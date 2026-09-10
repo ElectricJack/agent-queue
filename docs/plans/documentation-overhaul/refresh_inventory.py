@@ -514,8 +514,6 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Configuration schema and loader."),
     ("src/config_editor.py", "vault", "docs/reference/configuration.md",
      PRODUCTION, "Round-trip configuration writer."),
-    ("src/setup_wizard.py", "vault", "docs/reference/configuration.md", PRODUCTION,
-     "First-run setup wizard."),
     ("src/config_tuning.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
      "Resource-aware default tuning a fresh install is given."),
     ("src/portable_config.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,

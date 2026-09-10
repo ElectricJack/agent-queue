@@ -2,8 +2,14 @@
 
 Install AQ as a background service that turns a task description into an
 isolated coding-agent session against a Git repository. This page gets a new
-operator to a healthy local daemon; [the next tutorial](first-task.md) creates
-the first disposable project and task.
+operator from a fresh machine to a healthy daemon and an open dashboard;
+[the next tutorial](first-task.md) creates the first disposable project and
+task.
+
+There is one command: **`aq install`**. It asks a few questions, installs or
+reuses what this machine needs, writes a configuration tuned for this box,
+starts the daemon and tells you where your data lives. Rerunning it is how you
+resume, repair and add things later.
 
 ## Why this exists
 
@@ -26,111 +32,177 @@ the repository being changed.
 
 ## Prerequisites and supported boundary
 
-Use a current Linux machine or macOS host with Git, Docker (recommended for
-the bundled PostgreSQL service), Python 3.12 or later, and `tmux`. Node.js and
-`npm` are needed to launch the source-checkout dashboard. The installer
-detects Python and offers apt/Homebrew installation; its supported branches are
-Linux and macOS ([setup.sh](../../setup.sh)).
+| Host | Baseline | Tier |
+| --- | --- | --- |
+| Windows via WSL2 | Windows 10 2004 / build 19041 or newer, or Windows 11, with WSL2 and Ubuntu 24.04 LTS | supported |
+| macOS, Apple Silicon | macOS 14 (Sonoma) or newer | supported |
+| macOS, Intel | macOS 14 (Sonoma) or newer | compatibility |
+| Anything else | — | refused, with the observed facts, before anything is changed |
 
-Windows is not a native target in this installer. Use a Linux environment such
-as WSL2, keep Docker and Git available *inside that environment*, and run AQ,
-its database connection, and the harness from the same side of the boundary.
-Do not mix a Windows path with a Linux daemon path. If a harness must run on
-another host, configure and operate that deployment as a separate AQ host.
+On Windows, everything — AQ, PostgreSQL, your project checkouts and the
+harness — runs *inside* the WSL2 distribution. Do not mix a Windows path with a
+Linux daemon path.
 
-PostgreSQL is required. SQLite is not a current runtime option; an older
-SQLite database can only be imported through the setup migration path
-([database validation](../../src/config.py)). The development compose file
-ships PostgreSQL on host port `5533` ([docker-compose.yml](../../docker-compose.yml)).
+The installer checks Python 3.12+, Git and `tmux` itself, and on macOS it can
+install the missing ones through Homebrew. PostgreSQL is required and the
+installer will either use a server you already run or, when you ask it to,
+install a local one. SQLite is not a runtime option; an existing SQLite
+database can only be imported (`aq db import-sqlite`).
 
-## A realistic first installation
+## Install
 
-The following commands are suitable for a disposable local trial. They were
-checked against `setup.sh`, `aq start --help`, and `aq status --help` in this
-checkout. Clone AQ wherever you normally keep tools; the example repository
-comes in the next tutorial.
+From a release install, `aq install` is the whole thing. From a source
+checkout, `./setup.sh` creates the virtual environment, installs the `aq`
+command and then runs `aq install` for you:
 
 ```bash
 git clone <AQ-REPOSITORY-URL> agent-queue
 cd agent-queue
-docker compose up -d postgres
 ./setup.sh
 ```
 
+`aq install` then asks a short set of questions. Pressing Enter accepts each
+default, and `aq install --yes` takes them all without asking:
+
 ```text
-Using python3.12 (Python 3.12…)
-Installing typed API client (packages/aq-client)...
-Installing agent-queue and dependencies (dev + cli + gemini)...
-…
-agent-queue setup wizard
+Setting up AQ on this machine. Press Enter to accept each default.
+  (already installed)
+  Use Claude Code? [Y/n]:
+  (not installed here; AQ would install it with the provider's own installer)
+  Use Codex CLI? [y/N]:
+  ...
+  (no server answered on the configured host and port)
+  Let AQ install and run a local PostgreSQL server? [Y/n]:
+  (this is what serves the dashboard and runs your tasks)
+  Start the AQ daemon when setup finishes? [Y/n]:
 ```
 
-The exact Python patch version, download output, and prompts vary. The
-installer creates `.venv`, installs the `aq` and `agent-queue` commands, and,
-when `npm` is present, installs dashboard dependencies. It then starts the
-interactive wizard ([setup.sh](../../setup.sh), [wizard](../../src/setup_wizard.py)).
+Add `--advanced` to be asked about the optional extras as well — today that is
+Discord delivery, which is off by default.
 
-In the wizard:
+Each step then reports what it did, and every step that would change the
+machine asks first:
 
-1. Choose or enter a PostgreSQL DSN. For the compose service, the offered
-   local DSN is `postgresql://agent_queue:agent_queue_dev@localhost:5533/agent_queue`.
-2. Provide the requested Discord values only if you want the currently
-   shipped digest/escalation transport. The wizard presently asks for them,
-   but Discord is not how you create, review, or control tasks.
-3. Authenticate a harness. For Claude, use `claude login` or an Anthropic key.
-   The wizard stores entered service secrets in `~/.agent-queue/.env` with
-   mode `0600`; it writes configuration to `~/.agent-queue/config.yaml`.
-4. Confirm that `tmux` and the CLI chosen by your worker profile are on the
-   daemon host's `PATH`.
+```text
+[1/25] OK Confirm the host is supported
+[5/25] OK Prepare the AQ data directory
+…
+AQ is installed and ready.
+```
 
-> **Current implementation detail.** The wizard's menu still calls Codex
-> “not yet implemented,” but AQ's session layer has shipped `claude`, `codex`,
-> and `gemini` harness definitions ([probe](../../src/setup_wizard.py),
-> [session specification](../../src/sessions/spec.py)). Treat that menu text
-> as a wizard limitation: use `aq agent list-profiles` after startup and
-> install/authenticate the CLI named by the profile you select. Shipped default
-> worker profiles are Claude profiles; a Codex or Gemini profile is a local
-> configuration choice, not a claimed shipped default.
+The exact step list depends on the host and what you selected; `aq install
+--list-steps` prints it, and [the `aq install` reference](../reference/cli/install.md)
+documents every step, flag and exit code.
 
-Start AQ after the wizard exits:
+### Signing in to a harness
+
+**AQ never logs you in.** When a selected harness is not authenticated, the run
+stops at that step, names the provider's own login command (`claude auth
+login`, `codex login`, `gemini` then `/auth`) and exits `10`. Run it in your
+own terminal, then run `aq install` again: it revalidates everything that was
+already done and carries on from where it stopped. Skipping a harness entirely
+is a supported answer — the install still finishes.
+
+### Interruptions
+
+A rerun is the recovery path for everything: a closed terminal, a failed step,
+a reboot in the middle. `aq install` records what it completed and what it owns
+in `~/.agent-queue/install-state.json` (never a credential), revalidates a
+completed step instead of repeating it, and stops at the first thing that still
+needs attention. Nothing is done twice and nothing starts over.
+
+### Discord is optional
+
+AQ is operated from the CLI and the dashboard. Discord receives an hourly
+activity digest and one escalation thread per human decision, and nothing else
+depends on it: an install that never mentions it finishes ready, and the
+configuration it writes says `messaging_platform: none`. To add it later:
 
 ```bash
-aq start
-aq status
+aq install --with discord
 ```
+
+You supply the bot token yourself by putting it in `~/.agent-queue/.env` as
+`DISCORD_BOT_TOKEN=…`; the installer never asks for, prints or stores it.
+
+## When it finishes
+
+The closing summary is the same information a script gets from
+`aq install --json` under `onboarding`:
 
 ```text
-… daemon started …
-… system status overview …
+AQ is installed and ready.
+
+Where AQ stores your data
+  Configuration  /home/you/.agent-queue/config.yaml
+  Secrets        /home/you/.agent-queue/.env
+  Vault          /home/you/.agent-queue/vault
+  Worktrees      /home/you/.agent-queue/workspaces
+  Daemon log     /home/you/.agent-queue/daemon.log
+  Resume record  /home/you/.agent-queue/install-state.json
+  Database       postgresql+asyncpg://agent_queue@localhost:5432/agent_queue
+
+Dashboard
+  http://127.0.0.1:8081/dashboard
+
+Next
+  1. Open the dashboard at http://127.0.0.1:8081/dashboard.
+  2. Create your first project and task: `aq project onboard --help`, or follow
+     docs/tutorials/first-task.md.
+  3. `aq doctor` checks this installation whenever something looks wrong.
 ```
 
-`aq start` may offer to launch the dashboard from a source checkout. Accept
-the prompt or start it with `npm -w dashboard run dev`; the dashboard's source
-development port is `5173` ([daemon CLI](../../src/cli/daemon.py)). Open the
-local URL it reports in a browser. The daemon's command API is a separate
-local service; use `aq` rather than guessing its port.
+Open that URL in a browser. A **source checkout** ships no built dashboard, so
+the summary gives you the development command instead — run
+`npm -w dashboard run dev` in the checkout and open `http://localhost:5173`.
+
+`aq status` reports what the daemon thinks of itself, and `aq stop` /
+`aq restart` control it.
+
+## Unattended installation
+
+The same engine runs without a terminal, for a script or a new machine image:
+
+```bash
+aq install --non-interactive --config install.yaml --json
+```
+
+```yaml
+version: 1
+capabilities: [provider.claude, daemon, postgres-managed]
+approve: ["*"]          # or name each mutating step
+settings:
+  postgres:
+    host: db.internal
+```
+
+It never reads a terminal and never opens a browser: a missing human
+credential comes back as `needs_user` (exit `10`) with the provider's
+documented environment-credential route, rather than a guess. Exit codes: `0`
+ready, `10` needs_user, `11` invalid_input, `12` unsupported_host, `20` failed.
 
 ## Inputs and outputs
 
 | Input | Why AQ needs it | Output / where to check |
 | --- | --- | --- |
-| PostgreSQL DSN | Durable tasks, projects, sessions, and results | `aq doctor` and `aq status` report health. |
-| A harness login or provider credential | Lets a selected worker profile run its CLI | `aq agent list-profiles` shows available profiles; `aq agent check-profile <id>` checks one. |
-| Optional Node.js install | Runs the source-checkout dashboard | Browser at the URL reported by `aq start`. |
+| A PostgreSQL server (or permission to install one) | Durable tasks, projects, sessions, and results | `aq doctor` and `aq status` report health. |
+| A harness login | Lets a selected worker profile run its CLI | `aq agent list-profiles` shows available profiles; `aq agent check-profile <id>` checks one. |
 | A project root (next tutorial) | Limits where AQ can create/link projects | `aq project list-roots` lists the approved roots. |
 
-The default worker profile selection prefers `worker-standard-medium-claude`
-when it is installed ([default selection](../../src/profiles/default_selection.py)).
-That is a shipped default; a project's configured default profile or a
-task-level `--profile` is local policy and wins when provided.
+Shipped worker profiles are provider-explicit (`worker-standard-medium-claude`
+and its siblings), and only the ones whose harness is installed *and*
+authenticated are activated — `aq install` refreshes that eligibility on every
+run, so a default route never points at a provider you do not have.
 
 ## State ownership
 
 | State | Owner | Location |
 | --- | --- | --- |
-| AQ settings and PostgreSQL DSN | Operator / setup wizard | `~/.agent-queue/config.yaml` |
-| Entered service secrets | Operator / setup wizard | `~/.agent-queue/.env`, mode `0600` |
+| AQ settings and PostgreSQL DSN | Operator / `aq install` | `~/.agent-queue/config.yaml` |
+| Secrets the configuration refers to | Operator | `~/.agent-queue/.env`, mode `0600` |
+| What the installer completed and owns | `aq install` | `~/.agent-queue/install-state.json` |
 | Tasks, projects, sessions, results | AQ daemon | PostgreSQL |
+| Provider credentials | The provider's own CLI | its own store (Keychain, `~/.claude/.credentials.json`, …) — AQ never reads or moves one |
 | Repository source and commits | Your Git repository | Your configured project root |
 | Worker edits | AQ worker | AQ-managed worktree and task branch |
 
@@ -144,28 +216,35 @@ operator database; database upgrades are an operator action described in
 
 | Symptom | Diagnose | Recovery |
 | --- | --- | --- |
-| Cannot connect to PostgreSQL | `docker compose ps`, then `aq doctor` | Start the compose service or correct the DSN; re-run the wizard. |
-| No worker can start | `aq agent list-profiles`, then `aq agent check-profile <id>` | Install/login to that profile's harness and ensure `tmux` is on `PATH`. |
-| Dashboard does not open | Check the `aq start` prompt/log output | Install Node/npm, run the dashboard command from the source checkout, or continue with the CLI. |
-| Project onboarding says no roots | `aq project list-roots` | Add a readable/writable `project_roots` entry through Settings or `aq system config edit`; see the next tutorial. |
+| The run stopped with `needs_user` | Read the named step and its `next:` line | Do the named thing — a login, a password prompt, a setting — and run `aq install` again. |
+| No PostgreSQL server is reachable | `aq install --dry-run` | Rerun with `--with postgres-managed` to install one, or point `settings.postgres.host`/`port` at the server you already run. |
+| The daemon did not come up | `~/.agent-queue/daemon.log`, then `aq doctor` | Fix what the log names (an unreachable database is the usual answer) and rerun `aq install`. |
+| The configuration does not parse | The `config.check` step names the keys | `aq system config edit`, then rerun. Leave `messaging_platform: none` unless you selected Discord. |
+| No worker can start | `aq agent list-profiles`, then `aq agent check-profile <id>` | Sign in to that profile's harness and rerun `aq install` to refresh eligibility. |
+| The dashboard does not open | Check the summary's Dashboard line | A source checkout needs `npm -w dashboard run dev`; a release install serves it from the daemon. |
 | You need to stop AQ | `aq stop` | This stops the daemon and its agent sessions. Use `aq restart` for a restart that re-adopts live sessions. |
 
 ## Related pages
 
+* [`aq install` reference](../reference/cli/install.md) — every step, flag,
+  setting, exit code and the JSON payload.
 * [Your first isolated task](first-task.md) — creates a throwaway project and
   watches a worker finish it.
 * [Project onboarding](../guides/project-onboarding.md) — explains roots,
   GitHub authentication, idempotency, and recovery in depth.
-* [Worker pools](../guides/worker-pools.md) — explains pull-based workers once
-  you are operating more than one.
+* [Default tuning](../guides/default-tuning.md) — what the installer wrote into
+  your configuration, and how to override it.
 * [Migrations](../guides/migrations.md) — safe database ownership boundaries.
 
 ## Source and tests
 
-Implementation: [setup.sh](../../setup.sh), [src/setup_wizard.py](../../src/setup_wizard.py),
-[src/cli/daemon.py](../../src/cli/daemon.py),
-[src/config.py](../../src/config.py), and
-[src/profiles/default_selection.py](../../src/profiles/default_selection.py).
+Implementation: [src/install/](../../src/install/) — the engine
+([engine.py](../../src/install/engine.py)), the onboarding steps
+([onboarding.py](../../src/install/onboarding.py)), the wizard
+([wizard.py](../../src/install/wizard.py)) — and the command
+[src/cli/install.py](../../src/cli/install.py). `setup.sh` is the contributor
+bootstrap for a source checkout and hands machine setup to the same command.
 
-Focused verification: `aq start --help`, `aq stop --help`, `aq status --help`,
-`aq agent list-profiles --help`, and `aq test tests/test_setup_wizard.py`.
+Focused verification: `aq install --list-steps`, `aq install --dry-run`, and
+`aq test tests/test_install_cli.py tests/test_install_onboarding.py
+tests/test_install_wizard.py`.

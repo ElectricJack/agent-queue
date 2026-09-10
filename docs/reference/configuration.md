@@ -52,10 +52,13 @@ vault and compiled-artifact roots, and workspace_dir locates agent workspaces. T
 settings, the messaging platform, and subsystem-construction flags are read when the
 daemon builds services. Change them, then restart the daemon.
 
-The first-run wizard in [src/setup_wizard.py](../../src/setup_wizard.py) writes
-~/.agent-queue/config.yaml and stores entered secrets in ~/.agent-queue/.env with
-owner-only permissions. It is an interactive helper, not a replacement for reviewing
-the resulting YAML.
+[aq install](cli/install.md) writes ~/.agent-queue/config.yaml on a fresh machine: it
+creates the file with no messaging platform selected, points the database section at
+the DSN it provisioned, and adds resource-aware defaults derived from the box's cores
+and memory ([default tuning](../guides/default-tuning.md)). Secrets stay in
+~/.agent-queue/.env with owner-only permissions and are referenced from the YAML as
+${VAR}. A section you have already written is kept, and a numbered backup is taken
+before the file is changed — but neither is a replacement for reviewing the result.
 
 ## Top-level sections
 
@@ -122,8 +125,8 @@ the writer itself deliberately leaves validation to its caller. See
   validation, diffing, and watcher.
 * [src/config_editor.py](../../src/config_editor.py) — raw read/schema generation and
   round-trip writing.
-* [src/setup_wizard.py](../../src/setup_wizard.py) — first-run interactive config
-  creation.
+* [src/install/onboarding.py](../../src/install/onboarding.py) — the installer steps
+  that create, tune and validate the configuration on a fresh machine.
 * aq test tests/test_config.py tests/test_config_profiles.py tests/test_config_watcher.py
   and aq test tests/test_config_editor.py tests/test_config_roundtrip.py exercise the
   focused behavior.

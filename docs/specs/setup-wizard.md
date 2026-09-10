@@ -5,12 +5,16 @@ tags: [spec, setup, cli]
 # Setup Wizard Specification
 
 <!-- aq:historical -->
-> **Design record — not current documentation.** A spec states the behaviour
-> intended when it was approved; it is written before the code and is not
-> revised to track it. Where this page and the code disagree, the code is right.
-> Start at [the documentation home](../README.md) for what AQ does today, and
-> see [historical material](../history/README.md) for how this material is
-> organised.
+> **Retired design record — not current documentation.** This describes the
+> first-run wizard that `src/setup_wizard.py` implemented. That module was
+> deleted: machine setup is now one command, `aq install`, whose steps live in
+> `src/install/` and whose published surface is
+> [the `aq install` reference](../reference/cli/install.md). Two decisions on
+> this page were deliberately reversed — Discord is optional and no longer a
+> required prompt, and the wizard no longer owns configuration writing or
+> daemon launch on its own. Start at [Install AQ](../tutorials/install.md) for
+> what AQ does today, and see [historical material](../history/README.md) for
+> how this material is organised.
 
 ## 1. Overview
 
@@ -18,7 +22,9 @@ The setup wizard is an interactive CLI tool that guides a first-time user throug
 
 ## Source Files
 
-- `src/setup_wizard.py`
+- `src/setup_wizard.py` — **deleted.** Its successors are `src/install/onboarding.py`
+  (the configuration, Discord, daemon and dashboard steps), `src/install/wizard.py`
+  (the question plan and closing summary) and `src/cli/install.py`.
 
 ---
 

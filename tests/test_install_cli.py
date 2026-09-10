@@ -272,3 +272,159 @@ def test_the_documented_step_states_are_the_ones_the_code_reports():
     text = DOC.read_text(encoding="utf-8")
     for state in StepState:
         assert f"`{state.value}`" in text
+
+
+# -- the onboarding wizard ---------------------------------------------------
+
+
+@pytest.fixture
+def wizard_registry(monkeypatch, tmp_path):
+    """A registry with the onboarding steps but no database or platform adapter.
+
+    ``aq install`` composes those adapters for the host it runs on; a test
+    about the *wizard* must not depend on whether this box has PostgreSQL
+    listening or a Homebrew prefix.
+    """
+    from src.cli import install as install_cli
+    from src.install.onboarding import onboarding_steps
+    from src.install.prerequisites import default_registry
+
+    home = tmp_path / "aq-home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "messaging_platform: none\n"
+        "database:\n  url: postgresql+asyncpg://agent_queue:pw@localhost:5432/agent_queue\n",
+        encoding="utf-8",
+    )
+
+    def build(_support):
+        registry = default_registry(adapters=(), state_dir=home)
+        registry.extend(
+            onboarding_steps(
+                environ={"HOME": str(home)},
+                home=home,
+                runner=lambda argv, **kwargs: (_ for _ in ()).throw(
+                    AssertionError("the daemon must not be started in this test")
+                ),
+                which=lambda name: f"/usr/bin/{name}",
+                probe=lambda url: None,
+            )
+        )
+        return registry
+
+    monkeypatch.setattr(install_cli, "build_registry", build)
+    return home
+
+
+def _questions(*ids_and_capabilities):
+    from src.install.wizard import Question
+
+    return tuple(
+        Question(id=name, prompt=f"Use {name}?", capability=capability, default=default)
+        for name, capability, default in ids_and_capabilities
+    )
+
+
+@pytest.fixture
+def scripted_questions(monkeypatch):
+    """Replace the machine probes with a fixed question plan."""
+    from src.cli import install as install_cli
+
+    plan = _questions(
+        ("provider.codex", "provider.codex", False),
+        ("daemon", "daemon", False),
+    )
+    monkeypatch.setattr(install_cli, "wizard_questions", lambda *, advanced: plan)
+    return plan
+
+
+def _plan_action(output: str, step_id: str) -> str:
+    """The action the rendered dry-run plan gives *step_id*."""
+    match = re.search(rf"^\s+(\S+)\s+{re.escape(step_id)}\s", output, re.MULTILINE)
+    assert match, f"{step_id} is missing from the printed plan:\n{output}"
+    return match.group(1)
+
+
+def test_the_wizard_asks_its_questions_and_the_answers_select_capabilities(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", "--dry-run", input="y\nn\n")
+
+    assert "Use provider.codex?" in result.output
+    assert "Press Enter to accept each default" in result.output
+    # Yes to Codex, no to the daemon: one capability-gated step is planned and
+    # the other is recorded as unselected.
+    assert _plan_action(result.output, "provider.codex-cli") != "skip_not_selected"
+    assert _plan_action(result.output, "daemon.start") == "skip_not_selected"
+
+
+def test_pressing_enter_through_the_wizard_takes_the_defaults(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", "--dry-run", input="\n\n")
+
+    assert result.exit_code == 0
+    # Both defaults were "no", so both capability-gated steps are unselected.
+    assert _plan_action(result.output, "provider.codex-cli") == "skip_not_selected"
+    assert _plan_action(result.output, "daemon.start") == "skip_not_selected"
+
+
+def test_yes_takes_the_defaults_without_asking(install_home, wizard_registry, scripted_questions):
+    result = _invoke("--interactive", "--dry-run", "--yes")
+
+    assert "Use provider.codex?" not in result.output
+
+
+def test_an_explicit_capability_flag_suppresses_the_questions(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", "--dry-run", "--with", "provider.codex")
+
+    assert "Use provider.codex?" not in result.output
+
+
+def test_the_human_summary_says_where_data_lives_and_how_to_open_the_dashboard(
+    install_home, wizard_registry
+):
+    result = _invoke("--non-interactive", "--yes")
+
+    assert "Where AQ stores your data" in result.output
+    assert "Dashboard" in result.output
+    assert "Next" in result.output
+
+
+def test_the_machine_readable_result_carries_the_same_summary(install_home, wizard_registry):
+    result = _invoke("--non-interactive", "--yes", "--json")
+
+    payload = _payload(result)
+    summary = payload["onboarding"]
+    assert summary["ready"] is (payload["outcome"] == "ready")
+    labels = {entry["label"] for entry in summary["locations"]}
+    assert {"Configuration", "Vault", "Worktrees"} <= labels
+    assert summary["dashboard"] is not None
+    assert isinstance(summary["next_steps"], list)
+
+
+def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
+    result = _invoke("--non-interactive", "--yes", "--json")
+
+    payload = _payload(result)
+    assert payload["outcome"] == "ready"
+    discord = next(row for row in payload["steps"] if row["step_id"] == "config.discord")
+    assert discord["state"] == "skipped"
+    assert any("--with discord" in line for line in payload["onboarding"]["skipped"])
+
+
+def test_the_advanced_flag_is_passed_to_the_question_plan(install_home, wizard_registry, monkeypatch):
+    from src.cli import install as install_cli
+
+    seen: list[bool] = []
+
+    def plan(*, advanced):
+        seen.append(advanced)
+        return ()
+
+    monkeypatch.setattr(install_cli, "wizard_questions", plan)
+    _invoke("--interactive", "--dry-run", "--advanced")
+
+    assert seen == [True]

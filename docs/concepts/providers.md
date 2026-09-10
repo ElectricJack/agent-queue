@@ -408,10 +408,9 @@ the frontier and the *pool key* is quarantined for the same window, so a
 different worker on a different account can pick the work straight back up
 ([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py)).
 
-> **Two settings that look relevant and are not.** The scheduler reads a
+> **A setting that looks relevant and is not.** The scheduler reads a
 > `provider_cooldowns` map, but nothing on `main` writes an entry into the
-> orchestrator's copy of it; and the `pause_retry:` config block is read only
-> by the setup wizard. Do not plan around either.
+> orchestrator's copy of it. Do not plan around it.
 
 ## Inputs and outputs
 

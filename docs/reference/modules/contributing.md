@@ -29,7 +29,7 @@ The index for every other shard is the [module catalog](README.md).
 | [`.pre-commit-config.yaml`](../../../.pre-commit-config.yaml) | Two `ruff-pre-commit` hooks — `ruff-format`, then `ruff --fix`. | [checks](../../contributing/checks.md#lint) | Opt-in: `pre-commit install`. Nothing in CI runs it. |
 | [`.vibecop.yml`](../../../.vibecop.yml) | Ignore list for the `aq-vibecop` plugin's code-quality scans: generated clients, `docs/`, `scripts/` and vendored trees. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | Excludes `packages/aq-client/**` because findings there need a generator change, not an edit. |
 | [`.mcp.json`](../../../.mcp.json) | Offers one MCP server, `agent-queue`, over HTTP at `localhost:8082/mcp`, to MCP-aware editors and agent CLIs working in this repository. | [setup](../../contributing/setup.md#editor-and-agent-configuration) | Useful only with a daemon running. |
-| [`setup.sh`](../../../setup.sh) | Operator installer: detects or installs Python 3.12+, creates the virtualenv, installs the package and the generated client, installs the npm workspaces and generates the TypeScript client. | [setup](../../contributing/setup.md#install) | Stale in two places — requests an undefined `gemini` extra and installs the retired `acpx` runtime. Contributors use the explicit commands instead. |
+| [`setup.sh`](../../../setup.sh) | Operator installer: detects or installs Python 3.12+, creates the virtualenv, installs the package and the generated client, installs the npm workspaces and generates the TypeScript client. | [setup](../../contributing/setup.md#install) | Prepares the checkout, then hands machine setup to `aq install` (the one installer). `tests/test_setup_script.py` pins both halves. |
 | [`uninstall.sh`](../../../uninstall.sh) | Returns the checkout to a fresh-clone state and optionally removes `~/.agent-queue/`. | [setup](../../contributing/setup.md#install) | Destructive. Re-execs from a temporary copy so `git clean` cannot delete it mid-run. |
 
 ## Continuous integration
@@ -83,7 +83,6 @@ The index for every other shard is the [module catalog](README.md).
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`scripts/register-merge-conflict-hook.py`](../../../scripts/register-merge-conflict-hook.py) | Registered a periodic merge-conflict *hook* for a project. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | **Broken.** Imports `models.Hook`; hooks were replaced by playbooks and no such model exists. |
 | [`scripts/migrate_task_records.py`](../../../scripts/migrate_task_records.py) | Moved task-record markdown from the legacy memory path to `{data_dir}/tasks/{project}/`, byte-for-byte and idempotently. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | Completed vault migration; dry-run by default. Covered by `tests/test_migrate_task_records.py`. |
 | [`run_tests.sh`](../../../run_tests.sh) | Ran the entire pytest suite verbosely and teed the output to a file. | [testing](../../contributing/testing.md) | Historical: no gating, no marker deselects. Running it stalls every agent on the box. |
 | [`test_suite.bat`](../../../test_suite.bat) | The same, for Windows. | [testing](../../contributing/testing.md) | Historical: contains a hard-coded personal path. |

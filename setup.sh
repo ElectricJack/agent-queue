@@ -206,7 +206,37 @@ if [[ -n "$COMP_FILE" && -s "$COMP_FILE" ]]; then
     fi
 fi
 
+# --- Machine setup: one entry point ---
+#
+# setup.sh is the *contributor* bootstrap: it prepares this checkout (venv,
+# dependencies, the `aq` command, shell completion).  Everything about the
+# machine itself -- prerequisites, PostgreSQL, agent CLIs and their logins,
+# configuration, the daemon and the dashboard -- belongs to `aq install`, which
+# is the one installer users are documented to run.  Do not add a second
+# installation flow here: docs/tutorials/install.md and
+# docs/reference/cli/install.md describe that one.
+#
+# `aq install` is resumable, so an interruption (or a login you finish in
+# another terminal) is recovered by running it again.
+echo ""
+echo "Setting up this machine (aq install)..."
+set +e
+.venv/bin/aq install
+status=$?
+set -e
+if [[ "$status" -ne 0 ]]; then
+    echo ""
+    echo "Setup stopped (exit $status). Nothing was lost: rerun './setup.sh' or"
+    echo "'aq install' and it continues from where it stopped."
+    echo "See docs/tutorials/install.md."
+    exit "$status"
+fi
+
 # --- Optional memory plugin ---
+#
+# aq-memory is an external plugin (Milvus-backed memory). It is not bundled and
+# has no default location: pass --with-memory with AQ_MEMORY_PATH pointing at a
+# checkout, or install it later with `aq plugin install <git-or-path>`.
 INSTALL_MEMORY=0
 NO_PROMPT=0
 for arg in "$@"; do
@@ -216,24 +246,19 @@ for arg in "$@"; do
     esac
 done
 
-if [[ "$NO_PROMPT" -eq 0 && -t 0 ]]; then
-    read -rp "Install aq-memory plugin (Milvus-backed memory)? (y/N) " yn
+if [[ "$NO_PROMPT" -eq 0 && -t 0 && -n "${AQ_MEMORY_PATH:-}" ]]; then
+    read -rp "Install aq-memory plugin from $AQ_MEMORY_PATH? (y/N) " yn
     case "$yn" in
         [Yy]*) INSTALL_MEMORY=1 ;;
     esac
 fi
 
 if [[ "$INSTALL_MEMORY" -eq 1 ]]; then
-    AQ_MEMORY_PATH="${AQ_MEMORY_PATH:-/mnt/d/Dev/aq/aq-memory}"
-    if [[ -d "$AQ_MEMORY_PATH" ]]; then
+    if [[ -n "${AQ_MEMORY_PATH:-}" && -d "$AQ_MEMORY_PATH" ]]; then
         echo "Installing aq-memory from $AQ_MEMORY_PATH..."
         aq plugin install "$AQ_MEMORY_PATH"
     else
-        echo "aq-memory not found at $AQ_MEMORY_PATH — skipping."
+        echo "aq-memory was requested but AQ_MEMORY_PATH names no directory -- skipping."
         echo "  Set AQ_MEMORY_PATH=<dir> or run: aq plugin install <git-or-path>"
     fi
 fi
-
-# --- Run setup wizard ---
-echo ""
-.venv/bin/python src/setup_wizard.py

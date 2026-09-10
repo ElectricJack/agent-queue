@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from src.install import (
     exit_code,
 )
 from src.install.results import RESULT_SCHEMA_VERSION
+from src.install.wizard import OnboardingSummary, Question, capabilities_for, summarize
 
 from .app import cli, console
 
@@ -208,6 +210,75 @@ def _progress(target: Console) -> Any:
     return report
 
 
+def ask_questions(questions: Sequence[Question], target: Console) -> dict[str, bool]:
+    """Put the wizard's questions to the operator and collect the answers.
+
+    Questions go to stderr for the same reason consent does: a caller that
+    combines an interactive run with ``--json`` parses stdout, and a prompt
+    printed there would break it.  Every question has a default, so pressing
+    Enter through the list is the supported "just install it" path.
+    """
+    answers: dict[str, bool] = {}
+    if not questions:
+        return answers
+    click.echo("Setting up AQ on this machine. Press Enter to accept each default.", err=True)
+    for question in questions:
+        if question.detail:
+            click.echo(f"  ({question.detail})", err=True)
+        answers[question.id] = click.confirm(
+            f"  {question.prompt}", default=question.default, err=True
+        )
+    click.echo("", err=True)
+    return answers
+
+
+def wizard_questions(*, advanced: bool) -> tuple[Question, ...]:
+    """Build the question plan from what this machine already has.
+
+    The probes are read-only: which harness executables exist and whether a
+    PostgreSQL server answers.  They decide the *defaults*, never the answers.
+    """
+    from src.install.logins import probe_all
+    from src.install.postgres import PostgresSettings, tcp_open
+    from src.install.wizard import question_plan
+
+    settings = PostgresSettings()
+    return question_plan(
+        probes=probe_all(),
+        postgres_reachable=tcp_open(settings.host, settings.port, timeout=1.0),
+        advanced=advanced,
+    )
+
+
+def render_summary(summary: OnboardingSummary, target: Console) -> None:
+    """Print the closing summary: what is ready, where things live, what next."""
+    style = "bold green" if summary.ready else "bold yellow"
+    target.print(f"\n[{style}]{summary.headline}[/{style}]")
+
+    if summary.locations:
+        target.print("\n[bold]Where AQ stores your data[/bold]")
+        for location in summary.locations:
+            target.print(f"  {location.label:<14} {location.path}")
+            if location.note:
+                target.print(f"                 [dim]{location.note}[/dim]")
+
+    if summary.dashboard:
+        target.print("\n[bold]Dashboard[/bold]")
+        target.print(f"  {summary.dashboard.url}")
+        if summary.dashboard.hint:
+            target.print(f"  [dim]{summary.dashboard.hint}[/dim]")
+
+    if summary.skipped:
+        target.print("\n[bold]Not installed (optional)[/bold]")
+        for line in summary.skipped:
+            target.print(f"  [dim]-[/dim] {line}")
+
+    if summary.next_steps:
+        target.print("\n[bold]Next[/bold]")
+        for index, step in enumerate(summary.next_steps, start=1):
+            target.print(f"  {index}. {step}")
+
+
 def render_result(result: InstallResult, target: Console) -> None:
     """Print the human view of a run: what happened, then what to do next."""
     if result.dry_run:
@@ -279,6 +350,11 @@ def render_result(result: InstallResult, target: Console) -> None:
     help=f"Resume record path (default: {default_state_path()}).",
 )
 @click.option("--list-steps", is_flag=True, help="Print the registered steps and exit.")
+@click.option(
+    "--advanced",
+    is_flag=True,
+    help="Ask the optional extra questions (Discord delivery) as well as the short set.",
+)
 @click.pass_context
 def install(
     ctx: click.Context,
@@ -294,13 +370,19 @@ def install(
     restart_from: str | None,
     state_file: Path | None,
     list_steps: bool,
+    advanced: bool,
 ) -> None:
-    """Install or repair this machine's AQ prerequisites.
+    """Set up this machine to run AQ, from prerequisites to a ready dashboard.
+
+    Run with no options on a terminal and it asks a short set of questions with
+    good defaults, then installs what you selected, writes a configuration
+    tuned for this box, starts the daemon and tells you where your data lives.
 
     Reruns are the normal recovery path: the command records what it completed
     and what it owns, revalidates a completed step instead of repeating it, and
-    stops at the first step that needs attention.  Exit codes: 0 ready,
-    10 needs_user, 11 invalid_input, 12 unsupported_host, 20 failed.
+    stops at the first step that needs attention — including a harness login,
+    which you finish in your own terminal before rerunning.  Exit codes:
+    0 ready, 10 needs_user, 11 invalid_input, 12 unsupported_host, 20 failed.
     """
     support = describe_host()
     registry = build_registry(support)
@@ -310,6 +392,15 @@ def install(
 
     if interactive is None:
         interactive = sys.stdin.isatty() and not as_json
+
+    # The wizard asks only when nothing else has already spoken for the
+    # selection: an explicit ``--with``/``--config`` is the caller choosing,
+    # ``--yes`` means "do the sensible thing without asking me", and ``--json``
+    # is a script driving consent rather than a newcomer being onboarded.
+    if interactive and not as_json and not capabilities and not config_path:
+        questions = wizard_questions(advanced=advanced)
+        answers = {} if assume_yes else ask_questions(questions, console)
+        capabilities = tuple(sorted(capabilities_for(questions, answers)))
 
     options = build_options(
         registry,
@@ -367,10 +458,17 @@ def install(
                 + tuple(f"Profile activation: {message}" for message in guidance.values()),
             )
 
+    # The summary is derived from the result, so a human and a script are told
+    # the same things: what is ready, where the data lives, which URL to open
+    # and what was deliberately left out.
+    summary = summarize(result)
     if as_json:
-        click.echo(json.dumps(result.to_dict(), ensure_ascii=False))
+        payload = result.to_dict()
+        payload["onboarding"] = summary.to_dict()
+        click.echo(json.dumps(payload, ensure_ascii=False))
     else:
         render_result(result, console)
+        render_summary(summary, console)
     ctx.exit(result.exit_code)
 
 

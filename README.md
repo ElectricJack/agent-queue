@@ -26,9 +26,10 @@ The short version, once the prerequisites on that page are in place:
 ```bash
 git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
-./setup.sh          # virtualenv, Python + dashboard packages, `aq` entry point, setup wizard
-aq start            # starts the daemon; offers to start the dashboard (`--no-dashboard` skips)
-aq status
+./setup.sh          # virtualenv, Python + dashboard packages, `aq` entry point,
+                    # then `aq install` — the onboarding wizard: prerequisites,
+                    # PostgreSQL, agent CLIs, configuration, daemon, dashboard
+aq status           # what the daemon that `aq install` started thinks of itself
 ```
 
 You need Linux or macOS (WSL2 counts, if everything stays on the Linux side), Python

@@ -957,7 +957,7 @@ class ConfigUpdate:
     backup: Path | None = None
 
 
-_CONFIG_HEADER = """\
+CONFIG_HEADER = """\
 # AQ configuration, created by `aq install`.
 # Secrets are referenced as ${ENV_VAR} and resolved from the .env file beside
 # this one; never paste a password here.
@@ -997,7 +997,7 @@ def write_database_config(config_path: Path, *, url: str) -> ConfigUpdate:
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
-        config_path.write_text(_CONFIG_HEADER + "database:\n  url: ''\n", encoding="utf-8")
+        config_path.write_text(CONFIG_HEADER + "database:\n  url: ''\n", encoding="utf-8")
         section: dict[str, Any] = {}
         created = True
         backup = None
@@ -1017,6 +1017,7 @@ def write_database_config(config_path: Path, *, url: str) -> ConfigUpdate:
 
 
 __all__ = [
+    "CONFIG_HEADER",
     "DEFAULT_BREW_FORMULA_VERSION",
     "DEFAULT_DATABASE",
     "DEFAULT_HOST",
