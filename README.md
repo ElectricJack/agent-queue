@@ -24,6 +24,8 @@ development; expect to read logs and use `aq doctor`.
 Installing on Windows? Use the [Windows + WSL2 quickstart](docs/tutorials/install.md#windows-wsl2-quickstart).
 On a Mac, use the [macOS quickstart](docs/tutorials/install.md#macos-quickstart).
 Both paths lead to the same resumable installer and [recovery guidance](docs/tutorials/install.md#recovery-upgrade-and-uninstall).
+The versioned release's platform matrix, artifact checks, and intentionally
+visible acceptance limits are in the [installation release record](docs/validation/installation-release-0.1.0.md).
 
 The short version, once the prerequisites on that page are in place:
 
