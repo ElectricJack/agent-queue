@@ -645,8 +645,6 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Vibecop plugin configuration."),
     (".mcp.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "MCP servers offered to agents working in this repository."),
-    ("mkdocs.yml", "legacy", "docs/history/README.md", SUPPORTING,
-     "Legacy MkDocs configuration; the overhaul publishes GitHub-rendered Markdown."),
     (".gitignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Ignore rules."),
     (".gitattributes", "contributing", "docs/contributing/setup.md", SUPPORTING,

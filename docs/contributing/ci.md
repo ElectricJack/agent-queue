@@ -25,12 +25,14 @@ waiting for a check that is never going to appear.
 
 ## The workflows
 
-Two, both in [`.github/workflows/`](../../.github/workflows/).
+One, in [`.github/workflows/`](../../.github/workflows/). There was a second,
+`docs.yml`, which built a MkDocs site and deployed it to GitHub Pages; it was
+retired — see [there is no documentation
+build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
 | [`tests.yml`](../../.github/workflows/tests.yml) | Push to `main`, `aq/parent/**`, `aq/integration/**`, `aq/sound-current`; `workflow_dispatch` | The attestation decision, then a four-arm test matrix against a real PostgreSQL service. |
-| [`docs.yml`](../../.github/workflows/docs.yml) | Push to `main` touching `docs/**`, `specs/**` or `mkdocs.yml`; `workflow_dispatch` | Builds a MkDocs site and deploys it to GitHub Pages. **Historical** — see [below](#the-docs-workflow-is-historical). |
 
 > **Note.** There is no `pull_request` trigger anywhere. A PR from an ordinary
 > task branch gets no `Tests` check. Work reaches `main` through AQ's own
@@ -127,20 +129,35 @@ supersedes their obsolete checks.
 The same incident is why generated artefacts and the change that causes them
 belong in one commit — see [code generation](codegen.md#state-ownership).
 
-## The docs workflow is historical
+## There is no documentation build
 
-[`docs.yml`](../../.github/workflows/docs.yml) installs MkDocs and
-`mkdocs-material`, runs `mkdocs build`, and deploys the result to GitHub Pages.
-It predates this documentation set, which is **GitHub-rendered Markdown with
-relative links and has no site build** — the coverage manifest classifies
-[`mkdocs.yml`](../../mkdocs.yml) as legacy for that reason, and its local
-counterpart [`scripts/generate-docs.sh`](../../scripts/generate-docs.sh) is
-broken outright (it syncs from a `specs/` directory that is no longer in the
-tree).
+This documentation set is **GitHub-rendered Markdown with relative links**.
+Nothing compiles it, nothing deploys it, and there is no documentation site.
+
+It used to have one. `.github/workflows/docs.yml` built a MkDocs Material site
+on every push to `main` touching `docs/**` and published it to GitHub Pages at
+`electricjack.github.io/agent-queue/`. That site predated this documentation
+set and was never migrated to it: by the time it was removed, **49 of the 77
+pages listed in `mkdocs.yml`'s `nav:` block did not exist** — the entire
+`mkdocstrings` `api/` tree plus `getting-started.md`, `architecture.md` and the
+`git-sync-*.md` pages — so the deploy served a stale, partly-404 mirror of the
+documentation on every merge.
+
+Rather than maintain a second navigation over the same tree, the site was
+retired. `mkdocs.yml`, `.github/workflows/docs.yml`, `scripts/generate-docs.sh`
+and `pyproject.toml`'s `docs` extra were all deleted; the one navigation that
+remains is [the documentation map](../documentation-map.md).
+
+> **Operator step.** Deleting the workflow stops future deploys but does not
+> remove what is already published. The `github-pages` environment and the
+> Pages site itself are repository settings and have to be disabled by hand
+> (Settings → Pages → *Unpublish site*, then Settings → Environments →
+> `github-pages`).
 
 Practical consequence for a documentation change: your links must resolve in
 the GitHub file browser, from the directory of the file they are in. Nothing
-else checks them. The one check that *does* run locally is the coverage
+else checks them, so run [`check-docs.py`](../../scripts/check-docs.py) over
+the pages you edited. The one check that gates a push is the coverage
 manifest:
 
 ```bash
@@ -155,8 +172,9 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 * It does not build or test the dashboard. `npm run lint`, `typecheck` and
   `vitest` are local-only ([checks](checks.md#frontend)).
 * It does not run the [end-to-end kit](scripts.md#supported-end-to-end-kit).
-* It does not publish anything. There is no release workflow — see
-  [builds and releases](releases.md).
+* It does not publish anything. There is no release workflow and no
+  documentation deploy — see [builds and releases](releases.md) and
+  [above](#there-is-no-documentation-build).
 
 ## Inputs and outputs
 
@@ -195,7 +213,6 @@ job's checkout uses the default token and pushes nothing.
 ## Source and tests
 
 [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml),
-[`.github/workflows/docs.yml`](../../.github/workflows/docs.yml),
 [`scripts/check-integration-attestation.py`](../../scripts/check-integration-attestation.py),
 [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json).
 

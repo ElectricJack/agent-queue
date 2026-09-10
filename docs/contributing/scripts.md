@@ -99,7 +99,6 @@ instructions — and expect the ones marked *broken* to fail immediately.
 |---|---|---|
 | [`register-merge-conflict-hook.py`](../../scripts/register-merge-conflict-hook.py) | **Broken.** | Imports `models.Hook` to register a periodic *hook*. Hooks were replaced by playbooks (`docs/concepts/playbooks.md` — **planned**); there is no `Hook` model in `src/models.py`, so the import fails. The conflict *detector* it drove, `check-merge-conflicts.sh`, still works on its own. |
 | [`migrate_task_records.py`](../../scripts/migrate_task_records.py) | **Historical.** | A completed vault migration: moves task-record markdown from `{data_dir}/memory/{project}/tasks/` to `{data_dir}/tasks/{project}/`. Dry-run by default, `--execute` to act; byte-for-byte and idempotent. Nothing new needs it. |
-| [`generate-docs.sh`](../../scripts/generate-docs.sh) | **Broken.** | Builds a MkDocs site, after `rsync -a --delete specs/ docs/specs/`. There is no `specs/` directory in the tree, so the sync step fails under `set -e`. This documentation set is GitHub-rendered Markdown with relative links and has no site build. |
 | [`run_tests.sh`](../../run_tests.sh) | **Historical.** | `python -m pytest tests/ -v` — the entire suite, serially, with no gating. Predates `aq test`; running it stalls every agent on the box. See [testing](testing.md). |
 | [`test_suite.bat`](../../test_suite.bat) | **Historical.** | The same, for Windows, with a hard-coded personal path. |
 | [`setup.sh`](../../setup.sh) | **Supported for operators, stale in two places.** | Installs Python, the package and the npm workspaces. It requests a `gemini` extra `pyproject.toml` does not define, and installs `acpx`, a retired runtime. Contributors should use the explicit commands in [setup](setup.md#install). |
@@ -136,7 +135,6 @@ script refuses to run without a marker file proving that.
 | `node_modules missing — run: npm install` | `e2e-dashboard.sh` without a Node install. | `npm install` at the repository root. |
 | `TS client not generated` | The gitignored client has never been generated here. | `./scripts/regenerate-ts-client.sh --from-file` |
 | `ModuleNotFoundError: No module named 'models'` from `register-merge-conflict-hook.py` | The script is broken; hooks no longer exist. | Do not use it; playbooks replaced hooks. |
-| `rsync: [sender] change_dir "…/specs" failed` | `generate-docs.sh`; there is no `specs/` directory. | Do not use it. This documentation set has no build step. |
 
 ## Related pages
 

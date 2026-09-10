@@ -37,7 +37,6 @@ The index for every other shard is the [module catalog](README.md).
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) | Runs the integration-attestation reuse decision and then a four-arm test matrix against a `postgres:18` service, on pushes to `main`, `aq/parent/**`, `aq/integration/**` and `aq/sound-current`. | [CI](../../contributing/ci.md#testsyml) | No `pull_request` trigger. `main`'s concurrency group is keyed by commit so no merge commit goes untested. |
-| [`.github/workflows/docs.yml`](../../../.github/workflows/docs.yml) | Builds a MkDocs site from `docs/` and deploys it to GitHub Pages on pushes to `main`. | [CI](../../contributing/ci.md#the-docs-workflow-is-historical) | Historical: this documentation set is GitHub-rendered Markdown with no site build, and `mkdocs.yml` is classified legacy by the coverage manifest. |
 | [`.github/agent-queue-integration.example.json`](../../../.github/agent-queue-integration.example.json) | Template for a repository's `aq.integration-trust.v1` configuration: attestation and CI-producer app ids, canonical repository id, and the required check-set names and version. | [CI](../../contributing/ci.md) | Placeholders only; a real configuration is per-installation. |
 
 ## Code-generation scripts
@@ -86,7 +85,6 @@ The index for every other shard is the [module catalog](README.md).
 |---|---|---|---|
 | [`scripts/register-merge-conflict-hook.py`](../../../scripts/register-merge-conflict-hook.py) | Registered a periodic merge-conflict *hook* for a project. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | **Broken.** Imports `models.Hook`; hooks were replaced by playbooks and no such model exists. |
 | [`scripts/migrate_task_records.py`](../../../scripts/migrate_task_records.py) | Moved task-record markdown from the legacy memory path to `{data_dir}/tasks/{project}/`, byte-for-byte and idempotently. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | Completed vault migration; dry-run by default. Covered by `tests/test_migrate_task_records.py`. |
-| [`scripts/generate-docs.sh`](../../../scripts/generate-docs.sh) | Built a MkDocs site locally after mirroring `specs/` into `docs/specs/`. | [scripts](../../contributing/scripts.md#historical-and-unsupported) | **Broken.** There is no `specs/` directory, so the sync fails under `set -e`. This documentation set has no build step. |
 | [`run_tests.sh`](../../../run_tests.sh) | Ran the entire pytest suite verbosely and teed the output to a file. | [testing](../../contributing/testing.md) | Historical: no gating, no marker deselects. Running it stalls every agent on the box. |
 | [`test_suite.bat`](../../../test_suite.bat) | The same, for Windows. | [testing](../../contributing/testing.md) | Historical: contains a hard-coded personal path. |
 
