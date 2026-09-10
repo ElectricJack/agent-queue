@@ -99,6 +99,8 @@ class ResultQueryMixin:
                     completed_at=completion.completed_at,
                 )
             )
+            flipped = await self.recompute_blocked({completion.task_id}, conn=conn)
+        await self.log_blocked_flips(flipped)
 
     async def get_task_completion(self, task_id: str) -> TaskCompletion | None:
         """Return the latest completion record for *task_id*."""

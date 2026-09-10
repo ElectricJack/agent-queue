@@ -92,14 +92,24 @@ class DevelopmentIntegration:
     async def save(self, row):
         async with self.db._engine.begin() as conn:
             await conn.execute(insert(deliveries).values(**row))
+            flipped = await self.db.recompute_blocked(
+                {member["task_id"] for member in row["manifest"]}, conn=conn
+            )
+        await self.db.log_blocked_flips(flipped)
 
     async def change(self, identity, **values):
         async with self.db._engine.begin() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 update(deliveries)
                 .where(deliveries.c.id == identity)
                 .values(**values, updated_at=time.time())
+                .returning(deliveries.c.manifest)
             )
+            manifest = result.scalar_one_or_none() or []
+            flipped = await self.db.recompute_blocked(
+                {member["task_id"] for member in manifest}, conn=conn
+            )
+        await self.db.log_blocked_flips(flipped)
 
     async def rows(self, project_id):
         async with self.db._engine.connect() as conn:
@@ -113,6 +123,15 @@ class DevelopmentIntegration:
                     )
                 ).mappings()
             ]
+
+    async def refresh_dependencies(self, project_id):
+        """Repair projections from before delivery-aware readiness was installed."""
+        async with self.db._engine.begin() as conn:
+            ids = set((await conn.execute(
+                select(tasks.c.id).where(tasks.c.project_id == project_id)
+            )).scalars())
+            flipped = await self.db.recompute_blocked(ids, conn=conn)
+        await self.db.log_blocked_flips(flipped)
 
     async def reconcile(self, repo, store):
         for row in await self.rows(repo.project_id):
@@ -379,6 +398,7 @@ class DevelopmentIntegration:
             raise ValueError("project is not in development mode")
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
+        await self.refresh_dependencies(project_id)
         async with self.exclusion(repo.id):
             store = await self.store(repo)
             await self.reconcile(repo, store)
