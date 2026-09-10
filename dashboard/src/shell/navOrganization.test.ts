@@ -1,7 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   EMPTY_ORGANIZATION,
-  NAV_ORGANIZATION_STORAGE_KEY,
   createFolder,
   deleteFolder,
   moveFolder,
@@ -10,8 +9,6 @@ import {
   nudgeFolder,
   parseOrganization,
   renameFolder,
-  saveOrganization,
-  storedOrganization,
   toggleFolder,
   withProjectsRanked,
   type NavOrganization,
@@ -34,9 +31,6 @@ function withFolders(...names: string[]): { org: NavOrganization; ids: string[] 
   return { org, ids };
 }
 
-beforeEach(() => window.localStorage.clear());
-afterEach(() => window.localStorage.clear());
-
 describe("navTree", () => {
   it("renders the API order at the root when nothing is organized", () => {
     const tree = navTree(projects, EMPTY_ORGANIZATION);
@@ -47,7 +41,7 @@ describe("navTree", () => {
   it("buckets projects into their folders and honours the stored ranking", () => {
     const { org, ids } = withFolders("Work");
     const organized = moveProject(
-      { ...org, order: ["gamma", "beta", "alpha"] },
+      { ...org, project_order: ["gamma", "beta", "alpha"] },
       "beta",
       { folderId: ids[0]! },
     );
@@ -57,17 +51,17 @@ describe("navTree", () => {
   });
 
   it("sorts projects the organization has never seen after the ranked ones, in API order", () => {
-    const tree = navTree(projects, { ...EMPTY_ORGANIZATION, order: ["gamma"] });
+    const tree = navTree(projects, { ...EMPTY_ORGANIZATION, project_order: ["gamma"] });
     expect(tree.loose.map((p) => p.id)).toEqual(["gamma", "alpha", "beta"]);
   });
 
   it("ignores ranked and assigned ids that are no longer projects", () => {
     const { org, ids } = withFolders("Work");
-    const organized = moveProject({ ...org, order: ["ghost"] }, "ghost", { folderId: ids[0]! });
+    const organized = moveProject({ ...org, project_order: ["ghost"] }, "ghost", { folderId: ids[0]! });
     const tree = navTree(projects, organized);
     expect(tree.folders[0]!.projects).toEqual([]);
     expect(tree.loose.map((p) => p.id)).toEqual(["alpha", "beta", "gamma"]);
-    expect(organized.order).toContain("ghost"); // kept: the project may come back
+    expect(organized.project_order).toContain("ghost"); // kept: the project may come back
   });
 
   it("renders a project assigned to a folder that no longer exists at the root", () => {
@@ -146,31 +140,17 @@ describe("moveProject", () => {
 describe("withProjectsRanked", () => {
   it("seeds the ranking from the rendered order and is then a no-op", () => {
     const seeded = withProjectsRanked(EMPTY_ORGANIZATION, projects);
-    expect(seeded.order).toEqual(["alpha", "beta", "gamma"]);
+    expect(seeded.project_order).toEqual(["alpha", "beta", "gamma"]);
     expect(withProjectsRanked(seeded, projects)).toBe(seeded);
   });
 
   it("keeps ids for projects that are not currently listed", () => {
-    const seeded = withProjectsRanked({ ...EMPTY_ORGANIZATION, order: ["ghost"] }, projects);
-    expect(seeded.order).toEqual(["alpha", "beta", "gamma", "ghost"]);
+    const seeded = withProjectsRanked({ ...EMPTY_ORGANIZATION, project_order: ["ghost"] }, projects);
+    expect(seeded.project_order).toEqual(["alpha", "beta", "gamma", "ghost"]);
   });
 });
 
-describe("storage", () => {
-  it("round-trips through localStorage", () => {
-    const { org } = withFolders("Work");
-    saveOrganization(org);
-    expect(storedOrganization()).toEqual(org);
-  });
-
-  it("returns the empty organization for absent or malformed storage", () => {
-    expect(storedOrganization()).toEqual(EMPTY_ORGANIZATION);
-    window.localStorage.setItem(NAV_ORGANIZATION_STORAGE_KEY, "{oops");
-    expect(storedOrganization()).toEqual(EMPTY_ORGANIZATION);
-    window.localStorage.setItem(NAV_ORGANIZATION_STORAGE_KEY, "[1,2]");
-    expect(storedOrganization()).toEqual(EMPTY_ORGANIZATION);
-  });
-
+describe("server value parsing", () => {
   it("drops junk entries rather than the whole organization", () => {
     const parsed = parseOrganization({
       folders: [
@@ -181,13 +161,17 @@ describe("storage", () => {
         7,
       ],
       assignments: { alpha: "f1", beta: "gone", gamma: 5 },
-      order: ["alpha", "alpha", 9, "", "beta"],
+      project_order: ["alpha", "alpha", 9, "", "beta"],
     });
     expect(parsed.folders).toEqual([
       { id: "f1", name: "Work", collapsed: false },
       { id: "f2", name: "Folder", collapsed: false },
     ]);
     expect(parsed.assignments).toEqual({ alpha: "f1" });
-    expect(parsed.order).toEqual(["alpha", "beta"]);
+    expect(parsed.project_order).toEqual(["alpha", "beta"]);
+  });
+
+  it("does not treat the retired local order field as a server value", () => {
+    expect(parseOrganization({ order: ["alpha"] })).toEqual(EMPTY_ORGANIZATION);
   });
 });
