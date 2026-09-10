@@ -540,6 +540,152 @@ class TestUpdateConfigCommand:
         assert "scheduling" not in cfg_path.read_text()
 
 
+class TestConfigSecretRedactionRoundTrip:
+    """get_config hides literal credentials; update_config puts them back.
+
+    Everything here is a throwaway ``tmp_path`` config with obvious fake
+    credentials — the operator's config is never read or written.
+    """
+
+    FAKE_TOKEN = "fake-literal-bot-token"
+    FAKE_DSN = "postgresql+asyncpg://aq_user:fake-db-password@db.internal:5432/agent_queue"
+
+    @pytest.fixture
+    def handler_with_config(self, tmp_path):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from src.commands.handler import CommandHandler
+        from src.config import AppConfig
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            yaml.safe_dump(
+                {
+                    "discord": {"bot_token": self.FAKE_TOKEN, "guild_id": "1"},
+                    "database": {"url": self.FAKE_DSN},
+                    "scheduling": {"rolling_window_hours": 12},
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = AppConfig(data_dir=str(tmp_path / "data"))
+        config._config_path = str(cfg_path)
+        watcher = MagicMock()
+        watcher.reload = AsyncMock(return_value={"applied": ["scheduling"]})
+        orch = MagicMock()
+        orch.config = config
+        orch._config_watcher = watcher
+        return CommandHandler(orch, config), cfg_path, watcher
+
+    @pytest.mark.asyncio
+    async def test_get_config_never_returns_a_literal_credential(self, handler_with_config):
+        from src.config_secrets import SECRET_PLACEHOLDER
+
+        handler, _, _ = handler_with_config
+        result = await handler.execute("get_config", {})
+
+        serialized = repr(result)
+        assert self.FAKE_TOKEN not in serialized
+        assert "fake-db-password" not in serialized
+        assert result["config"]["discord"]["bot_token"] == SECRET_PLACEHOLDER
+        assert result["config"]["database"]["url"] == (
+            f"postgresql+asyncpg://aq_user:{SECRET_PLACEHOLDER}@db.internal:5432/agent_queue"
+        )
+        assert sorted(result["redacted"]) == ["database.url", "discord.bot_token"]
+        assert result["secret_placeholder"] == SECRET_PLACEHOLDER
+        # Non-secret settings are untouched.
+        assert result["config"]["scheduling"]["rolling_window_hours"] == 12
+        assert result["config"]["discord"]["guild_id"] == "1"
+
+    @pytest.mark.asyncio
+    async def test_section_read_reports_only_that_section(self, handler_with_config):
+        handler, _, _ = handler_with_config
+        result = await handler.execute("get_config", {"section": "database"})
+        assert result["redacted"] == ["database.url"]
+
+    @pytest.mark.asyncio
+    async def test_saving_an_unrelated_field_keeps_the_stored_secret(self, handler_with_config):
+        """The bug this guards: a redacted read + whole-section write."""
+        handler, cfg_path, _ = handler_with_config
+        read = await handler.execute("get_config", {"section": "discord"})
+        section = read["config"]["discord"]
+        section["guild_id"] = "999"  # the operator's actual edit
+
+        result = await handler.execute("update_config", {"section": "discord", "data": section})
+
+        assert result["changed"] is True
+        assert not result["validation_errors"]
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["discord"]["bot_token"] == self.FAKE_TOKEN
+        assert on_disk["discord"]["guild_id"] == "999"
+        assert read["secret_placeholder"] not in cfg_path.read_text()
+
+    @pytest.mark.asyncio
+    async def test_saving_a_redacted_dsn_keeps_the_stored_password(self, handler_with_config):
+        handler, cfg_path, _ = handler_with_config
+        read = await handler.execute("get_config", {"section": "database"})
+        section = read["config"]["database"]
+        section["url"] = section["url"].replace("agent_queue", "agent_queue_two")
+
+        result = await handler.execute("update_config", {"section": "database", "data": section})
+
+        assert result["changed"] is True
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["database"]["url"] == (
+            "postgresql+asyncpg://aq_user:fake-db-password@db.internal:5432/agent_queue_two"
+        )
+
+    @pytest.mark.asyncio
+    async def test_deliberate_credential_change_is_written(self, handler_with_config):
+        handler, cfg_path, _ = handler_with_config
+        result = await handler.execute(
+            "update_config",
+            {"section": "discord", "data": {"bot_token": "fake-rotated-token", "guild_id": "1"}},
+        )
+        assert result["changed"] is True
+        on_disk = yaml.safe_load(cfg_path.read_text())
+        assert on_disk["discord"]["bot_token"] == "fake-rotated-token"
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_placeholder_is_refused_and_writes_nothing(
+        self, handler_with_config
+    ):
+        from src.config_secrets import SECRET_PLACEHOLDER
+
+        handler, cfg_path, watcher = handler_with_config
+        before = cfg_path.read_bytes()
+
+        result = await handler.execute(
+            "update_config",
+            {
+                "section": "discord",
+                # A renamed key carrying the sentinel: there is nothing stored
+                # at that path to restore, so the save is refused.
+                "data": {"bot_token_renamed": SECRET_PLACEHOLDER, "guild_id": "1"},
+            },
+        )
+
+        assert result["applied"] is False
+        assert result["changed"] is False
+        assert "bot_token_renamed" in result["validation_errors"][0]
+        assert cfg_path.read_bytes() == before
+        watcher.reload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_env_reference_still_round_trips(self, handler_with_config, monkeypatch):
+        handler, cfg_path, _ = handler_with_config
+        monkeypatch.setenv("FAKE_TOKEN_VAR", "resolved-not-written")
+        await handler.execute(
+            "update_config",
+            {"section": "discord", "data": {"bot_token": "${FAKE_TOKEN_VAR}", "guild_id": "1"}},
+        )
+
+        read = await handler.execute("get_config", {"section": "discord"})
+        assert read["config"]["discord"]["bot_token"] == "${FAKE_TOKEN_VAR}"
+        assert read["redacted"] == []
+        assert "resolved-not-written" not in cfg_path.read_text()
+
+
 class TestCliDottedSet:
     def test_creates_intermediate_dicts(self):
         from src.cli.system_config import _set_dotted

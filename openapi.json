@@ -23125,6 +23125,19 @@
             "title": "Env Var References",
             "default": []
           },
+          "redacted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Redacted",
+            "default": []
+          },
+          "secret_placeholder": {
+            "type": "string",
+            "title": "Secret Placeholder",
+            "default": ""
+          },
           "error": {
             "anyOf": [
               {
@@ -23139,7 +23152,8 @@
         },
         "additionalProperties": true,
         "type": "object",
-        "title": "GetConfigResponse"
+        "title": "GetConfigResponse",
+        "description": "The config as written on disk, with literal credentials redacted.\n\n``redacted`` holds the dotted path of every value replaced (or, for a DSN,\npartially replaced) with ``secret_placeholder``.  Saving a section with the\nplaceholder left in place keeps the stored credential \u2014 see\n:mod:`src.config_secrets`."
       },
       "GetConfigSchemaRequest": {
         "properties": {},
