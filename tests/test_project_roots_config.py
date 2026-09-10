@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -15,10 +16,17 @@ from src.config import (
     load_config,
     resolve_project_root,
 )
-from src.doctor.models import DoctorContext, Severity
-from src.doctor.project_checks import PROJECT_ROOT_REMEDIATION, project_checks
 from src.doctor import default_registry
+from src.doctor.models import DoctorContext, Severity
+from src.doctor.project_checks import project_checks
 from src.event_bus import EventBus
+from src.projects.roots import (
+    PROJECT_ROOT_ACCESS_REMEDIATION,
+    PROJECT_ROOT_REMEDIATION,
+    ProjectRootsState,
+    RootFacts,
+    assess_project_roots,
+)
 
 
 def _write_config(tmp_path, roots) -> str:
@@ -175,10 +183,132 @@ async def test_doctor_warns_when_no_project_root_is_configured():
     assert result.data["roots"] == []
 
 
+@pytest.mark.asyncio
+async def test_doctor_warns_when_the_only_configured_root_is_read_only(tmp_path, monkeypatch):
+    """A readable-but-not-writable root is not a place a project can be created.
+
+    `ProjectOnboardingService` refuses a non-writable root for every source
+    mode but `link`, and the installer's first-task readiness check reports
+    "No configured project root is both readable and writable" for exactly
+    this configuration.  Reporting OK here would leave `aq doctor` and the
+    installer contradicting each other about one directory's permissions.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    config = AppConfig(project_roots=[ProjectRoot(id="mounted", label="Mounted", path=str(root))])
+    check = project_checks()[0]
+
+    assert (await check.run(DoctorContext(config=config))).severity is Severity.OK
+    monkeypatch.setattr("src.config.os.access", lambda _path, mode: mode != os.W_OK)
+    result = await check.run(DoctorContext(config=config))
+
+    assert result.severity is Severity.WARN
+    assert result.id == "projects.roots"
+    assert "readable and writable" in result.detail
+    assert str(root) in result.detail, "the offending root is named, not just counted"
+    assert PROJECT_ROOT_ACCESS_REMEDIATION in result.detail
+    assert result.data["state"] == "unusable"
+    assert result.data["roots"][0]["writable"] is False
+
+
+@pytest.mark.asyncio
+async def test_doctor_is_ok_when_one_of_several_roots_can_take_a_project(tmp_path, monkeypatch):
+    """One usable root is enough; a second read-only root does not degrade it."""
+    usable = tmp_path / "usable"
+    usable.mkdir()
+    readonly = tmp_path / "readonly"
+    readonly.mkdir()
+    config = AppConfig(
+        project_roots=[
+            ProjectRoot(id="readonly", label="Read only", path=str(readonly)),
+            ProjectRoot(id="usable", label="Usable", path=str(usable)),
+        ]
+    )
+    check = project_checks()[0]
+    monkeypatch.setattr(
+        "src.config.os.access",
+        lambda path, mode: not (mode == os.W_OK and path == str(readonly)),
+    )
+
+    result = await check.run(DoctorContext(config=config))
+
+    assert result.severity is Severity.OK
+    assert "1 of 2" in result.detail
+    assert "usable" in result.detail
+
+
 def test_project_root_remediation_names_both_operator_surfaces():
     """Same destinations the installation wizard's readiness check names."""
     assert "Settings → Project Roots" in PROJECT_ROOT_REMEDIATION
     assert "`project_roots:`" in PROJECT_ROOT_REMEDIATION
+    assert "permissions" in PROJECT_ROOT_ACCESS_REMEDIATION
+
+
+
+@pytest.mark.parametrize(
+    ("roots", "expected"),
+    [
+        ((), ProjectRootsState.MISSING),
+        (
+            (RootFacts(id="gone", path="/mnt/gone", readable=False, writable=False),),
+            ProjectRootsState.UNREADABLE,
+        ),
+        (
+            (
+                RootFacts(id="ro", path="/mnt/ro", readable=True, writable=False),
+                RootFacts(id="gone", path="/mnt/gone", readable=False, writable=False),
+            ),
+            ProjectRootsState.UNREADABLE,
+        ),
+        (
+            (RootFacts(id="ro", path="/mnt/ro", readable=True, writable=False),),
+            ProjectRootsState.UNUSABLE,
+        ),
+        (
+            (
+                RootFacts(id="ro", path="/mnt/ro", readable=True, writable=False),
+                RootFacts(id="home", path="/home/you/projects", readable=True, writable=True),
+            ),
+            ProjectRootsState.OK,
+        ),
+    ],
+)
+def test_project_roots_are_classified_once_for_every_surface(roots, expected):
+    """A vanished root outranks a read-only one; one usable root is enough."""
+    assessment = assess_project_roots(roots)
+
+    assert assessment.state is expected
+    assert assessment.ok is (expected is ProjectRootsState.OK)
+    assert (assessment.remediation is None) is assessment.ok
+
+
+def test_every_project_roots_state_maps_to_a_doctor_severity():
+    """Adding a state without deciding how `aq doctor` reports it is a bug."""
+    from src.doctor.project_checks import _SEVERITY
+
+    assert set(_SEVERITY) == set(ProjectRootsState)
+
+
+def test_the_installer_and_the_doctor_read_the_same_verdict():
+    """The reconciliation this module exists for, asserted directly.
+
+    `src.install.wizard._project_root_check` and the `projects.roots` check
+    both call `assess_project_roots`, so "installer says needs-attention,
+    doctor says fine" cannot come back for any configuration.
+    """
+    from src.doctor.project_checks import _SEVERITY
+
+    for roots in (
+        (),
+        (RootFacts(id="ro", path="/mnt/ro", readable=True, writable=False),),
+        (RootFacts(id="gone", path="/mnt/gone", readable=False, writable=False),),
+        (RootFacts(id="home", path="/home/you/projects", readable=True, writable=True),),
+    ):
+        assessment = assess_project_roots(roots)
+        installer_ready = assessment.ok
+        doctor_healthy = _SEVERITY[assessment.state] is Severity.OK
+
+        assert installer_ready is doctor_healthy, assessment.detail
 
 
 def test_project_roots_doctor_check_is_registered():
