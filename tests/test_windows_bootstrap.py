@@ -20,16 +20,29 @@ def test_windows_entrypoint_handles_install_conversion_and_resume() -> None:
 
     assert "wsl.exe --list --verbose" in text
     assert "wsl.exe --install -d $Distro" in text
-    assert "wsl.exe --set-version $Distro 2" in text
+    assert "wsl.exe --set-version $resolvedDistro 2" in text
     assert "Test-Administrator" in text
     assert "Restart Windows" in text
     assert "rerun this command" in text
 
 
+def test_windows_entrypoint_reuses_the_actual_ubuntu_2404_alias_safely() -> None:
+    text = WINDOWS_BOOTSTRAP.read_text()
+
+    assert "Resolve-SupportedWslDistro" in text
+    assert '"Ubuntu-24.04"' in text
+    assert '"Ubuntu"' in text
+    assert "cat /etc/os-release" in text
+    assert "Test-SupportedUbuntuRelease" in text
+    assert "[switch]$CheckOnly" in text
+    assert '$line = $line -replace [char]0, ""' in text
+    assert '$repoArgument = "\'$Repository\'"' in text
+
+
 def test_windows_entrypoint_starts_wsl_in_linux_home_and_delegates() -> None:
     text = WINDOWS_BOOTSTRAP.read_text()
 
-    assert "--distribution $Distro --cd ~ -- bash -lc" in text
+    assert "--distribution $resolvedDistro --cd ~ -- bash -lc" in text
     assert "install-wsl.sh" in text
     assert "Start-Process <url>" in text
     assert "localhost" in text
