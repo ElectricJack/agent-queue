@@ -356,7 +356,10 @@ class TmuxProvider(SessionProvider):
 
         async def capture() -> str:
             try:
-                return await self._tmux("capture-pane", "-p", "-t", target, "-S", "-60")
+                # Readiness is about the current viewport. Codex retains
+                # dismissed startup menus in scrollback; matching that history
+                # can quarantine or kill a session already doing useful work.
+                return await self._tmux("capture-pane", "-p", "-t", target)
             except TmuxCommandError:
                 return ""
 
