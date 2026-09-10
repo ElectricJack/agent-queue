@@ -55,11 +55,22 @@ flowchart LR
 
 ## State ownership and live updates
 
-The browser owns only presentation state: current URL, selected/expanded UI elements, pane state, its React Query cache, and small preferences such as the last project and WebSocket replay cursor in local storage. [dashboard/src/main.tsx](../../dashboard/src/main.tsx) creates the Query client; [dashboard/src/panes/store.tsx](../../dashboard/src/panes/store.tsx) owns contextual-pane state.
+The daemon is authoritative for all dashboard feature state that should survive a reload or appear on another browser. The dashboard uses `DashboardStateProvider` / `useDashboardDocumentState` to load a typed document, write it through the API, and replace cached values only with newer server revisions. There is no browser-storage fallback or import: stale keys from older dashboard versions are ignored.
 
-The daemon owns the authoritative data. API mutations and queries go through the generated TypeScript client configured by [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), usually wrapped by [dashboard/src/api/hooks.ts](../../dashboard/src/api/hooks.ts). PostgreSQL owns task, session, project, metric, and audit data; vault markdown owns authored configuration such as playbooks and profiles; worker sessions and worktrees own terminal processes and checked-out files. The dashboard never substitutes local UI state for a successful daemon write.
+| Ownership | Use it for | Current examples | Rule |
+|---|---|---|---|
+| Shared workspace | An operator's organization that every user should see | `nav_organization`: folders, assignments, project order | One workspace document; events refresh every dashboard. |
+| Per-user roaming | A preference that follows the authenticated person across browsers and machines | `shell_preferences`, `command_center_preferences`, per-project command-center view, playbook graph view | The server derives the owner from authentication; only that user's dashboards receive the document. |
+| Device-local transport | Recoverable connection bookkeeping that has no product meaning elsewhere | WebSocket replay cursor and epoch; console-stream identity guard | `src/deviceLocal.ts` is the only browser-persistence boundary. Absence means reconnect/refetch, never a preference reset. |
+| Ephemeral | Current interaction, route, draft, cache, or mounted component state | URL navigation, selection, open drawer, React Query cache, drag preview | Keep it in the URL or memory; discard it on reload and do not synchronize it. |
+
+API mutations and queries go through the generated TypeScript client configured by [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), usually wrapped by [dashboard/src/api/hooks.ts](../../dashboard/src/api/hooks.ts). PostgreSQL owns task, session, project, metric, audit, and dashboard-state data; vault markdown owns authored configuration such as playbooks and profiles; worker sessions and worktrees own terminal processes and checked-out files. The dashboard never substitutes local UI state for a successful daemon write.
 
 [dashboard/src/ws/EventStreamProvider.tsx](../../dashboard/src/ws/EventStreamProvider.tsx) keeps a bounded activity buffer while [dashboard/src/ws/useEventStream.ts](../../dashboard/src/ws/useEventStream.ts) maintains one reconnecting `/ws/events` connection and invalidates relevant cached queries. It stores a replay sequence and server epoch: after a daemon epoch changes, it clears an unusable cursor and reconnects. Metrics deliberately use a raw subscription so their one-second ticks do not churn every query cache.
+
+### Adding dashboard state
+
+Classify a field before writing code. If it must roam, add it to the dashboard-state registry and its typed server/client document; choose workspace versus user ownership, and project subject versus global scope. Keep independent concurrency units in separate namespaces. Add the default, validation, generated API union, event handling, and a two-context test that proves load, live propagation, reload/reconnect, reset, and the relevant user/project isolation. If it is only transport recovery, add a narrowly justified `DEVICE_LOCAL_KEYS` entry and its storage-guard documentation; ordinary remembered UI choices do not qualify. URL-addressable navigation belongs in the route, and drafts, selections, animations, and caches remain ephemeral. The detailed registry and add-a-namespace checklist are in the [dashboard-state contract](../superpowers/specs/2026-09-10-dashboard-state-contract-design.md).
 
 ## Common failures and recovery
 

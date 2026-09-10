@@ -55,6 +55,11 @@ export function __dispatchEventForTests(event: NotifyEvent): void {
   for (const fn of eventListeners) fn(event);
 }
 
+/** Test-only connection transition for proving bootstrap gap recovery. */
+export function __setConnectionStatusForTests(status: ConnectionStatus): void {
+  setStatus(status);
+}
+
 /**
  * Subscribe to raw frames without the query-invalidation pass.
  *
