@@ -4067,7 +4067,10 @@ class TaskCommandsMixin:
 
         # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
         state = getattr(self.orchestrator, "_last_scheduler_state", None)
-        if state is not None:
+        awaiting_claim = task.assigned_agent_id is None and task.status in (
+            TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED,
+        )
+        if state is not None and awaiting_claim:
             ws_counts = getattr(self.orchestrator, "_last_scheduler_workspace_counts", {})
             idle = getattr(self.orchestrator, "_last_scheduler_idle_by_project", {})
             capacity = build_capacity_reasons(task, state, ws_counts, idle)
@@ -4188,6 +4191,10 @@ class TaskCommandsMixin:
 
         from src.explain import Reason
 
+        if task.assigned_agent_id is not None or task.status not in (
+            TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED,
+        ):
+            return None
         orchestrator = self.orchestrator
         if orchestrator is None or not hasattr(orchestrator, "_pool_profile_ids"):
             return None

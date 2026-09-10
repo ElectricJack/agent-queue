@@ -425,7 +425,12 @@ class IntegrationStatusService:
             row["hierarchical_integration_mode"] != "disabled"
             or row["hierarchical_integration_desired_mode"] != "disabled"
         )
-        if integration_active and (designated is None or row["repo_id"] != designated):
+        # Development publication accepts an unpinned task on the project's
+        # designated repository, just as its candidate query does.
+        effective_repo = row["repo_id"]
+        if effective_repo is None and row["hierarchical_integration_mode"] == "development":
+            effective_repo = designated
+        if integration_active and (designated is None or effective_repo != designated):
             blockers.append(
                 _blocker(
                     "repository_not_designated",
