@@ -670,8 +670,28 @@ Performance, in `scripts/`, on PostgreSQL:
 
 - Seed: 5,000 tasks across 100 epics with nested packages, one epic of 1,000 tasks, one
   hub task with 50 dependents.
-- `tiles` for a 16 by 16 unit rectangle with the 1,000-task epic collapsed and visible:
-  under 100 ms at p95.
+- `tiles` for a 16 by 16 unit rectangle with the 1,000-task epic collapsed and visible, and
+  for a focus (`root`) request on that epic: **within a multiple of the same request over a
+  40-task epic**, measured on the same box in the same process — 8x at the median for the
+  rect case, 6x for a focus case. This replaces the flat "under 100 ms at p95" this section
+  used to state. That budget was set against 55 ms measured on a quiet box, and on
+  2026-09-09 at load average 10-16 it failed at p95 107.8 ms with the median at 90.2 ms and
+  nothing in the endpoint changed: a number of milliseconds is a budget on the machine as
+  much as on the query, and a p95 over 50 samples is the second-slowest sample, so it
+  tracked the neighbours rather than the code. Measured in
+  `tests/perf/test_layout_api_statements.py` on PostgreSQL 18 over localhost across two full
+  runs, at load average 2-6 and again at 12-13: the rect case is 5.2x then 5.8x its
+  reference (55.1 then 66.5 ms), the two focus cases 3.9x/4.0x (74.1 then 80.6 ms) and
+  3.8x/3.0x (75.3 then 58.4 ms). A slower box moves the reference by the factor it moves the
+  subject; a flat millisecond number moves only the verdict.
+- What a normalised latency cannot see is a request that grows a *round trip*, which is a
+  few percent of those medians. One steady-state `tiles` request is 9 SQL statements over 9
+  pooled connection checkouts — the project, the layout meta, the collapsed containers'
+  paths, the edges touching them, the agent list, the open gates, the visible rows with
+  their tasks, and the two stub queries when an edge points at something the request is not
+  returning. `test_tiles_round_trip_budget` pins both counts deterministically, on a seed
+  1/100th the size and with no `perf_strict` gate, so it runs wherever the `perf` marker is
+  selected rather than only on an operator's box.
 - Incremental batch of 10 task creations: under 550 ms. Measured on PostgreSQL at this
   section's own seed scale — 100 epics / ~5,000 tasks — the batch took 0.343 s / 0.428 s /
   0.509 s over three runs; the budget is the slowest run rounded up to the next 50 ms. The
