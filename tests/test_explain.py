@@ -194,6 +194,19 @@ class TestExplainCommand:
         res = await handler._cmd_explain_task({"task_id": "t"})
         assert any(r["code"] == "blocked_gate" and r["ref"] == gid for r in res["reasons"])
 
+    async def test_retired_delegate_explains_terminal_operation_without_resume_advice(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.PAUSED)
+        await db.set_task_meta("t", "integration_retirement", {
+            "operation_id": "operation", "state": "completed",
+            "reason": "integration operation operation is completed",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "integration_delegate_retired" in res["reason_codes"]
+        assert "paused_manually" not in res["reason_codes"]
+        reason = next(r for r in res["reasons"] if r["code"] == "integration_delegate_retired")
+        assert reason["ref"] == "operation"
+        assert "no longer required" in reason["detail"]
+
     async def test_hold_label_reason(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         await db.add_task_label("t", "hold:alice")

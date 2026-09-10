@@ -37,6 +37,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_repair_operations,
+    integration_repair_stages,
     projects,
     sessions,
     task_branch_origins,
@@ -129,7 +130,7 @@ class ProjectIntegrationMode:
 
 
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
-    """Correlated predicate requiring an exact origin only in enabled projects.
+    """Require an exact origin or an active repair reservation in enabled projects.
 
     With *mode* supplied the ``projects`` lookup is folded away at compile
     time: a non-hierarchical project admits every task, and a hierarchical
@@ -141,15 +142,15 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
             return true()
         if mode.integration_repository_id is None:
             return false()
-        return exists(
+        return or_(_reserved_repair_branch(mode.integration_repository_id), exists(
             select(literal(1)).where(
                 task_branch_origins.c.task_id == tasks.c.id,
                 task_branch_origins.c.repository_id == mode.integration_repository_id,
                 task_branch_origins.c.retired_at.is_(None),
                 task_branch_origins.c.materialized.is_(True),
             )
-        )
-    return ~exists(
+        ))
+    return or_(_reserved_repair_branch(), ~exists(
         select(literal(1))
         .select_from(projects)
         .where(
@@ -170,6 +171,41 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                     task_branch_origins.c.retired_at.is_(None),
                     task_branch_origins.c.materialized.is_(True),
                 )
+            ),
+        )
+    ))
+
+
+def _reserved_repair_branch(repository_id: str | None = None):
+    """A repair writes its operation's existing branch, not a new task origin."""
+    operation = integration_repair_operations
+    stage = integration_repair_stages
+    owner = integration_branch_owners
+    source = stage.join(operation, operation.c.id == stage.c.operation_id).join(
+        owner, owner.c.owner_id == stage.c.repair_task_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(
+        select(literal(1))
+        .select_from(source)
+        .correlate(tasks)
+        .where(
+            tasks.c.created_by_kind == "integration_repair",
+            tasks.c.created_by_id == operation.c.id,
+            stage.c.repair_task_id == tasks.c.id,
+            stage.c.writer_kind == "repair_delegate",
+            stage.c.ordinal == operation.c.active_stage,
+            stage.c.state.in_(("active", "awaiting_completion")),
+            operation.c.state.in_(("active", "escalated")),
+            owner.c.owner_role == "repair",
+            owner.c.handoff_state == "reserved",
+            owner.c.session_id.is_(None),
+            owner.c.workspace_id.is_(None),
+            owner.c.repository_id == tasks.c.repo_id,
+            owner.c.ref == tasks.c.branch_name,
+            owner.c.repository_id == (
+                repository_id if repository_id is not None else projects.c.integration_repository_id
             ),
         )
     )

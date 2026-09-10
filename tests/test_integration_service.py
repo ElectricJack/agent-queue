@@ -34,6 +34,15 @@ async def db(tmp_path):
     await database.close()
 
 
+async def test_tick_retires_terminal_delegates_without_a_new_completion_event(db):
+    repair = SimpleNamespace(retire_terminal_delegates=AsyncMock(return_value=[]))
+    service = IntegrationService(
+        db, SimpleNamespace(), repair, SimpleNamespace(dispatch_due=AsyncMock()),
+    )
+    await service.tick(100.0)
+    repair.retire_terminal_delegates.assert_awaited_once_with(100.0)
+
+
 async def test_due_schedule_keyset_pages_every_row_once_past_two_hundred(db):
     count = 205
     async with db.immediate() as conn:
