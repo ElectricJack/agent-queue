@@ -861,13 +861,20 @@ def place_pool_actions(
     placed_drains: list[PlacedDrain] = []
     starvations: list[PlacementStarvation] = []
 
+    # Workspace slots and project concurrency are shared by every profile.
+    # Keep one budget for the entire tick, including repeated actions.
+    total = {}
+    capacity = {}
+    for profile_candidates in candidates.values():
+        for candidate in profile_candidates:
+            total[candidate.project_id] = candidate.project_live_total
+            capacity[candidate.project_id] = candidate.workspace_capacity
+
     for action in actions:
         cands = {c.project_id: c for c in candidates.get(action.key, [])}
         # Working copies: placements within this tick move these, the
         # measured ``PlacementCandidate`` values stay as observed.
         live = {pid: c.live for pid, c in cands.items()}
-        total = {pid: c.project_live_total for pid, c in cands.items()}
-        capacity = {pid: c.workspace_capacity for pid, c in cands.items()}
         idle_ids = {pid: list(c.idle_session_ids) for pid, c in cands.items()}
         # Starts placed here this tick.  A worker on its way into a project
         # serves that project's ready queue exactly as a booting one does,
@@ -888,6 +895,7 @@ def place_pool_actions(
             for _ in range(action.count):
                 eligible = []
                 blocked = {}
+                has_unserved_demand = any(unserved(c) > 0 for c in cands.values())
                 for pid, cand in cands.items():
                     why = _start_ineligibility(
                         cand,
@@ -898,6 +906,13 @@ def place_pool_actions(
                     )
                     if why:
                         blocked[pid] = why
+                        continue
+                    if (
+                        has_unserved_demand
+                        and live[pid] >= cand.warm_floor
+                        and unserved(cand) <= 0
+                    ):
+                        blocked[pid] = "no unserved demand in this project"
                         continue
                     eligible.append(cand)
                 if not eligible:

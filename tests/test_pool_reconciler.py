@@ -664,6 +664,8 @@ async def test_quarantined_project_does_not_burn_the_fleets_start_budget(orch, d
     await second_project(db, path=str(tmp_path / "second-ws"))
     orch._pool_quarantine[(PROJECT_ID, "worker")] = time.time() + 60
     await ready(db, "t1")
+    await ready(db, "t2")
+    await db.update_task("t2", project_id="second")
 
     await orch._reconcile_pools()
 

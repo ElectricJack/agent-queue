@@ -590,6 +590,7 @@ class WorkspaceQueryMixin:
         project_id: str,
         *,
         worktree_slot_cap: int | None = None,
+        kind_id: str | None = None,
     ) -> int:
         """Count acquirable capacity for a project.
 
@@ -604,6 +605,9 @@ class WorkspaceQueryMixin:
         lazily on demand.  Counting inventory there would refuse to create
         any agent at all, and the project would never start.
         """
+        # Pool workers acquire project-repo only. Callers can restrict the
+        # count to that kind so an auto-attached vault cannot advertise a
+        # launch slot when the repository has no acquirable capacity.
         # The legacy path stays a single SQL COUNT: it runs per project on
         # every 5 s cascade cycle and, with worktrees off (the default), no
         # kind resolution is needed to answer it.
@@ -616,11 +620,14 @@ class WorkspaceQueryMixin:
                         (workspaces.c.project_id == project_id)
                         & (workspaces.c.locked_by_agent_id.is_(None))
                         & (workspaces.c.enabled.is_(True))
+                        & (workspaces.c.kind_id == kind_id if kind_id is not None else true())
                     )
                 )
                 return result.fetchone()[0]
 
         all_rows = await self.list_workspaces(project_id)
+        if kind_id is not None:
+            all_rows = [w for w in all_rows if (w.kind_id or "project-repo") == kind_id]
         rows = [w for w in all_rows if w.enabled]
 
         # Resolve each distinct kind once (project row shadows system row).

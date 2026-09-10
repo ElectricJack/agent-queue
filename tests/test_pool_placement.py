@@ -150,6 +150,41 @@ def test_a_second_start_respects_the_capacity_the_first_consumed():
     assert starved[0].wanted == 1
 
 
+def test_profiles_share_workspace_capacity_within_a_tick():
+    other = PoolKey("other")
+    starts, _, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(other, "start", 1)],
+        candidates={key: [cand("a", ready=9, workspace_capacity=1)] for key in (K, other)},
+    )
+    assert sum(start.count for start in starts) == 1
+    assert starved[0].reasons == {"a": "no workspace capacity"}
+
+
+def test_profiles_share_project_cap_within_a_tick():
+    other = PoolKey("other")
+    starts, _, starved = place_pool_actions(
+        actions=[PoolAction(K, "start", 1), PoolAction(other, "start", 1)],
+        candidates={key: [cand("a", ready=9, project_cap=1)] for key in (K, other)},
+    )
+    assert sum(start.count for start in starts) == 1
+    assert starved[0].reasons == {"a": "at project cap (1)"}
+
+
+def test_blocked_demand_does_not_launch_workers_in_empty_projects():
+    starts, _, starved = place(
+        candidates=[cand("backlog", ready=9, workspace_capacity=0), cand("empty")],
+    )
+    assert starts == []
+    assert starved[0].reasons["empty"] == "no unserved demand in this project"
+
+
+def test_blocked_demand_still_honors_explicit_warm_floor():
+    starts, _, _ = place(
+        candidates=[cand("backlog", ready=9, workspace_capacity=0), cand("warm", warm_floor=1)],
+    )
+    assert placed(starts) == [("warm", 1, "warm_floor")]
+
+
 def test_idle_worker_with_nothing_queued_skips_the_project():
     """That idle worker will claim the next ready task itself; launching beside it
     just manufactures a drain candidate two minutes later."""

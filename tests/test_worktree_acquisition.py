@@ -255,6 +255,21 @@ class TestWorktreeModeAcquisition:
 
 
 class TestWorktreeCapacityCount:
+    async def test_pool_capacity_excludes_vault_and_disabled_base(self, db):
+        await _worktree_project(db)
+        assert await db.count_available_workspaces(
+            "p1", worktree_slot_cap=3, kind_id="project-repo"
+        ) == 3
+        await db.update_workspace("ws-base", enabled=False)
+        assert await db.count_available_workspaces(
+            "p1", worktree_slot_cap=3, kind_id="project-repo"
+        ) == 0
+
+    async def test_kind_capacity_without_worktrees_excludes_vault(self, db):
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 0
+        await _add_ws(db, ws_id="ws-repo", path="/repo", kind_id="project-repo")
+        assert await db.count_available_workspaces("p1", kind_id="project-repo") == 1
+
     async def test_base_with_no_slots_still_reports_capacity(self, db):
         """Without this the reconciler never creates the first agent.
 

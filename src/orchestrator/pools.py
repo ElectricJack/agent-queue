@@ -234,6 +234,7 @@ class PoolsMixin:
             default_profile_id = await self._effective_default_profile_id(project)
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
+                kind_id="project-repo",
                 worktree_slot_cap=(
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
@@ -624,6 +625,7 @@ class PoolsMixin:
         # could be acquired. Worktree slots still count as lazy capacity.
         available = await self.db.count_available_workspaces(
             project.id,
+            kind_id="project-repo",
             worktree_slot_cap=(self._project_slot_cap(project) if self._worktrees_enabled() else None),
         )
         if not available:

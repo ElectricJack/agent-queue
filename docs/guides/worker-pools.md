@@ -500,6 +500,14 @@ Quarantining failures:
 - the session started but its `sessions` row could not be written;
 - any other exception out of acquisition, token mint, spec build or launch.
 
+Pool capacity counts only the `project-repo` kind that workers actually acquire;
+the auto-attached vault is not an execution slot. A disabled base repository
+prevents lazy worktree growth. Check the base's enabled state as well as its
+slots when a project has ready work but no capacity. Placement shares workspace
+and project concurrency budgets across all profiles in a tick. When unserved
+demand is blocked in one project, it does not launch workers into empty projects
+to satisfy that demand; explicit per-project warm floors still apply.
+
 Zero measured workspace capacity prevents placement without a backoff. If
 capacity was advertised but acquisition fails, the key backs off for 60 seconds
 so another project can use the next launch opportunity. Disabled worktree slots
