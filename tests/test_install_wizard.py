@@ -180,7 +180,7 @@ def result(
     )
 
 
-def check_step_result() -> StepResult:
+def check_step_result(*, project_roots: list[dict] | None = None) -> StepResult:
     return StepResult.succeeded(
         STEP_CHECK,
         "config.yaml parses",
@@ -188,7 +188,20 @@ def check_step_result() -> StepResult:
             "locations": [
                 {"label": "Configuration", "path": "/home/you/.agent-queue/config.yaml", "note": ""},
                 {"label": "Vault", "path": "/home/you/.agent-queue/vault", "note": "markdown"},
-            ]
+            ],
+            "project_roots": (
+                [
+                    {
+                        "id": "home",
+                        "label": "Home projects",
+                        "path": "/home/you/projects",
+                        "readable": True,
+                        "writable": True,
+                    }
+                ]
+                if project_roots is None
+                else project_roots
+            ),
         },
     )
 
@@ -259,6 +272,7 @@ def test_readiness_requires_a_measured_database_daemon_dashboard_and_routable_ag
         "agent_authentication",
         "profile_routing",
         "workspace_prerequisites",
+        "project_root",
     ]
     assert all(check.ready for check in summary.readiness.checks)
     assert any("Create your first project" in step for step in summary.next_steps)
@@ -279,6 +293,78 @@ def test_an_installed_daemon_does_not_claim_first_task_readiness_without_a_route
     assert routing.remediation is not None
     assert not any("Create your first project" in step for step in summary.next_steps)
     assert any("First-task readiness needs attention" in step for step in summary.next_steps)
+
+
+def test_an_install_with_no_configured_project_root_says_so_instead_of_inviting_onboarding():
+    """The gap `aq project onboard` would hit, named before it is hit.
+
+    A machine can be perfectly installed and still have nowhere to put a
+    project: AQ derives its defaults from cores and memory and owns no
+    filesystem location, so ``project_roots`` starts empty.  Readiness has to
+    report that rather than send a newcomer to a command whose required
+    ``--root-id`` has no value to take.
+    """
+    summary = summarize(
+        result(
+            steps=(check_step_result(project_roots=[]),) + first_task_machine_steps()[1:],
+        ),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+    )
+
+    assert summary.ready is True, "an install is complete without a project root"
+    assert summary.readiness is not None
+    assert summary.readiness.ready is False
+    root = next(check for check in summary.readiness.checks if check.id == "project_root")
+    assert root.ready is False
+    assert "--root-id" in root.detail
+    assert root.remediation is not None and "Project Roots" in root.remediation
+    assert not any("Create your first project" in step for step in summary.next_steps)
+    assert any("Project Roots" in step for step in summary.next_steps)
+
+
+def test_a_configured_root_that_is_not_writable_is_not_a_place_a_project_can_be_created():
+    summary = summarize(
+        result(
+            steps=(
+                check_step_result(
+                    project_roots=[
+                        {
+                            "id": "mounted",
+                            "label": "Mounted volume",
+                            "path": "/mnt/projects",
+                            "readable": True,
+                            "writable": False,
+                        }
+                    ]
+                ),
+            )
+            + first_task_machine_steps()[1:],
+        ),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+    )
+
+    assert summary.readiness is not None
+    root = next(check for check in summary.readiness.checks if check.id == "project_root")
+    assert root.ready is False
+    assert "/mnt/projects" in root.detail
+    assert root.remediation is not None and "permissions" in root.remediation
+
+
+def test_a_readable_writable_root_admits_the_first_project():
+    summary = summarize(
+        result(steps=first_task_machine_steps()),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+    )
+
+    assert summary.readiness is not None
+    root = next(check for check in summary.readiness.checks if check.id == "project_root")
+    assert root.ready is True
+    assert "home" in root.detail
+    assert root.remediation is None
+    assert any("--root-id" in step for step in summary.next_steps)
 
 
 def test_an_unselected_optional_capability_is_reported_as_a_choice_not_a_gap():

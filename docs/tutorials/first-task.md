@@ -12,12 +12,20 @@ optional provider was skipped, but that is not evidence that AQ can start a
 coding worker. Its closing summary (and `--json` under
 `onboarding.readiness`) reports separate, observed checks for the PostgreSQL
 connection, daemon health, dashboard reachability, harness authentication,
-profile routing, and Git/tmux worktree prerequisites.
+profile routing, Git/tmux worktree prerequisites, and a configured project
+root that is readable and writable.
 
 Every check must say `ready` for this tutorial. In particular, do not infer
 agent authentication from an executable being on `PATH`, or daemon readiness
 from a started process. Repair the named check and rerun the installer; it
 revalidates completed steps rather than starting over.
+
+A fresh installation reports **needs attention** for **Project root**: AQ
+derives its defaults from this machine's cores and memory and deliberately
+invents no filesystem location, so `project_roots` starts empty and
+`aq project onboard` has no `--root-id` to take. [A realistic disposable
+example](#a-realistic-disposable-example) below configures one; that is the
+step the installer is asking for.
 
 Choose one active **standard-medium** profile for this demonstration. It is
 small enough to make the live run inexpensive and clear; do not use a

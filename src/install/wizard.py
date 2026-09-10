@@ -291,6 +291,62 @@ def _step_succeeded(result: InstallResult, step_id: str) -> bool:
     return any(step.step_id == step_id and step.state is StepState.SUCCEEDED for step in result.steps)
 
 
+#: Where an operator adds the first project root.  Named in one place because
+#: the check's detail, its remediation and the closing next step all point at
+#: the same page, and a newcomer should not have to reconcile three spellings.
+PROJECT_ROOT_REMEDIATION = (
+    "Add one under Settings → Project Roots in the dashboard, or put a `project_roots:` "
+    "entry (`id`, `label`, `path`) in config.yaml with `aq system config edit`; then rerun "
+    "`aq install` to recheck it."
+)
+
+
+def _project_root_check(result: InstallResult) -> ReadinessCheck:
+    """Readiness condition 6's second half: a root project creation can use.
+
+    AQ does not invent this path.  ``src/config_tuning.py`` derives defaults
+    from cores and memory alone and deliberately owns no filesystem location,
+    and the contract keeps project selection out of the installation wizard —
+    so the honest installer behaviour is to *measure* the gap and name the page
+    that closes it, not to write a directory into someone's home.
+    """
+    roots = _detail(result, STEP_CHECK).get("project_roots")
+    if not isinstance(roots, list) or not roots:
+        return ReadinessCheck(
+            "project_root",
+            "Project root",
+            False,
+            "No project root is configured, so `aq project onboard` has no `--root-id` to "
+            "onboard into.",
+            PROJECT_ROOT_REMEDIATION,
+        )
+    entries = [entry for entry in roots if isinstance(entry, Mapping)]
+    usable = [
+        entry for entry in entries if bool(entry.get("readable")) and bool(entry.get("writable"))
+    ]
+    if usable:
+        named = ", ".join(str(entry.get("id") or "?") for entry in usable)
+        return ReadinessCheck(
+            "project_root",
+            "Project root",
+            True,
+            f"{len(usable)} of {len(entries)} configured project root(s) are readable and "
+            f"writable: {named}.",
+            None,
+        )
+    named = ", ".join(
+        f"{entry.get('id') or '?'} ({entry.get('path') or '?'})" for entry in entries
+    )
+    return ReadinessCheck(
+        "project_root",
+        "Project root",
+        False,
+        f"No configured project root is both readable and writable: {named}.",
+        "Create the directory (or fix its permissions) on the daemon host, or correct the path "
+        "under Settings → Project Roots, then rerun `aq install`.",
+    )
+
+
 def _first_task_readiness(
     result: InstallResult,
     *,
@@ -350,6 +406,7 @@ def _first_task_readiness(
             if workspace else "Git, tmux, or AQ's configured worktree location was not verified.",
             None if workspace else "Fix the named prerequisite and rerun `aq install` before creating a project.",
         ),
+        _project_root_check(result),
     )
     return FirstTaskReadiness(
         ready=result.outcome is InstallOutcome.READY and not result.dry_run and all(
@@ -390,14 +447,14 @@ def _next_steps(
             steps.append(dashboard.hint)
         if readiness.ready:
             steps.append(
-                "Create your first project and task: `aq project onboard --help`, or follow "
-                "docs/tutorials/first-task.md."
+                "Create your first project and task: `aq project onboard --root-id <root> "
+                "--help`, or follow docs/tutorials/first-task.md."
             )
         else:
             first_missing = next(check for check in readiness.checks if not check.ready)
             steps.append(
                 "First-task readiness needs attention: "
-                f"{first_missing.remediation or first_missing.detail}"
+                f"{first_missing.detail} {first_missing.remediation or ''}".rstrip()
             )
         steps.append("`aq doctor` checks this installation whenever something looks wrong.")
     return tuple(steps)
@@ -471,8 +528,11 @@ class WizardChoices:
 
 
 __all__ = [
+    "PROJECT_ROOT_REMEDIATION",
+    "FirstTaskReadiness",
     "OnboardingSummary",
     "Question",
+    "ReadinessCheck",
     "WizardChoices",
     "capabilities_for",
     "question_plan",

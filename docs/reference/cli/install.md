@@ -302,7 +302,9 @@ view and a script are told the same things:
         {"id": "dashboard", "status": "ready", "detail": "The dashboard is reachable."},
         {"id": "agent_authentication", "status": "ready", "detail": "An installed harness authenticated without exposing a credential."},
         {"id": "profile_routing", "status": "ready", "detail": "An authenticated worker profile is active."},
-        {"id": "workspace_prerequisites", "status": "ready", "detail": "Git, tmux, and the worktree location were verified."}
+        {"id": "workspace_prerequisites", "status": "ready", "detail": "Git, tmux, and the worktree location were verified."},
+        {"id": "project_root", "status": "needs_attention", "detail": "No project root is configured, ...",
+         "remediation": "Add one under Settings → Project Roots in the dashboard, ..."}
       ]
     },
     "skipped": ["Discord delivery for digests and escalations — not selected; add it with `aq install --with discord`"],
@@ -314,9 +316,17 @@ view and a script are told the same things:
 * **`onboarding.ready`** agrees with `outcome == "ready"`.
 * **`onboarding.readiness`** is the separate admission check for the first
   live task. Its database, daemon, dashboard, agent-authentication,
-  profile-routing and workspace-prerequisite checks are all observed; an
-  install that deliberately skipped every provider can still have
+  profile-routing, workspace-prerequisite and project-root checks are all
+  observed; an install that deliberately skipped every provider can still have
   `onboarding.ready: true` but `onboarding.readiness.ready: false`.
+* **`project_root`** answers readiness condition 6's second half — "configured
+  project roots are readable and writable where project creation needs them" —
+  from the `project_roots` the `config.check` step read out of the loaded
+  configuration. The installer never writes one: default tuning derives values
+  from cores and memory alone and owns no filesystem path, and the contract
+  keeps project selection out of the installation wizard. A fresh machine
+  therefore reports `needs_attention` here with the Settings → Project Roots
+  remediation, which is also what the closing `next_steps` names.
 * **`onboarding.skipped`** lists the *optional* things this run did not do and
   the flag that would add each one. A skipped capability is a finished install,
   not a partial one.

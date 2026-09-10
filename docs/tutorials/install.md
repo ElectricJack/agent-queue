@@ -173,7 +173,21 @@ First-task readiness
   OK Agent authentication: at least one harness has non-secret authentication evidence.
   OK Profile routing: an authenticated worker profile is active.
   OK Workspace prerequisites: Git, tmux, and the worktree location were verified.
+  !! Project root: No project root is configured, so `aq project onboard` has no
+     `--root-id` to onboard into.
+     next: Add one under Settings → Project Roots in the dashboard, or put a
+     `project_roots:` entry (`id`, `label`, `path`) in config.yaml with
+     `aq system config edit`; then rerun `aq install` to recheck it.
 ```
+
+**Project root** is the one check a correct, complete installation still
+reports as needing attention. AQ's defaults come from this machine's cores and
+memory and name no filesystem location, and choosing where your repositories
+live is a project decision rather than a machine one — so the installer
+measures the gap and names the page that closes it instead of creating a
+directory in your home. Adding one root is a one-time step;
+[the first-task tutorial](first-task.md#a-realistic-disposable-example) shows
+the YAML.
 
 The exact step list depends on the host and what you selected; `aq install
 --list-steps` prints it, and [the `aq install` reference](../reference/cli/install.md)
@@ -239,8 +253,8 @@ Dashboard
 
 Next
   1. Open the dashboard at http://127.0.0.1:8081/dashboard.
-  2. Create your first project and task: `aq project onboard --help`, or follow
-     docs/tutorials/first-task.md.
+  2. Create your first project and task: `aq project onboard --root-id <root>
+     --help`, or follow docs/tutorials/first-task.md.
   3. `aq doctor` checks this installation whenever something looks wrong.
 ```
 
@@ -251,7 +265,9 @@ the summary gives you the development command instead — run
 The install outcome and first-task readiness answer different questions. You
 can deliberately finish an installation with every provider skipped, but AQ
 will then show **needs attention** for agent authentication and profile routing
-instead of inviting you to create a task that cannot run. Follow the named
+instead of inviting you to create a task that cannot run. The same is true of
+**Project root** on any fresh machine, which is why step 2 above names a
+`--root-id` you have yet to configure. Follow the named
 remediation and rerun `aq install`; it rechecks rather than repeats completed
 work. The machine-readable equivalent is `onboarding.readiness` in
 `aq install --json`.
