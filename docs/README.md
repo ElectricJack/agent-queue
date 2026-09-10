@@ -14,7 +14,7 @@ links to the source and focused checks behind its claims.
 | # | Page | What you learn |
 | --- | --- | --- |
 | 1 | [Glossary](reference/glossary.md) | AQ’s durable-state, agent, and delivery vocabulary. |
-| 2 | [Install and start AQ](tutorials/install.md) | Prerequisites, PostgreSQL, a harness credential, first startup, and shutdown. |
+| 2 | [Install and start AQ](tutorials/install.md) | [Windows + WSL2](tutorials/install.md#windows-wsl2-quickstart) and [macOS](tutorials/install.md#macos-quickstart) quickstarts; prerequisites, PostgreSQL, a harness credential, first startup, and recovery. |
 | 3 | [Run your first isolated task](tutorials/first-task.md) | Create a disposable project, follow one task, inspect its result, and clean up. |
 | 4 | [Tasks](concepts/tasks.md) and [scheduling](concepts/scheduling.md) | Why AQ changes task state and when a worker can start. |
 | 5 | [Integration](concepts/integration.md) and [operations](guides/operations.md) | The distinction between task completion and delivery, plus recovery paths. |

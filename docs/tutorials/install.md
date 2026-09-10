@@ -49,6 +49,83 @@ installer will either use a server you already run or, when you ask it to,
 install a local one. SQLite is not a runtime option; an existing SQLite
 database can only be imported (`aq db import-sqlite`).
 
+## Platform quickstarts
+
+Choose one path below, then continue with [the first task](first-task.md).
+These commands get AQ onto the machine; [`aq install`'s reference](../reference/cli/install.md)
+is the authoritative list of installer flags, steps, exit codes, and JSON
+fields. Do not run both paths on one computer.
+
+### Windows + WSL2 quickstart
+
+AQ is not a native-Windows service. Its database client, daemon, project
+checkouts, and agent CLIs must all live in the same **Ubuntu 24.04 WSL2**
+distribution and in its Linux filesystem (for example, `/home/alex`), never
+under `/mnt/c`.
+
+1. In an **Administrator PowerShell** window, install the supported
+   distribution if you do not have it yet:
+
+   ```powershell
+   wsl --install -d Ubuntu-24.04
+   ```
+
+   Restart Windows when asked, launch **Ubuntu 24.04** once from Start, and
+   create its Linux username and password. Microsoft documents the same setup
+   and its WSL2 check with `wsl --list --verbose` in its [WSL installation
+   guide](https://learn.microsoft.com/windows/wsl/install).
+
+2. Back in a regular PowerShell window, run the AQ Windows bootstrap:
+
+   ```powershell
+   irm https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install-windows.ps1 | iex
+   ```
+
+   It reuses an existing Ubuntu 24.04 distribution, converts WSL1 to WSL2 if
+   needed, opens a Linux-home shell, installs the minimal WSL prerequisites,
+   and calls the common `aq install --interactive` flow. It does not reset an
+   existing AQ checkout or install a separate Windows copy.
+
+   Expect `Using existing Ubuntu-24.04 on WSL2` followed by `Running the
+   common AQ installer inside WSL2...`. A reboot, WSL setup, or a provider
+   login is a checkpoint, not a failed install: complete the named action and
+   run the same PowerShell command again. When AQ prints a dashboard URL,
+   open that `localhost` URL in your Windows browser.
+
+### macOS quickstart
+
+Use Terminal in a native shell: Apple Silicon is supported on macOS 14+
+(Sonoma or newer); Intel macOS 14+ is a compatibility tier. AQ refuses a
+Rosetta-based primary install, because it must not build an Intel Homebrew
+toolchain on an Apple Silicon Mac.
+
+1. If macOS has not installed its Command Line Tools yet, run this and accept
+   the macOS dialog:
+
+   ```bash
+   xcode-select --install
+   ```
+
+2. Clone AQ and use the source-checkout bootstrap:
+
+   ```bash
+   git clone https://github.com/ElectricJack/agent-queue.git
+   cd agent-queue
+   ./setup.sh
+   ```
+
+   `setup.sh` prepares the checkout and hands all machine setup to `aq
+   install`. On a new Mac, it may stop for the Homebrew administrator prompt,
+   a shell-PATH change, or a harness browser login. Complete that human-only
+   checkpoint in the terminal, then rerun `./setup.sh` (or `aq install` after
+   the checkout bootstrap succeeds). The installer records progress and
+   revalidates completed steps rather than repeating them.
+
+On either platform, a healthy closing summary includes `AQ is installed and
+ready.` and a dashboard URL. If it instead says `needs_user`, read its `next:`
+line, complete only that action, and rerun; see [structured outcomes for people
+and automation](#structured-outcomes-for-people-and-automation).
+
 ## Install
 
 From a release install, `aq install` is the whole thing. From a source
@@ -110,6 +187,13 @@ login`, `codex login`, `gemini` then `/auth`) and exits `10`. Run it in your
 own terminal, then run `aq install` again: it revalidates everything that was
 already done and carries on from where it stopped. Skipping a harness entirely
 is a supported answer — the install still finishes.
+
+The browser/device prompt belongs to the provider and must be completed by a
+human. Do not give an API key, device code, password, or browser session to AQ,
+an agent prompt, or an installation log. For provider-specific choices and
+account restrictions, use the provider's current guide: [Codex CLI](https://learn.chatgpt.com/docs/codex/cli),
+[Claude Code](https://code.claude.com/docs/en/quickstart), or [Gemini CLI
+authentication](https://geminicli.com/docs/get-started/authentication/).
 
 ### Interruptions
 
@@ -196,6 +280,86 @@ It never reads a terminal and never opens a browser: a missing human
 credential comes back as `needs_user` (exit `10`) with the provider's
 documented environment-credential route, rather than a guess. Exit codes: `0`
 ready, `10` needs_user, `11` invalid_input, `12` unsupported_host, `20` failed.
+
+### Structured outcomes for people and automation
+
+For a person, the final human-readable `next:` line is the only action to take.
+For an agent or deployment script, discover the current step names first and
+then branch on the JSON result; never scrape progress text or assume that an
+installed executable is a usable harness.
+
+```bash
+aq install --list-steps --json
+aq install --non-interactive --config install.yaml --json
+```
+
+| JSON field / exit | Meaning | Agent action |
+| --- | --- | --- |
+| `outcome: "ready"` / `0` | Every selected step is satisfied. | Read `onboarding.readiness`; create a first task only when its `ready` field is true. |
+| `outcome: "needs_user"` / `10` | A human-only login, device flow, consent, or similar action is required. | Stop. Surface `blocking_step` and `next_action` to a human; do not retry a browser login or invent credentials. |
+| `outcome: "invalid_input"` / `11` | The input file, flag, capability, or step id is invalid. | Correct the named input and rerun. |
+| `outcome: "unsupported_host"` / `12` | AQ refused the observed platform before changing it. | Stop and move to a supported WSL2/macOS path. |
+| `outcome: "failed"` / `20` | A step could not complete. | Preserve the redacted step result and `next_action`, fix the named condition, then rerun. |
+
+`steps[].state`, `blocking_step`, `next_action`, and `onboarding.readiness`
+are stable, non-secret fields. The full payload contract and the complete list
+of plan actions are in the [`aq install` reference](../reference/cli/install.md#machine-readable-output).
+
+## Move portable defaults and profiles
+
+After both installations are healthy and their daemons are running, move
+reviewed AQ policy—not an AQ home directory—from one machine to another. A
+portable bundle contains allowlisted tuning plus global agent profiles; it
+excludes project vaults and memory, task/session history and logs, provider
+credentials, secrets, and machine/repository paths.
+
+On the source machine, inspect before writing a bundle:
+
+```bash
+aq system preview-portable-config
+aq system export-portable-config --destination ~/aq-defaults.aqbundle
+```
+
+Copy `aq-defaults.aqbundle` by a secure channel. On the destination, validate
+without changing it, then import with the default non-destructive conflict
+policy:
+
+```bash
+aq system import-portable-config --source ~/aq-defaults.aqbundle --dry-run --conflict error
+aq system import-portable-config --source ~/aq-defaults.aqbundle
+```
+
+The normal import policy is `keep`: existing configuration sections and
+profiles remain in place. Use `--conflict replace` only after reviewing the
+dry-run result and deciding that the destination's conflicting configuration
+should be replaced. Some imported sections require a daemon restart; the
+result names them. Re-derive resource limits for the destination hardware
+after import:
+
+```bash
+aq system config tune --apply --overwrite
+```
+
+The detailed allowlist and tuning rationale are in [Default tuning](../guides/default-tuning.md#relationship-to-portable-bundles).
+
+## Recovery, upgrade, and uninstall
+
+Use the smallest lifecycle action that matches the problem. All installer
+commands retain unrelated projects, provider credentials, and reused machine
+software unless an explicit uninstall scope says otherwise.
+
+| Situation | Command | What to expect |
+| --- | --- | --- |
+| Interrupted install or a completed login | `aq install` | Revalidates completed steps and resumes at the first unsatisfied one. |
+| A host changed in a way the normal checks cannot verify | `aq install --repair` | Reconciles the recorded installation; does not delete resources. |
+| Update AQ and make the version transition resumable | `aq install --upgrade` | Performs repair plus records an upgrade transaction before changing steps. |
+| Inspect removal without changing anything | `aq uninstall --dry-run` | Shows what AQ owns, keeps, or leaves for manual removal. |
+| Remove AQ runtime but keep data | `aq uninstall` | Stops AQ and removes its runtime records; configuration, data, and database stay. |
+
+If the daemon already starts but a task or delivery needs diagnosis, continue in
+the [operations guide](../guides/operations.md). For every installer-specific
+failure, retain the redacted JSON result and follow the command reference's
+[rerun, repair, database, and uninstall guidance](../reference/cli/install.md#rerunning-resuming-and-repair).
 
 ## Inputs and outputs
 
