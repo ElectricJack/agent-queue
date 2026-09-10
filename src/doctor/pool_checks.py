@@ -397,6 +397,11 @@ async def _find_preparing_stuck(ctx: DoctorContext):
     bad = []
     for phase in ("claiming", "preparing"):
         for s in await ctx.db.list_sessions(lifecycle="pool", claim_phase=phase):
+            orchestrator = getattr(ctx.handler, "orchestrator", None)
+            preparations = getattr(orchestrator, "claim_preparations", {})
+            preparation = preparations.get((s.id, s.task_id, s.last_claim_epoch))
+            if preparation is not None and not preparation.done():
+                continue
             if (s.claim_phase_at or 0.0) <= threshold:
                 bad.append(s)
     return bad
@@ -423,23 +428,25 @@ async def _fix_preparing_stuck(ctx: DoctorContext) -> CheckResult:
         return _no_db_result("pools.preparing_stuck")
     bad = await _find_preparing_stuck(ctx)
     now = time.time()
+    released_count = 0
     for s in bad:
-        if s.task_id:
-            await ctx.db.release_claim(
-                s.id,
-                task_status=TaskStatus.READY,
-                context="doctor_prepare_timeout",
-                now=now,
-                result="prepare_failed",
-                needs_attention="prepare_timeout",
-                prepare_backoff=True,
-            )
-        else:
-            await ctx.db.update_session(s.id, claim_phase=None, claim_phase_at=None)
+        result = await ctx.db.release_claim(
+            s.id,
+            task_status=TaskStatus.READY,
+            context="doctor_prepare_timeout",
+            now=now,
+            expected_task_id=s.task_id,
+            expected_claim_epoch=s.last_claim_epoch,
+            preparation_expired_before=now - 2 * _prepare_timeout(ctx),
+            result="prepare_failed",
+            needs_attention="prepare_timeout",
+            prepare_backoff=True,
+        )
+        released_count += int(result.released)
     return CheckResult(
         id="pools.preparing_stuck",
         severity=Severity.OK,
-        detail=f"released {len(bad)} claim/prepare session(s) stuck past timeout",
+        detail=f"released {released_count} claim/prepare session(s) stuck past timeout",
     )
 
 

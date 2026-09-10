@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.commands.handler import CommandHandler
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import integration_repair_stages, task_branch_origins, task_metadata
-from src.intelligence_classes import IntelligenceClass
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
+from src.intelligence_classes import IntelligenceClass
 from src.models import (
     Agent,
     AgentProfile,
@@ -867,8 +867,9 @@ class TestClaim:
     @pytest.mark.parametrize("proof", ["ended", "missing", "successor"])
     async def test_retire_stopped_slot_claim_after_binding_cleared(self, handler, db, tmp_path, proof):
         from sqlalchemy import delete, update
-        from src.database.tables import sessions, task_session_attempts, workspaces
+
         from src.claim_file import read_claim_file
+        from src.database.tables import sessions, task_session_attempts, workspaces
         from src.orchestrator.workspace_claim_recovery import retire_stopped_slot_claim
 
         await mktask(db, "t1", profile_id="worker")
@@ -1690,3 +1691,82 @@ class TestTaskShowClaimedBy:
         on_disk = json.loads((wd / ".aq" / "claim.json").read_text())
         res = await handler._cmd_task_show({"task_id": "t1"})
         assert res["claimed_by"]["claim_epoch"] == on_disk["claim_epoch"]
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_path, cancel, monkeypatch):
+    await mktask(db, "t1", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def reset(*args, **kwargs):
+        started.set()
+        await finish.wait()
+        return "aq/t1"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = reset
+    request = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True}))
+    reconciler = SessionReconciler(
+        db, config, SessionProviderRegistry({}), bus=handler.orchestrator.bus,
+        orchestrator=handler.orchestrator, epoch="test",
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        row = await db.get_session(sid)
+        key = (sid, "t1", row.last_claim_epoch)
+        assert handler.orchestrator.claim_preparations[key] is request
+        # Both the automatic timeout and doctor repair must respect the
+        # same actual request, rather than inferring abandonment from age.
+        from src.doctor.pool_checks import run_check
+
+        await db.update_session(sid, claim_phase_at=time.time() - 3 * config.swarm.prepare_timeout)
+        finding = await run_check(
+            db, "pools.preparing_stuck", config=config, handler=handler, repair=True
+        )
+        assert finding.data.get("count", 0) == 0
+        expired = row.claim_phase_at + config.swarm.prepare_timeout + 1
+        await reconciler._step_prepare_timeout([row], expired)
+        assert (await db.get_session(sid)).task_id == "t1"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        if cancel:
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            assert not handler.orchestrator.claim_preparations
+            await reconciler._step_prepare_timeout([row], expired)
+            assert (await db.get_task("t1")).status is TaskStatus.READY
+            assert (await db.get_session(sid)).task_id is None
+        else:
+            finish.set()
+            assert (await request)["result"] == "claimed"
+            assert (await db.get_session(sid)).claim_phase == "active"
+            assert not handler.orchestrator.claim_preparations
+            # A stale timeout read racing activation cannot release it even
+            # after the request leaves the in-memory preparation registry.
+            await db.release_claim(
+                sid, task_status=TaskStatus.READY, context="prepare_timeout",
+                now=expired, expected_task_id="t1", expected_claim_epoch=row.last_claim_epoch,
+                preparation_expired_before=expired - config.swarm.prepare_timeout,
+            )
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+            assert (await db.get_session(sid)).claim_phase == "active"
+            real_list = db.list_sessions
+
+            async def stale_observation(**kwargs):
+                if kwargs.get("claim_phase") == "preparing":
+                    return [row]
+                return await real_list(**kwargs)
+
+            monkeypatch.setattr(db, "list_sessions", stale_observation)
+            waiter = asyncio.get_running_loop().create_future()
+            handler.orchestrator.claim_waiters[(sid, row.last_claim_epoch)] = waiter
+            await reconciler._step_prepare_timeout([row], expired)
+            assert not waiter.done(), "a rejected stale timeout must not wake claim waiters"
+            waiter.cancel()
+            handler.orchestrator.claim_waiters.clear()
+            assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+    finally:
+        finish.set()
+        if not request.done():
+            request.cancel()
+        await asyncio.gather(request, return_exceptions=True)

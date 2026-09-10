@@ -74,22 +74,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from src.database.queries.hierarchy_queries import HierarchyError
 from src.config import AppConfig, ConfigWatcher
-from src.llm_logger import LLMLogger
 from src.database import create_database
-from src.notifications.builder import build_task_detail
-from src.notifications.events import (
-    TaskStoppedEvent,
-    TaskThreadCloseEvent,
-)
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
+from src.git.manager import GitManager
+from src.llm_logger import LLMLogger
 from src.messaging.types import (
-    NotifyCallback as _NotifyCallbackType,
-    ThreadSendCallback as _ThreadSendCallbackType,
     CreateThreadCallback as _CreateThreadCallbackType,
 )
-from src.git.manager import GitManager
+from src.messaging.types import (
+    NotifyCallback as _NotifyCallbackType,
+)
+from src.messaging.types import (
+    ThreadSendCallback as _ThreadSendCallbackType,
+)
 from src.models import (
     AgentProfile,
     AgentState,
@@ -97,24 +96,28 @@ from src.models import (
     Task,
     TaskStatus,
 )
-from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
-from src.tokens.budget import BudgetManager
-from src.vault_manager import VaultManager
+from src.notifications.builder import build_task_detail
+from src.notifications.events import (
+    TaskStoppedEvent,
+    TaskThreadCloseEvent,
+)
+from src.orchestrator.context import ContextMixin
+from src.orchestrator.events import EventsMixin
+from src.orchestrator.execution import ExecutionMixin
+from src.orchestrator.git_ops import GitOpsMixin
+from src.orchestrator.layout_step import LayoutStepMixin
+from src.orchestrator.monitoring import MonitoringMixin
+from src.orchestrator.pools import PoolsMixin
+from src.orchestrator.pr_polling import PRPollingMixin
 
 # Mixin imports — each provides one domain of methods
 from src.orchestrator.route_needed import RouteNeededMixin
-from src.orchestrator.workspace import WorkspaceMixin
-from src.orchestrator.execution import ExecutionMixin
-from src.orchestrator.monitoring import MonitoringMixin
-from src.orchestrator.git_ops import GitOpsMixin
-from src.orchestrator.pr_polling import PRPollingMixin
-from src.orchestrator.context import ContextMixin
-from src.orchestrator.events import EventsMixin
 from src.orchestrator.sync_workflow import SyncWorkflowMixin
-from src.orchestrator.pools import PoolsMixin
-from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.triage import TriageMixin
-
+from src.orchestrator.workspace import WorkspaceMixin
+from src.scheduler import AssignAction, Scheduler, SchedulerState, idle_workers
+from src.tokens.budget import BudgetManager
+from src.vault_manager import VaultManager
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +329,9 @@ class Orchestrator(
         # ``(session_id, claim_epoch)``; resolved by
         # ``ClaimCommandsMixin._resolve_claim_waiters``.
         self.claim_waiters: dict[tuple[str, int | None], asyncio.Future] = {}
+        # Actual request tasks, distinct from notification futures: a live
+        # workspace reset must finish or be cancelled before reclaiming it.
+        self.claim_preparations: dict[tuple[str, str, int | None], asyncio.Task] = {}
         # Worker-pool sizing state (swarm-work-model §11), owned by
         # ``PoolsMixin``.  ``_pool_surplus_since`` tracks how long each
         # ``(project_id, profile_id)`` key has been in continuous surplus,
@@ -375,8 +381,8 @@ class Orchestrator(
         # feature flag off; nothing spawns until ``sessions.enabled``.
         from src.sessions import default_session_registry
         from src.sessions.harness_registry import HarnessRegistry
-        from src.sessions.reconciler import SessionReconciler
         from src.sessions.questions import AgentQuestionService
+        from src.sessions.reconciler import SessionReconciler
         from src.sessions.spec import SessionSpecBuilder
         from src.sessions.transcripts.watcher import TranscriptWatcher
 
@@ -818,9 +824,8 @@ class Orchestrator(
         ``agent_profiles`` table), which leaves the caller on the pre-existing
         "adapter built-in defaults" path.
         """
-        from src.profiles.default_selection import select_default_profile_id
-
         from src.profiles.catalog import active_catalog_profile_ids
+        from src.profiles.default_selection import select_default_profile_id
 
         profiles = await self.db.list_profiles()
         chosen = select_default_profile_id(
@@ -1496,12 +1501,12 @@ class Orchestrator(
         # ready immutable activations are subscribed directly to the event bus;
         # there is no legacy compiler, mutable registry, or runtime selector.
         if self.config.playbooks.enabled:
-            from src.playbooks.runtime import V2PlaybookRuntime
-            from src.timer_service import TimerService
             from src.playbooks.required import (
                 RequiredPlaybookReconciler,
                 ensure_reviewed_playbook_bundles,
             )
+            from src.playbooks.runtime import V2PlaybookRuntime
+            from src.timer_service import TimerService
 
             if self._command_handler is None:
                 raise RuntimeError("Playbooks enabled before command handler was wired")
@@ -1566,23 +1571,23 @@ class Orchestrator(
         # One durable reconciliation loop owns integration scheduling and
         # outbox dispatch. Later Task 10 phases attach their narrow handlers
         # without adding another timer or orchestration authority.
-        from src.integration.outbox import IntegrationOutbox
+        from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
+        from src.git.github_cli import GitHubCLIClient
+        from src.integration.attestation import IntegrationAttestationService
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
         from src.integration.cleanup import IntegrationCleanupService
+        from src.integration.controls import (
+            IntegrationControlService,
+            daemon_functional_preflight,
+        )
         from src.integration.main_promotion import RootPromotionService
+        from src.integration.outbox import IntegrationOutbox
         from src.integration.promotion import PromotionService
         from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
         from src.integration.service import IntegrationService
-        from src.integration.attestation import IntegrationAttestationService
-        from src.integration.controls import (
-            IntegrationControlService,
-            daemon_functional_preflight,
-        )
-        from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
-        from src.git.github_cli import GitHubCLIClient
 
         async def accept_integration_event(
             event_type: str, payload: dict[str, Any], event_id: str
@@ -1978,6 +1983,8 @@ class Orchestrator(
         # same startup.
         from src.profiles.mcp_inline_migration import (
             migrate_vault_profiles as migrate_inline_vault,
+        )
+        from src.profiles.mcp_inline_migration import (
             migrate_yaml_config_profiles as migrate_inline_yaml,
         )
 

@@ -72,14 +72,13 @@ import re
 import signal
 import subprocess
 import tempfile
-from contextlib import asynccontextmanager, contextmanager
 from collections.abc import Callable
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, AsyncIterator
 
-from src.git.askpass_fd import answer_prompt
 from src.git.askpass_broker import (
     GitCredentialTopology,
     make_request_channel,
@@ -87,6 +86,7 @@ from src.git.askpass_broker import (
     serve_one_credential,
     zeroize,
 )
+from src.git.askpass_fd import answer_prompt
 from src.git.github_app import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
@@ -466,12 +466,16 @@ class GitManager:
                     proc.communicate(),
                     timeout=effective_timeout,
                 )
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                # Cancellation (including daemon shutdown) must not leave a
+                # reset writing after its claim request has gone away.
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass  # Process already exited before we could kill it
                 await proc.wait()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise GitError(
                     f"git {' '.join(args)} timed out after "
                     f"{effective_timeout}s (possible credential prompt)"
