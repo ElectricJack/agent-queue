@@ -1518,9 +1518,19 @@ def s15_development_delivery(state: dict) -> str:
     check(bool(task_id), str(task))
     aq("task", "set", task_id, "--branch", "fixture-feature")
     aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+    successor = api("create_task", {
+        "project_id": "e2e-development", "title": "wait for delivered code",
+        "description": "must not start before the prerequisite reaches main",
+        "profile_id": POOL_PROFILE, "intelligence_class": POOL_CLASS,
+    })
+    successor_id = successor.get("task_id") or successor.get("created")
+    check(bool(successor_id), str(successor))
+    api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
+    check(task_show(successor_id)["is_blocked"], "undelivered code released its successor")
     result = aq("integration", "sweep", "e2e-development")
     check(result.get("outcome") == "delivered", str(result))
     check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
+    check(not task_show(successor_id)["is_blocked"], "publication did not release the successor")
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
     check(adopted.get("outcome") == "adopted", str(adopted))
