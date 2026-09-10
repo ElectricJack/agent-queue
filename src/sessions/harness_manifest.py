@@ -49,6 +49,7 @@ HarnessStatus = Literal["missing", "current", "stale", "edited"]
 SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
     "claude.md": frozenset(
         {
+            "ab5e3c830a07eb1c8173abf914c18ef4fbbac370af476d15054f0b77fe282c48",  # 2026-09-10 trust menu selection
             "99870ea8ee162cf7f43c4f8d2705afc645ce463f91843bbc80e9535a3d8d3b20",  # bcad7104 2026-08-19
             "df620660ea22ec2eff6096a08c2e723fabfdb403a6332b74853c75e08be043c2",  # 9244b370 2026-08-19
             "336b4e2cb4ac3bdadfde5e5d88782dd4776af4af21585023a589ba830ceb6cc4",  # 48bfab98 2026-08-20
@@ -69,6 +70,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
     ),
     "codex.md": frozenset(
         {
+            "22a654b7031ae5af075e7a0256d15335867e427edf4d7499f7421d123985b847",  # PR #581 optional hook opt-out
             "b3d21d32fba38accc6320c7db07fad15d4037197f172db14b7358529ab4cc92e",  # 5e7ea1f5 2026-08-21
             "6ce63f882c66a0c0be4ef683b82f473afb78177e16e63612249a8b499ed00526",  # 334dc034 2026-08-27
             "c9c5b100a8274ac2f3a6a958b46cf0679034352fcbd3e465478421d290f97348",  # f2fc32df 2026-08-30
