@@ -9427,6 +9427,53 @@
         }
       }
     },
+    "/api/system/export-portable-config": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+        "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+        "operationId": "export_portable_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportPortableConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortableConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/get-chat-analyzer-metrics": {
       "post": {
         "tags": [
@@ -9844,6 +9891,53 @@
         }
       }
     },
+    "/api/system/import-portable-config": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+        "description": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+        "operationId": "import_portable_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPortableConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortableConfigResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/list-event-triggers": {
       "post": {
         "tags": [
@@ -10010,6 +10104,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OrchestratorControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/preview-portable-config": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+        "description": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+        "operationId": "preview_portable_config",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewPortableConfigRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortableConfigResponse"
                 }
               }
             }
@@ -21360,6 +21501,20 @@
         "title": "ExplanationValueDTO",
         "description": "One typed value, in both its human and canonical forms.\n\n``display`` is always present and always safe to render.  ``canonical`` is\nthe Advanced-view payload and is ``None`` whenever ``redacted`` is true."
       },
+      "ExportPortableConfigRequest": {
+        "properties": {
+          "destination": {
+            "type": "string",
+            "title": "Destination",
+            "description": "Output .aqbundle path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "destination"
+        ],
+        "title": "ExportPortableConfigRequest"
+      },
       "ExportProfileRequest": {
         "properties": {
           "profile_id": {
@@ -26159,6 +26314,32 @@
         "additionalProperties": false,
         "type": "object",
         "title": "IdempotencyDTO"
+      },
+      "ImportPortableConfigRequest": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Input .aqbundle path"
+          },
+          "conflict": {
+            "type": "string",
+            "title": "Conflict",
+            "description": "",
+            "default": "keep"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "ImportPortableConfigRequest"
       },
       "ImportProfileRequest": {
         "properties": {
@@ -33584,6 +33765,49 @@
         "title": "PoolStatusRow",
         "description": "One worker pool -- a profile, fleet-wide (global-worker-pools \u00a76.1).\n\nA row used to be one ``(project_id, profile_id)`` pair, which quietly\nmultiplied ``min_active``/``max_active`` by the number of active\nprojects.  Bounds and supply are aggregates over the whole fleet now,\nand the per-project detail lives in ``projects``."
       },
+      "PortableConfigResponse": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied",
+            "default": false
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "validation_errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Validation Errors",
+            "default": []
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "PortableConfigResponse",
+        "description": "Preview/export/import receipt. Fields vary by operation."
+      },
       "PrMergeBaseFreshness": {
         "properties": {
           "ref": {
@@ -33763,6 +33987,11 @@
         "type": "object",
         "title": "PrMergeResponse",
         "description": "Response model for the ``pr_merge`` command."
+      },
+      "PreviewPortableConfigRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PreviewPortableConfigRequest"
       },
       "ProbeMcpServerRequest": {
         "properties": {

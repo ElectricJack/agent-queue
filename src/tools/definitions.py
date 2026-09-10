@@ -185,6 +185,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
+    "preview_portable_config": "system",
+    "export_portable_config": "system",
+    "import_portable_config": "system",
     "orchestrator_control": "system",
     "provide_input": "system",
     "list_prompts": "system",
@@ -3093,6 +3096,33 @@ _ALL_TOOL_DEFINITIONS = [
             "config shape. Top-level properties carry x-reload: hot/restart/unclassified."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "preview_portable_config",
+        "description": "Preview the strict allowlisted settings and global profiles that a portable AQ bundle would contain. Project data, history, paths, credentials, and secrets are excluded.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "export_portable_config",
+        "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"destination": {"type": "string", "description": "Output .aqbundle path"}},
+            "required": ["destination"],
+        },
+    },
+    {
+        "name": "import_portable_config",
+        "description": "Validate and import a portable AQ bundle. Existing config sections and profiles are kept by default; use conflict=replace only to explicitly replace them, or conflict=error to report all collisions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Input .aqbundle path"},
+                "conflict": {"type": "string", "enum": ["keep", "replace", "error"], "default": "keep"},
+                "dry_run": {"type": "boolean", "default": False},
+            },
+            "required": ["source"],
+        },
     },
     {
         "name": "update_config",

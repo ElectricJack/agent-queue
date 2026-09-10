@@ -238,6 +238,8 @@ from .explanation_value import ExplanationValue
 from .explanation_value_dto import ExplanationValueDTO
 from .explanation_value_dto_kind import ExplanationValueDTOKind
 from .explanation_value_kind import ExplanationValueKind
+from .export_portable_config_request import ExportPortableConfigRequest
+from .export_portable_config_response_422 import ExportPortableConfigResponse422
 from .export_profile_request import ExportProfileRequest
 from .export_profile_response import ExportProfileResponse
 from .export_profile_response_422 import ExportProfileResponse422
@@ -449,6 +451,8 @@ from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
+from .import_portable_config_request import ImportPortableConfigRequest
+from .import_portable_config_response_422 import ImportPortableConfigResponse422
 from .import_profile_request import ImportProfileRequest
 from .import_profile_response import ImportProfileResponse
 from .import_profile_response_422 import ImportProfileResponse422
@@ -747,6 +751,7 @@ from .pool_status_request import PoolStatusRequest
 from .pool_status_response import PoolStatusResponse
 from .pool_status_response_422 import PoolStatusResponse422
 from .pool_status_row import PoolStatusRow
+from .portable_config_response import PortableConfigResponse
 from .post_message_api_messages_send_post_response_post_message_api_messages_send_post import (
     PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost,
 )
@@ -755,6 +760,8 @@ from .pr_merge_ci_verdict import PrMergeCiVerdict
 from .pr_merge_request import PrMergeRequest
 from .pr_merge_response import PrMergeResponse
 from .pr_merge_response_422 import PrMergeResponse422
+from .preview_portable_config_request import PreviewPortableConfigRequest
+from .preview_portable_config_response_422 import PreviewPortableConfigResponse422
 from .probe_mcp_server_request import ProbeMcpServerRequest
 from .probe_mcp_server_response import ProbeMcpServerResponse
 from .probe_mcp_server_response_422 import ProbeMcpServerResponse422
@@ -1371,6 +1378,8 @@ __all__ = (
     "ExplanationValueDTO",
     "ExplanationValueDTOKind",
     "ExplanationValueKind",
+    "ExportPortableConfigRequest",
+    "ExportPortableConfigResponse422",
     "ExportProfileRequest",
     "ExportProfileResponse",
     "ExportProfileResponse422",
@@ -1578,6 +1587,8 @@ __all__ = (
     "GridPositionDTO",
     "HTTPValidationError",
     "IdempotencyDTO",
+    "ImportPortableConfigRequest",
+    "ImportPortableConfigResponse422",
     "ImportProfileRequest",
     "ImportProfileResponse",
     "ImportProfileResponse422",
@@ -1874,7 +1885,10 @@ __all__ = (
     "PoolStatusResponse",
     "PoolStatusResponse422",
     "PoolStatusRow",
+    "PortableConfigResponse",
     "PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost",
+    "PreviewPortableConfigRequest",
+    "PreviewPortableConfigResponse422",
     "PrMergeBaseFreshness",
     "PrMergeCiVerdict",
     "PrMergeRequest",
