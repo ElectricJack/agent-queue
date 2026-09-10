@@ -150,6 +150,21 @@ async def _seed_irrelevant_history(db, count: int = 201) -> None:
 
 
 class TestDeliveryPolicy:
+    async def test_large_message_uses_retrievable_notification(self, db):
+        sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
+        engine = make_engine(db, sessions)
+        body = "Large recovery dossier: " + "details " * 1000
+        msg = await _send(db, body=body, body_kind="task_recovery")
+        result = await engine.run_delivery_pass()
+        assert result["delivered"] == 1
+        text = sessions.nudges[0][3]
+        assert len(text.encode()) <= 1000
+        assert f"aq message status {msg.id} --json" in text
+        assert "aq reply" not in text
+        stored = await db.get_message(msg.id)
+        assert stored.body == body
+        assert stored.delivered_at is not None
+
     async def test_idle_supervisor_nudged_and_marked_delivered(self, db):
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
         bus = RecordingBus()

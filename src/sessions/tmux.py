@@ -820,6 +820,10 @@ class TmuxProvider(SessionProvider):
         if last_prompt is None:
             return None
         input_text = "\n".join(lines[last_prompt:])
+        if re.search(r"\[Pasted (?:Content|text)[^\]]*\]", input_text, re.IGNORECASE):
+            # A collapsed paste does not prove delivery or exact draft identity.
+            # Preserve recovery evidence and never submit an unobservable draft.
+            return None
         if pending.marker not in input_text:
             return False
         # Exact text identity is what makes an edited AQ-looking draft a

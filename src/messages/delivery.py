@@ -22,6 +22,7 @@ transactions), and treats the event bus as optional (``None`` no-ops).
 from __future__ import annotations
 
 import logging
+import shlex
 import time
 from typing import Any
 
@@ -40,6 +41,7 @@ __all__ = ["MessageDeliveryEngine", "PARK_AFTER_SECONDS"]
 #: are never parked; profile recipients are consumed via ``aq inbox`` and
 #: also never parked.
 PARK_AFTER_SECONDS: float = 86_400.0
+MAX_NUDGE_BYTES = 1000
 
 
 class MessageDeliveryEngine:
@@ -136,6 +138,9 @@ class MessageDeliveryEngine:
 
             # idle → render one nudge for the batch
             text = _render_nudge(pending)
+            while len(text.encode("utf-8")) > MAX_NUDGE_BYTES and len(pending) > 1:
+                pending = pending[:-1]
+                text = _render_nudge(pending)
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project, text=text
             )
@@ -397,11 +402,16 @@ def _render_nudge(batch: list[Message]) -> str:
             header = f"{header} {msg.subject}"
         parts.append(f"{header}\n{msg.body}")
     replies = [msg for msg in batch if msg.body_kind not in {"agent_question", "task_recovery"}]
-    if not replies:
-        return "\n\n".join(parts)
     ids = ", ".join(msg.id for msg in replies)
     instruction = (
         f'Reply with `aq reply <msg-id> "…"` (ids: {ids}).' if len(replies) > 1
-        else f'Reply with `aq reply {replies[0].id} "…"`.'
+        else f'Reply with `aq reply {replies[0].id} "…"`.' if replies else ""
     )
-    return "\n\n".join(parts) + "\n\n" + instruction
+    rendered = "\n\n".join(parts) + ("\n\n" + instruction if instruction else "")
+    if len(rendered.encode("utf-8")) <= MAX_NUDGE_BYTES:
+        return rendered
+    # Large pastes collapse in terminal composers, making exact-text submit
+    # verification impossible. Keep the payload durable and inject only a
+    # short retrieval instruction, which remains readable after delivery.
+    commands = "; ".join(f"aq message status {shlex.quote(msg.id)} --json" for msg in batch)
+    return f"AQ messages: read the full message bodies with `{commands}`, then handle them. {instruction}".strip()
