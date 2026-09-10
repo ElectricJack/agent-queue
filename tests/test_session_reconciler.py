@@ -1427,15 +1427,16 @@ class TestDesiredState:
         await reconciler.tick(now=NOW)
         assert starter.calls == []
 
+    @pytest.mark.parametrize("initial_state", ["sleeping", "stopped"])
     async def test_repeated_start_failure_quarantines(
-        self, db, provider, reconciler, config, bus
+        self, db, provider, reconciler, config, bus, initial_state
     ):
         """A misconfigured supervisor must not cost an attempt every tick."""
         reconciler.starter = self._Starter(result=RuntimeError("no harness"))
         await self._named(
             db,
             provider,
-            state="sleeping",
+            state=initial_state,
             desired_state="running",
             started_at=NOW - 5000,
             last_activity=NOW - 5000,
@@ -1445,8 +1446,14 @@ class TestDesiredState:
             await reconciler.tick(now=now)
             now += config.sessions.restart_backoff_seconds * 10
         row = await db.get_session("n1")
-        assert row.state == "quarantined" and row.sleep_reason == "start_failed"
+        expected_state = "stopped" if initial_state == "stopped" else "quarantined"
+        assert row.state == expected_state and row.sleep_reason == "start_failed"
         assert row.desired_state == "stopped"
+        assert row.quarantined_at is not None
+        assert bus.types().count("session.quarantined") == 1
+        restarts = row.restarts
+        await reconciler.tick(now=now + config.sessions.restart_backoff_seconds * 10)
+        assert (await db.get_session("n1")).restarts == restarts
 
     async def test_backoff_holds_between_attempts(self, db, provider, reconciler, config):
         starter = self._Starter(result=False)  # declines, so intent stands

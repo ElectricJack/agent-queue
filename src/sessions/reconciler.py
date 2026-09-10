@@ -1677,7 +1677,10 @@ class SessionReconciler:
                 logger.debug("stop during quarantine failed for %s", row.id, exc_info=True)
         await self.db.update_session(
             row.id,
-            state="quarantined",
+            # Stopped is terminal in the session state machine. Failed named
+            # cold starts still need their restart intent retired and their
+            # quarantine evidence recorded without an illegal state change.
+            state="stopped" if row.state == "stopped" else "quarantined",
             desired_state="stopped",
             quarantined_at=now,
             ended_at=now,
