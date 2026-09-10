@@ -41,7 +41,6 @@ __all__ = ["MessageDeliveryEngine", "PARK_AFTER_SECONDS"]
 #: are never parked; profile recipients are consumed via ``aq inbox`` and
 #: also never parked.
 PARK_AFTER_SECONDS: float = 86_400.0
-MAX_NUDGE_BYTES = 1000
 
 
 class MessageDeliveryEngine:
@@ -136,11 +135,11 @@ class MessageDeliveryEngine:
                     parked += await self._maybe_park(pending)
                 continue
 
-            # idle → render one nudge for the batch
+            # Keep each terminal notification on one line. Codex redraws word
+            # wraps as separate terminal rows, so even a non-collapsed batch
+            # cannot be verified as the exact original composer text.
+            pending = pending[:1]
             text = _render_nudge(pending)
-            while len(text.encode("utf-8")) > MAX_NUDGE_BYTES and len(pending) > 1:
-                pending = pending[:-1]
-                text = _render_nudge(pending)
             ok = await self._sessions.nudge(
                 kind=kind, target_id=target_id, project_id=resolved_project, text=text
             )
@@ -387,31 +386,5 @@ def _message_sent_payload(msg: Message) -> dict[str, Any]:
 
 
 def _render_nudge(batch: list[Message]) -> str:
-    """Render one nudge text block for a batch of pending messages.
-
-    Follows the spec §6.1 envelope: ``[message <id> from <from>] <body>``
-    plus the standing "reply with ``aq reply <id>``" instruction. When
-    several messages arrive together, each renders as a paragraph in
-    priority-then-arrival order (already the ``get_pending_messages``
-    ordering) and the reply instruction lists them all.
-    """
-    parts: list[str] = []
-    for msg in batch:
-        header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
-        if msg.subject:
-            header = f"{header} {msg.subject}"
-        parts.append(f"{header}\n{msg.body}")
-    replies = [msg for msg in batch if msg.body_kind not in {"agent_question", "task_recovery"}]
-    ids = ", ".join(msg.id for msg in replies)
-    instruction = (
-        f'Reply with `aq reply <msg-id> "…"` (ids: {ids}).' if len(replies) > 1
-        else f'Reply with `aq reply {replies[0].id} "…"`.' if replies else ""
-    )
-    rendered = "\n\n".join(parts) + ("\n\n" + instruction if instruction else "")
-    if len(rendered.encode("utf-8")) <= MAX_NUDGE_BYTES:
-        return rendered
-    # Large pastes collapse in terminal composers, making exact-text submit
-    # verification impossible. Keep the payload durable and inject only a
-    # short retrieval instruction, which remains readable after delivery.
-    commands = "; ".join(f"aq message status {shlex.quote(msg.id)} --json" for msg in batch)
-    return f"AQ messages: read the full message bodies with `{commands}`, then handle them. {instruction}".strip()
+    """A single-line reference to the full, durable message body."""
+    return f"Read `aq message status {shlex.quote(batch[0].id)} --json`."
