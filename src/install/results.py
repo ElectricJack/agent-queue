@@ -77,6 +77,14 @@ class PlanAction(str, Enum):
     BLOCKED = "blocked"
 
 
+#: The resource kind for AQ's own ``config.yaml``.  Two adapters write that
+#: file — ``postgres.credentials`` points it at the database, ``config.defaults``
+#: fills in the tuned defaults — and :mod:`src.install.lifecycle` decides what
+#: an uninstall does with it, so the kind is spelled once here rather than three
+#: times as a literal.
+RESOURCE_CONFIG = "config"
+
+
 @dataclass(frozen=True, slots=True)
 class ResourceRecord:
     """One thing the installer created, or found and reused.
@@ -115,6 +123,27 @@ class ResourceRecord:
             reused=bool(payload.get("reused", False)),
             detail=dict(payload.get("detail") or {}),
         )
+
+
+def merge_resource(existing: ResourceRecord, new: ResourceRecord) -> ResourceRecord:
+    """Fold a newer observation *new* onto the record already held for its key.
+
+    The newer record wins on everything except ownership, which is monotone:
+    once AQ has created a resource it owns it, and a later step — or a later
+    run — that finds the same resource already present is looking at AQ's own
+    handiwork, not at something the host brought.  Without this rule
+    ``postgres.credentials`` creating ``config.yaml`` and ``config.defaults``
+    then finding it present would leave the file recorded as reused, and
+    ``aq uninstall --remove-config`` would keep the configuration AQ itself
+    wrote — pointing at a database the same uninstall may have dropped.
+
+    Ownership is never *raised* here either: a step that genuinely reused what
+    was on the host records ``owned=False``, and nothing later in the run turns
+    that into a deletion.
+    """
+    if new.owned or not existing.owned:
+        return new
+    return replace(new, owned=True, reused=existing.reused)
 
 
 @dataclass(frozen=True, slots=True)

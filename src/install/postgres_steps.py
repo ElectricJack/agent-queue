@@ -85,7 +85,7 @@ from .postgres import (
     write_database_config,
     write_env_value,
 )
-from .results import ResourceRecord, StepResult
+from .results import RESOURCE_CONFIG, ResourceRecord, StepResult
 from .state import default_state_dir
 from .steps import StepContext, StepRunner, StepSpec
 
@@ -957,6 +957,20 @@ class PostgresAdapter:
                         "credential_store": str(env_path),
                         "credential_source": f"env:{settings.password_env}",
                     },
+                ),
+                # This step is the first thing in the run that writes
+                # config.yaml, so it is also the only step that can tell
+                # whether the file was AQ's to begin with.  `config.defaults`
+                # runs later and can only ever see a file that exists; without
+                # this record `aq uninstall --remove-config` would keep a
+                # configuration AQ wrote, still pointing at a database the same
+                # uninstall may have dropped.
+                ResourceRecord(
+                    kind=RESOURCE_CONFIG,
+                    id=str(config_path),
+                    owned=update.created,
+                    reused=not update.created,
+                    detail={"created": update.created},
                 ),
             ),
         )

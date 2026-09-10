@@ -184,6 +184,64 @@ def test_resource_merging_is_keyed_by_kind_and_id():
     assert merged[0].reused is True
 
 
+def test_a_later_report_never_downgrades_a_resource_aq_already_owns():
+    """Ownership is monotone: it is the uninstall boundary, and AQ created this.
+
+    The step that creates a file is usually not the last step to touch it. A
+    later step can only ever observe that the file exists, and if that
+    observation were allowed to win, the record would say the host brought
+    something ``aq install`` itself wrote.
+    """
+    created = ResourceRecord(kind="config", id="/x/config.yaml", owned=True)
+    found = ResourceRecord(kind="config", id="/x/config.yaml", owned=False, reused=True)
+
+    merged = merge_resources((created,), (found,))
+
+    assert len(merged) == 1
+    assert (merged[0].owned, merged[0].reused) == (True, False)
+
+
+def test_a_resource_the_host_brought_is_not_promoted_by_a_later_report():
+    """The rule only refuses downgrades; it never invents ownership."""
+    found = ResourceRecord(kind="config", id="/x/config.yaml", owned=False, reused=True)
+    again = ResourceRecord(kind="config", id="/x/config.yaml", owned=False, reused=True)
+
+    merged = merge_resources((found,), (again,))
+
+    assert (merged[0].owned, merged[0].reused) == (False, True)
+
+
+def test_the_resume_record_keeps_ownership_across_steps_and_runs(tmp_path):
+    """``InstallState.apply`` folds resources with the same rule the engine does.
+
+    The persisted record is what a later ``aq uninstall`` reads, so a second
+    run finding AQ's own handiwork in place must not rewrite history.
+    """
+    state = InstallState(installer_version="1.0.0", target_version="1.0.0")
+    state.apply(
+        StepResult.succeeded(
+            "creator",
+            "created it",
+            resources=(ResourceRecord(kind="config", id="/x/config.yaml", owned=True),),
+        ),
+        now="2026-01-01T00:00:00Z",
+    )
+    state.apply(
+        StepResult.succeeded(
+            "observer",
+            "it is already there",
+            resources=(
+                ResourceRecord(kind="config", id="/x/config.yaml", owned=False, reused=True),
+            ),
+        ),
+        now="2026-01-01T00:00:01Z",
+    )
+
+    record = state.resources[("config", "/x/config.yaml")]
+    assert (record.owned, record.reused) == (True, False)
+    assert record in state.owned_resources()
+
+
 # -- capability gating and consent ------------------------------------------
 
 

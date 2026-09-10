@@ -38,6 +38,8 @@ from src.install import (
     RemovalAction,
     RemovalScope,
     build_registry,
+    default_handlers,
+    execute_uninstall,
     load_state,
     plan_uninstall,
 )
@@ -322,6 +324,91 @@ def test_uninstall_after_reusing_a_server_removes_nothing_of_it(tmp_path):
     assert ("postgres-server", "localhost:5432") not in removed
     kept = {item.kind for item in plan.items if item.action is RemovalAction.KEEP}
     assert "postgres-credential" in kept
+
+
+def _config_item(host, *, scopes=frozenset({RemovalScope.CONFIG})):
+    plan = plan_uninstall(load_state(host.state_path), scopes=scopes, state_path=host.state_path)
+    return next(
+        item for item in plan.items if (item.kind, item.id) == ("config", str(host.config_path))
+    )
+
+
+def test_uninstall_removes_the_configuration_the_installer_wrote(tmp_path):
+    """``config.yaml`` is written by two adapters; only the first one created it.
+
+    ``postgres.credentials`` creates the file to point it at the database, and
+    ``config.defaults`` later fills in the tuned defaults — by which time all it
+    can see is a file that exists.  Recording that later observation as the
+    truth is what made ``aq uninstall --remove-config`` keep a configuration AQ
+    wrote, still naming a database the same uninstall had just dropped.
+    """
+    host = signed_in(tmp_path)
+    assert not host.config_path.exists()
+
+    result = host.install(capabilities=FULL)
+
+    assert result.outcome is InstallOutcome.READY
+    assert host.config_path.exists()
+    item = _config_item(host)
+    assert item.action is RemovalAction.REMOVE
+    assert item.resource.owned is True
+
+
+def test_uninstall_keeps_a_configuration_that_was_already_on_the_host(tmp_path):
+    """The other half of the boundary: a file AQ found is never AQ's to delete."""
+    host = Machine(tmp_path, database=provisioned())
+    host.set_env(AQ_DB_PASSWORD="existing-password")
+    host.config_path.parent.mkdir(parents=True, exist_ok=True)
+    host.config_path.write_text("messaging_platform: none\n", encoding="utf-8")
+
+    result = host.install(capabilities=(CAPABILITY_DAEMON,))
+
+    assert result.outcome is InstallOutcome.READY
+    item = _config_item(host)
+    assert item.action is RemovalAction.KEEP
+    assert item.resource.owned is False
+    assert "did not create it" in item.reason
+
+
+def test_remove_config_actually_deletes_the_file_the_installer_wrote(tmp_path):
+    """The plan is only half the promise; this is the file leaving the disk."""
+    host = signed_in(tmp_path)
+    host.install(capabilities=FULL)
+
+    plan = plan_uninstall(
+        load_state(host.state_path),
+        scopes=frozenset({RemovalScope.CONFIG}),
+        state_path=host.state_path,
+    )
+    result = execute_uninstall(
+        plan,
+        default_handlers(home=host.aq_home, runner=host.run_daemon, which=host.which),
+    )
+
+    assert result.outcome is InstallOutcome.READY
+    assert not host.config_path.exists()
+    assert host.env_path.exists(), "the credential store is never AQ's to remove"
+
+
+def test_a_rerun_does_not_forget_that_the_installer_wrote_the_configuration(tmp_path):
+    """A second run sees the file in place; the resume record still owns it."""
+    host = signed_in(tmp_path)
+    host.install(capabilities=FULL)
+
+    host.install(capabilities=FULL)
+
+    assert _config_item(host).action is RemovalAction.REMOVE
+
+
+def test_the_configuration_survives_an_uninstall_that_does_not_select_it(tmp_path):
+    """Owned is not the same as selected: ``--remove-config`` is still required."""
+    host = signed_in(tmp_path)
+    host.install(capabilities=FULL)
+
+    item = _config_item(host, scopes=frozenset({RemovalScope.RUNTIME, RemovalScope.DATABASE}))
+
+    assert item.action is RemovalAction.KEEP
+    assert "--remove-config" in item.reason
 
 
 @pytest.mark.parametrize(
