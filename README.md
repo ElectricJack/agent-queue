@@ -194,4 +194,4 @@ Useful starting points:
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
