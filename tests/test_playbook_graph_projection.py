@@ -136,9 +136,7 @@ def test_event_graphs_are_arranged_in_columns_from_left_to_right():
             assert left > previous_right
         previous_right = right
 
-    task_rules = event_rule_ids["task.completed"]
-    first, second = (bounds[rule_id] for rule_id in task_rules)
-    assert second["y"] >= first["y"] + first["height"] + 1
+    assert "task.completed" not in event_rule_ids
 
 
 def test_saved_positions_override_compiler_layout_and_resize_the_rule_cluster():
