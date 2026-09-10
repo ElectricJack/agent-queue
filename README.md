@@ -1,197 +1,163 @@
 # Agent Queue
 
-**A local control plane for running a software factory of coding agents.**
+**Agent Queue (AQ) is a background service that runs AI coding agents against your
+Git repositories.**
 
-Agent Queue is a long-running daemon that turns durable work into isolated agent
-sessions, routes that work across a shared worker fleet, and carries it through review.
-Tasks, dependencies, gates, sessions, and outcomes live outside any one model context,
-so a crashed or exhausted session does not have to be the end of the job.
+You describe work as *tasks*. AQ decides which task is ready, gives it an isolated Git
+worktree, starts a coding-agent CLI inside a terminal session, records what came back,
+and carries the finished branch toward your default branch under a policy you choose.
+Tasks, dependencies, gates, sessions and outcomes live in PostgreSQL rather than in one
+model's context, so a crashed or exhausted agent is a retry rather than the end of the
+job.
 
-The closest category reference is [Gas City](https://github.com/gastownhall/gascity):
-in both cases, the interesting unit is not a chat with one agent but an operational
-system that expresses work, assigns it to a fleet, observes it, and keeps it moving.
-Agent Queue is an independent implementation, not a Gas City distribution or compatible
-SDK. It uses its own daemon, database, task graph, markdown vault, pipeline policy, and
-API. The comparison is about the kind of system this is—a local software factory—not a
-claim that the internals or scale are the same.
+It is for people who already run coding-agent CLIs by hand and want a queue, isolation
+and an audit trail around them — not a hosted product. The interesting unit here is not a
+chat with one agent but a local software factory: an operational system that expresses
+work, assigns it to a fleet, observes it and keeps it moving. AQ is under active
+development; expect to read logs and use `aq doctor`.
 
-Agent Queue is under active development. It is currently best suited to operators who
-are comfortable running coding-agent CLIs and inspecting the work they produce.
+## Start here
 
-## How work moves through the system
+**→ [Install and start Agent Queue](docs/tutorials/install.md)**, then
+[run your first isolated task](docs/tutorials/first-task.md).
 
-1. **Work enters as durable records.** Create a task from the dashboard, `aq` CLI,
-   Discord, REST API, or MCP. A task can stand alone or sit in a typed dependency graph.
-   Reusable formulas can materialize graph templates. Approved specs can be handed to a
-   spec-ingest agent, which proposes a task batch for human approval before anything is
-   committed to the graph.
-2. **Routing chooses capabilities, not a hard-coded model.** An unrouted task receives a
-   routing gate. The default pipeline coalesces open gates into a reusable triage task,
-   and triage pins a profile, intelligence class, and workspace requirement. Profiles
-   describe the role and allowed tools; intelligence classes map a level such as
-   `standard-medium` to provider-specific model and reasoning settings.
-3. **A shared worker runs the task.** Durable, global worker identities are reused across
-   projects. For each assignment, the daemon launches the profile's harness in an
-   observable tmux session. The shipped harness definitions cover Claude Code, OpenAI
-   Codex, and Gemini CLI.
-4. **Git work is isolated.** Repository tasks run in reusable worktree slots, normally on
-   an `aq/<task-id>` branch. The worktree is disposable execution space; the branch,
-   task history, comments, and session attempts are the durable artifacts. Project caps,
-   workspace locks, leases, heartbeats, and recovery logic bound concurrency and make
-   stalled work visible.
-5. **Review is part of the graph.** A workspace task must close explicitly with a
-   summary. The default pipeline creates a read-only reviewer for each completed task
-   with a branch, gates downstream work on that verdict, and coalesces the branch into a
-   final review. The final-reviewer profile is the only shipped profile with merge
-   authority. Rejection reopens the original task with actionable feedback.
-6. **Humans steer the running factory.** The Command Center shows the live task graph,
-   task list, gates, files, diffs, playbook runs, and session history. The Agent Flock
-   view exposes shared workers and attachable live terminals. The same command layer is
-   available through the dashboard, CLI, Discord, REST, and MCP rather than being
-   reimplemented per interface.
-
-## The pieces
-
-### Daemon and API
-
-The Python daemon owns scheduling, task state, workspace acquisition, session
-reconciliation, event delivery, and pipeline dispatch. A FastAPI application exposes
-the command surface, health endpoints, generated resource routes, and WebSocket streams
-used by the dashboard. PostgreSQL is the only supported backend
-for the more concurrent path.
-
-The control path is deliberately mostly deterministic. Scheduling, dependency and gate
-resolution, task assignment, pipeline actions, and recovery do not need an LLM call.
-Models do the work that requires judgment: triage, implementation, review, spec
-decomposition, and user-defined reasoning steps.
-
-### Work graph and gates
-
-Tasks form a graph with typed relationships such as `blocks`, `parent-child`,
-`waits-for`, `discovered-from`, and `related`. Gates represent conditions outside the
-ordinary task-status enum: routing decisions, human approval, another task, a timer, a
-merged PR, CI, or an event. This keeps “why is this not running?” queryable instead of
-hiding it in an agent transcript.
-
-### Markdown vault
-
-Operator-editable policy and configuration live under `~/.agent-queue/vault/` and are
-watched by the daemon. Important paths include:
-
-```text
-vault/
-├── agent-types/<profile>/profile.md
-├── harnesses/{claude,codex,gemini}.md
-├── intelligence-classes/<class>.md
-├── workspace-kinds/<kind>.md
-├── system/playbooks/*.md
-├── formulas/*.md
-└── projects/<project>/
-    ├── agent-types/      # project overrides
-    ├── playbooks/
-    ├── formulas/
-    ├── specs/
-    ├── notes/
-    └── memory/
-```
-
-Markdown is the editable source; database rows and compiled artifacts are runtime
-projections. The vault is compatible with ordinary editors and Obsidian, but neither is
-required.
-
-### Pipelines and playbooks
-
-The shipped `default-pipeline.md` reacts to task, spec, proposal, and gate events. Its
-routing, review, and spec-ingest actions are declared in markdown and dispatched through
-a strict command allowlist. Project-scoped policy can shadow system policy by role.
-
-General playbooks are also markdown workflow graphs. They can be compiled, validated,
-dry-run, inspected, triggered by events, and paused at human gates. Playbooks remain an
-actively evolving subsystem; use `aq playbook health` and `aq doctor` to inspect the
-capabilities enabled in a particular installation.
-
-### Optional memory and plugins
-
-Memory is not the core scheduling model and Agent Queue does not promise that every
-completed task automatically makes the system smarter. The Milvus-backed `aq-memory`
-integration is an optional plugin, installed separately. Other plugins can contribute
-commands, event handlers, services, and health checks. Inspect a live installation with
-`aq plugin list`; the README intentionally does not promise a fixed plugin or tool count.
-
-## Getting started
-
-The source setup currently targets Linux and macOS. You need Python 3.12+, Git, tmux,
-and at least one authenticated agent CLI (`claude`, `codex`, or `gemini`). Node.js/npm
-is needed for the dashboard, and the GitHub CLI (`gh`) is needed for the automated PR
-and merge path. The setup wizard is currently Claude-first even though the session
-runtime supports all three shipped harnesses.
+The short version, once the prerequisites on that page are in place:
 
 ```bash
 git clone https://github.com/ElectricJack/agent-queue.git
 cd agent-queue
-./setup.sh
-aq start
-```
-
-`setup.sh` creates the virtual environment, installs the Python and dashboard packages,
-links the CLI entry points, creates `~/.agent-queue/config.yaml`, and runs the interactive
-setup wizard. The daemon seeds the vault on first startup. `aq start` starts the daemon
-and can start the local dashboard. Discord is the supported chat transport; set
-`messaging_platform: none` if you only want the dashboard, CLI, API, and MCP surfaces.
-
-Create a project and put work on the queue:
-
-```bash
-aq project create --name my-app --repo-url https://github.com/you/my-app.git
-aq agent create --name worker-1 --profile-id worker-standard-medium-claude
-aq task create --project my-app --title "Add rate limiting to the API"
-
+./setup.sh          # virtualenv, Python + dashboard packages, `aq` entry point, setup wizard
+aq start            # starts the daemon; offers to start the dashboard (`--no-dashboard` skips)
 aq status
-aq task list --project my-app
-aq task explain <task-id>
 ```
 
-`aq task create --graph <file>` creates a dependency graph from JSON or YAML.
-`aq task create --from-spec <path>` creates one from a fenced `aq-graph` block. Use
-`--dry-run` with either form to validate without writing. Run `aq --help-all` for the
-complete CLI surface and `aq doctor` when an installation is not behaving as expected.
+You need Linux or macOS (WSL2 counts, if everything stays on the Linux side), Python
+3.12+, Git, tmux, a PostgreSQL database, and at least one authenticated agent CLI —
+`claude`, `codex` or `gemini`. PostgreSQL is the only supported backend. `npm` is needed
+for the dashboard, and the GitHub CLI (`gh`) for the GitHub-facing delivery paths.
 
-To run the dashboard separately during development:
+Unsure what a word means? The [glossary](docs/reference/glossary.md) defines the
+vocabulary the rest of the documentation uses.
 
-```bash
-npm run dev
+## What happens to a task
+
+```mermaid
+flowchart TD
+    A["You create a task<br/>dashboard, aq CLI, REST or MCP"] --> B{"Routed?"}
+    B -- "no class or profile" --> R["Routing playbook picks an<br/>intelligence class and profile"]
+    R --> C
+    B -- yes --> C["Orchestrator waits until nothing<br/>blocks it: dependencies, gates, capacity"]
+    C --> D["Worktree slot reserved: an isolated<br/>checkout on the task's own aq/ branch"]
+    D --> E["Harness CLI starts in a tmux session,<br/>primed with the task and project knowledge"]
+    E --> F["Worker commits to its branch and<br/>closes the task with a summary"]
+    F --> G["Integration collects the branch and<br/>delivers it under the project's policy"]
+    G --> H["Commit on your default branch"]
 ```
 
-Vite serves the dashboard on `http://127.0.0.1:5173` and proxies the daemon API at
-`http://127.0.0.1:8081` by default.
+1. **Work enters as a durable record.** Create a task from the dashboard, the `aq` CLI,
+   the REST API or an MCP client. A task can stand alone or sit in a typed dependency
+   graph (`aq task create --graph` / `--from-spec`, `--dry-run` to validate first).
+   Approved specs take a longer road: the shipped
+   [default pipeline](src/prompts/default_playbooks/default-pipeline.md) creates a
+   spec-ingest task, which proposes a task batch, which waits at a human gate before
+   anything is written into the graph.
+2. **Routing chooses capabilities, not a hard-coded model.** A task missing an
+   intelligence class or a profile makes the orchestrator emit `task.route_needed`. The
+   shipped [routing playbook](src/prompts/default_playbooks/default-assignment-routing.md)
+   asks a small model to pick a class and a profile from the catalog of what this install
+   can actually run, and writes both onto the task. A *profile* is the markdown role —
+   what the agent is for, which tools it may use, which harness runs it. An *intelligence
+   class* maps a level such as `standard-medium` onto provider-specific model and
+   reasoning settings.
+3. **A shared worker runs it.** Workers are global identities reused across projects. For
+   each assignment the daemon starts the profile's harness in an observable tmux session;
+   the shipped harnesses are [Claude Code, Codex and Gemini CLI](src/sessions/default_harnesses/).
+   No coding model runs inside the daemon.
+4. **Git work is isolated.** Repository tasks run in reusable worktree slots, normally on
+   an `aq/<task-id>` branch. The worktree is disposable execution space; the branch, the
+   task history, its comments and its session attempts are the durable artifacts. Project
+   caps, workspace locks, leases and heartbeats bound concurrency and make stalled work
+   visible.
+5. **Closing is not delivering.** A task closes with an explicit summary — that means the
+   worker pushed a branch and said it was done.
+   [Integration](docs/concepts/integration.md) is the separate, restartable job that
+   decides which branches still apply, proves they work, and publishes them. Nothing
+   reaches your default branch outside that path.
+6. **You steer it while it runs.** The dashboard shows the live task graph, task list,
+   gates, files, diffs, sessions, playbook runs and worker terminals. The CLI, REST API
+   and MCP server reach the same command layer rather than reimplementing it.
 
-## Development
+## What ships on, what you turn on
+
+AQ ships deliberately conservative. Four things are easy to confuse, so the
+documentation labels all of them:
+
+| | |
+|---|---|
+| **Shipped defaults** | Spec-ingest, the proposal gate and batch commit ([default pipeline](src/prompts/default_playbooks/default-pipeline.md)); playbook-driven routing; per-task delivery as a pull request (`integration.default_mode`); project integration mode `disabled`; worker pools off (`swarm.enabled`); Discord notification-only, and `messaging_platform: none` fully supported. |
+| **Configured local policy** | Anything you set in `~/.agent-queue/config.yaml` or the vault. This repository, for example, configures `development` integration mode — batched validate-and-publish straight to `main` — and runs pull-based worker pools. Yours does not unless you say so. |
+| **Optional compatibility modes** | `hierarchy` and `train` integration modes; the older triage-task routing shape; the `reviewer` / `final-reviewer` profiles, which still ship but which **no default configuration creates work for**. |
+| **Proposed work** | Lives in [`docs/specs/`](docs/specs/) and [`docs/superpowers/`](docs/superpowers/) and is not a description of what runs. |
+
+Two things AQ specifically does *not* do, despite what older pages may say: the default
+pipeline does not create a reviewer for every finished task or a final branch review, and
+Discord has no slash commands, buttons or task controls — it is one channel carrying an
+hourly [activity digest and escalation threads](docs/concepts/messaging.md), and the reply
+you type in an escalation thread is the only thing that travels back in.
+
+## Where things live
+
+Operator-editable policy is markdown under `~/.agent-queue/vault/`, watched by the daemon:
+agent profiles, harness definitions, intelligence classes, workspace kinds, playbooks,
+formulas, and per-project overrides, specs, notes and memory. Markdown is the editable
+source; database rows and compiled artifacts are projections of it. Obsidian works on the
+vault, and nothing requires it.
+
+Durable state — tasks, gates, sessions, claims, workspaces, delivery journals — is in
+PostgreSQL. The control path is deterministic on purpose: scheduling, dependency and gate
+resolution, assignment and recovery need no LLM call. Models do the parts that need
+judgment.
+
+## Documentation
+
+**[The documentation home](docs/README.md)** is the reading order and the index for
+everything below.
+
+| Start with | For |
+|---|---|
+| [Install](docs/tutorials/install.md) · [First task](docs/tutorials/first-task.md) | Getting a healthy daemon and watching one worker finish a job. |
+| [Glossary](docs/reference/glossary.md) | The words the rest of the documentation assumes. |
+| [Architecture](docs/concepts/architecture.md) | What the daemon starts, in what order, and who owns which state. |
+| [Agents and routing](docs/concepts/agents-and-routing.md) · [Sessions](docs/concepts/sessions.md) · [Providers](docs/concepts/providers.md) | How a task becomes a running agent, and what happens when one dies. |
+| [Integration](docs/concepts/integration.md) | How a finished branch becomes a commit on `main`. |
+| [Playbooks](docs/concepts/playbooks.md) | Markdown workflow graphs: events, gates, activation. |
+| [Messaging, digests and escalations](docs/concepts/messaging.md) | Talking to workers, and how a machine asks a human a question. |
+| [CLI reference](docs/reference/cli/README.md) · [HTTP API](docs/reference/api/README.md) · [Database](docs/reference/database/README.md) | Exhaustive look-up material. |
+| [Contributing](docs/contributing/README.md) | Setting up a development checkout and delivering a change. |
+
+## Working on Agent Queue
 
 ```bash
-pip install -e packages/aq-client
+pip install -e packages/aq-client     # generated typed API client
 pip install -e ".[dev,cli]"
 npm install
-
-pytest tests/
-npm test --workspace dashboard
-npm run typecheck
-npm run build
 ```
 
-Useful starting points:
+Then run only the checks your change needs — the test suite is large enough that running
+all of it is a whole-box event:
 
-- [AQ surface](docs/specs/design/aq-surface.md) — CLI, API auth, task-scoped commands,
-  and prime documents
-- [Work graph](docs/specs/design/work-graph.md) — typed dependencies, gates, claims,
-  pools, and task hierarchy
-- [Worktree execution](docs/specs/design/worktree-execution.md) — reusable slots,
-  branches, recovery, and integration
-- [Profiles](docs/specs/design/profiles.md) — markdown roles and capabilities
-- [Playbooks](docs/specs/design/playbooks.md) — authored workflow graphs
-- [Agent flock plan](docs/superpowers/plans/2026-08-30-agent-flock.md) and
-  [Command Center plan](docs/superpowers/plans/2026-08-30-command-center-unification.md)
-  — the recent direction of the worker and operator surfaces
+```bash
+ruff check <the files you edited>
+aq test tests/test_<area>.py          # `aq test` takes a box-wide slot and caps workers
+npm -w dashboard run lint             # for dashboard changes
+npm -w dashboard run typecheck
+```
+
+[Local checks](docs/contributing/checks.md) maps what you changed to what you should run;
+[testing](docs/contributing/testing.md) explains why bare `pytest tests/` is the wrong
+habit here. `npm run dev` serves the dashboard on `http://127.0.0.1:5173`, proxying the
+daemon API at `http://127.0.0.1:8081`.
 
 ## License
 
-MIT
+MIT.
