@@ -184,7 +184,15 @@ class TestDeliveryPolicy:
         assert stored.body == body
         assert stored.delivered_at is not None
 
-    async def test_idle_supervisor_nudged_and_marked_delivered(self, db):
+    @pytest.mark.parametrize("hyphenated_id", [False, True])
+    async def test_idle_supervisor_nudged_and_marked_delivered(self, db, monkeypatch, hyphenated_id):
+        if hyphenated_id:
+            # Recovery and question notices also use hyphenated UUIDs. Their
+            # nudge must fit the same 80-column terminal as normal message IDs.
+            monkeypatch.setattr(
+                "src.database.queries.message_queries._new_message_id",
+                lambda: "msg-12345678-1234-1234-1234-123456789abc",
+            )
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "idle"})
         bus = RecordingBus()
         engine = make_engine(db, sessions, bus=bus)
@@ -196,7 +204,7 @@ class TestDeliveryPolicy:
         assert len(sessions.nudges) == 1
         text = sessions.nudges[0][3]
         assert "msg-" in text and msg.id in text
-        assert text == f"Handle body: `aq message status {msg.id} --json`"
+        assert text == f"Handle `aq message status {msg.id} --json`."
         assert "\n" not in text and len(text) < 78
         stored = await db.get_message(msg.id)
         assert stored.body == "world"
