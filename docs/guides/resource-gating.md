@@ -4,6 +4,11 @@ tags: [guide, ops, resources, testing]
 
 # Resource gating — keeping N agents from taking the box down
 
+Read [Scheduling, worker pools and resource limits](../concepts/scheduling.md)
+first for why capacity and test throughput are separate concerns. This page is
+the operational guide for the installed resource policy; its numbers are
+configuration defaults or local policy, not a benchmark promise.
+
 On 2026-09-01 this repo's own daemon ran eight concurrent agents on a
 24-core / 31 GB box. Each of them was following `CLAUDE.md`'s advice to run
 `pytest -n auto`. `-n auto` asks the *machine* how many cores it has, and

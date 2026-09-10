@@ -1,0 +1,33 @@
+# Module catalog: scheduling, pools and resources
+
+This catalog is the `scheduler` shard of the [module catalog](README.md). The prose entry point is [scheduling, worker pools and resource limits](../../concepts/scheduling.md); workspace-specific files are catalogued by the workspaces shard.
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [src/orchestrator/__init__.py](../../../src/orchestrator/__init__.py) | Exports the composed `Orchestrator` and its public callback types. | [Scheduling](../../concepts/scheduling.md) | Package entry point. |
+| [src/orchestrator/agent_reconciler.py](../../../src/orchestrator/agent_reconciler.py) | Reconciles durable push-agent supply with dispatchable work before scheduling. | [Scheduling](../../concepts/scheduling.md) | `tests/test_orchestrator.py`. |
+| [src/orchestrator/context.py](../../../src/orchestrator/context.py) | Builds task-specific execution rules and prompt context for a launched worker. | [Scheduling](../../concepts/scheduling.md) | Execution context, not capacity policy. |
+| [src/orchestrator/core.py](../../../src/orchestrator/core.py) | Composes the mixins and runs the deterministic orchestration cycle. | [Scheduling](../../concepts/scheduling.md) | `tests/test_orchestrator.py`. |
+| [src/orchestrator/events.py](../../../src/orchestrator/events.py) | Emits task lifecycle events and notification payloads from orchestration changes. | [Scheduling](../../concepts/scheduling.md) | `tests/test_event_bus_validation.py`. |
+| [src/orchestrator/execution.py](../../../src/orchestrator/execution.py) | Starts, supervises, and cleans up push-task execution. | [Scheduling](../../concepts/scheduling.md) | `tests/test_orchestrator.py`. |
+| [src/orchestrator/layout_step.py](../../../src/orchestrator/layout_step.py) | Advances persisted task-graph layout work during an orchestration cycle. | [Scheduling](../../concepts/scheduling.md) | Focused layout coverage: `tests/task_graph/test_layout_step.py`. |
+| [src/orchestrator/merge_slot.py](../../../src/orchestrator/merge_slot.py) | Acquires, renews, releases, and repairs project merge-slot leases. | [Scheduling](../../concepts/scheduling.md) | Delivery coordination; see integration documentation. |
+| [src/orchestrator/monitoring.py](../../../src/orchestrator/monitoring.py) | Detects stuck tasks, expired work, and other lifecycle conditions for reporting. | [Scheduling](../../concepts/scheduling.md) | `tests/test_orchestrator.py`. |
+| [src/orchestrator/pools.py](../../../src/orchestrator/pools.py) | Measures pool supply/demand, applies sizing and placement, launches workers, and drains idle sessions. | [Scheduling](../../concepts/scheduling.md) | `tests/test_pool_reconciler.py`, `tests/test_pool_lifecycle_integration.py`. |
+| [src/orchestrator/pr_polling.py](../../../src/orchestrator/pr_polling.py) | Polls pull-request delivery state for tasks that require it. | [Scheduling](../../concepts/scheduling.md) | See integration documentation. |
+| [src/orchestrator/provider_distribution.py](../../../src/orchestrator/provider_distribution.py) | Maintains provider-aware launch distribution and cooldown state. | [Scheduling](../../concepts/scheduling.md) | Capacity input to scheduling. |
+| [src/orchestrator/route_needed.py](../../../src/orchestrator/route_needed.py) | Emits and reconciles missing assignment-route work before a task can launch. | [Scheduling](../../concepts/scheduling.md) | Routing policy is documented in agents and routing. |
+| [src/orchestrator/stranded_work.py](../../../src/orchestrator/stranded_work.py) | Preserves and reports committed work that could not be published on close. | [Scheduling](../../concepts/scheduling.md) | See integration recovery. |
+| [src/orchestrator/sync_workflow.py](../../../src/orchestrator/sync_workflow.py) | Runs bounded synchronization workflow reconciliation from the cycle. | [Scheduling](../../concepts/scheduling.md) | Workflow coordination support. |
+| [src/orchestrator/task_checkpoint.py](../../../src/orchestrator/task_checkpoint.py) | Captures, validates, and restores safe Git checkpoints for manually paused tasks. | [Scheduling](../../concepts/scheduling.md) | Workspace/Git recovery cross-link. |
+| [src/orchestrator/triage.py](../../../src/orchestrator/triage.py) | Recovers persisted routing wakeups when configured policy requires an assignment decision. | [Scheduling](../../concepts/scheduling.md) | A compatibility/recovery helper, not a default user workflow. |
+| [src/pool_claims.py](../../../src/pool_claims.py) | Defines which task states still count as live pool claims. | [Scheduling](../../concepts/scheduling.md) | Used by claim bookkeeping. |
+| [src/resources/__init__.py](../../../src/resources/__init__.py) | Marks the resource-gating package. | [Resource gating](../../guides/resource-gating.md) | Package root. |
+| [src/resources/limits.py](../../../src/resources/limits.py) | Derives session caps, probes cgroup delegation, and wraps a harness command with limits. | [Resource gating](../../guides/resource-gating.md) | `tests/test_resource_limits.py`. |
+| [src/resources/procs.py](../../../src/resources/procs.py) | Scans `/proc` and attributes load and pytest descendants to sessions. | [Resource gating](../../guides/resource-gating.md) | Focused resource-limit coverage. |
+| [src/resources/semaphore.py](../../../src/resources/semaphore.py) | Provides crash-safe, machine-wide `flock` test slots and their status snapshot. | [Resource gating](../../guides/resource-gating.md) | `tests/test_resource_semaphore.py`, `tests/test_cli_test_runner.py`. |
+| [src/schedule.py](../../../src/schedule.py) | Matches structured periodic-hook schedules and five-field cron expressions. | [Scheduling](../../concepts/scheduling.md) | `tests/test_schedule.py`. |
+| [src/scheduler.py](../../../src/scheduler.py) | Produces pure push assignments and fleet-wide pool sizing, placement, and rebalancing actions. | [Scheduling](../../concepts/scheduling.md) | `tests/test_pool_sizing.py`, `tests/test_pool_placement.py`. |
+| [src/timer_service.py](../../../src/timer_service.py) | Emits timer and local-clock cron events for subscribed playbooks. | [Scheduling](../../concepts/scheduling.md) | `tests/test_timer_service.py`, `tests/test_timer_service_cron.py`. |
+
+The excluded `src/orchestrator/base_workspace.py`, `workspace.py`, `workspace_attachments.py`, `workspace_claim_recovery.py`, `worktree_manager.py`, and `git_ops.py` are deliberately owned by the `workspaces` catalog shard in the [documentation ownership map](../../documentation-map.md#page-ownership). They are cross-linked here because pool placement reads workspace capacity, but this shard does not duplicate their implementation documentation.
