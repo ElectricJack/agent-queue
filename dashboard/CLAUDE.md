@@ -47,6 +47,34 @@ components / pages
   `assigned_agent`. The hand-typed interfaces that previously lied about
   `repo_path` / `default_branch` / `agent_name` are gone.
 
+## Browser storage
+
+Persistent feature state lives on the server. Anything a user expects to find
+again after a reload — on this machine or another — goes through
+`useDashboardDocument` and the `dashboard_state` namespaces
+(`docs/superpowers/specs/2026-09-10-dashboard-state-contract-design.md`);
+addressable navigation goes in the URL; everything else is component or module
+memory that a reload discards. There is no browser fallback and no migration of
+old values: while the server is unavailable the dashboard renders defaults.
+
+`src/deviceLocal.ts` is the only module that touches browser persistence, and
+only for these device-local transport keys:
+
+| Key | Owner | Why it stays in the browser |
+|---|---|---|
+| `aq:ws:last_seq` | `ws/useEventStream.ts` | This browser's WebSocket replay cursor. A missing or stale value costs a replay or a refetch; it means nothing on another device. |
+| `aq:ws:epoch` | `ws/useEventStream.ts` | Event-stream epoch; a change after the daemon's database is replaced invalidates the local cursor. |
+| `aq:session:id` | `panes/console-stream/index.tsx` | Read-only connection-identity stub (production never writes it) that rejects a console stream addressed to another session. |
+
+`tests/test_dashboard_browser_storage.py` enforces this in CI (the vitest suite
+does not run there). It fails when any other production file under `src/`
+references `localStorage`, `sessionStorage`, IndexedDB, cookies, Cache Storage
+or `navigator.storage`; when `DEVICE_LOCAL_KEYS` holds a key missing from this
+table or the test's allowlist; and when a retired feature key reappears anywhere
+under `src/`, tests included. A new key needs a transport justification of the
+same kind in all three places — a remembered UI choice never qualifies. Tests
+need not assert that a feature leaves browser storage alone; the guard covers it.
+
 ## Dev / build
 
 ```

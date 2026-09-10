@@ -37,10 +37,7 @@ vi.mock("../pages/project/onboarding/useProjectRoots", () => ({
   }),
 }));
 
-afterEach(() => {
-  cleanup();
-  window.localStorage.clear();
-});
+afterEach(cleanup);
 
 function renderRail() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

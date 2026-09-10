@@ -21,7 +21,6 @@ describe("expanded state ownership", () => {
 
     act(() => first.result.current.toggleExpanded("epic"));
     expect(first.result.current.expandedTaskIds.has("epic")).toBe(true);
-    expect(localStorage.getItem("aq:command-center:expanded-task-ids:v1")).toBeNull();
 
     // A re-render — what a live graph refresh or a resize produces — leaves
     // the set alone.

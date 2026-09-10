@@ -134,7 +134,6 @@ describe("LayoutCanvas", () => {
     const moved = flow.current!.nodes.find((node) => node.id === "z")!;
     expect(moved.position).toEqual({ x: 720, y: 312 });
     act(() => flow.current!.onNodeDragStop!(null, moved));
-    expect(localStorage.getItem("aq.command-center.graph-positions")).toBeNull();
 
     first.unmount();
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
@@ -173,8 +172,6 @@ describe("LayoutCanvas", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const density = screen.getByRole("combobox", { name: "Graph density" });
     expect(density).toHaveValue("comfortable");
-    fireEvent.change(density, { target: { value: "compact" } });
-    expect(localStorage.getItem("aq.command-center.graph-density")).toBeNull();
   });
 
   it("re-renders only the cards a live refetch actually changed", () => {

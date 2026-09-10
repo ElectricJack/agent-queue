@@ -94,7 +94,6 @@ function renderAgents(initial = "/agents") {
 }
 
 beforeEach(() => {
-  localStorage.clear();
   vi.clearAllMocks();
   TerminalSocketMock.instances = [];
   TerminalMock.instances = [];

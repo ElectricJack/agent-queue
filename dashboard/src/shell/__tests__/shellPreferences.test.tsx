@@ -43,7 +43,6 @@ let server: FakeDashboardStateServer;
 
 beforeEach(() => {
   server = createFakeDashboardStateServer();
-  localStorage.clear();
 });
 
 function Status() {
@@ -106,21 +105,6 @@ describe("agent-flock collapse", () => {
     expect(flockToggle()).toHaveAttribute("aria-expanded", "true");
     expect(server.document("shell_preferences", { owner: "human:grace" }).revision).toBe(0);
   });
-
-  it("ignores a legacy browser value and writes nothing to browser storage", async () => {
-    localStorage.setItem("aq:flock:collapsed", "true");
-    const setItem = vi.spyOn(Storage.prototype, "setItem");
-    const user = userEvent.setup();
-    renderShell(<AgentFlock />);
-    await preferencesReady();
-    expect(flockToggle()).toHaveAttribute("aria-expanded", "true");
-    await user.click(flockToggle());
-    await waitFor(() =>
-      expect(server.document("shell_preferences").value).toMatchObject({ agent_flock_collapsed: true }),
-    );
-    expect(setItem).not.toHaveBeenCalled();
-    setItem.mockRestore();
-  });
 });
 
 describe("right surface", () => {
@@ -135,7 +119,6 @@ describe("right surface", () => {
 
   it("shows the default width until the server answers, then the user's width", async () => {
     server.write("shell_preferences", savedSurface({ width: 620 }));
-    localStorage.setItem("aq:rightsurface:width", "300");
     const release = server.hold();
     const { result } = renderHook(useSurface, { wrapper: surfaceWrapper() });
     expect(result.current.surface.width).toBe(480);

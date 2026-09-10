@@ -105,7 +105,6 @@ beforeEach(() => {
   server = createFakeDashboardStateServer();
   delete document.documentElement.dataset.theme;
   projects.splice(0, projects.length, ...initialProjects.map((project) => ({ ...project })));
-  window.localStorage.clear();
   actions.remove.mockImplementation(async ({ project_id }: { project_id: string }) => {
     const index = projects.findIndex((project) => project.id === project_id);
     if (index >= 0) projects.splice(index, 1);
@@ -346,8 +345,7 @@ describe("Roaming shell preferences", () => {
   const savedSurface = (patch: Partial<ShellPrefs["right_surface"]>) =>
     saved({ right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, ...patch } });
 
-  it("returns to the user's last project from the server, ignoring a legacy browser value", async () => {
-    window.localStorage.setItem("aq.dashboard.lastProjectId", "p1");
+  it("returns to the user's last project from the server", async () => {
     server.write("shell_preferences", saved({ last_project_id: "p2" }));
     renderApp("/command-center");
     await screen.findByRole("heading", { name: "Command Center graph" });
@@ -359,7 +357,6 @@ describe("Roaming shell preferences", () => {
     await screen.findByRole("heading", { name: "Command Center tasks" });
     await waitFor(() =>
       expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p2" }));
-    expect(window.localStorage.getItem("aq.dashboard.lastProjectId")).toBeNull();
     first.unmount();
     renderApp("/command-center");
     await screen.findByRole("heading", { name: "Command Center graph" });

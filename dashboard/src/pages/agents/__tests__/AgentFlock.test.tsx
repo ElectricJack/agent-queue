@@ -68,7 +68,6 @@ function renderFlock(initial: string | { pathname: string; search?: string; stat
 }
 
 beforeEach(() => {
-  localStorage.clear();
   dashboardState = createFakeDashboardStateServer();
   vi.clearAllMocks();
   TerminalSocketMock.instances = [];

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { EMPTY_ORGANIZATION, toggleFolder, type NavOrganization } from "./navOrganization";
 
@@ -29,17 +29,11 @@ beforeEach(() => {
   api.dashboardStatePut.mockReset();
   api.dashboardStateGet.mockResolvedValue({ data: { document: document(EMPTY_ORGANIZATION) } });
 });
-afterEach(() => window.localStorage.clear());
 
 describe("useNavOrganization", () => {
-  it("shows the server default while loading and ignores a retired browser value", async () => {
+  it("shows the server default while loading", async () => {
     let resolve!: (value: unknown) => void;
     api.dashboardStateGet.mockReturnValue(new Promise((done) => { resolve = done; }));
-    window.localStorage.setItem("aq.shell.project-organization", JSON.stringify({
-      folders: [{ id: "legacy", name: "Legacy", collapsed: false }],
-      assignments: {},
-      order: [],
-    }));
 
     const { result } = renderHook(() => useNavOrganization());
     expect(result.current.status).toBe("loading");

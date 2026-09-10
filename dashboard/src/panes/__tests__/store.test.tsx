@@ -45,7 +45,6 @@ let client: QueryClient;
 beforeEach(() => {
   server = createFakeDashboardStateServer();
   client = testQueryClient();
-  localStorage.clear();
 });
 
 const wrapper = ({ children }: { children: ReactNode }) => (
@@ -121,7 +120,7 @@ test("setArgs updates open state and re-validates", () => {
   expect(result.current.state).toMatchObject({ args: { taskId: "t2" } });
 });
 
-test("setWidth persists the view's width to the user's server preferences, not the browser", async () => {
+test("setWidth persists the view's width to the user's server preferences", async () => {
   const { result } = renderHook(useProbe, { wrapper });
   await waitFor(() => expect(result.current.preferences.status).toBe("ready"));
   act(() => result.current.pane.open("mock-view", { taskId: "t1" }));
@@ -132,7 +131,6 @@ test("setWidth persists the view's width to the user's server preferences, not t
       pane_widths: { "mock-view": 720 },
     }),
   );
-  expect(localStorage.getItem("aq:shellpane:width:mock-view")).toBeNull();
   expect(result.current.pane.state).toMatchObject({ width: 720 });
 });
 
@@ -157,9 +155,8 @@ test("a resize gesture is written once, when it settles", async () => {
   expect(widthWrites).toHaveLength(1);
 });
 
-test("opening a view uses the width saved on the server and ignores a legacy browser value", async () => {
+test("opening a view uses the width saved on the server", async () => {
   server.write("shell_preferences", saved({ pane_widths: { "mock-view": 640 } }));
-  localStorage.setItem("aq:shellpane:width:mock-view", "320");
   const { result } = renderHook(useProbe, { wrapper });
   await waitFor(() => expect(result.current.preferences.status).toBe("ready"));
   act(() => result.current.pane.open("mock-view", { taskId: "t1" }));

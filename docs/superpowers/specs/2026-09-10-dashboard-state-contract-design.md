@@ -863,7 +863,12 @@ active project.
   `ws/useEventStream.ts`) and the read-only `aq:session:id` connection-identity stub.
   These are the only browser-persistent keys the `amber-stone.8` guard permits; each is
   listed there with this justification. None of them is a namespace, an event or a
-  field of any value above.
+  field of any value above. As implemented: `dashboard/src/deviceLocal.ts` is the one
+  module that touches browser storage (its `DEVICE_LOCAL_KEYS` registry holds exactly
+  these three keys), `dashboard/CLAUDE.md` § Browser storage documents them, and
+  `tests/test_dashboard_browser_storage.py` — in the Python suite, because the vitest
+  suite does not run in CI — fails on any other production storage reference, an
+  undocumented registry key, or a retired feature key anywhere under `dashboard/src`.
 
 ## 12. Verification obligations by task
 

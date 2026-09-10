@@ -17,6 +17,7 @@ import {
 } from "../api/dashboardState";
 import type { DashboardStateListResponse } from "../api/client";
 import type { NotifyEvent, TaskMessageEvent, ProposalStatusChangedEvent } from "./types";
+import { readDeviceLocal, removeDeviceLocal, writeDeviceLocal } from "../deviceLocal";
 
 const BASE_RECONNECT_MS = 1_000;
 /** Window over which a burst of playbook frames collapses into one refetch. */
@@ -76,14 +77,6 @@ function setStatus(s: ConnectionStatus) {
   currentStatus = s;
   for (const fn of statusListeners) fn(s);
 }
-
-/**
- * Device-local transport cursors. These are deliberately localStorage-backed:
- * they describe this browser's WebSocket replay position, are never sent to
- * the dashboard-state API, and must never become roaming user preferences.
- */
-const LAST_SEQ_KEY = "aq:ws:last_seq";
-const EPOCH_KEY = "aq:ws:epoch";
 
 interface DashboardStateChange {
   version: 1;
@@ -166,47 +159,32 @@ function scheduleDashboardStateInvalidation(
   }, DASHBOARD_STATE_INVALIDATE_MS));
 }
 
+/**
+ * Device-local transport cursors (see `../deviceLocal`): they describe this
+ * browser's WebSocket replay position, are never sent to the dashboard-state
+ * API, and must never become roaming user preferences.
+ */
 function loadLastSeq(): number | null {
-  try {
-    const raw = localStorage.getItem(LAST_SEQ_KEY);
-    if (raw == null) return null;
-    const n = Number.parseInt(raw, 10);
-    return Number.isFinite(n) ? n : null;
-  } catch {
-    return null;
-  }
+  const raw = readDeviceLocal("aq:ws:last_seq");
+  if (raw == null) return null;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
 }
 
 function saveLastSeq(seq: number): void {
-  try {
-    localStorage.setItem(LAST_SEQ_KEY, String(seq));
-  } catch {
-    /* ignore */
-  }
+  writeDeviceLocal("aq:ws:last_seq", String(seq));
 }
 
 function loadEpoch(): string | null {
-  try {
-    return localStorage.getItem(EPOCH_KEY);
-  } catch {
-    return null;
-  }
+  return readDeviceLocal("aq:ws:epoch");
 }
 
 function saveEpoch(epoch: string): void {
-  try {
-    localStorage.setItem(EPOCH_KEY, epoch);
-  } catch {
-    /* ignore */
-  }
+  writeDeviceLocal("aq:ws:epoch", epoch);
 }
 
 function clearStoredSeq(): void {
-  try {
-    localStorage.removeItem(LAST_SEQ_KEY);
-  } catch {
-    /* ignore */
-  }
+  removeDeviceLocal("aq:ws:last_seq");
 }
 
 function connect() {
