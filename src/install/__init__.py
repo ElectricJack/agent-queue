@@ -28,7 +28,19 @@ from .platform import (
     detect_platform,
     evaluate_support,
 )
-from .prerequisites import default_registry
+from .postgres import (
+    MINIMUM_SERVER_VERSION,
+    ConnectionCheck,
+    PostgresSettings,
+    PostgresSettingsError,
+)
+from .postgres_steps import (
+    CAPABILITY_MANAGED,
+    CAPABILITY_ROTATE,
+    PostgresAdapter,
+    postgres_steps,
+)
+from .prerequisites import default_registry, prerequisite_steps
 from .redaction import SecretLeakError, assert_secret_free, redact
 from .results import (
     EXIT_CODES,
@@ -55,9 +67,13 @@ from .state import (
 from .steps import InstallPlanError, StepContext, StepRegistry, StepSpec
 
 __all__ = [
+    "CAPABILITY_MANAGED",
+    "CAPABILITY_ROTATE",
     "EXIT_CODES",
+    "MINIMUM_SERVER_VERSION",
     "RESULT_SCHEMA_VERSION",
     "STATE_SCHEMA_VERSION",
+    "ConnectionCheck",
     "ConsentCallback",
     "IncompatibleStateError",
     "InstallEngine",
@@ -69,6 +85,9 @@ __all__ = [
     "PlanAction",
     "PlannedStep",
     "PlatformFacts",
+    "PostgresAdapter",
+    "PostgresSettings",
+    "PostgresSettingsError",
     "ProgressCallback",
     "ProgressEvent",
     "ResourceRecord",
@@ -89,6 +108,8 @@ __all__ = [
     "evaluate_support",
     "exit_code",
     "load_state",
+    "postgres_steps",
+    "prerequisite_steps",
     "redact",
     "run_install",
     "save_state",

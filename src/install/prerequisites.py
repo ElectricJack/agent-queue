@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 
 from .results import ResourceRecord, StepResult
@@ -254,24 +254,45 @@ def data_directory_step(
     )
 
 
+def prerequisite_steps(
+    *,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+    state_dir: Path | None = None,
+) -> tuple[StepSpec, ...]:
+    """The engine's own steps, in the order they run."""
+    return (
+        host_step(),
+        python_step(),
+        git_step(which=which),
+        tmux_step(which=which),
+        data_directory_step(environ=environ, path=state_dir),
+    )
+
+
 def default_registry(
     *,
     environ: Mapping[str, str] | None = None,
     which: Callable[[str], str | None] | None = None,
     state_dir: Path | None = None,
+    adapters: Iterable[StepSpec] | None = None,
 ) -> StepRegistry:
-    """The engine's built-in steps, in the order they run.
+    """The steps ``aq install`` runs, in the order they run.
 
     Platform, packaging, database and provider adapters extend this registry
     with :meth:`StepRegistry.register`; they never replace it, so every install
-    on every host starts from the same admission and prerequisite checks.
+    on every host starts from the same admission and prerequisite checks.  The
+    database adapter (``noble-apex.6``) is registered here because every
+    install needs a database; *adapters* replaces it in a test that wants the
+    prerequisites without a PostgreSQL step in the way.
     """
+    from .postgres_steps import postgres_steps
+
+    if adapters is None:
+        adapters = postgres_steps(environ=environ, which=which or shutil.which, state_dir=state_dir)
     return StepRegistry(
         (
-            host_step(),
-            python_step(),
-            git_step(which=which),
-            tmux_step(which=which),
-            data_directory_step(environ=environ, path=state_dir),
+            *prerequisite_steps(environ=environ, which=which, state_dir=state_dir),
+            *adapters,
         )
     )
