@@ -98,6 +98,10 @@ Policy changes take effect on the next batch. There is no drain to wait for.
 
 ## Watch a batch happen
 
+`aq integration status <project>` reports development publication receipts and
+pending writes. It does not require GitHub App bindings or strict train rollout
+configuration: development mode uses ordinary Git, including local origins.
+
 Let the interval fire, or ask for a sweep now:
 
 ```bash

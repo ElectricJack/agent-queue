@@ -410,6 +410,51 @@ async def test_development_status_does_not_report_strict_policy_missing(setup):
     assert status["policy"]["validation"] == "focused"
 
 
+@pytest.mark.parametrize("pending", [False, True])
+async def test_control_status_uses_development_publication_blockers(setup, pending):
+    from unittest.mock import AsyncMock
+
+    from src.database.tables import development_deliveries
+    from src.integration.controls import IntegrationControlService
+
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "done")
+    await service.sweep("p")
+    if pending:
+        async with db.immediate() as conn:
+            await conn.execute(update(development_deliveries).where(
+                development_deliveries.c.project_id == "p",
+                development_deliveries.c.state == "delivered",
+            ).values(state="publishing"))
+    strict_preflight = AsyncMock(return_value=("repository_binding_failed",))
+    controls = IntegrationControlService(db, external_preflight=strict_preflight)
+    status = await controls.status("p")
+    strict_preflight.assert_not_awaited()
+    assert status["ready"] is not pending
+    assert {b["code"] for b in status["blockers"]} == (
+        {"publication_pending"} if pending else set()
+    )
+    assert status["deliveries"]
+    assert status["blocker_digest"].startswith("sha256:")
+
+
+async def test_control_status_keeps_strict_preflight_outside_development(setup):
+    from unittest.mock import AsyncMock
+
+    from src.integration.controls import IntegrationControlService
+
+    db, _service, _source, _remote, _repo = setup
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="disabled",
+            hierarchical_integration_desired_mode="disabled",
+        ))
+    strict_preflight = AsyncMock(return_value=("repository_binding_failed",))
+    status = await IntegrationControlService(db, external_preflight=strict_preflight).status("p")
+    strict_preflight.assert_awaited_once_with("p", "r")
+    assert "repository_binding_failed" in {b["code"] for b in status["blockers"]}
+
+
 @pytest.mark.parametrize("repository", [None, "r", "other"])
 async def test_development_task_explanation_uses_publisher_repository_rules(setup, repository):
     from src.integration.status import IntegrationStatusService
