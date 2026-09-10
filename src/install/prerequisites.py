@@ -67,7 +67,11 @@ def host_step() -> StepSpec:
     )
 
 
-def python_step(*, version_info: tuple[int, ...] | None = None) -> StepSpec:
+def python_step(
+    *,
+    version_info: tuple[int, ...] | None = None,
+    depends_on: tuple[str, ...] = (STEP_HOST,),
+) -> StepSpec:
     """Check the interpreter running the installer."""
     observed = tuple(version_info or sys.version_info[:3])
 
@@ -93,7 +97,7 @@ def python_step(*, version_info: tuple[int, ...] | None = None) -> StepSpec:
         title="Check the Python interpreter",
         description=f"AQ requires Python {'.'.join(str(p) for p in MINIMUM_PYTHON)} or newer.",
         run=run,
-        depends_on=(STEP_HOST,),
+        depends_on=depends_on,
     )
 
 
@@ -106,6 +110,7 @@ def command_step(
     description: str = "",
     capability: str | None = None,
     which: Callable[[str], str | None] | None = None,
+    depends_on: tuple[str, ...] = (STEP_HOST,),
 ) -> StepSpec:
     """Build a read-only "is this executable on PATH?" prerequisite step.
 
@@ -150,13 +155,17 @@ def command_step(
         title=title,
         description=description,
         run=run,
-        depends_on=(STEP_HOST,),
+        depends_on=depends_on,
         capability=capability,
         verify=lambda context: lookup(command) is not None,
     )
 
 
-def git_step(*, which: Callable[[str], str | None] | None = None) -> StepSpec:
+def git_step(
+    *,
+    which: Callable[[str], str | None] | None = None,
+    depends_on: tuple[str, ...] = (STEP_HOST,),
+) -> StepSpec:
     return command_step(
         STEP_GIT,
         "git",
@@ -167,10 +176,15 @@ def git_step(*, which: Callable[[str], str | None] | None = None) -> StepSpec:
             "default": "Install Git (macOS: `xcode-select --install` or `brew install git`).",
         },
         which=which,
+        depends_on=depends_on,
     )
 
 
-def tmux_step(*, which: Callable[[str], str | None] | None = None) -> StepSpec:
+def tmux_step(
+    *,
+    which: Callable[[str], str | None] | None = None,
+    depends_on: tuple[str, ...] = (STEP_HOST,),
+) -> StepSpec:
     return command_step(
         STEP_TMUX,
         "tmux",
@@ -182,6 +196,7 @@ def tmux_step(*, which: Callable[[str], str | None] | None = None) -> StepSpec:
             "default": "Install tmux (macOS: `brew install tmux`).",
         },
         which=which,
+        depends_on=depends_on,
     )
 
 
@@ -265,6 +280,9 @@ def default_registry(
     Platform, packaging, database and provider adapters extend this registry
     with :meth:`StepRegistry.register`; they never replace it, so every install
     on every host starts from the same admission and prerequisite checks.
+    :func:`src.install.registry.build_registry` is what composes those steps
+    with the adapter for the host actually being installed, and is what
+    ``aq install`` runs.
     """
     return StepRegistry(
         (

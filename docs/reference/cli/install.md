@@ -9,11 +9,13 @@ on every supported host.
 It is the only `aq` command that expects **no running daemon** — it runs the
 engine in-process and talks to nothing over the network.
 
-> **Status.** The engine, the platform matrix and the built-in prerequisite
-> steps ship today. The steps that install WSL, Homebrew, PostgreSQL and the
-> agent CLIs are being added by the remaining install-and-onboarding tasks;
-> `aq install --list-steps` always prints what this build actually knows how
-> to do.
+> **Status.** The engine, the platform matrix, the built-in prerequisite steps
+> and the **macOS** bootstrap ship today. The steps that install WSL,
+> PostgreSQL and the agent CLIs are being added by the remaining
+> install-and-onboarding tasks; `aq install --list-steps` always prints what
+> this build actually knows how to do **on the host you run it on** — the
+> registry is composed for the detected host, so a Mac lists the `macos.*`
+> steps and a WSL2 host does not.
 
 ## Usage
 
@@ -106,6 +108,36 @@ existing code is never reassigned.
 `aq install --list-steps --json` prints `{"schema_version": 1, "steps": [...]}`
 with each step's `id`, `title`, `description`, `depends_on`, `capability`,
 `mutating`, `owner` and `input_schema_version`.
+
+## macOS
+
+On macOS the registry gains the platform adapter's steps, which run before the
+generic prerequisite checks — the adapter installs what the engine then
+verifies.
+
+| Step | What it does | When it stops |
+| --- | --- | --- |
+| `macos.architecture` | Confirms the shell is native. Reads `sysctl.proc_translated` and `hw.optional.arm64`, so an x86_64 shell on Apple-Silicon hardware is caught even when `uname -m` says `x86_64`. | `failed` under Rosetta, naming `arch -arm64` and the Get Info toggle. AQ does not support a Rosetta-based installation. |
+| `macos.developer-tools` | Checks the Xcode Command Line Tools with `xcode-select -p`. | `needs_user` when absent (`xcode-select --install` opens a dialog a human has to accept) or when the selected developer directory is missing (`sudo xcode-select --reset`). |
+| `macos.homebrew` | Finds Homebrew at its **real** prefix: `HOMEBREW_PREFIX`, then `PATH`, then `/opt/homebrew` (Apple Silicon) and `/usr/local` (Intel). Records the prefix and version. | `needs_user` with Homebrew's official install command when it is absent — that installer asks for an administrator password, which `aq install` never types. `failed` when the only Homebrew is the Intel build on an Apple-Silicon Mac, or when the prefix is not writable by this user (with Homebrew's `chown` repair). |
+| `macos.shell-path` | *Mutating.* Appends one marked block containing Homebrew's documented `eval "$(<prefix>/bin/brew shellenv)"` line to the login file of the invoking user's shell (`~/.zprofile`, `~/.bash_profile`, `~/.profile`). | `needs_user` for a shell it does not edit (fish, tcsh), quoting the line to add rather than guessing that shell's syntax. Skipped when consent is declined. |
+| `macos.packages` | *Mutating.* `brew install`s the prerequisites that are missing (`tmux`, `git`). Anything already on `PATH` is left alone. | `failed` with the formula, the tail of Homebrew's output and the command to rerun by hand. |
+| `macos.launch-services` | Checks that the invoking user's `launchd` domain is reachable, which is what `brew services` needs to install a service that starts at login. | `skipped` — not failed — in a session without one (a plain SSH login), explaining that a service will run now but not at login. |
+| `macos.python-runtime` | Refuses to continue when the installer is running on `/usr/bin/python3`. | `failed`, not retryable, pointing at `brew install python@3.12`. AQ never modifies the macOS system Python: it is externally managed and macOS updates replace it. |
+
+Consequences worth knowing:
+
+* Nothing here enters a password or drives a GUI. Homebrew's installer and
+  `xcode-select --install` are human checkpoints that the run resumes past.
+* A formula this run installed lives in `<prefix>/bin`, which is on the *next*
+  shell's `PATH`. `prereq.git` and `prereq.tmux` look inside the Homebrew
+  prefix as well as on `PATH`, so one run both installs and verifies.
+* Apple Silicon is the supported tier and Intel is the compatibility tier; the
+  adapter never assumes `/opt/homebrew`, and `macos.architecture` names which
+  one it observed.
+* A Mac that already has Homebrew, the Command Line Tools and tmux runs the
+  same steps and installs nothing — every macOS step is either read-only or
+  guarded by its own verifier.
 
 ## Rerunning, resuming and repair
 
