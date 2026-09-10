@@ -108,8 +108,10 @@ daemon writes the file itself. It is emitted only alongside
 claude.md rather than widening it. When launch policy withholds hook trust
 (including a default supervisor in the vault), AQ does not write its optional
 telemetry hook file. Existing user hook files remain subject to review. If
-the review screen appears, startup fails explicitly instead of reporting the
-menu as a ready composer; AQ does not select a trust option automatically.
+the known review screen appears, AQ selects its explicit “Continue without
+trusting” option, leaving hooks disabled. A review screen without that known
+option fails startup explicitly instead of reporting the menu as a ready
+composer. AQ does not select a trust option automatically.
 
 The events wired today are `SubagentStart` / `SubagentStop`, both of which
 carry `session_id`, `turn_id`, `agent_id`, `agent_type`, `cwd`,

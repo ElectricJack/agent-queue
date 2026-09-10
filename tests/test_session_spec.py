@@ -317,6 +317,27 @@ class TestCodexHookTrust:
         hook_trust_flag="--dangerously-bypass-hook-trust",
     )
 
+    async def test_known_hook_menu_continues_without_trusting(self, builder):
+        from tests.test_tmux_startup_dialogs import _Pane, _provider, _await_ready
+
+        spec = replace(
+            _build(builder, harness=self.CODEX),
+            ready_prompt_prefix="› ", ready_delay_ms=0,
+        )
+        pane = _Pane(lambda p: "› \n" if p.sent else (
+            "Hooks need review\n› 1. Review hooks\n  2. Trust all and continue\n"
+            "  3. Continue without trusting (hooks won't run)\n"
+        ))
+        await _await_ready(_provider(pane, settle=0.1), spec)
+        assert pane.sent == [("3",)]
+
+    def test_unknown_hook_menu_requires_intervention(self, builder):
+        from src.sessions.dialogs import first_match
+
+        spec = _build(builder, harness=self.CODEX)
+        rule = first_match(spec.dialogs, "Hooks need review\n3. Trust all hooks\n")
+        assert rule is not None and rule.quarantine and not rule.keys
+
     def test_the_file_is_written_into_the_work_dir_with_no_settings_flag(self, builder):
         spec = _isolated(builder, harness=self.CODEX)
         by_path = dict(spec.files)

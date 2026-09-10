@@ -509,6 +509,12 @@ class SessionSpecBuilder:
             # Its menu uses the composer glyph, so it must never be accepted
             # as readiness, including with an older customized harness file.
             dialogs = (DialogRule(
+                name="hook-review-skip-optional",
+                pattern=(r"(?m)^\s*Hooks need review\s*$[\s\S]*"
+                         r"^\s*(?:›\s*)?3\. Continue without trusting \(hooks won't run\)\s*$"),
+                is_regex=True,
+                keys=("3",),
+            ), DialogRule(
                 name="hook-review-required",
                 pattern="Hooks need review",
                 keys=(),
