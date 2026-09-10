@@ -13,7 +13,14 @@ Two callables carry the idempotence contract:
     A read-only check of the step's *observable condition*.  The engine calls
     it on a rerun before it calls ``run``, which is how "rerunning is safe and
     does not duplicate resources" is enforced by the engine rather than
-    re-argued in every adapter.
+    re-argued in every adapter.  It returns ``True`` when the condition still
+    holds and ``False`` when it is gone (the engine then runs the step again).
+    A step that is *itself* read-only may instead return the
+    :class:`~src.install.results.StepResult` it observed: the engine adopts it,
+    stamps ``detail["revalidated"]``, and the step's detail survives the rerun
+    instead of being flattened to "still true".  That matters for any detail a
+    reader consumes — the closing summary's data locations and dashboard are
+    built from exactly that.
 ``run``
     The action.  It may mutate only when :attr:`StepSpec.mutating` is true, and
     the engine will not call it in a dry run when it is.
@@ -65,7 +72,9 @@ class StepContext:
 
 
 StepRunner = Callable[[StepContext], StepResult]
-StepVerifier = Callable[[StepContext], bool]
+#: ``True``/``False`` for the observable condition, or the result a read-only
+#: step observed while verifying itself.  See this module's docstring.
+StepVerifier = Callable[[StepContext], bool | StepResult]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +95,8 @@ class StepSpec:
     #: executed in a dry run.
     mutating: bool = False
     consent_prompt: str | None = None
+    #: Read-only revalidation.  Returns a bool, or the ``StepResult`` it
+    #: observed when the step is read-only enough to verify by running.
     verify: StepVerifier | None = None
     owner: str = "engine"
     input_schema_version: int = 1

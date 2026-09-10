@@ -458,6 +458,67 @@ def test_a_completed_step_whose_condition_disappeared_is_executed_again(tmp_path
     assert body.calls == 2, "the condition is gone; the step must run again"
 
 
+def test_a_verifier_may_return_the_result_it_verified_so_detail_survives_a_rerun(tmp_path):
+    """A read-only step verifies by running, and its detail is not flattened.
+
+    The engine's own "already satisfied" result carries nothing but
+    ``{"revalidated": True}``.  Every reader of a step's detail — the closing
+    summary's data locations and dashboard among them — would therefore go
+    empty on the second install, which is what a verifier returning its
+    ``StepResult`` fixes.
+    """
+    body = _Counter("readonly", StepResult.succeeded("readonly", "read", detail={"where": "/data"}))
+    registry = StepRegistry((StepSpec(id="readonly", title="Read-only", run=body, verify=body),))
+
+    first = _run(registry, tmp_path)
+    second = _run(registry, tmp_path)
+
+    assert first.steps[0].detail["where"] == "/data"
+    assert second.plan[0].action is PlanAction.REVALIDATE
+    assert second.steps[0].state is StepState.SUCCEEDED
+    assert second.steps[0].detail["where"] == "/data", "the rerun must report the same detail"
+    assert second.steps[0].detail["revalidated"] is True, "and still say it revalidated"
+
+
+def test_a_verifier_returning_a_failure_is_the_answer_rather_than_a_rerun(tmp_path):
+    """An explicit verdict from the verifier is not a missing condition."""
+    ran = _Counter("v")
+
+    def verify(context):
+        return StepResult.failed("v", "the installed copy is broken", "Reinstall it.")
+
+    registry = StepRegistry((StepSpec(id="v", title="V", run=ran, verify=verify),))
+    _run(registry, tmp_path)
+    result = _run(registry, tmp_path)
+
+    assert result.outcome is InstallOutcome.FAILED
+    assert result.steps[0].summary == "the installed copy is broken"
+    assert "revalidated" not in result.steps[0].detail
+    assert ran.calls == 1, "an explicit failure must not re-execute the step"
+
+
+def test_a_verifier_that_reports_another_step_is_an_adapter_bug(tmp_path):
+    """The same shape check ``run`` gets, so a mistyped id names its owner."""
+    registry = StepRegistry(
+        (
+            StepSpec(
+                id="v",
+                title="V",
+                run=_Counter("v"),
+                verify=lambda context: StepResult.succeeded("other", "wrong step"),
+                owner="onboarding",
+            ),
+        )
+    )
+    _run(registry, tmp_path)
+    result = _run(registry, tmp_path)
+
+    assert result.outcome is InstallOutcome.FAILED
+    assert "results for 'other'" in result.steps[0].summary
+    assert "onboarding" in (result.steps[0].remediation or "")
+    assert result.steps[0].retryable is False
+
+
 def test_a_verifier_that_raises_is_a_failure_with_a_restart_instruction(tmp_path):
     def boom(context):
         raise OSError("permission denied")

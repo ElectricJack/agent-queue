@@ -393,6 +393,41 @@ def test_the_human_summary_says_where_data_lives_and_how_to_open_the_dashboard(
     assert "Next" in result.output
 
 
+def test_a_rerun_prints_the_same_summary_as_the_first_install(install_home, wizard_registry):
+    """The reported defect: the second run's summary sections were empty.
+
+    ``render_summary`` prints no heading when there is nothing under it, so a
+    rerun whose ``config.check`` reported only "still satisfied" silently lost
+    the whole "Where AQ stores your data" section.
+    """
+    first = _invoke("--non-interactive", "--yes")
+    second = _invoke("--non-interactive", "--yes")
+
+    assert second.exit_code == first.exit_code
+    assert "Where AQ stores your data" in second.output
+    assert "Dashboard" in second.output
+
+
+def test_a_rerun_carries_the_locations_into_the_machine_readable_summary(
+    install_home, wizard_registry
+):
+    _invoke("--non-interactive", "--yes", "--json")
+    payload = _payload(_invoke("--non-interactive", "--yes", "--json"))
+
+    actions = {row["step_id"]: row["action"] for row in payload["plan"]}
+    assert actions["config.check"] == "revalidate"
+    labels = {entry["label"] for entry in payload["onboarding"]["locations"]}
+    assert {"Configuration", "Vault", "Worktrees"} <= labels
+
+
+def test_a_repair_reports_the_same_locations_a_first_install_did(install_home, wizard_registry):
+    first = _payload(_invoke("--non-interactive", "--yes", "--json"))
+    repaired = _payload(_invoke("--non-interactive", "--yes", "--repair", "--json"))
+
+    assert repaired["onboarding"]["locations"] == first["onboarding"]["locations"]
+    assert repaired["onboarding"]["locations"] != []
+
+
 def test_the_machine_readable_result_carries_the_same_summary(install_home, wizard_registry):
     result = _invoke("--non-interactive", "--yes", "--json")
 
