@@ -539,11 +539,15 @@ class TestClaimLatency:
         guards, and they are the larger cost.  A statement on an
         already-held connection was 0.54 ms on the box this was measured on
         (2026-09-09, PostgreSQL 18, load ~7-10); a ``begin()`` around the
-        same statement was 3.38 ms, of which ``pool_pre_ping`` (enabled in
-        ``create_postgres_engine``) is 1.56 ms -- SQLAlchemy's asyncpg
-        pre-ping opens and rolls back a transaction to stay pgbouncer-safe,
-        so it is three round trips, not one.  Ten transactions is therefore
-        ~34 ms of the round trip before any row is read.
+        same statement was 3.38 ms.  1.56 ms of that was ``pool_pre_ping``,
+        which ``create_postgres_engine`` used to enable unconditionally --
+        SQLAlchemy's asyncpg pre-ping opens and rolls back a transaction to
+        stay pgbouncer-safe, so it is three round trips, not one.  It is now
+        ``database.pre_ping: local`` by default (a free ``is_closed()`` check
+        at checkout instead), which takes a pooled transaction to ~1.8 ms and
+        the ten transactions below to ~18 ms rather than ~34 ms.  Either way
+        the floor the latency test derives is measured on the box rather
+        than assumed here.
 
         The eight claim transactions, in order:
         ``get_session_with_profile``, ``touch_session_activity`` and

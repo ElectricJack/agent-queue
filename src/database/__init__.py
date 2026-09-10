@@ -72,7 +72,11 @@ def create_database(config: AppConfig) -> DatabaseBackend:
         )
     logger.info("database url=%s", redact_dsn(db_url))
     return PostgreSQLDatabaseAdapter(
-        db_url, config.database.pool_min_size, config.database.pool_max_size
+        db_url,
+        config.database.pool_min_size,
+        config.database.pool_max_size,
+        pre_ping=config.database.pre_ping,
+        pool_recycle=config.database.pool_recycle_seconds,
     )
 
 

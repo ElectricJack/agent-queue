@@ -991,6 +991,36 @@ def is_postgres_url(url: str) -> bool:
     return str(url or "").startswith(POSTGRES_URL_SCHEMES)
 
 
+#: How the pool establishes that a pooled connection is still alive before
+#: handing it to a caller.  This is a latency knob with a resilience cost, so
+#: the vocabulary is closed and the three points on the curve are named:
+#:
+#: ``wire``
+#:     SQLAlchemy's ``pool_pre_ping=True``.  On the asyncpg dialect that is
+#:     *three* round trips per checkout, not one: ``_async_ping`` opens an
+#:     explicit transaction, runs ``;`` and rolls back so the ping stays
+#:     correct under pgbouncer transaction pooling.  Measured at 1.26-1.56 ms
+#:     per pooled transaction on the reference box (see the guide) — real
+#:     money when ``task_claim`` alone takes eight pooled transactions.
+#: ``local``
+#:     Ask the asyncpg connection whether it already knows it is dead
+#:     (``Connection.is_closed()``) and discard it if so.  Zero round trips:
+#:     when the server closes a connection — a restart, an idle timeout, a
+#:     ``pg_terminate_backend`` — the event loop reads the EOF while the
+#:     connection sits idle in the pool and asyncpg marks it closed, so the
+#:     common staleness cases are caught for free.  What it cannot catch is a
+#:     connection that died so recently the loop has not observed it yet, or
+#:     a half-open socket with no FIN; those still raise to the caller.
+#: ``off``
+#:     No liveness check at all.
+#:
+#: ``local`` is the default: it keeps the failure modes an operator actually
+#: hits (server bounce, idle reaper) transparent while spending nothing on
+#: the hot path.  Behind pgbouncer in transaction mode, or on a link where
+#: half-open sockets are a real concern, ``wire`` is the conservative choice.
+POOL_PRE_PING_MODES: tuple[str, ...] = ("off", "local", "wire")
+
+
 @dataclass
 class DatabaseConfig:
     """Database backend configuration via a single URL/DSN.
@@ -1018,6 +1048,14 @@ class DatabaseConfig:
     url: str = ""  # DSN or file path — backend is inferred
     pool_min_size: int = 2
     pool_max_size: int = 10
+    #: One of :data:`POOL_PRE_PING_MODES` — how a pooled connection is checked
+    #: for liveness on checkout.  See that constant for the trade-off.
+    pre_ping: str = "local"
+    #: Retire a pooled connection older than this many seconds at its next
+    #: checkout, so a server-side idle reaper is unlikely to be raced.  The
+    #: check is local (SQLAlchemy compares timestamps), so it costs nothing on
+    #: the wire.  ``0`` disables recycling.
+    pool_recycle_seconds: int = 1800
 
     @property
     def backend(self) -> str:
@@ -1042,6 +1080,18 @@ class DatabaseConfig:
                 errors.append(ConfigError("database", "pool_min_size", "must be >= 1"))
             if self.pool_max_size < self.pool_min_size:
                 errors.append(ConfigError("database", "pool_max_size", "must be >= pool_min_size"))
+            if self.pre_ping not in POOL_PRE_PING_MODES:
+                errors.append(
+                    ConfigError(
+                        "database",
+                        "pre_ping",
+                        f"must be one of {', '.join(POOL_PRE_PING_MODES)}",
+                    )
+                )
+            if self.pool_recycle_seconds < 0:
+                errors.append(
+                    ConfigError("database", "pool_recycle_seconds", "must be >= 0 (0 disables)")
+                )
         return errors
 
 
@@ -3336,6 +3386,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             url=d.get("url", ""),
             pool_min_size=d.get("pool_min_size", 2),
             pool_max_size=d.get("pool_max_size", 10),
+            pre_ping=str(d.get("pre_ping", "local")),
+            pool_recycle_seconds=int(d.get("pool_recycle_seconds", 1800)),
         )
     # Backward compat: if no explicit database section, populate from database_path
     if not config.database.url:

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
+import time
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy import exc as sa_exc
 
 from src.database.engine import (
     _schema_cache_inputs,
@@ -146,3 +149,104 @@ def test_schema_cache_key_covers_the_whole_migration_environment():
 
 
 
+
+class TestConnectionLiveness:
+    """``database.pre_ping`` — what a pooled checkout costs, and what it covers.
+
+    ``create_postgres_engine`` used to pass ``pool_pre_ping=True``
+    unconditionally.  On the asyncpg dialect that is three round trips per
+    checkout, not one (``_async_ping`` opens a transaction, runs ``;`` and
+    rolls back so it stays correct under pgbouncer), which measured 1.26-1.56
+    ms of every pooled transaction the daemon takes — ~15 ms of a single
+    ``task_claim`` + ``release_claim`` round trip, and the same tax on every
+    other path.  The default is now ``local``: ask asyncpg whether it already
+    knows the connection is dead, for free.  These tests pin both halves of
+    that trade — the wiring, and the failure it still has to absorb.
+    """
+
+    #: A DSN good enough to build an engine from.  Nothing here connects.
+    UNCONNECTED = "postgresql://u:p@localhost:5432/does-not-matter"
+
+    def test_local_is_the_default_and_keeps_sqlalchemys_wire_ping_off(self):
+        pool = create_postgres_engine(self.UNCONNECTED).sync_engine.pool
+        assert pool._pre_ping is False
+        assert bool(pool.dispatch.checkout), "local mode installs a checkout listener"
+
+    def test_wire_asks_sqlalchemy_for_the_three_round_trip_ping(self):
+        pool = create_postgres_engine(self.UNCONNECTED, pre_ping="wire").sync_engine.pool
+        assert pool._pre_ping is True
+        assert not bool(pool.dispatch.checkout), "wire mode must not also pay for the local check"
+
+    def test_off_checks_nothing(self):
+        pool = create_postgres_engine(self.UNCONNECTED, pre_ping="off").sync_engine.pool
+        assert pool._pre_ping is False
+        assert not bool(pool.dispatch.checkout)
+
+    def test_an_unknown_mode_falls_back_to_local_rather_than_failing_to_build(self):
+        """Config validation reports the typo; the engine still comes up safe."""
+        pool = create_postgres_engine(self.UNCONNECTED, pre_ping="lcoal").sync_engine.pool
+        assert pool._pre_ping is False
+        assert bool(pool.dispatch.checkout)
+
+    def test_pool_recycle_is_plumbed_and_zero_disables_it(self):
+        assert create_postgres_engine(self.UNCONNECTED).sync_engine.pool._recycle == 1800
+        recycled = create_postgres_engine(self.UNCONNECTED, pool_recycle=60).sync_engine.pool
+        assert recycled._recycle == 60
+        assert create_postgres_engine(self.UNCONNECTED, pool_recycle=0).sync_engine.pool._recycle == -1
+
+    async def test_local_replaces_a_backend_the_server_terminated(self):
+        """The case ``wire`` was being paid for, handled without a round trip."""
+        engine, pid, closed = await _park_a_terminated_connection("liveness_local", "local")
+        assert closed, "asyncpg should have observed the termination while idle in the pool"
+        try:
+            async with engine.begin() as conn:
+                fresh = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+            assert fresh != pid
+        finally:
+            await engine.dispose()
+
+    async def test_off_lets_the_dead_connection_reach_the_caller(self):
+        """The control: without a liveness check the same kill is an error."""
+        engine, _pid, closed = await _park_a_terminated_connection("liveness_off", "off")
+        assert closed
+        try:
+            with pytest.raises(sa_exc.DBAPIError):
+                async with engine.begin() as conn:
+                    await conn.execute(text("SELECT pg_backend_pid()"))
+        finally:
+            await engine.dispose()
+
+
+async def _park_a_terminated_connection(suffix: str, pre_ping: str):
+    """Leave one pooled connection whose backend the server has killed.
+
+    Returns ``(engine, dead pid, asyncpg noticed)``.  The wait is on
+    ``Connection.is_closed()`` rather than a sleep because that flag *is* the
+    thing ``pre_ping: local`` reads: polling it makes the test deterministic
+    instead of a race with the event loop's next read.
+    """
+    dsn = await create_scratch_database(suffix)
+    engine = create_postgres_engine(dsn, pool_max=1, pre_ping=pre_ping)
+
+    parked: list = []
+
+    @event.listens_for(engine.sync_engine, "checkin")
+    def _capture(dbapi_connection, connection_record):
+        parked.append(connection_record.driver_connection)
+
+    async with engine.begin() as conn:
+        pid = (await conn.execute(text("SELECT pg_backend_pid()"))).scalar()
+
+    killer = create_postgres_engine(dsn, pre_ping="off")
+    try:
+        async with killer.begin() as conn:
+            await conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+    finally:
+        await killer.dispose()
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if parked and parked[-1] is not None and parked[-1].is_closed():
+            return engine, pid, True
+        await asyncio.sleep(0.05)
+    return engine, pid, False
