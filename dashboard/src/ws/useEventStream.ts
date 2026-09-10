@@ -7,12 +7,22 @@
  */
 
 import { useEffect, useCallback } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import {
+  DASHBOARD_STATE_BOOTSTRAP_KEY,
+  DASHBOARD_STATE_NAMESPACES,
+  dashboardStateDocumentKey,
+  isDashboardStateNamespace,
+  type DashboardStateDocument,
+} from "../api/dashboardState";
+import type { DashboardStateListResponse } from "../api/client";
 import type { NotifyEvent, TaskMessageEvent, ProposalStatusChangedEvent } from "./types";
 
 const BASE_RECONNECT_MS = 1_000;
 /** Window over which a burst of playbook frames collapses into one refetch. */
 const PLAYBOOK_INVALIDATE_MS = 400;
+/** Dashboard document bursts coalesce independently by QueryClient + address. */
+const DASHBOARD_STATE_INVALIDATE_MS = 100;
 const MAX_RECONNECT_MS = 30_000;
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -25,8 +35,15 @@ type StatusListener = (status: ConnectionStatus) => void;
 let ws: WebSocket | null = null;
 let reconnectDelay = BASE_RECONNECT_MS;
 let currentStatus: ConnectionStatus = "disconnected";
+let connectedGeneration = 0;
 
 let playbookInvalidation: ReturnType<typeof setTimeout> | null = null;
+
+const dashboardStateInvalidations = new WeakMap<
+  QueryClient,
+  Map<string, ReturnType<typeof setTimeout>>
+>();
+const dashboardStateBootstrapGeneration = new WeakMap<QueryClient, number>();
 
 const eventListeners = new Set<Listener>();
 const statusListeners = new Set<StatusListener>();
@@ -55,12 +72,99 @@ export function useRawEventSubscription(listener: (event: NotifyEvent) => void):
 }
 
 function setStatus(s: ConnectionStatus) {
+  if (s === "connected" && currentStatus !== "connected") connectedGeneration += 1;
   currentStatus = s;
   for (const fn of statusListeners) fn(s);
 }
 
+/**
+ * Device-local transport cursors. These are deliberately localStorage-backed:
+ * they describe this browser's WebSocket replay position, are never sent to
+ * the dashboard-state API, and must never become roaming user preferences.
+ */
 const LAST_SEQ_KEY = "aq:ws:last_seq";
 const EPOCH_KEY = "aq:ws:epoch";
+
+interface DashboardStateChange {
+  version: 1;
+  scope: "workspace" | "user";
+  ownerId: string;
+  namespace: keyof typeof DASHBOARD_STATE_NAMESPACES;
+  subject: string | null;
+  revision: number;
+}
+
+function dashboardStateChange(event: NotifyEvent): DashboardStateChange | null {
+  const outer = event as unknown as Record<string, unknown>;
+  let nested: unknown = outer.payload;
+  if (typeof nested === "string") {
+    try {
+      nested = JSON.parse(nested);
+    } catch {
+      return null;
+    }
+  }
+  const raw = nested != null && typeof nested === "object" && !Array.isArray(nested)
+    ? { ...outer, ...(nested as Record<string, unknown>) }
+    : outer;
+  if (
+    raw.version !== 1
+    || (raw.scope !== "workspace" && raw.scope !== "user")
+    || typeof raw.owner_id !== "string"
+    || !isDashboardStateNamespace(raw.namespace)
+    || (raw.subject !== null && typeof raw.subject !== "string")
+    || !Number.isSafeInteger(raw.revision)
+    || (raw.revision as number) < 0
+  ) return null;
+
+  const metadata = DASHBOARD_STATE_NAMESPACES[raw.namespace];
+  if (metadata.scope !== raw.scope) return null;
+  if (metadata.subject === "project" ? !raw.subject : raw.subject !== null) return null;
+  if (raw.scope === "workspace" ? raw.owner_id !== "" : !raw.owner_id) return null;
+
+  return {
+    version: 1,
+    scope: raw.scope,
+    ownerId: raw.owner_id,
+    namespace: raw.namespace,
+    subject: raw.subject,
+    revision: raw.revision as number,
+  };
+}
+
+function scheduleDashboardStateInvalidation(
+  queryClient: QueryClient,
+  change: DashboardStateChange,
+): void {
+  const bootstrap = queryClient.getQueryData<DashboardStateListResponse>(
+    DASHBOARD_STATE_BOOTSTRAP_KEY,
+  );
+  if (change.ownerId !== "" && change.ownerId !== bootstrap?.owner_id) return;
+
+  const queryKey = dashboardStateDocumentKey(change.namespace, change.subject);
+  const cached = queryClient.getQueryData<DashboardStateDocument>(queryKey);
+  const bootstrapped = bootstrap?.documents.find(
+    (document) => document.namespace === change.namespace
+      && (document.subject ?? "") === (change.subject ?? ""),
+  );
+  const heldRevision = Math.max(cached?.revision ?? 0, bootstrapped?.revision ?? 0);
+  if (change.revision <= heldRevision) return;
+
+  let pending = dashboardStateInvalidations.get(queryClient);
+  if (!pending) {
+    pending = new Map();
+    dashboardStateInvalidations.set(queryClient, pending);
+  }
+  const address = JSON.stringify(queryKey);
+  if (pending.has(address)) return;
+  pending.set(address, setTimeout(() => {
+    pending?.delete(address);
+    void queryClient.invalidateQueries(
+      { queryKey, exact: true },
+      { cancelRefetch: false },
+    );
+  }, DASHBOARD_STATE_INVALIDATE_MS));
+}
 
 function loadLastSeq(): number | null {
   try {
@@ -192,12 +296,24 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
 
   // Subscribe to status changes
   useEffect(() => {
-    if (!onStatusChange) return;
-    statusListeners.add(onStatusChange);
+    const handleStatus = (status: ConnectionStatus) => {
+      if (
+        status === "connected"
+        && dashboardStateBootstrapGeneration.get(queryClient) !== connectedGeneration
+      ) {
+        dashboardStateBootstrapGeneration.set(queryClient, connectedGeneration);
+        void queryClient.invalidateQueries(
+          { queryKey: DASHBOARD_STATE_BOOTSTRAP_KEY, exact: true },
+          { cancelRefetch: false },
+        );
+      }
+      onStatusChange?.(status);
+    };
+    statusListeners.add(handleStatus);
     // Fire current status immediately
-    onStatusChange(currentStatus);
-    return () => { statusListeners.delete(onStatusChange); };
-  }, [onStatusChange]);
+    handleStatus(currentStatus);
+    return () => { statusListeners.delete(handleStatus); };
+  }, [onStatusChange, queryClient]);
 
   // Subscribe to events
   const handleEvent = useCallback(
@@ -209,6 +325,12 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
       // The metrics sampler ticks once a second and owns no query cache of
       // its own — the Metrics page subscribes to the raw frame directly.
       if (type.startsWith("metrics.")) return;
+
+      if (type === "dashboard_state.changed.v1") {
+        const change = dashboardStateChange(event);
+        if (change) scheduleDashboardStateInvalidation(queryClient, change);
+        return;
+      }
 
       if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
         // Coalesced: one run emits a frame per step, and refetching both
