@@ -228,8 +228,8 @@ only under `aq integration enable`.
 Keep `default-pipeline` enabled: its per-task reviews supply the exact approval
 evidence trains need, and its spec/proposal rules remain in use. Hierarchy/train
 mode suppresses only its legacy per-branch final-review/merge route. Retire the
-project's `pr-merge-sweep` activation after cutover; keep the template available
-for projects using legacy delivery. `ci-main-sentinel` remains a read-only
+project's `pr-merge-sweep` activation after cutover; the shipped template was
+removed on 2026-09-11 ([software-factory policy](../concepts/factory-policy.md)). `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
 `blocked-task-escalation` must defer integration-owned tasks to operation-level
 recovery instead of generic task recovery or replacement repair budgets.

@@ -53,7 +53,6 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
     "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
-    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",

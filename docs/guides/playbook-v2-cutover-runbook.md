@@ -23,7 +23,7 @@ reviewed. Do not replace those vault files merely to make inventory green.
 
 | Playbook | Scope | Staged evidence | Approval / deployment state |
 |---|---|---|---|
-| `pr-merge-sweep` | `project:agent-queue` | `tests/fixtures/playbooks/v2/pr-merge-sweep/` | Pending a human operator's review. Its live V1 source remains at `projects/agent-queue/playbooks/pr-merge-sweep.md` until V1 admission is closed; import inactive artifact first, then replace the source and activate V2 in the same controlled switch. |
+| `pr-merge-sweep` | `project:agent-queue` | — (retired) | **Retired 2026-09-11** by the [software-factory policy](../concepts/factory-policy.md): its shipped source and staged bundle were removed because it merged clean PRs without required validation beside the configured publisher. Do not import or activate it; retire any installed activation through the guarded activation controls. |
 
 An artifact in this table with a pending review is not a readiness exception.
 It cannot be activated, and it must remain visible to the operator rather than

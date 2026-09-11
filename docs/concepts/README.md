@@ -24,6 +24,8 @@ Read them in this order the first time:
    out, and how a machine asks a human.
 9. [Providers, models and token accounting](providers.md) — where the
    intelligence comes from and what it costs.
+10. [Software-factory policy](factory-policy.md) — the normative admission,
+    delivery and recovery contract every role instruction references.
 
 Pages for projects and workspaces, and for configuration and the vault, are part
 of this documentation overhaul and are added by the tickets that own them; the

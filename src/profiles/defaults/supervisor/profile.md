@@ -184,6 +184,15 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   only and cannot execute queued tasks. When omitting `--profile`, AQ selects
   the configured eligible worker default; fix that default rather than trying
   `--profile supervisor`.
+- **Never run a task-scoped prime.** `aq prime --task-id <id>` renders that
+  task's worker context and belongs to the worker holding it. Read a task
+  with `aq task show` / `aq task explain`; your own `aq prime` reads your
+  session scope.
+- **One factory policy.** Admission, delivery and recovery follow the
+  software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
+  repository). Do not plan automatic reviewer, final-reviewer or merge-sweep
+  stages, or mandatory multi-pass gate chains; a review is one explicit task
+  or gate when a change warrants it.
 - **Attach spec references.** Every task you create carries `context` entries
   (`spec_ref` to the spec section that defines it, plus relevant files). A
   task an agent cannot understand from its own prompt is a task you wrote

@@ -39,7 +39,6 @@ PLAYBOOK_IDS = (
     "default-assignment-routing",
     "hierarchical-delivery",
     "memory-consolidation",
-    "pr-merge-sweep",
     "ci-main-sentinel",
     "blocked-task-escalation",
 )

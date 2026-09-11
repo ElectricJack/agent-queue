@@ -496,10 +496,12 @@ class TestStaticSections:
         assert "aq task create" in body
         assert "--reason" in body
         assert "discovered-from" in body
-        # Sibling placement under the held task's parent is the server default;
-        # the guidance must say so rather than tell workers to pass the epic id.
-        assert "sibling under that same parent by default" in body
-        assert "--parent <your-task-id>" in body
+        # A child of the held task is the server default (bright-falcon);
+        # the guidance must not revive the retired sibling default.
+        assert "child of the task you hold" in body
+        assert "sibling" not in body
+        assert "--parent <id>" in body
+        assert "merely to make your close pass" in body
         assert "--root" in body
         assert "receives a routing gate" in body
         assert "--parent` and `--root` cannot be combined" in body
