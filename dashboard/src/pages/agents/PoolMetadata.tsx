@@ -29,6 +29,18 @@ export function PoolSupplyRow({ pool }: { pool: PoolStatusRow }) {
   );
 }
 
+/** Task-lifecycle sessions that consume a route this pool could have served. */
+export function PoolOutsidePools({ pool }: { pool: PoolStatusRow }) {
+  const outside = pool.outside_pools ?? [];
+  if (outside.length === 0) return null;
+  const summary = outside.map((session) => session.profile_id + " · " + (session.task_id || "no task")).join("\n");
+  return (
+    <span className="block truncate text-[10px] text-amber-300" title={summary}>
+      Outside pools: {outside.length} task-lifecycle session{outside.length === 1 ? "" : "s"} on this route
+    </span>
+  );
+}
+
 /**
  * Which projects a pool's live workers are in, in one line.
  *

@@ -623,6 +623,21 @@ class PoolInstanceStatus(BaseModel):
     quarantine_reason: str | None = None
 
 
+class OutsidePoolSessionStatus(BaseModel):
+    """A live task-lifecycle session shadowing this pool's execution route."""
+
+    session_id: str
+    project_id: str | None = None
+    profile_id: str
+    harness: str
+    intelligence_class: str
+    name: str
+    state: str
+    task_id: str | None = None
+    task_title: str | None = None
+    started_at: float
+
+
 class PoolProjectStatus(BaseModel):
     """Where one pool's workers actually are, in a single project.
 
@@ -684,6 +699,9 @@ class PoolStatusRow(BaseModel):
     #: never pool identity.
     projects: list[PoolProjectStatus] = []
     instances: list[PoolInstanceStatus] = []
+    #: Live task-lifecycle sessions whose harness/class route is also served
+    #: by this pool. They consume project capacity but are not pool supply.
+    outside_pools: list[OutsidePoolSessionStatus] = []
 
 
 class PoolStatusResponse(BaseModel):

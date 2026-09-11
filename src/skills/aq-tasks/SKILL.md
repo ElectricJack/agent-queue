@@ -202,17 +202,17 @@ visible and, while open, blocks that task's successful close. `--parent <id>`
 (an authorised alternative parent) and `--root` (cross-cutting work) are
 deliberate choices, never a way to move required work out of your task's way.
 
-Profile ids below are examples from the shipped worker ladder
-(`worker-<tier>-<level>-<provider>`). Confirm what this install actually has
-with `aq agent list-profiles` (and `aq system list-intelligence-classes` for
-`--intelligence-class`) rather than trusting a literal id from any document —
-omitting `--profile` lets the project default apply, which is usually right.
+Profile ids are installation-specific. Confirm the enabled `lifecycle: pool`
+profiles this install actually has with `aq agent list-profiles` (and classes
+with `aq system list-intelligence-classes`) rather than trusting a literal id
+or ID prefix from any document — omitting `--profile` lets the project default
+apply, which is usually right.
 
 ```bash
 # Ad-hoc task creation.  --reason is required on a worker-filed task and is
 # stored on the discovered-from edge back to the task you hold.
 aq task create --project <pid> --title "..." --description "..." \
-  --profile worker-standard-medium-claude --priority 50 --reason "why this exists"
+  --profile <enabled-pool-profile-id> --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
@@ -220,7 +220,7 @@ aq task create --from-spec <path> --dry-run   # validate first, always
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
-  --profile worker-standard-medium-claude --parent <container_task_id>
+  --profile <enabled-pool-profile-id> --parent <container_task_id>
 
 # Explicitly at project level — the opt-out for cross-cutting work filed from
 # inside an epic's child task.  Mutually exclusive with --parent.

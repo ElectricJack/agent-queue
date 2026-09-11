@@ -1,7 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { XMarkIcon, CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import { PoolInstanceTerminal } from "./AgentTerminal";
-import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
+import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
 import PoolProjects from "./PoolProjects";
 import PoolScaleFields from "./PoolScaleFields";
 import { formatIdle, type PoolEntry } from "./pools";
@@ -57,6 +57,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
               <PoolBadge />
             </div>
             <p className="mt-0.5"><PoolSupplyRow pool={pool} /></p>
+            <PoolOutsidePools pool={pool} />
             <PoolPlacementRow projects={projects} />
             <PoolQuarantine projects={projects} />
             {instances.length > 0 ? (

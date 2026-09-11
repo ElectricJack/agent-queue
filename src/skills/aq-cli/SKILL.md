@@ -139,10 +139,12 @@ aq agent list-profiles                    # the profiles that exist here
 aq system list-intelligence-classes       # the classes that exist here
 ```
 
-Shipped worker defaults are named `worker-<tier>-<level>-<provider>`, e.g.
-`worker-standard-medium-claude`. Shipped intelligence classes are the
-`{fast,standard,deep}-{off,low,medium,high}` ladder. Anything you see in
-an example is an example, not a guarantee that the id exists here.
+Worker profile IDs are installation-specific. For ordinary queued work, prefer
+an enabled `lifecycle: pool` profile from `aq agent list-profiles`; do not
+infer a route from an ID prefix or an example in documentation. Shipped
+intelligence classes are the `{fast,standard,deep}-{off,low,medium,high}`
+ladder. Anything you see in an example is not a guarantee that the id exists
+here.
 
 ## When to reach for a specialized aq-* skill
 

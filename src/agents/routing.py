@@ -13,25 +13,11 @@ from src.intelligence_classes import resolve_class
 from src.sessions.spec import _infer_provider_from_harness, _is_codex_cli
 
 
-#: The generic worker ladder is matched by id prefix rather than enumerated.
-#: Since the provider-explicit rename the shipped ids are
-#: ``worker-<tier>-<level>-<provider>`` (``worker-standard-medium-claude``,
-#: ``worker-deep-high-claude``, …) and an operator's vault carries the whole
-#: tier x level x provider ladder, so no literal set stays complete.  The
-#: ``harness == "claude"`` gate in :func:`_generic_worker_profile` is what
-#: keeps the ``-codex`` / ``-gemini`` siblings provider-bound.
-_GENERIC_WORKER_PREFIX = "worker-"
-
 #: Stage profiles whose bundled capabilities are class-backed the same way a
 #: generic worker's are.  These are single-purpose and stay enumerated.
 _CLASS_CAPABILITY_PROFILES = frozenset({
     "triage", "reviewer", "final-reviewer", "playbook-compiler", "spec-ingest",
 })
-
-
-def _generic_worker_id(profile_id: str) -> bool:
-    """True for any profile id on the generic worker ladder."""
-    return profile_id.startswith(_GENERIC_WORKER_PREFIX)
 
 
 def _value(source, name: str) -> str:
@@ -63,17 +49,24 @@ def resolve_agent_profile(agent, profiles: Mapping):
 
 
 def _generic_worker_profile(profile) -> bool:
-    # Tags are deliberately not used: a provider-specific copy can retain
-    # "generic" tags from its source. Bundled class-backed capabilities use
-    # provider mappings; an explicit copied/custom harness stays binding.
+    # The live worker ladder is operator-owned, so IDs are not a contract.
+    # A class-backed pool profile is the generic worker route.  The original
+    # Claude task-worker templates retain their class-only compatibility path;
+    # a task-lifecycle Codex/Gemini copy remains an explicit execution binding.
+    # Tags are deliberately not used because copied profiles retain them.
     profile_id = _value(profile, "id")
     return (
-        (profile_id in _CLASS_CAPABILITY_PROFILES or _generic_worker_id(profile_id))
+        _value(profile, "lifecycle") in {"pool", "task"}
         and _value(profile, "harness") == "claude"
-        and (
-            bool(_value(profile, "default_class"))
-            or (_generic_worker_id(profile_id) and not _value(profile, "model"))
-        )
+        and bool(_value(profile, "default_class"))
+    ) or (
+        _value(profile, "lifecycle") == "pool"
+        and bool(_value(profile, "harness"))
+        and bool(_value(profile, "default_class"))
+    ) or (
+        profile_id in _CLASS_CAPABILITY_PROFILES
+        and _value(profile, "harness") == "claude"
+        and bool(_value(profile, "default_class"))
     )
 
 

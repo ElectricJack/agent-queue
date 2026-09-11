@@ -268,6 +268,46 @@ class OpsCommandsMixin:
                 continue
             sessions_by_profile.setdefault(session.profile_id, []).append(session)
 
+        # Task-lifecycle sessions are intentionally excluded from sizing, but
+        # silently omitting a live session that consumes the same class and
+        # harness made a zero-busy pool look healthy while all worktree slots
+        # were held elsewhere.  Associate those sessions with every pool that
+        # can serve their execution route without folding them into supply.
+        all_profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        pool_routes: dict[tuple[str, str], list[str]] = {}
+        for key, profile in measurement.profiles.items():
+            harness = str(getattr(profile, "harness", "") or "").strip()
+            default_class = str(getattr(profile, "default_class", "") or "").strip()
+            if harness and default_class:
+                pool_routes.setdefault((harness, default_class), []).append(key.profile_id)
+        outside_by_profile: dict[str, list[dict]] = {}
+        for session in await self.db.list_sessions(lifecycle="task", live_only=True):
+            if view is not None and session.project_id != view:
+                continue
+            profile = all_profiles.get(session.profile_id)
+            harness = str(session.harness or getattr(profile, "harness", "") or "").strip()
+            intelligence_class = str(
+                session.intelligence_class or getattr(profile, "default_class", "") or ""
+            ).strip()
+            matched = pool_routes.get((harness, intelligence_class), [])
+            if not matched:
+                continue
+            task = await self.db.get_task(session.task_id) if session.task_id else None
+            detail = {
+                "session_id": session.id,
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "harness": harness,
+                "intelligence_class": intelligence_class,
+                "name": session.name,
+                "state": session.state,
+                "task_id": session.task_id,
+                "task_title": task.title if task is not None else None,
+                "started_at": session.started_at,
+            }
+            for profile_id in matched:
+                outside_by_profile.setdefault(profile_id, []).append(detail)
+
         pools = []
         for key in sorted(measurement.supply, key=lambda k: k.profile_id):
             sup = measurement.supply[key]
@@ -356,6 +396,7 @@ class OpsCommandsMixin:
                     "ready": ready,
                     "projects": projects,
                     "instances": instances,
+                    "outside_pools": outside_by_profile.get(key.profile_id, []),
                 }
             )
         return {"success": True, "pools": pools}

@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Project
+from src.models import AgentProfile, Project
 from src.orchestrator import Orchestrator
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 from tests.db_fixtures import lease_dsn
@@ -336,9 +336,11 @@ Do the work.
 
 ```json
 {
+  "harness": "fake",
   "lifecycle": "pool",
   "min_active": 1,
-  "max_active": 2
+  "max_active": 2,
+  "default_class": "deep-high"
 }
 ```
 
@@ -722,6 +724,45 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
         "started_at": pytest.approx(now - 30, abs=2),
         "quarantine_reason": None,
     }
+
+
+async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool_handler):
+    """Unpooled work remains visible without inflating pool supply."""
+    import time
+
+    from src.models import SessionRecord, Task, TaskStatus
+
+    now = time.time()
+    await pool_handler.db.create_profile(
+        AgentProfile(
+            id="legacy-deep", name="Legacy deep", lifecycle="task", harness="fake",
+            default_class="deep-high",
+        )
+    )
+    await pool_handler.db.create_task(
+        Task(
+            id="outside-task", project_id=PROJECT_ID, title="Outside", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="legacy-deep",
+        )
+    )
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="task-1", project_id=PROJECT_ID, profile_id="legacy-deep", harness="fake",
+            provider="fake", name="legacy-deep--proj", lifecycle="task", work_dir="/tmp/task-1",
+            epoch="test", instance_token="token", started_at=now - 20, state="running",
+            task_id="outside-task", intelligence_class="deep-high",
+        )
+    )
+
+    row = (await pool_handler._cmd_pool_status({}))["pools"][0]
+
+    assert row["running_busy"] == 0
+    assert row["outside_pools"] == [{
+        "session_id": "task-1", "project_id": PROJECT_ID, "profile_id": "legacy-deep",
+        "harness": "fake", "intelligence_class": "deep-high", "name": "legacy-deep--proj",
+        "state": "running", "task_id": "outside-task", "task_title": "Outside",
+        "started_at": pytest.approx(now - 20, abs=2),
+    }]
 
 
 # ──────────────── pool_status is one row per profile (§6.1) ──────────────

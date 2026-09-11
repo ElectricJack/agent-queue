@@ -6,6 +6,7 @@ Guards the fallback that keeps READY tasks from stalling with
 from __future__ import annotations
 
 from src.profiles.default_selection import select_default_profile_id
+from src.models import AgentProfile
 
 
 def test_prefers_claude_opus():
@@ -17,6 +18,34 @@ def test_prefers_claude_opus():
 def test_prefers_standard_high_pool_over_legacy_defaults():
     assert select_default_profile_id(
         ["standard-high-claude", "standard-high-codex", "claude-opus"]
+    ) == "standard-high-codex"
+
+
+def test_prefers_enabled_standard_medium_pool_from_profile_metadata():
+    assert select_default_profile_id(
+        [
+            AgentProfile(
+                id="standard-medium-claude", name="Standard Claude", harness="claude",
+                default_class="standard-medium", lifecycle="pool",
+            ),
+            AgentProfile(
+                id="worker-standard-medium-claude", name="Legacy", harness="claude",
+                default_class="standard-medium", lifecycle="task",
+            ),
+            "standard-high-codex",
+        ]
+    ) == "standard-medium-claude"
+
+
+def test_disabled_pool_is_not_selected_from_metadata():
+    assert select_default_profile_id(
+        [
+            AgentProfile(
+                id="standard-medium-codex", name="Disabled", harness="codex",
+                default_class="standard-medium", lifecycle="pool", enabled=False,
+            ),
+            "standard-high-codex",
+        ]
     ) == "standard-high-codex"
 
 

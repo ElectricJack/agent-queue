@@ -1256,6 +1256,7 @@ def format_pool_table(pools: list[dict]):
     table.add_column("Start", justify="right")
     table.add_column("Drain", justify="right")
     table.add_column("Ready", justify="right")
+    table.add_column("Outside", justify="right")
     table.add_column(
         "Projects", style="bright_magenta", overflow="fold", min_width=22
     )
@@ -1272,6 +1273,7 @@ def format_pool_table(pools: list[dict]):
             str(row.get("starting", 0)),
             str(row.get("draining", 0)),
             str(row.get("ready", 0)),
+            str(len(row.get("outside_pools", []))),
             _pool_project_summary(row),
         )
 

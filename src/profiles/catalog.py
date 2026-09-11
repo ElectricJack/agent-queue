@@ -11,6 +11,7 @@ refreshes routing eligibility without erasing operator profile choices.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -20,6 +21,10 @@ from typing import Any
 
 from src.install.logins import AuthProbe, login_instructions, provider_logins
 from src.install.platform import PlatformFacts
+from src.profiles.parser import parse_profile
+from src.profiles.retired_defaults import retired_default_ids
+
+logger = logging.getLogger(__name__)
 
 ACTIVATION_FILENAME = "profile-activation.json"
 ACTIVATION_SCHEMA_VERSION = 1
@@ -140,21 +145,39 @@ def refresh_catalog_profiles(
     root = Path(data_dir)
     defaults_root = Path(__file__).with_name("defaults")
     profiles_root = root / "vault" / "agent-types"
-    result = {"created": [], "skipped": [], "inactive": []}
+    retired = retired_default_ids(str(root))
+    existing_routes = _existing_profile_routes(profiles_root)
+    result = {"created": [], "skipped": [], "inactive": [], "retired": [], "duplicates": []}
     for activation in activations:
         profile = activation.profile
         if not activation.active:
             result["inactive"].append(profile.id)
             continue
+        if profile.id in retired:
+            result["retired"].append(profile.id)
+            continue
         destination = profiles_root / profile.id / "profile.md"
         if destination.exists():
             result["skipped"].append(profile.id)
+            continue
+        route = (profile.harness, profile.intelligence_class)
+        if route in existing_routes:
+            result["duplicates"].append(profile.id)
+            logger.info(
+                "catalog profile %s not seeded; %s already serves harness=%s default_class=%s",
+                profile.id, existing_routes[route], profile.harness, profile.intelligence_class,
+            )
             continue
         source = defaults_root / profile.source_profile_id / "profile.md"
         text = source.read_text(encoding="utf-8")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(_materialize_profile(text, profile), encoding="utf-8")
         result["created"].append(profile.id)
+        existing_routes[route] = profile.id
+        logger.info(
+            "catalog profile created: %s (harness=%s default_class=%s)",
+            profile.id, profile.harness, profile.intelligence_class,
+        )
     _write_activation(
         activation_path(root),
         {"schema_version": ACTIVATION_SCHEMA_VERSION,
@@ -169,10 +192,45 @@ def _materialize_profile(template: str, profile: CatalogProfile) -> str:
     text = template.replace(profile.source_profile_id, profile.id)
     text = text.replace('"Claude ·', f'"{title} ·').replace("# Claude ·", f"# {title} ·")
     text = text.replace('"harness": "claude"', f'"harness": "{profile.harness}"')
-    return text.replace(
+    text = text.replace(
         "It ships on the `claude` harness at intelligence class",
         f"It ships on the `{profile.harness}` harness at intelligence class",
     )
+    if profile.harness != "claude":
+        text = text.replace(
+            "resolves to a concrete Anthropic model.",
+            f"resolves to a concrete {profile.harness.title()} model.",
+        )
+        text = text.replace(
+            "A Codex or Gemini equivalent is a\nseparate profile with its own `-codex` / `-gemini` id — repointing this\nprofile's harness would make its id stop describing what actually runs.",
+            "Other harnesses use their own provider-specific profile IDs; repointing this\nprofile's harness would make its id stop describing what actually runs.",
+        )
+    return text
+
+
+def _existing_profile_routes(profiles_root: Path) -> dict[tuple[str, str], str]:
+    """Return the first valid vault profile for each harness/class route.
+
+    Catalog siblings are conveniences, never a reason to recreate an
+    operator's already-working route.  Lifecycle is deliberately excluded:
+    a task-lifecycle profile still proves that this host has an authored
+    harness/class choice and must not be shadowed by generated markdown.
+    """
+    routes: dict[tuple[str, str], str] = {}
+    if not profiles_root.is_dir():
+        return routes
+    for path in sorted(profiles_root.glob("*/profile.md")):
+        try:
+            parsed = parse_profile(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        if not parsed.is_valid:
+            continue
+        harness = str(parsed.config.get("harness") or "").strip()
+        default_class = str(parsed.config.get("default_class") or "").strip()
+        if harness and default_class:
+            routes.setdefault((harness, default_class), parsed.frontmatter.id or path.parent.name)
+    return routes
 
 
 def _write_activation(path: Path, payload: Mapping[str, Any]) -> None:

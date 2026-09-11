@@ -706,6 +706,22 @@ name: Namespaced Worker
         profile = await handler.db.get_profile("test-reviewer")
         assert profile is None
 
+    async def test_delete_catalog_codex_profile_records_a_tombstone(self, handler):
+        """Generated provider siblings must not return on the next install."""
+        from src.profiles.retired_defaults import is_retired
+
+        await handler.execute(
+            "create_profile",
+            {"id": "worker-standard-medium-codex", "name": "Catalog Codex"},
+        )
+
+        result = await handler.execute(
+            "delete_profile", {"profile_id": "worker-standard-medium-codex"},
+        )
+
+        assert result["retired"] is True
+        assert is_retired(handler.config.data_dir, "worker-standard-medium-codex")
+
     async def test_duplicate_detection_via_vault(self, handler):
         """Creating a profile with an existing vault file should fail."""
         await handler.execute(

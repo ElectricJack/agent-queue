@@ -28,9 +28,10 @@ reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 2. ``standard-high-claude``
 3. ``claude-opus``
 4. ``claude-sonnet``
-5. ``worker-standard-medium-claude``
-6. any remaining general-purpose profile, alphabetically by id
-7. any remaining non-supervisor profile, alphabetically by id
+5. an enabled pool profile with ``default_class: standard-medium``
+6. ``worker-standard-medium-claude`` (legacy compatibility)
+7. any remaining general-purpose profile, alphabetically by id
+8. any remaining non-supervisor profile, alphabetically by id
 
 Steps 6 and 7 differ only in whether special-purpose profiles (reviewer,
 planner, triage, …) are eligible: they are a poor default because they
@@ -101,9 +102,10 @@ def select_default_profile_id(
     is deterministic: the same profile set always yields the same answer,
     so the reconciler does not flap between profiles across ticks.
     """
+    values = tuple(profile_ids)
     supplied = {
         profile_id
-        for value in profile_ids
+        for value in values
         for profile_id in (_profile_id(value),)
         if profile_id and _profile_enabled(value)
     }
@@ -126,6 +128,24 @@ def select_default_profile_id(
     if not candidates:
         return None
 
+    # The installed pool ladder is operator-owned and has no stable naming
+    # convention.  Prefer its ordinary lane before historical literal ids:
+    # that keeps omitted task profiles on the durable pull workers rather
+    # than reintroducing a task-lifecycle worker merely because its id sorts
+    # first.  Strings preserve the old compatibility path below because they
+    # carry no lifecycle/default-class metadata.
+    pool_standard = sorted(
+        profile_id
+        for value in values
+        for profile_id in (_profile_id(value),)
+        if profile_id in candidates
+        and _profile_lifecycle(value) == "pool"
+        and _profile_default_class(value) == "standard-medium"
+        and _profile_harness(value)
+    )
+    if pool_standard:
+        return pool_standard[0]
+
     for preferred in PREFERRED_DEFAULT_PROFILE_IDS:
         if preferred in candidates:
             return preferred
@@ -143,3 +163,15 @@ def _profile_id(value: str | Any) -> str:
 
 def _profile_enabled(value: str | Any) -> bool:
     return isinstance(value, str) or bool(getattr(value, "enabled", True))
+
+
+def _profile_lifecycle(value: str | Any) -> str:
+    return "" if isinstance(value, str) else str(getattr(value, "lifecycle", "") or "")
+
+
+def _profile_default_class(value: str | Any) -> str:
+    return "" if isinstance(value, str) else str(getattr(value, "default_class", "") or "")
+
+
+def _profile_harness(value: str | Any) -> str:
+    return "" if isinstance(value, str) else str(getattr(value, "harness", "") or "")
