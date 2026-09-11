@@ -240,9 +240,12 @@ exchange. Columns (schema detail in the implementation spec):
 The delivery engine (a cascade step plus a `message.sent` subscriber) resolves the target
 to a concrete session and picks one of three paths:
 
-1. **Target session idle** → provider `nudge` with a rendered envelope
-   (`[message <id> from <from>] <body>` plus the standing instruction to reply with
-   `aq reply <id>`). A nudge to a sleeping `on_demand` session first **wakes** it
+1. **Target session idle** → provider `nudge` for the first pending message only, as a
+   single line pointing at its durable body (``Handle `aq message status <id> --json`.``);
+   the rest stay pending for later passes. The nudge carries no body and no reply
+   instruction — the supervisor profile teaches `aq reply <msg-id>` for user messages,
+   and internal notices (`task_recovery`, `agent_question`) take no reply. A nudge to a
+   sleeping `on_demand` session first **wakes** it
    (session-runtime start with `--resume`); this is the "wakes on first message" behavior.
 2. **Target session busy (mid-turn)** → do not interrupt. The message waits and is
    nudged on the first cycle that observes the session idle. This *was* a

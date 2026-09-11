@@ -421,8 +421,8 @@ async def test_internal_recovery_nudge_does_not_request_a_user_reply():
         body="question",
     )
     mixed = _render_nudge([notice, user])
-    assert "Reply with `aq reply user-message" in mixed
-    assert "Reply with `aq reply internal" not in mixed
+    assert mixed == "Handle `aq message status internal --json`."
+    assert "question" not in mixed
 
 
 @pytest.mark.parametrize("still_running", [True, "unknown"])
@@ -680,3 +680,27 @@ async def test_incident_hook_is_bound_to_the_event_project_and_operators(env):
     worker = asdict(RequestScope(kind="session", session_id="x", project_id="p"))
     assert "scope" in (await notify(env, _scope=worker))["error"].lower()
     assert not await queued_messages(env)
+
+
+async def test_user_message_nudge_leaves_the_reply_protocol_to_the_supervisor_profile():
+    from pathlib import Path
+
+    from src.messages.delivery import _render_nudge
+    from src.models import Message
+
+    user = Message(
+        id="user-message",
+        project_id=None,
+        from_kind="user",
+        from_id="user",
+        to_kind="session",
+        to_id="supervisor-global",
+        body="question",
+    )
+    # A nudge is a one-line pointer to the durable body and asks no message
+    # for a reply; which messages get an `aq reply` is the profile's to teach.
+    assert _render_nudge([user]) == "Handle `aq message status user-message --json`."
+    profile = Path(__file__).parents[1] / "src/profiles/defaults/supervisor/profile.md"
+    text = " ".join(profile.read_text().split())
+    assert 'Answer user messages with `aq reply <msg-id> "…"`' in text
+    assert "Internal recovery notices need a recovery decision, not an `aq reply`" in text
