@@ -111,20 +111,13 @@ describe("dashboard-state server contract across isolated browsers", () => {
     const server = createFakeDashboardStateServer();
     writeSeed(server);
 
-    // These are stale values from the retired browser-backed implementation.
-    // They must never influence the first server-backed render.
-    window.localStorage.setItem("aq.shell.project-organization", '{"folders":[{"id":"stale"}]}');
-    window.localStorage.setItem("aq:flock:collapsed", "false");
-    window.localStorage.setItem("aq.command-center.graph-density", "compact");
-    window.localStorage.setItem("aq:command-center:expanded-task-ids:v1", '["stale-task"]');
-    window.localStorage.setItem("aq.command-center.graph-positions", "{}");
-
     const laptop = renderHook(useBrowserState, { wrapper: browser(server).wrapper });
     const desktop = renderHook(useBrowserState, { wrapper: browser(server).wrapper });
     await waitFor(() => expectReady(laptop.result.current));
     await waitFor(() => expectReady(desktop.result.current));
 
-    // Load-time values are the shared backend values, never legacy storage.
+    // Load-time values are the shared backend values. That no retired browser
+    // key is read is enforced by tests/test_dashboard_browser_storage.py.
     expect(desktop.result.current.navigation.value.folders?.[0]).toMatchObject({
       id: "shared", name: "Shared work", collapsed: true,
     });
