@@ -1,6 +1,23 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { useLocation, useNavigationType } from "react-router-dom";
 import { useShellPaneStore } from "../panes/store";
 import type { PaneToolbarAction, ShortcutBinding } from "../panes/types";
+
+/**
+ * Where each pane was scrolled, per history entry and pane, so Back / Forward
+ * return to the same place. Module memory: a reload starts at the top.
+ */
+const paneScroll = new Map<string, number>();
+const PANE_SCROLL_LIMIT = 200;
+
+function rememberScroll(key: string, top: number) {
+  paneScroll.delete(key);
+  paneScroll.set(key, top);
+  if (paneScroll.size > PANE_SCROLL_LIMIT) {
+    const oldest = paneScroll.keys().next().value;
+    if (oldest !== undefined) paneScroll.delete(oldest);
+  }
+}
 
 /**
  * Renders whichever pane view is currently open in the shell-pane store.
@@ -14,6 +31,16 @@ export default function ShellPaneHost() {
   // per-view plans land; the setter still needs to be a stable no-op so
   // views can call it without exploding.
   const [, setShortcuts] = useState<ShortcutBinding[]>([]);
+  const location = useLocation();
+  const navigationType = useNavigationType();
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const scrollKey = state.kind === "open"
+    ? `${location.key}|${JSON.stringify([state.view, state.args])}`
+    : null;
+  useLayoutEffect(() => {
+    if (!scrollKey || navigationType !== "POP" || !scroller.current) return;
+    scroller.current.scrollTop = paneScroll.get(scrollKey) ?? 0;
+  }, [scrollKey, navigationType]);
 
   if (state.kind !== "open") {
     return (
@@ -49,7 +76,14 @@ export default function ShellPaneHost() {
           ))}
         </div>
       </div>
-      <div className="flex-1 overflow-auto p-3">
+      <div
+        ref={scroller}
+        data-testid="shell-pane-scroller"
+        onScroll={(event) => {
+          if (scrollKey) rememberScroll(scrollKey, event.currentTarget.scrollTop);
+        }}
+        className="flex-1 overflow-auto p-3"
+      >
         <Component
           args={state.args}
           close={close}

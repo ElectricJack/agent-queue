@@ -75,6 +75,13 @@ under `src/`, tests included. A new key needs a transport justification of the
 same kind in all three places — a remembered UI choice never qualifies. Tests
 need not assert that a feature leaves browser storage alone; the guard covers it.
 
+History-entry state is navigation, not storage. `shell/navigationHistory.tsx`
+records the shell pane each entry showed in that entry's `history.state` (via
+`shell/historyState.ts`, and only when `main.tsx` hands it the window's
+`History`), so Back / Forward — the top-bar buttons, Alt+←/→, ⌘[ / ⌘], or the
+browser's own — put the pane back, even after a reload. It belongs to the one
+entry and dies with the tab; it is not a place for remembered UI choices.
+
 ## Dev / build
 
 ```

@@ -1,14 +1,23 @@
-import { CommandLineIcon, BellIcon } from "@heroicons/react/24/outline";
+import { ArrowLeftIcon, ArrowRightIcon, CommandLineIcon, BellIcon } from "@heroicons/react/24/outline";
 import { useRightSurface } from "./useRightSurface";
 import { useShellPaneStore } from "../panes/store";
 import { useAllOpenGates } from "../api/hooks";
 import { usePaletteState } from "./palette/paletteState";
 import { useShellPreferences } from "./useShellPreferences";
+import { useNavigationHistory } from "./navigationHistory";
+import { detectPlatform } from "./hotkeys/usePlatform";
+
+const HISTORY_BUTTON =
+  "rounded p-2 text-gray-400 hover:bg-gray-800 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent";
 
 export default function TopBar() {
   const { kind, setKind } = useRightSurface();
   const pane = useShellPaneStore();
   const palette = usePaletteState();
+  const history = useNavigationHistory();
+  const mac = detectPlatform().modifier === "cmd";
+  const backKey = mac ? "⌘[" : "Alt+←";
+  const forwardKey = mac ? "⌘]" : "Alt+→";
   const { data: gates } = useAllOpenGates();
   const humanGates = (gates ?? []).filter((g) => g.gate_type === "human").length;
   const preferences = useShellPreferences();
@@ -46,6 +55,30 @@ export default function TopBar() {
             {preferenceProblem.label}
           </span>
         )}
+        <button
+          type="button"
+          aria-label="Back"
+          onClick={history.back}
+          disabled={!history.canGoBack}
+          className={HISTORY_BUTTON}
+          title={history.canGoBack
+            ? `Back to ${history.backTitle ?? "the previous view"} (${backKey})`
+            : "Back"}
+        >
+          <ArrowLeftIcon className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="Forward"
+          onClick={history.forward}
+          disabled={!history.canGoForward}
+          className={HISTORY_BUTTON}
+          title={history.canGoForward
+            ? `Forward to ${history.forwardTitle ?? "the next view"} (${forwardKey})`
+            : "Forward"}
+        >
+          <ArrowRightIcon className="h-4 w-4" />
+        </button>
         <button
           onClick={palette.toggle}
           className="rounded p-2 text-gray-400 hover:bg-gray-800"
