@@ -539,7 +539,6 @@ worktrees:
   enabled: false
 
 work_graph:
-  blocked_state_authoritative: false
   gate_sweep_interval_seconds: 5
   conditional_autoclose: true
   container_sweep_interval_seconds: 5

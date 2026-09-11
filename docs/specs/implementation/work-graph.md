@@ -218,40 +218,19 @@ await self._sweep_gates()
 - `src/api/websocket.py::WebSocketManager.handle`: parse `after_seq` from the query string; replay persisted rows via `get_recent_events(after_id=…)` in pages, then bridge to live mode. Live mode gains a `seq` field: `log_event` (event_queries line 15) returns the inserted id, and emitters thread it into bus payloads where both exist; pure `notify.*` UI events without a DB row carry `seq: null` (documented — replay covers the persisted stream, which is the durable one).
 - `src/event_schemas.py`: register `task.blocked`, `task.unblocked`, `task.skipped_conditional`, `dependency.added`, `dependency.removed`, `label.added`, `label.removed`, `gate.created`, `gate.resolved`, `gate.expired`.
 
-## 9. Config and rollout flags
+## 9. Readiness authority
 
-New dataclasses in `src/config.py` (wired into `AppConfig`, line 804; hot-reloadable like `monitoring`):
+`tasks.is_blocked` is the canonical readiness projection. Dependency, parent-child, and gate writes recompute it atomically; the promotion cascade consumes that one value and no longer carries a legacy dependency scan, shadow comparison, or authority toggle.
 
 ```yaml
 state_machine:
-  enforce: false          # flip to true after a warning-free observation window
+  enforce: false          # independent lifecycle enforcement rollout
 work_graph:
-  blocked_state_authoritative: false   # shadow mode: recompute + compare with legacy scan, log divergence
-  gate_sweep_interval_seconds: 30      # pr/ci polling stays on the 60s approval throttle
-  conditional_autoclose: true          # cascade auto-close of dead conditional tasks
+  gate_sweep_interval_seconds: 30
+  conditional_autoclose: true
 ```
 
-Rollout order: (1) migrations + recompute in shadow mode → (2) flip `blocked_state_authoritative` after ≥1 week of zero-divergence logs → (3) gates live (additive; nothing uses them until created) → (4) flip `state_machine.enforce` after the warning audit. Rollback for (2) is a config flip — the legacy scan path is kept until the collapse phase.
-
-### 9.1 Before the flip — `blocked_state_authoritative`
-
-Three gaps are known, reproduced, and **deliberately not fixed in WG-1/WG-2**. None blocks merging the projection in shadow mode: while the flag is `false` the legacy scan decides and the projection is only observed. All three become live the moment the flag flips, so each needs a decision — and the first two need a migration — as part of step (2) of the rollout order above.
-
-**P2-4 — in-flight legacy plan subtasks 2..n have no `parent-child` edge.** The old plan wiring created exactly one `blocks` edge (subtask 1 → plan task); subtasks 2..n were withheld by the `is_plan_subtask` special case in `_check_defined_tasks`, not by an edge. The data migration (`a1c7f3e08b42`) retypes edges that *exist*, so it converts that one edge and leaves subtasks 2..n edgeless. Under the legacy scan they stay withheld (the special case still runs). Under the projection they are unblocked — **unapproved plan subtasks would start running** at flip time.
-
-Fix, as part of the flip: an `INSERT … SELECT` creating a `parent-child` edge for every `tasks` row with `is_plan_subtask = 1` and a non-null `parent_task_id` that has no `parent-child` edge to that parent, followed by `recompute_all_blocked()`. Must be written with the same PK-collision guard as §2's retype (`NOT EXISTS` on the target `(task_id, depends_on_task_id, 'parent-child')`).
-
-**P2-5 — a non-released plan parent frees its children.** `_WITHHOLDING_PARENT_STATUSES` is `{DEFINED, AWAITING_PLAN_APPROVAL}` *(landed note: now just `{DEFINED}` — the approval status was removed)*; every other parent status counts as released, so a plan parent that is BLOCKED, FAILED, READY or PAUSED no longer withholds its children. Design §3.1 sanctions this — "released" is defined as *not* withholding, and the withholding set is the closed list — but "the children of a failed plan start running" is a behaviour change that deserves an explicit yes/no rather than arriving as a side effect of a config flip. Decide at flip time whether FAILED/BLOCKED parents join the withholding set. (The legacy scan's answer was narrower: it treated only `AWAITING_PLAN_APPROVAL` as withholding and IN_PROGRESS as satisfied, and had no opinion at all about a FAILED parent.)
-
-**P2-6 — PostgreSQL: concurrent sibling completions can leave a fan-in waiter stale.** Two transactions each completing a different `parent-child` child of the same container, both recomputing the `waits-for` waiter, can both read the *other* child as not-yet-COMPLETED: the correlated `EXISTS` lives in the `SET` expression and evaluates under a statement snapshot taken before the other transaction committed. The waiter is then left `is_blocked = 1` with every child COMPLETED. §3.2's "the single UPDATE takes row locks in one statement" covers write ordering between the two, not subquery visibility. Impossible on SQLite (single writer, WAL).
-
-Fix at flip time: take the row locks explicitly before the projection UPDATE —
-
-```sql
-SELECT id FROM tasks WHERE id IN (:ordered) FOR UPDATE   -- PG only; canonical sorted order
-```
-
-— which forces the second transaction to re-read after the first commits, plus a `postgres`-marked test driving two concurrent sibling completions against one fan-in waiter (§11 already budgets that test). Until then, `recompute_all_blocked()` (`aq doctor`) is the repair path; it is now fast enough to run routinely (§11 perf note).
+The former shadow rollout notes are historical. No new data migration or compatibility framework is introduced by this collapse: current graph writes already maintain the projection, and terminal/attention fences remain explicit in the cascade.
 
 ## 10. Phase checklist
 

@@ -490,7 +490,7 @@ def type_from_schema(schema: Any) -> ValueType:
 def type_from_annotation(annotation: Any) -> ValueType:
     """A ``ValueType`` for a Pydantic field annotation."""
     from types import UnionType
-    from typing import Union, get_args, get_origin
+    from typing import Literal, Union, get_args, get_origin
 
     origin = get_origin(annotation)
     if origin in (Union, UnionType):
@@ -500,6 +500,9 @@ def type_from_annotation(annotation: Any) -> ValueType:
             return NULL
         joined = join_types([type_from_annotation(arg) for arg in args])
         return joined.with_nullable(joined.nullable or nullable)
+    if origin is Literal:
+        values = get_args(annotation)
+        return join_types([type_from_annotation(type(value)) for value in values])
     if origin in (list, tuple, set, frozenset):
         args = get_args(annotation)
         return ValueType("array", item_type=type_from_annotation(args[0]) if args else UNKNOWN)

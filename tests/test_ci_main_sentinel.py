@@ -84,12 +84,14 @@ def test_artifact_observes_then_repairs_or_escalates() -> None:
         "created": done, "reused": done, "rejected": failed, "runtime_error": failed
     }
 
-    assert escalate.command == "gate_create"
+    assert escalate.command == "escalation_create"
     inputs = {name: value.model_dump(mode="json") for name, value in escalate.inputs.items()}
-    assert inputs["gate_type"] == {"type": "literal", "value": "human"}
-    assert inputs["await_id"]["path"] == "escalation_key"
+    assert inputs["source_kind"] == {"type": "literal", "value": "core"}
+    assert inputs["source_identity"]["path"] == "escalation_key"
+    assert inputs["incident_key"]["path"] == "escalation_key"
+    assert inputs["severity"] == {"type": "literal", "value": "high"}
     assert escalate.transitions == {
-        "created": done, "reused": done, "skipped": done, "rejected": failed, "runtime_error": failed
+        "created": done, "reused": done, "rejected": failed, "runtime_error": failed
     }
     assert definition.steps[done].outcome == "completed"
     assert definition.steps[failed].outcome == "failed"
@@ -117,7 +119,7 @@ def test_every_command_and_outcome_resolves_against_the_live_registry() -> None:
         for outcome in step.transitions:
             assert outcome == "runtime_error" or outcome in declared, (command, outcome)
     assert set(definition.compiled_against.commands) == {
-        "ci_baseline_status", "ensure_task", "gate_create"
+        "ci_baseline_status", "ensure_task", "escalation_create"
     }
     assert definition.compiled_against.profiles == {}
 
@@ -139,5 +141,5 @@ def test_artifact_is_canonical_bound_to_the_source_and_its_manifest() -> None:
     assert manifest["source_sha256"] == source_digest(source)
     assert manifest["contract_fingerprint"] == contract_fingerprint(definition)
     assert manifest["capabilities_granted"]["aq_commands"] == [
-        "ci_baseline_status", "ensure_task", "gate_create"
+        "ci_baseline_status", "ensure_task", "escalation_create"
     ]

@@ -117,7 +117,7 @@ Blockedness is deliberately **not transitive through blockedness**: an open (non
   - "Has a blocking edge" alone cannot tell a graph-BLOCKED task from a terminal close: every child of a container carries a `parent-child` edge. A transition into BLOCKED with a **terminal context** (`session_close_hard_failure`, `max_retries`, `session_close_pipeline_stop`, `timeout`, `stop_task`) therefore writes a `blocked_terminal = <context>` row in `task_metadata` inside the same transaction, and any transition out of BLOCKED (restart, reopen, supervisor recovery, admin skip) deletes it. The cascade drops marked rows from the BLOCKED candidate set before either decider runs, so a hard failure is terminal for hierarchical tasks too; only an explicit restart/reopen brings one back. `aq task explain` reports the mark as `blocked_terminal`.
 - The scheduler skips `READY ∧ is_blocked = 1` — closing the "edge added after READY" hole.
 - `aq project ready` = `status = READY ∧ is_blocked = 0`, ordered `(priority, created_at)`, with label filters.
-- During rollout a shadow mode runs both the legacy scan and the projection and logs divergence before the projection becomes authoritative (flag `work_graph.blocked_state_authoritative`).
+- `tasks.is_blocked` is the sole readiness authority; the cascade does not retain a legacy dependency scan or rollout toggle.
 
 ## 5. Gates
 

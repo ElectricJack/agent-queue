@@ -1989,16 +1989,11 @@
     "work_graph": {
       "additionalProperties": false,
       "default": {
-        "blocked_state_authoritative": false,
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
         "gate_sweep_interval_seconds": 30
       },
       "properties": {
-        "blocked_state_authoritative": {
-          "default": false,
-          "type": "boolean"
-        },
         "conditional_autoclose": {
           "default": true,
           "type": "boolean"

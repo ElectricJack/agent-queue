@@ -2679,9 +2679,7 @@ class TestTerminalBlockedIsNotRecovered:
         assert refreshed.is_blocked is False
         return refreshed
 
-    @pytest.mark.parametrize("authoritative", [False, True])
-    async def test_hard_failed_child_stays_blocked_across_cycles(self, orch, authoritative):
-        orch.config.work_graph.blocked_state_authoritative = authoritative
+    async def test_hard_failed_child_stays_blocked_across_cycles(self, orch):
         await self._hard_close_child_of_released_container(orch)
 
         for _ in range(3):
@@ -2706,7 +2704,6 @@ class TestTerminalBlockedIsNotRecovered:
         """The recovery rule keeps working for a BLOCKED task with a real graph reason."""
         from src.models import DepType
 
-        orch.config.work_graph.blocked_state_authoritative = True
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
             Task(id="t-dep", project_id="p-1", title="Dep", description="d", status=TaskStatus.READY)
@@ -2734,11 +2731,9 @@ class TestTerminalBlockedIsNotRecovered:
 class TestMergeConflictBlockedIsNotRecovered:
     """A merge-conflict BLOCKED child must not re-enter the ready frontier."""
 
-    @pytest.mark.parametrize("authoritative", [False, True])
-    async def test_merge_conflict_child_stays_blocked_across_cycles(self, orch, authoritative):
+    async def test_merge_conflict_child_stays_blocked_across_cycles(self, orch):
         from src.models import DepType
 
-        orch.config.work_graph.blocked_state_authoritative = authoritative
         await _create_project_with_workspace(orch.db)
         await orch.db.create_task(
             Task(
