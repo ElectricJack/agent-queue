@@ -8,10 +8,13 @@ survive reseed on next startup.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
+from src.commands.task_commands import _check_capability_escalation
+from src.models import AgentProfile
 from src.profiles.capabilities import CapabilityPolicy
-from src.profiles.parser import parse_profile
+from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
@@ -107,6 +110,22 @@ def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
         "session_logs", "session_peek",
     ):
         assert policy.allows_aq_command(command)
+
+
+def test_seeded_supervisor_can_delegate_to_shipped_standard_and_deep_workers(tmp_path):
+    """Delegation checks every namespace; plugin grants do not imply AQ grants."""
+    ensure_default_profiles(str(tmp_path))
+    profile_fields = {field.name for field in fields(AgentProfile)}
+
+    def load(profile_id):
+        parsed = parse_profile(_vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8"))
+        values = parsed_profile_to_agent_profile(parsed)
+        return AgentProfile(**{key: value for key, value in values.items() if key in profile_fields})
+
+    supervisor = load("supervisor")
+    for profile_id in ("worker-standard-medium-claude", "worker-deep-high-claude"):
+        worker = load(profile_id)
+        assert _check_capability_escalation(supervisor, worker) == "", profile_id
 
 
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):

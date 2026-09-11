@@ -211,7 +211,7 @@ def _create_task_graph(
     "profile_id",
     default=None,
     help=(
-        "Agent profile id; omit to use the project default. "
+        "Worker profile id; supervisor is control-plane only. Omit to use the project default. "
         "Run `aq agent list-profiles` for the ids this install has "
         "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
     ),

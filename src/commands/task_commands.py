@@ -1566,6 +1566,49 @@ class TaskCommandsMixin:
                 )
         return None
 
+    @staticmethod
+    def _task_execution_profile_error(profile) -> str | None:
+        """Reject a control-plane profile wherever it could route work."""
+        from src.profiles.task_execution import task_execution_profile_error
+
+        return task_execution_profile_error(profile)
+
+    async def _supervisor_default_worker_profile(self, project):
+        """Resolve the worker route for a supervisor's omitted profile."""
+        candidate_id = project.default_profile_id
+        if candidate_id:
+            candidate = await self.db.get_profile(candidate_id)
+            if candidate is None:
+                return None, (
+                    f"project default profile '{candidate_id}' is not defined; configure an "
+                    "eligible worker default before creating work"
+                )
+            if error := self._task_execution_profile_error(candidate):
+                return None, f"project default is invalid: {error}"
+            if not getattr(candidate, "enabled", True):
+                return None, (
+                    f"project default profile '{candidate_id}' is disabled; enable it or select "
+                    "an eligible worker default"
+                )
+            return candidate, None
+
+        from src.profiles.catalog import active_catalog_profile_ids
+        from src.profiles.default_selection import select_default_profile_id
+
+        candidate_id = select_default_profile_id(
+            await self.db.list_profiles(),
+            eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir),
+        )
+        if not candidate_id:
+            return None, (
+                "supervisor cannot create executable work without a configured eligible worker "
+                "default; set the project's default_profile_id or install an active worker profile"
+            )
+        candidate = await self.db.get_profile(candidate_id)
+        if candidate is None or (error := self._task_execution_profile_error(candidate)):
+            return None, error or f"system fallback profile '{candidate_id}' is not defined"
+        return candidate, None
+
     async def _cmd_create_task(self, args: dict) -> dict:
         explicit_root = bool(args.get("root"))
         if explicit_root and args.get("parent_id"):
@@ -1837,6 +1880,8 @@ class TaskCommandsMixin:
             profile = await self.db.get_profile(profile_id)
             if not profile:
                 return {"error": f"Profile '{profile_id}' not found"}
+            if error := self._task_execution_profile_error(profile):
+                return {"error": error}
             if caller_profile is not None and profile.id != caller_profile.id:
                 escalation = _check_capability_escalation(caller_profile, profile)
                 if escalation:
@@ -1848,8 +1893,36 @@ class TaskCommandsMixin:
                         )
                     }
         elif caller_profile is not None:
-            # Default-inherit so the child cannot exceed the caller.
-            profile_id = caller_profile.id
+            if self._task_execution_profile_error(caller_profile):
+                profile, error = await self._supervisor_default_worker_profile(project)
+                if error:
+                    return {"error": error}
+                profile_id = profile.id
+                escalation = _check_capability_escalation(caller_profile, profile)
+                if escalation:
+                    return {
+                        "error": (
+                            f"Capability escalation rejected: child profile '{profile.id}' is not "
+                            f"a subset of caller profile '{caller_profile.id}'. {escalation}"
+                        )
+                    }
+            else:
+                # Default-inherit so the child cannot exceed the caller.
+                profile_id = caller_profile.id
+        elif project.default_profile_id:
+            # A persisted default normally remains implicit on the task row,
+            # but it is still an execution route. Validate stale/misconfigured
+            # defaults before creating a READY row that no worker may run.
+            default_profile = await self.db.get_profile(project.default_profile_id)
+            if default_profile is None:
+                return {
+                    "error": (
+                        f"project default profile '{project.default_profile_id}' is not defined; "
+                        "configure an eligible worker default before creating work"
+                    )
+                }
+            if error := self._task_execution_profile_error(default_profile):
+                return {"error": f"project default is invalid: {error}"}
         class_error = self._validate_routing_class(args.get("intelligence_class"), profile)
         if class_error:
             return {"success": False, "error": class_error}
@@ -3021,6 +3094,8 @@ class TaskCommandsMixin:
                 profile = await self.db.get_profile(pid)
                 if not profile:
                     return {"error": f"Profile '{pid}' not found"}
+                if error := self._task_execution_profile_error(profile):
+                    return {"error": error}
             updates["profile_id"] = pid  # None clears the profile
         if "intelligence_class" in args:
             updates["intelligence_class"] = args["intelligence_class"]
@@ -4130,6 +4205,24 @@ class TaskCommandsMixin:
         """Route audit detail plus one actionable reason, from the task row alone."""
         from src.explain import Reason
 
+        if error := self._task_execution_profile_error(task.profile_id):
+            return None, Reason(
+                code="supervisor_profile",
+                detail=(error + "; reroute the legacy task to an eligible worker profile"),
+                ref=task.profile_id,
+            )
+
+        if task.profile_id is None:
+            project = await self.db.get_project(task.project_id)
+            if project is not None and (
+                error := self._task_execution_profile_error(project.default_profile_id)
+            ):
+                return None, Reason(
+                    code="supervisor_profile",
+                    detail=(error + "; set an eligible project worker default before rerunning"),
+                    ref=project.default_profile_id,
+                )
+
         explicit = (task.intelligence_class or "").strip()
         reason_text = None
         try:
@@ -4589,6 +4682,8 @@ class TaskCommandsMixin:
         profile = await self.db.get_profile(str(profile_id))
         if profile is None:
             return {"success": False, "error": f"profile '{profile_id}' not found"}
+        if error := self._task_execution_profile_error(profile):
+            return {"success": False, "error": error}
 
         cls_id = args.get("intelligence_class") or task.intelligence_class or None
         if not cls_id:

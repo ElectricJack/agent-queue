@@ -54,6 +54,10 @@ def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | No
     return and_(
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
+        # Legacy rows can carry the named control-plane supervisor profile.
+        # They remain visible for diagnosis and rerouting, but must never win
+        # a pool worker's index-ordered claim frontier.
+        (tasks.c.profile_id.is_(None) | (tasks.c.profile_id != "supervisor")),
         tasks.c.is_blocked == 0,
         tasks.c.assigned_agent_id.is_(None),
         tasks.c.is_plan_subtask == 0,

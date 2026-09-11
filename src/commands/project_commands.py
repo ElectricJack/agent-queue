@@ -109,6 +109,14 @@ class ProjectCommandsMixin:
                     "set up its provider and rerun aq install, or choose an active profile"
                 )
             }
+        if default_profile_id:
+            profile = await self.db.get_profile(default_profile_id)
+            if profile is None:
+                return {"error": f"Profile '{default_profile_id}' not found"}
+            from src.profiles.task_execution import task_execution_profile_error
+
+            if error := task_execution_profile_error(profile):
+                return {"error": f"project default is invalid: {error}"}
         if not default_profile_id:
             from src.profiles.default_selection import select_default_profile_id
 
@@ -354,6 +362,10 @@ class ProjectCommandsMixin:
                 profile = await self.db.get_profile(dpid)
                 if not profile:
                     return {"error": f"Profile '{dpid}' not found"}
+                from src.profiles.task_execution import task_execution_profile_error
+
+                if error := task_execution_profile_error(profile):
+                    return {"error": f"project default is invalid: {error}"}
             updates["default_profile_id"] = dpid  # None clears it
         if "assignment_playbook_id" in args:
             playbook_id = args["assignment_playbook_id"]
