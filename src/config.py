@@ -1697,14 +1697,9 @@ class WorkGraphConfig:
     three *independent* rollout stages — deliberately not chained, so that
     flipping one does not silently arm another:
 
-    ``blocked_state_authoritative``
-        ``false`` = shadow mode.  Both the legacy dependency scan and the
-        ``is_blocked`` projection are computed every cycle and compared; the
-        legacy scan still decides.  Flip after an observation window with
-        zero divergence warnings.  Rollback is a config flip.
     ``gate_sweep_interval_seconds``
         Cadence of the cascade's gate sweep; ``0`` disables it entirely.
-        This — not ``blocked_state_authoritative`` — is what gates step 2b.
+        This alone controls the gate-sweep cadence.
     ``conditional_autoclose``
         Whether the cascade disposes of contingency tasks whose
         ``conditional-blocks`` dependency completed.  On by default per
@@ -1717,7 +1712,6 @@ class WorkGraphConfig:
         ``0`` disables.
     """
 
-    blocked_state_authoritative: bool = False
     gate_sweep_interval_seconds: int = 30
     conditional_autoclose: bool = True
     container_sweep_interval_seconds: int = 60
@@ -3726,7 +3720,6 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     if "work_graph" in raw and isinstance(raw["work_graph"], dict):
         wg = raw["work_graph"]
         config.work_graph = WorkGraphConfig(
-            blocked_state_authoritative=bool(wg.get("blocked_state_authoritative", False)),
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
             container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),

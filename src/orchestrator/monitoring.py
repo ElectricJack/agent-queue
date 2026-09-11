@@ -15,18 +15,12 @@ from src.notifications.events import (
     ChainStuckEvent,
     StuckDefinedTaskEvent,
 )
-from src.models import BLOCKING_DEP_TYPES, DepType, Task, TaskStatus
+from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
-
-# Edge kinds the pre-work-graph readiness scan has no rule for.  A task
-# carrying one is deferred to the ``is_blocked`` projection rather than
-# guessed at (see ``_legacy_promotion_decisions``).
-_LEGACY_UNKNOWN_DEP_TYPES = frozenset({DepType.WAITS_FOR.value, DepType.CONDITIONAL_BLOCKS.value})
-
 
 class MonitoringMixin:
     """Monitoring and housekeeping methods mixed into Orchestrator."""
@@ -219,19 +213,10 @@ class MonitoringMixin:
     async def _check_defined_tasks(self) -> None:
         """Promote DEFINED/BLOCKED tasks to READY when the graph allows it.
 
-        Two independent deciders run every cycle (work-graph implementation
-        spec §6.2):
-
-        * **legacy** — the historical per-task dependency scan, including the
-          ``is_plan_subtask`` special case;
-        * **projection** — one indexed read of ``tasks.is_blocked``, the
-          persisted blocked-state projection.
-
-        Which one *acts* is the ``work_graph.blocked_state_authoritative``
-        flag; the other still runs and any disagreement is logged.  That is
-        shadow mode (§9): the projection earns authority only after an
-        observation window with zero divergence, and rollback is a config
-        flip because the legacy scan stays in the tree.
+        ``tasks.is_blocked`` is the sole readiness authority.  Dependency and
+        gate writes recompute that persisted projection in their transaction,
+        so this cascade does not reimplement edge semantics or carry a second
+        compatibility decision path.
 
         Conditional-edge disposal runs first so a contingency task that can
         never fire is closed rather than considered for promotion.
@@ -268,23 +253,7 @@ class MonitoringMixin:
         )
         blocked = [task for task in blocked if task.id not in terminal]
 
-        legacy, deferred = await self._legacy_promotion_decisions(defined, blocked)
-        projected = await self._projected_promotion_decisions(defined, blocked)
-
-        authoritative = self.config.work_graph.blocked_state_authoritative
-        self._log_promotion_divergence(legacy, projected, deferred, authoritative)
-
-        if authoritative:
-            decisions = projected
-        else:
-            # The legacy scan predates typed edges and cannot judge a task
-            # that carries one; for those it defers to the projection.  Its
-            # verdict still rules every classic `blocks`-only graph, which is
-            # what the shadow window is actually evidence about.
-            decisions = dict(legacy)
-            for task_id in deferred:
-                if task_id in projected:
-                    decisions[task_id] = projected[task_id]
+        decisions = await self._projected_promotion_decisions(defined, blocked)
 
         for task_id in sorted(decisions):
             flipped = await self.db.transition_task(
@@ -353,92 +322,6 @@ class MonitoringMixin:
             await self._settle_seeds({task_id})
         return flagged
 
-    async def _legacy_promotion_decisions(
-        self,
-        defined: list[Task],
-        blocked: list[Task],
-    ) -> tuple[dict[str, str], set[str]]:
-        """The pre-projection readiness scan, as a pure decision function.
-
-        Returns ``({task_id: transition_context}, deferred_ids)``.  Preserved
-        verbatim (bar the compute/apply split) so it can act as the
-        shadow-mode oracle:
-
-        - DEFINED with no dependencies → READY;
-        - DEFINED/BLOCKED whose every blocking dependency is COMPLETED → READY;
-        - plan subtasks with an IN_PROGRESS parent count the parent
-          dependency as satisfied (the special case the ``parent-child``
-          edge type generalises away).
-
-        The scan only ever knew two shapes: ``blocks`` edges, and the
-        plan-subtask parent edge.  A task carrying an edge kind it predates
-        (``waits-for``, ``conditional-blocks``, or ``parent-child`` outside a
-        plan subtask) is **deferred** — reported in the second return value
-        and left to the projection.  Deferring rather than guessing matters:
-        ``are_dependencies_met`` would read a ``conditional-blocks`` edge to a
-        COMPLETED dependency as *satisfied* and run a contingency task whose
-        condition never fired.
-
-        Deciding before applying is safe: every promotion here targets READY,
-        and READY never satisfies another task's dependency.
-        """
-        decisions: dict[str, str] = {}
-        deferred: set[str] = set()
-        candidates = [*defined, *blocked]
-        if not candidates:
-            return decisions, deferred
-
-        # One statement for every candidate's edges, one for every status the
-        # rules below read (dependency targets and plan parents).  The loop
-        # used to issue two to four statements per task — 9 s per cycle at
-        # 4,600 DEFINED tasks.
-        edges_by_task = await self.db.get_typed_dependencies_for_tasks([t.id for t in candidates])
-        status_ids: set[str] = set()
-        for task in candidates:
-            status_ids.update(dep for dep, _ in edges_by_task[task.id])
-            if task.is_plan_subtask and task.parent_task_id:
-                status_ids.add(task.parent_task_id)
-        statuses = await self.db.get_task_statuses(sorted(status_ids))
-        completed = TaskStatus.COMPLETED.value
-
-        for task in candidates:
-            typed_edges = edges_by_task[task.id]
-            is_plan_child = bool(task.is_plan_subtask and task.parent_task_id)
-            if any(
-                dep_type in _LEGACY_UNKNOWN_DEP_TYPES
-                or (
-                    dep_type == DepType.PARENT_CHILD.value
-                    and not (is_plan_child and target == task.parent_task_id)
-                )
-                for target, dep_type in typed_edges
-            ):
-                deferred.add(task.id)
-                continue
-
-            # Blocking edges only — the same set ``get_dependencies`` and
-            # ``are_dependencies_met`` default to.
-            blocking = {dep for dep, typ in typed_edges if typ in BLOCKING_DEP_TYPES}
-
-            # Plan subtask special handling: the parent plan transitions to
-            # IN_PROGRESS (not COMPLETED) when approved, so the plain
-            # all-COMPLETED rule would block forever.  Treat the IN_PROGRESS
-            # parent dep as satisfied and judge only the other deps.
-            if is_plan_child and statuses.get(task.parent_task_id) == TaskStatus.IN_PROGRESS.value:
-                non_parent = blocking - {task.parent_task_id}
-                if all(statuses.get(dep) == completed for dep in non_parent):
-                    decisions[task.id] = "deps_met_plan_parent_active"
-                continue
-
-            if not blocking:
-                if task.status == TaskStatus.DEFINED:
-                    # No dependencies — promote DEFINED to READY.  (BLOCKED
-                    # tasks with no deps stay blocked — they were blocked for
-                    # other reasons like verification failure.)
-                    decisions[task.id] = "deps_met_no_deps"
-            elif all(statuses.get(dep) == completed for dep in blocking):
-                decisions[task.id] = "deps_met"
-        return decisions, deferred
-
     async def _projected_promotion_decisions(
         self,
         defined: list[Task],
@@ -463,57 +346,6 @@ class MonitoringMixin:
                     decisions[task_id] = "deps_met"
         return decisions
 
-    def _log_promotion_divergence(
-        self,
-        legacy: dict[str, str],
-        projected: dict[str, str],
-        deferred: set[str],
-        authoritative: bool,
-    ) -> None:
-        """Log where the two deciders disagree.
-
-        The observation gate on flipping ``blocked_state_authoritative``: a
-        window of clean cycles is the evidence that the projection matches
-        the scan it replaces.  Only the *sets* are compared — the transition
-        context strings are cosmetic.
-
-        Tasks the legacy scan deferred on (typed edges it predates) are
-        excluded from the comparison: there is no second opinion to compare
-        against, so counting them would drown the signal the observation
-        window is looking for.  Their **count** is still reported, at INFO —
-        without it "zero divergence for a week" cannot be told apart from
-        "the oracle judged nothing all week".
-
-        Logging is edge-triggered.  This runs every 5 s, and a divergence
-        persists until someone acts on it: one stuck plan parent re-logged at
-        WARNING 17 000 times a day buries the very signal the window exists to
-        collect.  A line is emitted only when the reported state changes, so
-        each distinct divergence appears once, and its clearing appears once.
-        """
-        only_legacy = tuple(sorted(set(legacy) - set(projected) - deferred))
-        only_projected = tuple(sorted(set(projected) - set(legacy) - deferred))
-
-        state = (only_legacy, only_projected, len(deferred))
-        if state == getattr(self, "_last_divergence_state", None):
-            return
-        self._last_divergence_state = state
-
-        logger.info(
-            "blocked-state shadow: %d deferred to the projection, "
-            "%d legacy-only, %d projection-only",
-            len(deferred),
-            len(only_legacy),
-            len(only_projected),
-        )
-        if not only_legacy and not only_projected:
-            return
-        logger.warning(
-            "blocked-state divergence (%s authoritative): legacy-only=%s projection-only=%s",
-            "projection" if authoritative else "legacy scan",
-            list(only_legacy) or "-",
-            list(only_projected) or "-",
-        )
-
     async def _close_dead_conditional_tasks(self) -> None:
         """Dispose of contingency tasks whose condition can never fire.
 
@@ -524,10 +356,9 @@ class MonitoringMixin:
         no-op instead (work-graph design §3.1).
 
         Gated on ``work_graph.conditional_autoclose`` (default on).  It is
-        deliberately independent of ``blocked_state_authoritative``: the
-        "dead conditional edge" test is a direct graph fact, not a read of
-        the projection, and ``conditional-blocks`` edges only exist where
-        someone explicitly created one.
+        deliberately independent of the projection: the "dead conditional
+        edge" test is a direct graph fact, and ``conditional-blocks`` edges
+        only exist where someone explicitly created one.
         """
         if not self.config.work_graph.conditional_autoclose:
             return

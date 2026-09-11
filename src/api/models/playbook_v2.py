@@ -229,6 +229,11 @@ class ActivationStateDTO(V2Model):
     activated_by: str | None = None
     pending_event_count: int = 0
     running_count: int = 0
+    source_path: str | None = None
+    source_sha256: str | None = None
+    active_source_sha256: str | None = None
+    source_drift: bool | None = None
+    source_error: str | None = None
 
 
 class PlaybookActivationHealthResponse(V2Model):

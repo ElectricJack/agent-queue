@@ -1259,6 +1259,30 @@ async def test_activation_health_response_validates_against_the_wire_contract(db
     assert response.activations[0].pending_event_count == 0
 
 
+@pytest.mark.asyncio
+async def test_activation_health_surfaces_authored_source_drift(db, tmp_path, monkeypatch):
+    """A changed source is visible without changing the deployed activation."""
+    from types import SimpleNamespace
+
+    from tests.playbook_v2_helpers import StubContracts, StubProfiles
+
+    await _activate_profiled_artifact(db, tmp_path)
+    handler = _v2_handler(db, (StubContracts(), StubProfiles(), None))
+    source = SimpleNamespace(
+        vault_path="system/playbooks/twin.md",
+        raw="---\nid: twin\nscope: system\ntriggers: [task.created]\n---\n\n# Edited\n",
+    )
+    monkeypatch.setattr(handler, "_v2_find_source", lambda _playbook_id: (source, None))
+
+    result = await handler._cmd_playbook_activation_health({})
+
+    activation = result["activations"][0]
+    assert activation["source_path"] == source.vault_path
+    assert activation["source_sha256"].startswith("sha256:")
+    assert activation["active_source_sha256"].startswith("sha256:")
+    assert activation["source_drift"] is True
+
+
 # ---------------------------------------------------------------------------
 # The collect/delete TOCTOU (child plan §12.1): a hash re-adopted by a
 # concurrent compile between the row delete and the file removal, on both

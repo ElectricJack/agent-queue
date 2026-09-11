@@ -312,31 +312,14 @@ class DependencyQueryMixin:
         return await self.get_all_dependencies(dep_types=frozenset({DepType.PARENT_CHILD.value}))
 
     async def are_dependencies_met(self, task_id: str) -> bool:
-        """Check whether all upstream *blocking* dependencies are COMPLETED.
+        """Return the canonical persisted readiness projection for one task.
 
-        Legacy readiness scan — retained deliberately through the shadow-mode
-        window so ``_check_defined_tasks`` has an independent oracle to
-        compare the ``is_blocked`` projection against.  It collapses into a
-        shim over ``is_blocked`` once the projection becomes authoritative
-        (implementation spec §4.2).
+        Kept as a compatibility read for callers outside the orchestrator;
+        dependency and gate writes maintain ``is_blocked`` atomically.
         """
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                select(task_dependencies.c.depends_on_task_id, tasks.c.status)
-                .select_from(
-                    task_dependencies.join(
-                        tasks, tasks.c.id == task_dependencies.c.depends_on_task_id
-                    )
-                )
-                .where(
-                    and_(
-                        task_dependencies.c.task_id == task_id,
-                        _dep_type_filter(None),
-                    )
-                )
-            )
-            rows = result.mappings().fetchall()
-            return all(r["status"] == TaskStatus.COMPLETED.value for r in rows)
+            value = await conn.scalar(select(tasks.c.is_blocked).where(tasks.c.id == task_id))
+        return value is False
 
     async def get_stuck_active_tasks(
         self,

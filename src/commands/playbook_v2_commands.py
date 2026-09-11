@@ -393,7 +393,7 @@ class PlaybookV2CommandsMixin:
         configured = getattr(self.config, "vault_root", None)
         if configured:
             return Path(configured).resolve()
-        return (Path(self.config.data_dir) / "vault").resolve()
+        return (Path(getattr(self.config, "data_dir", None) or ".") / "vault").resolve()
 
     def _v2_resolve_vault_path(self, raw: Any, field: str) -> tuple[Path | None, str | None]:
         if not isinstance(raw, str) or not raw.strip():
@@ -915,6 +915,28 @@ class PlaybookV2CommandsMixin:
             )
         if hasattr(self.db, "count_active_runs"):
             payload["running_count"] = await self.db.count_active_runs(record.playbook_id)
+        artifact = (
+            await self.db.get_playbook_artifact_row(record.active_artifact_sha256)
+            if record.active_artifact_sha256
+            else None
+        )
+        active_source_sha256 = artifact.get("source_digest") if artifact else None
+        payload["active_source_sha256"] = active_source_sha256
+        source, source_error = self._v2_find_source(record.playbook_id)
+        if source is None:
+            payload["source_error"] = source_error
+            payload["source_drift"] = None
+        else:
+            current_source_sha256 = source_digest(source.raw)
+            payload.update(
+                source_path=source.vault_path,
+                source_sha256=current_source_sha256,
+                source_drift=(
+                    current_source_sha256 != active_source_sha256
+                    if active_source_sha256 is not None
+                    else None
+                ),
+            )
         return payload
 
     async def _v2_load_artifact(self, sha: str, playbook_id: str | None = None):
@@ -1069,6 +1091,11 @@ class PlaybookV2CommandsMixin:
         ``pending_event_count`` and ``running_count`` are the run-overlay
         counts Package 5 fills in with the rest of the projections; they are
         left at their DTO defaults rather than guessed at here.
+
+        The response also reports the currently authored source digest beside
+        the digest captured by the active artifact.  This makes a source that
+        was edited but not deployed visible without treating it as a changed
+        contract or silently changing the effective policy.
 
         Args:
             playbook_id: Optional — one playbook. All activations when absent.

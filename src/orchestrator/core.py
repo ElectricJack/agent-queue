@@ -2768,11 +2768,8 @@ class Orchestrator(
         throttle; re-check ``event`` gates against persisted events; emit
         ``gate.resolved`` / ``gate.expired`` / ``task.unblocked``.
 
-        Gating note (WG-1): this used to check
-        ``work_graph.blocked_state_authoritative``, but §9's rollout puts
-        gates at stage (3) — *after* the stage-(2) flip of that flag.  It is
-        gated on ``gate_sweep_interval_seconds`` (``<= 0`` disables
-        sweeping) so the two rollout stages are independent.
+        It is gated on ``gate_sweep_interval_seconds`` (``<= 0`` disables
+        sweeping).
 
         Order matters: the sweep runs at cascade step 2b (before
         ``_check_defined_tasks``) so a freshly resolved gate unblocks its

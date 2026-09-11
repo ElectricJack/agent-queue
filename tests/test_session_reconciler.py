@@ -1516,9 +1516,8 @@ class TestBackstop:
         assert failed["status"] == TaskStatus.BLOCKED.value
         assert failed["context"] == "stuck_timeout"
 
-    @pytest.mark.parametrize("authoritative", [False, True])
     async def test_backstop_block_survives_next_promotion_cycle(
-        self, db, provider, reconciler, config, authoritative, tmp_path
+        self, db, provider, reconciler, config, tmp_path
     ):
         from src.orchestrator import Orchestrator
 
@@ -1527,7 +1526,6 @@ class TestBackstop:
         config.database = DatabaseConfig(url=lease_dsn("unused.db"))
         config.sessions.lease_ttl_seconds = 0
         config.agents_config.stuck_timeout_seconds = 3600
-        config.work_graph.blocked_state_authoritative = authoritative
         await _task(db)
         await db.create_task(Task(
             id="completed-dependency", project_id="p1", title="Done", description="Done",

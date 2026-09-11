@@ -198,7 +198,6 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
         },
         "auto_task": {"max_verification_retries": 2},
         "work_graph": {
-            "blocked_state_authoritative": False,
             "gate_sweep_interval_seconds": _by_size(machine, 60, 30, 30),
             "conditional_autoclose": True,
             "container_sweep_interval_seconds": _by_size(machine, 120, 60, 60),
@@ -396,14 +395,6 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             "Two reopens for a git verification failure: one for a genuine "
             "flake, and a stop before a broken task reopens forever.",
             "0 turns a verification failure into a single terminal failure.",
-        ),
-        TuningNote(
-            "work_graph.blocked_state_authoritative",
-            "Shipped in shadow mode: both the legacy dependency scan and the "
-            "projection run and are compared, and the legacy scan still "
-            "decides. A new install has no observation window yet.",
-            "Flip to true after an observation window with no divergence "
-            "warnings; rollback is a config flip.",
         ),
         TuningNote(
             "work_graph.gate_sweep_interval_seconds",

@@ -46,12 +46,16 @@ takes exactly one of three paths.
    red reuses the in-flight repair and a different failure gets its own task.
    A `created` or `reused` outcome ends the rule; a `rejected` or
    `runtime_error` outcome fails it.
-3. Call `gate_create` with `project_id` `agent-queue`, `gate_type` `human`,
-   `title` `baseline.escalation_title`, `question`
-   `baseline.escalation_question`, and `await_id` `baseline.escalation_key`.
-   The key is `ci-baseline-escalation:<signature>`, so the gate opens once per
-   failure. A `created`, `reused`, or `skipped` outcome ends the rule; a
-   `rejected` or `runtime_error` outcome fails it.
+3. Call `escalation_create` with `project_id` `agent-queue`, source and
+   incident keys `baseline.escalation_key`, `summary`
+   `baseline.escalation_title`, and `investigation`
+   `baseline.escalation_question`. Its `source_kind` is `core`; both
+   `source_identity` and `incident_key` use `baseline.escalation_key`.
+   Its `decision_requested` is to select a bounded next step, with `choices`
+   to fix by hand, retarget, or accept the baseline, and `severity` `high`. The key is
+   `ci-baseline-escalation:<signature>`, so one durable, incident-bound human
+   escalation is created or reused for each failure. A `created` or `reused`
+   outcome ends the rule; a `rejected` or `runtime_error` outcome fails it.
 
 ## Failure handling, uniformly
 
