@@ -43,7 +43,7 @@
       "idempotency_key": "run-7:ensure-review-task:1",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+      "contract_fingerprint": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb",
       "error": "database is locked",
       "wait": null,
       "cancellation": null
@@ -100,7 +100,7 @@
       "idempotency_key": "run-7:ensure-review-task:2",
       "principal_fingerprint": "sha256:9f1c",
       "profile_id": null,
-      "contract_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+      "contract_fingerprint": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb",
       "error": null,
       "wait": null,
       "cancellation": null
