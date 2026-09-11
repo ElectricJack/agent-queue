@@ -50,7 +50,9 @@ function makeId(): string {
 /**
  * Register a hotkey. The `key` string uses react-hotkeys-hook syntax with
  * `$mod` as a stand-in for the platform modifier (cmd on mac, ctrl elsewhere).
- * Also feeds the cheat-sheet via the context registry.
+ * A key matches the character it types (`event.key`, so "[" or "/") or its
+ * physical key's code name ("bracketleft"). Also feeds the cheat-sheet via the
+ * context registry.
  */
 export function useShortcut(key: string, opts: ShortcutOpts): void {
   const register = useContext(RegisterC);
@@ -85,7 +87,11 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
       e.preventDefault();
       optsRef.current.onFire();
     },
-    { enableOnFormTags: false, preventDefault: true },
+    // Without useKey, react-hotkeys-hook 5 compares only the mapped event.code,
+    // where "[" arrives as "bracketleft" and "/" as "slash", so a punctuation
+    // binding could never fire. With it the library tries event.key first and
+    // still falls back to the code.
+    { enableOnFormTags: false, preventDefault: true, useKey: true },
   );
 }
 
