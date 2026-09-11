@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 334,
+    "leaf_commands": 338,
     "registration": {
-      "generated": 238,
+      "generated": 242,
       "handwritten": 96
     },
     "ownership": {
-      "core": 295,
+      "core": 299,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 333
+      "supported": 337
     },
     "evidence_level": {
       "behavioral": 10,
-      "dispatch": 238,
+      "dispatch": 242,
       "registration": 86
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 278
+      "untested": 282
     }
   },
   "commands": [
@@ -853,6 +853,143 @@
           "--project",
           "--since",
           "--group-by",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard state-get",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "dashboard_state_get",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--namespace"
+        ],
+        "optional": [
+          "--subject",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard state-list",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "dashboard_state_list",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard state-put",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "dashboard_state_put",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--namespace",
+          "--value"
+        ],
+        "optional": [
+          "--subject",
+          "--base-revision",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--value"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard state-reset",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "dashboard_state_reset",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--namespace"
+        ],
+        "optional": [
+          "--subject",
           "--json",
           "--brief",
           "--api-url"
@@ -9648,6 +9785,8 @@
           "--proposal-id"
         ],
         "optional": [
+          "--gate-id",
+          "--project-id",
           "--json",
           "--brief",
           "--api-url"

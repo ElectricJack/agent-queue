@@ -68,6 +68,15 @@ async def _propose_one_task(handler, project_id: str = "p1") -> str:
     return prop["proposal_id"]
 
 
+async def _approve(handler, prop_id: str, project_id: str = "p1") -> None:
+    """Commits materialise only under a resolved human approval gate."""
+    gate = await handler.execute(
+        "gate_create",
+        {"project_id": project_id, "gate_type": "human", "title": "Approve?", "await_id": prop_id},
+    )
+    await handler._db.resolve_gate(gate["gate_id"], resolved_by="human:test", resolution="approved")
+
+
 class TestProposalStatusChangedEmission:
     async def test_discard_emits_status_changed_event(self, handler):
         prop_id = await _propose_one_task(handler)
@@ -82,6 +91,7 @@ class TestProposalStatusChangedEmission:
 
     async def test_commit_emits_status_changed_event(self, handler):
         prop_id = await _propose_one_task(handler)
+        await _approve(handler, prop_id)
         r = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
         assert r["success"] is True
         events = [e for e in _emitted(handler) if e[0] == "proposal.status_changed"]
@@ -102,7 +112,9 @@ class TestProposalStatusChangedEmission:
         monkeypatch.setattr(pc, "_create_one_task", _boom)
 
         prop_id = await _propose_one_task(handler)
+        await _approve(handler, prop_id)
         r = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
         assert r["success"] is False
+        assert not r.get("not_approved"), r
         events = [e for e in _emitted(handler) if e[0] == "proposal.status_changed"]
         assert events == []

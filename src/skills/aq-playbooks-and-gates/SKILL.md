@@ -106,13 +106,23 @@ The system default pipeline is a `kind: pipeline` playbook with exactly
 three rules — approved specs in, an approved task batch out:
 
 - `spec.approved` → create a spec-ingest task under the `spec-ingest`
-  profile, deduped on `spec-ingest:<spec_path>`, that turns the approved
-  spec into a `task_batch_propose` proposal.
+  profile with an explicit `standard-high` class, deduped on
+  `spec-ingest:<spec_path>`, that turns the approved spec into a
+  `task_batch_propose` proposal.
 - `proposal.ready` → open a human gate ("Approve task batch?") whose
-  `await_id` is pinned to the proposal id.
-- `gate.resolved`, filtered to `gate_type: human` → call
-  `task_batch_commit` with that `await_id`, writing the approved batch
-  into the task graph.
+  `await_id` is pinned to the proposal id. The proposal's payload is
+  frozen from then on (`task_batch_update` refuses), so the decision
+  covers exactly one revision.
+- `gate.resolved`, filtered to `gate_type: human` and a `resolution` of
+  `approve` or `approved` → call `task_batch_commit` with that
+  `await_id`, the `gate_id` and the `project_id`. The command re-reads
+  the gate and answers `not_approved` unless it is that proposal's
+  resolved approval; a replay answers `already_committed` with the
+  original task ids. A rejected, expired or free-text resolution commits
+  nothing — resolve with `approve`/`approved` to approve.
+
+Every refused step (`not_approved`, `rejected`, `runtime_error`) ends its
+run `failed`, never `completed`.
 
 It does **not** create per-task reviewers, final branch reviewers, or
 review/PR gates on downstream work — code validation and delivery come

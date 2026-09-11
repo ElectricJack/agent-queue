@@ -338,6 +338,7 @@ class GateQueriesMixin:
         project_id: str | None = None,
         status: str | None = None,
         gate_type: str | None = None,
+        await_id: str | None = None,
     ) -> list[dict]:
         """List gates with optional filters, newest first."""
         stmt = select(gates)
@@ -348,6 +349,8 @@ class GateQueriesMixin:
             conditions.append(gates.c.status == status)
         if gate_type is not None:
             conditions.append(gates.c.gate_type == gate_type)
+        if await_id is not None:
+            conditions.append(gates.c.await_id == await_id)
         if conditions:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(gates.c.created_at.desc())

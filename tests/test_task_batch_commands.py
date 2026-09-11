@@ -4,9 +4,11 @@ Phase 6 Tasks 2 + 3 (design §8, spec ingestion).
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 
-from src.database.queries.proposal_queries import detect_cycles
+from src.database.queries.proposal_queries import detect_cycles, get_proposal
 from src.models import AgentProfile
 
 
@@ -95,6 +97,26 @@ def _emitted(h) -> list[tuple[str, dict]]:
     return out
 
 
+async def _approve(
+    handler, proposal_id: str, *, project_id: str = "p1", resolution: str = "approved"
+) -> str:
+    """Raise and resolve the proposal's human gate as the pipeline and dashboard do."""
+    gate = await handler.execute(
+        "gate_create",
+        {
+            "project_id": project_id,
+            "gate_type": "human",
+            "title": "Approve task batch?",
+            "await_id": proposal_id,
+        },
+    )
+    assert gate["success"] is True, gate
+    await handler._db.resolve_gate(
+        gate["gate_id"], resolved_by="human:test", resolution=resolution
+    )
+    return gate["gate_id"]
+
+
 async def test_propose_rejects_cycle(handler):
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
     r = await handler.execute(
@@ -177,6 +199,7 @@ async def test_commit_is_atomic_and_idempotent(handler):
         },
     )
     prop_id = prop["proposal_id"]
+    gate_id = await _approve(handler, prop_id)
 
     c1 = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
     assert c1["success"] is True
@@ -185,10 +208,12 @@ async def test_commit_is_atomic_and_idempotent(handler):
         {"id": "module", "kind": "file", "target": "src/new_module.py"}
     ]
 
-    # Double-commit rejected.
-    c2 = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
-    assert c2["success"] is False
-    assert "committed" in c2["error"].lower()
+    # A replayed approval is idempotent: the original receipt, no second graph.
+    c2 = await handler.execute(
+        "task_batch_commit", {"proposal_id": prop_id, "gate_id": gate_id, "project_id": "p1"}
+    )
+    assert c2 == {"success": True, "already_committed": True, "task_ids": c1["task_ids"]}
+    assert len(await handler._db.list_tasks(project_id="p1")) == 2
 
 
 async def test_commit_rejects_legacy_supervisor_project_default(handler):
@@ -204,6 +229,7 @@ async def test_commit_rejects_legacy_supervisor_project_default(handler):
             "tasks": [{"tempId": "a", "title": "A", "description": ""}], "edges": [],
         },
     )
+    await _approve(handler, proposal["proposal_id"])
     result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
     assert "project default is invalid" in result["error"]
     assert await handler._db.list_tasks(project_id="p1") == []
@@ -235,6 +261,7 @@ async def test_commit_partial_failure_rolls_back(handler, monkeypatch):
             ],
         },
     )
+    await _approve(handler, prop["proposal_id"])
 
     from src.commands import proposal_commands as pc
 
@@ -294,7 +321,8 @@ async def test_commit_partial_failure_rolls_back(handler, monkeypatch):
 async def test_commit_concurrent_double_commit_only_one_wins(handler):
     """Two overlapping task_batch_commit calls on the same proposal must
     materialise the task set exactly once — the loser aborts on the
-    conditional-UPDATE claim BEFORE creating any tasks."""
+    conditional-UPDATE claim BEFORE creating any tasks, or, if it starts
+    after the winner finished, replays the winner's receipt."""
     import asyncio
 
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
@@ -311,14 +339,16 @@ async def test_commit_concurrent_double_commit_only_one_wins(handler):
         },
     )
     prop_id = prop["proposal_id"]
+    await _approve(handler, prop_id)
 
     r1, r2 = await asyncio.gather(
         handler.execute("task_batch_commit", {"proposal_id": prop_id}),
         handler.execute("task_batch_commit", {"proposal_id": prop_id}),
     )
-    wins = [r for r in (r1, r2) if r.get("success")]
-    losses = [r for r in (r1, r2) if not r.get("success")]
-    assert len(wins) == 1 and len(losses) == 1, (r1, r2)
+    created = [r for r in (r1, r2) if r.get("success") and not r.get("already_committed")]
+    assert len(created) == 1, (r1, r2)
+    other = r2 if created[0] is r1 else r1
+    assert other.get("already_committed") or "already claimed" in other.get("error", ""), other
 
     listing = await handler.execute("list_tasks", {"project_id": "p1"})
     # Exactly two tasks materialised, no duplicates.
@@ -349,6 +379,7 @@ async def test_update_draft_only(handler):
     )
     assert up["success"] is True
 
+    await _approve(handler, prop["proposal_id"])
     await handler.execute(
         "task_batch_commit", {"proposal_id": prop["proposal_id"]}
     )
@@ -377,3 +408,156 @@ async def test_discard(handler):
         "task_batch_discard", {"proposal_id": prop["proposal_id"]}
     )
     assert r["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Approval at the materialisation boundary (policy simplification, audit F1)
+# ---------------------------------------------------------------------------
+
+
+async def _propose(handler, project_id: str = "p1") -> str:
+    await handler.execute("create_project", {"id": project_id, "name": project_id})
+    prop = await handler.execute(
+        "task_batch_propose",
+        {
+            "project_id": project_id,
+            "source": "spec:foo",
+            "tasks": [{"tempId": "a", "title": "A", "description": ""}],
+            "edges": [],
+        },
+    )
+    assert prop["success"] is True, prop
+    return prop["proposal_id"]
+
+
+async def _open_gate(handler, proposal_id: str, **extra) -> str:
+    gate = await handler.execute(
+        "gate_create",
+        {
+            "project_id": "p1",
+            "gate_type": "human",
+            "title": "Approve task batch?",
+            "await_id": proposal_id,
+            **extra,
+        },
+    )
+    assert gate["success"] is True, gate
+    return gate["gate_id"]
+
+
+async def test_commit_without_an_approval_gate_is_not_approved(handler):
+    """The direct command path cannot bypass the approval the pipeline asks for."""
+    prop_id = await _propose(handler)
+
+    r = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
+
+    assert r["success"] is False and r["not_approved"] is True, r
+    assert "no human approval gate" in r["error"]
+    assert await handler._db.list_tasks(project_id="p1") == []
+    assert (await get_proposal(handler._db, prop_id))["status"] == "ready"
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "rejected",
+        "rejected-newest-gate",
+        "free-text",
+        "open",
+        "expired",
+        "not-a-human-gate",
+        "another-proposal",
+        "another-project",
+        "project-argument-mismatch",
+    ],
+)
+async def test_commit_refuses_any_decision_but_this_proposals_approval(handler, case):
+    """Rejected, expired, unrelated and wrong-project decisions create nothing."""
+    prop_id = await _propose(handler)
+    db = handler._db
+    args: dict = {"proposal_id": prop_id}
+    if case == "rejected":
+        args["gate_id"] = await _approve(handler, prop_id, resolution="rejected")
+    elif case == "rejected-newest-gate":
+        await _approve(handler, prop_id, resolution="reject")
+    elif case == "free-text":
+        args["gate_id"] = await _approve(handler, prop_id, resolution="Yes, approve it")
+    elif case == "open":
+        args["gate_id"] = await _open_gate(handler, prop_id)
+    elif case == "expired":
+        gate_id = await _open_gate(handler, prop_id, timeout_at=time.time() - 1)
+        assert gate_id in await db.expire_open_gates(time.time())
+        args["gate_id"] = gate_id
+    elif case == "not-a-human-gate":
+        gate_id = await _open_gate(handler, prop_id, gate_type="task")
+        await db.resolve_gate(gate_id, resolved_by="sweep:task", resolution="approved")
+        args["gate_id"] = gate_id
+    elif case == "another-proposal":
+        other = await handler.execute(
+            "task_batch_propose",
+            {
+                "project_id": "p1",
+                "source": "spec:bar",
+                "tasks": [{"tempId": "x", "title": "X", "description": ""}],
+                "edges": [],
+            },
+        )
+        args["gate_id"] = await _approve(handler, other["proposal_id"])
+    elif case == "another-project":
+        await handler.execute("create_project", {"id": "p2", "name": "p2"})
+        args["gate_id"] = await _approve(handler, prop_id, project_id="p2")
+    elif case == "project-argument-mismatch":
+        args["gate_id"] = await _approve(handler, prop_id)
+        args["project_id"] = "p2"
+
+    r = await handler.execute("task_batch_commit", args)
+
+    assert r["success"] is False and r.get("not_approved") is True, r
+    assert await db.list_tasks(project_id="p1") == []
+    assert (await get_proposal(db, prop_id))["status"] == "ready"
+
+
+async def test_commit_with_the_exact_approving_gate_materialises_once(handler):
+    prop_id = await _propose(handler)
+    gate_id = await _approve(handler, prop_id, resolution="approve")
+    args = {"proposal_id": prop_id, "gate_id": gate_id, "project_id": "p1"}
+
+    first = await handler.execute("task_batch_commit", args)
+    replay = await handler.execute("task_batch_commit", args)
+
+    assert first["success"] is True and not first.get("already_committed"), first
+    assert replay == {"success": True, "already_committed": True, "task_ids": first["task_ids"]}
+    assert {t.id for t in await handler._db.list_tasks(project_id="p1")} == set(first["task_ids"])
+
+
+async def test_update_is_refused_once_an_approval_gate_exists(handler):
+    """The gate asks about one payload; that is the only one it can approve."""
+    prop_id = await _propose(handler)
+    await _open_gate(handler, prop_id)
+
+    up = await handler.execute(
+        "task_batch_update",
+        {
+            "proposal_id": prop_id,
+            "payload": {
+                "tasks": [{"tempId": "a", "title": "Changed", "description": ""}],
+                "edges": [],
+            },
+        },
+    )
+
+    assert up["success"] is False and "frozen" in up["error"], up
+    assert (await get_proposal(handler._db, prop_id))["payload"]["tasks"][0]["title"] == "A"
+
+
+def test_commit_outcomes_are_typed():
+    from src.commands.contracts.builtin import _outcome_of
+
+    assert _outcome_of("task_batch_commit", {"success": True, "task_ids": ["t"]}) == "committed"
+    assert _outcome_of(
+        "task_batch_commit", {"success": True, "already_committed": True, "task_ids": ["t"]}
+    ) == "already_committed"
+    assert _outcome_of(
+        "task_batch_commit", {"success": False, "not_approved": True, "error": "no gate"}
+    ) == "not_approved"
+    assert _outcome_of("task_batch_commit", {"success": False, "error": "cycle"}) == "rejected"

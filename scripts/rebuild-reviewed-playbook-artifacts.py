@@ -11,8 +11,9 @@ regenerate them (child plan §5.3, "Determinism note").
 Two of the four shipped playbooks retain reviewer-approved deterministic
 semantic bodies, without an LLM:
 
-* ``default-pipeline`` — reads the semantic body from its reviewed artifact and
-  remaps source references onto the current prose.
+* ``default-pipeline`` — a reviewer-authored deterministic graph
+  (``_default_pipeline_body``): three single-command rules whose refusals
+  reach a ``failed`` terminal, the commit rule filtered to approved human gates.
 * ``default-assignment-routing`` — a reviewer-authored deterministic graph
   (``_default_assignment_routing_body``): read options, decide (LLM) when the
   class is not explicit, write the route.  Spec:
@@ -21,8 +22,8 @@ semantic bodies, without an LLM:
 ``memory-consolidation`` uses a deterministic, reviewer-authored semantic body
 that preserves the prose as the LLM prompt and adds the typed envelope:
 triggers, profiles, budgets, tool ceilings, output schemas, and terminal
-transitions. ``pr-merge-sweep`` follows the same reviewed-artifact approach as
-``default-pipeline``.
+transitions. ``pr-merge-sweep`` reads its semantic body from its reviewed
+artifact and remaps source references onto the current prose.
 
 Usage::
 
@@ -66,31 +67,8 @@ SHIPPED = {
 }
 SOURCES = SHIPPED
 
-#: Which numbered prose item authorises which lowered step (§5.3 review record).
-#: A terminal step is authorised by the "Failure handling, uniformly" section,
-#: which is the prose that says a rule ends rather than retries.
-PIPELINE_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
-    "per-task-review--create-review": ("per-task-review", 1),
-    "per-task-review--link-discovered-from": ("per-task-review", 2),
-    "per-task-review--fetch-downstream": ("per-task-review", 3),
-    "per-task-review--gate-downstream": ("per-task-review", 4),
-    "per-task-review--gate-downstream-body": ("per-task-review", 4),
-    "per-task-review--done": ("per-task-review", None),
-    "per-branch-final-review--ensure-final": ("per-branch-final-review", 1),
-    "per-branch-final-review--ensure-review": ("per-branch-final-review", 2),
-    "per-branch-final-review--link-blocks": ("per-branch-final-review", 3),
-    "per-branch-final-review--fetch-downstream-branch": ("per-branch-final-review", 4),
-    "per-branch-final-review--gate-downstream-pr-merged": ("per-branch-final-review", 5),
-    "per-branch-final-review--gate-downstream-pr-merged-body": ("per-branch-final-review", 5),
-    "per-branch-final-review--done": ("per-branch-final-review", None),
-    "spec-ingest-on-approve--spec_ingest_gate": ("spec-ingest-on-approve", 1),
-    "spec-ingest-on-approve--done": ("spec-ingest-on-approve", None),
-    "proposal-ready-gate--proposal_ready_gate": ("proposal-ready-gate", 1),
-    "proposal-ready-gate--done": ("proposal-ready-gate", None),
-    "commit-on-gate-resolve--commit_proposal": ("commit-on-gate-resolve", 1),
-    "commit-on-gate-resolve--done": ("commit-on-gate-resolve", None),
-}
-
+#: A terminal step of a recorded body is authorised by the "Failure handling,
+#: uniformly" section, the prose that says a rule ends rather than retries.
 _TERMINAL_HEADING = "## Failure handling, uniformly"
 
 PR_MERGE_SWEEP_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
@@ -150,21 +128,118 @@ class ProseIndex:
         return self._ref(self._items[rule_id][ordinal], f"Rule: {rule_id}")
 
 
-def _remap_pipeline_refs(body: dict[str, Any], index: ProseIndex) -> dict[str, Any]:
-    for rule in body["rules"]:
-        rule["source"] = index.rule_ref(rule["id"])
-    for step_id, step in body["steps"].items():
-        rule_id, ordinal = PIPELINE_STEP_PROSE[step_id]
-        step["source"] = index.step_ref(rule_id, ordinal)
-    return body
-
-
 def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
     """Read executable semantics from the artifact that reviewers approved."""
     payload = json.loads(
         (FIXTURE_ROOT / playbook_id / "artifact.json").read_text(encoding="utf-8")
     )
     return {"rules": payload["rules"], "steps": payload["steps"]}
+
+
+def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``default-pipeline``.
+
+    Three rules of one command step each.  The success outcomes the prose names
+    reach the rule's ``completed`` terminal; ``rejected``, ``runtime_error`` and
+    the commit's ``not_approved`` reach a distinct ``failed`` terminal, so a
+    refused step never reads as a finished run.  The commit rule dispatches
+    only for an approved human gate that names a proposal, and hands the gate
+    and project to ``task_batch_commit`` so the command re-checks the exact
+    decision (policy-simplification task agile-glacier.2).
+    """
+    index = ProseIndex(source, source.vault_path)
+    terminal_ref = _source_ref_for_heading(source, "## Failure handling")
+    rules: list[dict[str, Any]] = []
+    steps: dict[str, Any] = {}
+
+    def lit(value: Any) -> dict[str, Any]:
+        return {"type": "literal", "value": value}
+
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    def template(*parts: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "template", "parts": list(parts)}
+
+    def add(
+        rule: str,
+        trigger: dict[str, Any],
+        title: str,
+        command: str,
+        inputs: dict[str, Any],
+        successes: tuple[str, ...],
+        failures: tuple[str, ...] = ("rejected", "runtime_error"),
+        guard: dict[str, Any] | None = None,
+    ) -> None:
+        entry, done, failed = f"{rule}--{title}", f"{rule}--done", f"{rule}--failed"
+        declared: dict[str, Any] = {
+            "id": rule, "name": rule, "trigger": trigger, "entry_step": entry,
+            "source": index.rule_ref(rule),
+        }
+        if guard is not None:
+            declared["guard"] = guard
+        rules.append(declared)
+        transitions = {name: done for name in successes}
+        transitions.update({name: failed for name in failures})
+        steps[entry] = {
+            "type": "command", "rule": rule, "title": title,
+            "source": index.step_ref(rule, 1), "command": command,
+            "inputs": inputs, "transitions": transitions,
+        }
+        steps[done] = _terminal(rule, "completed", terminal_ref)
+        steps[failed] = _terminal(rule, "failed", terminal_ref)
+
+    add(
+        "spec-ingest-on-approve",
+        {"event_type": "spec.approved"},
+        "spec_ingest_gate",
+        "ensure_task",
+        {
+            "project_id": event("project_id"),
+            "dedup_key": template(lit("spec-ingest:"), event("spec_path")),
+            "title": template(lit("Ingest spec "), event("spec_path")),
+            "profile_id": lit("spec-ingest"),
+            "intelligence_class": lit("standard-high"),
+            "description": lit(
+                "Read this spec, list existing tasks in the project, and emit "
+                "task_batch_propose with the derived task graph. Iterate on "
+                "validation errors."
+            ),
+        },
+        ("created", "reused"),
+    )
+    add(
+        "proposal-ready-gate",
+        {"event_type": "proposal.ready"},
+        "proposal_ready_gate",
+        "gate_create",
+        {
+            "project_id": event("project_id"),
+            "gate_type": lit("human"),
+            "title": lit("Approve task batch?"),
+            "question": template(lit("Approve proposal "), event("proposal_id"), lit("?")),
+            "await_id": event("proposal_id"),
+        },
+        ("created", "reused", "skipped"),
+    )
+    add(
+        "commit-on-gate-resolve",
+        {
+            "event_type": "gate.resolved",
+            "filter": {"gate_type": "human", "resolution": ["approve", "approved"]},
+        },
+        "commit_proposal",
+        "task_batch_commit",
+        {
+            "proposal_id": event("await_id"),
+            "gate_id": event("gate_id"),
+            "project_id": event("project_id"),
+        },
+        ("committed", "already_committed"),
+        failures=("not_approved", "rejected", "runtime_error"),
+        guard={"type": "exists", "value": event("await_id"), "mode": "truthy"},
+    )
+    return {"rules": rules, "steps": steps}
 
 
 def profile_lookup(playbook_id: str | None = None) -> Any:
@@ -191,8 +266,7 @@ def _load(rel_path: str) -> PlaybookSource:
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
     if playbook_id == "default-pipeline":
-        body = _recorded_semantic_body(playbook_id)
-        return _remap_pipeline_refs(json.loads(json.dumps(body)), ProseIndex(source, source.vault_path))
+        return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
     if playbook_id == "pr-merge-sweep":

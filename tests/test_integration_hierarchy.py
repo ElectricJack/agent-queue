@@ -314,6 +314,21 @@ async def test_ordinary_create_routes_all_child_writes_through_atomic_origin_wri
     assert await db.get_task_labels("parent.1") == ["integration-child"]
 
 
+async def _approve_proposal(handler, db, proposal_id: str, project_id: str = "p") -> None:
+    """Proposals materialise only under a resolved human approval gate."""
+    gate = await handler.execute(
+        "gate_create",
+        {
+            "project_id": project_id,
+            "gate_type": "human",
+            "title": "Approve task batch?",
+            "await_id": proposal_id,
+        },
+    )
+    assert gate["success"] is True, gate
+    await db.resolve_gate(gate["gate_id"], resolved_by="human:test", resolution="approved")
+
+
 async def test_proposal_commit_uses_one_atomic_hierarchy_transaction(
     db, hierarchy, internal_plugins_handler
 ):
@@ -335,6 +350,7 @@ async def test_proposal_commit_uses_one_atomic_hierarchy_transaction(
             ],
         },
     )
+    await _approve_proposal(handler, db, proposal["proposal_id"])
 
     committed = await handler.execute(
         "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
@@ -730,6 +746,7 @@ async def test_new_root_bootstraps_default_branch_before_its_branch_exists(
             "tasks": [{"tempId": "root", "title": "New root", "description": "No branch"}],
             "edges": [],
         })
+        await _approve_proposal(handler, db, proposal["proposal_id"])
         result = await handler.execute(operation, {"proposal_id": proposal["proposal_id"]})
         assert result["success"], result
         task_id = result["task_ids"][0]

@@ -49,6 +49,10 @@ _LEGACY_DEFAULT_PIPELINE_HASHES = frozenset(
         # recorded the ``ensure_task`` creation-point refusal (task
         # solid-harbor-68).  Rules unchanged; prose only.
         "21ff23549f6df0b908aecb73e54bd516610fd662eddf3a89760060a1b8fd2c5f",
+        # Reviews retired (cf0002b9c), but the commit rule had no approval
+        # filter and every failure reached a ``completed`` terminal
+        # (policy-simplification task agile-glacier.2).
+        "5ade5c846886562f31e6342420ce60696f9c1c7aeb9fa18b10e99b7f08eed31b",
     }
 )
 

@@ -25,8 +25,8 @@ class CreateTaskRequest:
             opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to
             inherit the project/system policy.
         task_type (None | str | Unset): Categorize the task type for display and filtering (optional)
-        profile_id (None | str | Unset): Agent profile ID to configure the agent with specific tools/capabilities
-            (optional)
+        profile_id (None | str | Unset): Eligible worker profile ID to configure the task (optional; supervisor is not
+            executable)
         intelligence_class (None | str | Unset): Execution intelligence class id, e.g. deep-high or standard-medium. Use
             list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work
             atomically.

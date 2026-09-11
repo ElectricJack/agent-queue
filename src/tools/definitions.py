@@ -5376,18 +5376,33 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_batch_commit",
         "description": (
-            "Atomically materialise a proposal into the live work graph: "
-            "creates every task, then every dependency edge, stamping the "
-            "proposal's source as provenance. The ready→committed flip is a "
-            "single conditional update, so two concurrent commits cannot both "
-            "win. Any failure unwinds every task and edge already created and "
-            "returns the proposal to ``ready`` for a retry. Returns the "
-            "created task ids."
+            "Atomically materialise an approved proposal into the live work "
+            "graph: creates every task, then every dependency edge, stamping "
+            "the proposal's source as provenance. Refused (``not_approved``) "
+            "unless a resolved human gate in the proposal's project, awaiting "
+            "this proposal, carries an approval resolution (``approve`` or "
+            "``approved``). The ready→committed flip is a single conditional "
+            "update, so two concurrent commits cannot both win. Any failure "
+            "unwinds every task and edge already created and returns the "
+            "proposal to ``ready`` for a retry. Committing an already "
+            "committed proposal returns its original task ids with "
+            "``already_committed: true``. Returns the created task ids."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "proposal_id": {"type": "string", "description": "Proposal to commit."},
+                "gate_id": {
+                    "type": "string",
+                    "description": (
+                        "The human gate whose resolution approves the proposal. "
+                        "Omitted: the newest human gate awaiting the proposal."
+                    ),
+                },
+                "project_id": {
+                    "type": "string",
+                    "description": "Expected project; refused if the proposal or gate differs.",
+                },
             },
             "required": ["proposal_id"],
         },

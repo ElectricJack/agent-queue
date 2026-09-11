@@ -302,6 +302,11 @@ class GetDownstreamTasksValue(CommandValue):
 
 class TaskBatchCommitArgs(CommandArgs):
     proposal_id: str
+    #: The human gate whose resolution approves this proposal.  Omitted, the
+    #: command reads the newest human gate awaiting the proposal instead.
+    gate_id: str | None = None
+    #: Must equal the proposal's (and the gate's) project when given.
+    project_id: str | None = None
 
 
 class TaskBatchCommitValue(CommandValue):
@@ -464,7 +469,14 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
             # child it no longer owns must not see that as a failure; a
             # missing task still does (``rejected``).
             return "not_running"
+        if name == "task_batch_commit" and raw.get("not_approved"):
+            # No human decision approves this exact proposal: nothing was
+            # created, and the step must not read as a plain rejection of a
+            # valid batch.
+            return "not_approved"
         return "rejected"
+    if name == "task_batch_commit":
+        return "already_committed" if raw.get("already_committed") else "committed"
     if name == "provider_usage_probe":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROBE_OUTCOMES else "rejected"
@@ -497,7 +509,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "memory_save": "saved",
         "memory_search": "searched",
         "get_downstream_tasks": "listed",
-        "task_batch_commit": "committed",
         "task_route": "routed",
         "stop_task": "stopped",
         "message_send": "queued",
@@ -526,7 +537,9 @@ def _adapter(name: str, value_type: type[CommandValue]):
                 provider=str(raw.get("provider") or getattr(args, "provider", None) or "claude"),
                 detail=raw.get("error"),
             )
-        elif outcome in {"rejected", "refused_routing_gate", "already_linked", "not_running"}:
+        elif outcome in {
+            "rejected", "refused_routing_gate", "already_linked", "not_running", "not_approved",
+        }:
             value = value_type.model_construct()
         else:
             try:
@@ -795,8 +808,13 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
     "task_batch_commit": CommandPresentation(
         title="Commit a proposed task batch",
         summary="Turn an approved proposal into real tasks and dependencies.",
-        arg_labels={"proposal_id": "Proposal"},
-        outcome_labels={"committed": "Committed", "rejected": "Rejected"},
+        arg_labels={"proposal_id": "Proposal", "gate_id": "Approval gate", "project_id": "Project"},
+        outcome_labels={
+            "committed": "Committed",
+            "already_committed": "Already committed",
+            "not_approved": "Not approved",
+            "rejected": "Rejected",
+        },
         result_labels={"task_ids": "Created tasks"},
         subject_labels={"task_graph": "the proposed task graph"},
     ),
@@ -1092,7 +1110,8 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "task_batch_commit",
             TaskBatchCommitArgs,
             TaskBatchCommitValue,
-            _outcomes("committed"),
+            _outcomes("committed", "already_committed")
+            + (OutcomeSpec(name="not_approved", classification=OutcomeClass.FAILURE),),
             SideEffectClass.COMPOSITE,
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),

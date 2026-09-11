@@ -12932,8 +12932,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Atomically materialise a proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Returns the created task ids.",
-        "description": "Atomically materialise a proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Returns the created task ids.",
+        "summary": "Atomically materialise an approved proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
+        "description": "Atomically materialise an approved proposal into the live work graph: creates every task, then every dependency edge, stamping the proposal's source as provenance. Refused (``not_approved``) unless a resolved human gate in the proposal's project, awaiting this proposal, carries an approval resolution (``approve`` or ``approved``). The ready\u2192committed flip is a single conditional update, so two concurrent commits cannot both win. Any failure unwinds every task and edge already created and returns the proposal to ``ready`` for a retry. Committing an already committed proposal returns its original task ids with ``already_committed: true``. Returns the created task ids.",
         "operationId": "task_batch_commit",
         "requestBody": {
           "content": {
@@ -17499,7 +17499,7 @@
               }
             ],
             "title": "Default Profile Id",
-            "description": "Agent profile used for tasks in this project that don't specify their own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-profiles` for the ids this install has."
+            "description": "Eligible worker profile used for tasks in this project that don't specify their own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-profiles` for the ids this install has."
           }
         },
         "type": "object",
@@ -17693,7 +17693,7 @@
               }
             ],
             "title": "Profile Id",
-            "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)"
+            "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)"
           },
           "intelligence_class": {
             "anyOf": [
@@ -20661,7 +20661,7 @@
               }
             ],
             "title": "Profile Id",
-            "description": "Pre-route the task to this agent profile on create. Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
+            "description": "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
           },
           "intelligence_class": {
             "anyOf": [
@@ -41794,6 +41794,30 @@
             "type": "string",
             "title": "Proposal Id",
             "description": "Proposal to commit."
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id",
+            "description": "The human gate whose resolution approves the proposal. Omitted: the newest human gate awaiting the proposal."
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Expected project; refused if the proposal or gate differs."
           }
         },
         "type": "object",
@@ -41816,11 +41840,16 @@
             "type": "array",
             "title": "Task Ids",
             "default": []
+          },
+          "already_committed": {
+            "type": "boolean",
+            "title": "Already Committed",
+            "default": false
           }
         },
         "type": "object",
         "title": "TaskBatchCommitResponse",
-        "description": "The ids of the tasks the commit actually created, in batch order."
+        "description": "The ids of the tasks the commit created, in batch order.\n\n``already_committed`` marks a replay: the proposal was materialised by an\nearlier call and ``task_ids`` is that commit's receipt."
       },
       "TaskBatchDiscardRequest": {
         "properties": {
@@ -43389,7 +43418,7 @@
           "profile_id": {
             "type": "string",
             "title": "Profile Id",
-            "description": "Agent profile ID that should execute the task"
+            "description": "Eligible worker profile ID that should execute the task (never supervisor)"
           },
           "intelligence_class": {
             "anyOf": [

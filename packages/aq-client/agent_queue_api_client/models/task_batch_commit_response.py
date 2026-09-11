@@ -13,15 +13,20 @@ T = TypeVar("T", bound="TaskBatchCommitResponse")
 
 @_attrs_define
 class TaskBatchCommitResponse:
-    """The ids of the tasks the commit actually created, in batch order.
+    """The ids of the tasks the commit created, in batch order.
 
-    Attributes:
-        success (bool | Unset):  Default: True.
-        task_ids (list[str] | Unset):
+    ``already_committed`` marks a replay: the proposal was materialised by an
+    earlier call and ``task_ids`` is that commit's receipt.
+
+        Attributes:
+            success (bool | Unset):  Default: True.
+            task_ids (list[str] | Unset):
+            already_committed (bool | Unset):  Default: False.
     """
 
     success: bool | Unset = True
     task_ids: list[str] | Unset = UNSET
+    already_committed: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +36,8 @@ class TaskBatchCommitResponse:
         if not isinstance(self.task_ids, Unset):
             task_ids = self.task_ids
 
+        already_committed = self.already_committed
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -38,6 +45,8 @@ class TaskBatchCommitResponse:
             field_dict["success"] = success
         if task_ids is not UNSET:
             field_dict["task_ids"] = task_ids
+        if already_committed is not UNSET:
+            field_dict["already_committed"] = already_committed
 
         return field_dict
 
@@ -48,9 +57,12 @@ class TaskBatchCommitResponse:
 
         task_ids = cast(list[str], d.pop("task_ids", UNSET))
 
+        already_committed = d.pop("already_committed", UNSET)
+
         task_batch_commit_response = cls(
             success=success,
             task_ids=task_ids,
+            already_committed=already_committed,
         )
 
         task_batch_commit_response.additional_properties = d

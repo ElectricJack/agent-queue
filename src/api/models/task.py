@@ -595,10 +595,15 @@ class TaskClaimResponse(BaseModel):
 
 
 class TaskBatchCommitResponse(BaseModel):
-    """The ids of the tasks the commit actually created, in batch order."""
+    """The ids of the tasks the commit created, in batch order.
+
+    ``already_committed`` marks a replay: the proposal was materialised by an
+    earlier call and ``task_ids`` is that commit's receipt.
+    """
 
     success: bool = True
     task_ids: list[str] = []
+    already_committed: bool = False
 
 
 class PoolInstanceStatus(BaseModel):

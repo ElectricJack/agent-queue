@@ -75,16 +75,22 @@ REQUIRED_REVIEW_KEYS = frozenset(
 REQUIRED_REVIEW_SECTIONS = ()
 
 
-#: The rule ids `tests/test_default_pipeline.py` pins.
+#: The three intake rules the shipped default pipeline keeps; the per-task and
+#: per-branch review rules were retired in cf0002b9c.
 PIPELINE_RULE_IDS = frozenset(
     {
-        "per-task-review",
-        "per-branch-final-review",
         "spec-ingest-on-approve",
         "proposal-ready-gate",
         "commit-on-gate-resolve",
     }
 )
+
+#: The pre-retirement five-rule recording, kept only as a review-rule corpus
+#: for engine tests and the doctor's review-key pin.  Not a shipped artifact.
+RETIRED_REVIEW_PIPELINE = FIXTURE_ROOT / "default-pipeline-retired-reviews.artifact.json"
+
+#: The operator-importable copy of the reviewed bundle.
+INTEGRATION_ONLY_BUNDLE = REPO_ROOT / "docs" / "playbooks" / "integration-only" / "default-pipeline"
 
 #: `src/playbooks/routing.py` suppresses these retired rules; they must never
 #: reappear in a reviewed artifact.
@@ -314,13 +320,13 @@ def test_compiled_against_fingerprints_every_referenced_profile(playbook_id: str
         )
 
 
-def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> None:
+def test_the_pipeline_depends_on_its_profile_only_by_delegation() -> None:
     """The shape that made the empty map easy to miss, pinned.
 
-    `default-pipeline` has no `llm` or `agent_task` step at all: every one of
-    its three profile dependencies is an `ensure_task` argument.  A future
-    refactor that dropped the delegated half of the snapshot would pass every
-    other assertion in this file, so name the shape here.
+    `default-pipeline` has no `llm` or `agent_task` step at all: its one
+    profile dependency is an `ensure_task` argument.  A future refactor that
+    dropped the delegated half of the snapshot would pass every other
+    assertion in this file, so name the shape here.
     """
     definition = _artifact("default-pipeline")
     own = {
@@ -329,11 +335,7 @@ def test_the_pipeline_depends_on_its_review_profiles_only_by_delegation() -> Non
         if getattr(step, "profile_id", None)
     }
     assert own == set(), "default-pipeline gained an AI step; re-review this fixture"
-    assert set(definition.compiled_against.profiles) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
-    }
+    assert set(definition.compiled_against.profiles) == {"spec-ingest"}
 
 
 def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
@@ -343,18 +345,78 @@ def test_shipped_profile_fingerprints_covers_the_shipped_tree() -> None:
     assert all(value.startswith("sha256:") for value in fingerprints.values())
 
 
-def test_pipeline_references_the_three_review_profiles() -> None:
-    assert _referenced_profile_ids(_artifact("default-pipeline")) == {
-        "reviewer",
-        "final-reviewer",
-        "spec-ingest",
-    }
+def test_pipeline_references_only_the_spec_ingest_profile() -> None:
+    assert _referenced_profile_ids(_artifact("default-pipeline")) == {"spec-ingest"}
 
 
 def test_pipeline_rule_set_unchanged() -> None:
     rule_ids = {rule.id for rule in _artifact("default-pipeline").rules}
     assert rule_ids == PIPELINE_RULE_IDS
     assert not rule_ids & SUPERSEDED_RULE_IDS
+
+
+def test_pipeline_commit_rule_dispatches_only_for_an_approved_human_gate() -> None:
+    """Audit F1: a null filter let every gate resolution attempt a commit."""
+    definition = _artifact("default-pipeline")
+    (rule,) = [r for r in definition.rules if r.id == "commit-on-gate-resolve"]
+    assert rule.trigger.event_type == "gate.resolved"
+    assert rule.trigger.filter == {"gate_type": "human", "resolution": ["approve", "approved"]}
+    guard = rule.guard.model_dump(mode="json")
+    assert guard == {
+        "type": "exists", "value": {"type": "event_ref", "path": "await_id"}, "mode": "truthy",
+    }
+
+    from src.commands.proposal_commands import APPROVAL_RESOLUTIONS
+
+    assert set(rule.trigger.filter["resolution"]) == APPROVAL_RESOLUTIONS, (
+        "the rule filter and the command boundary must accept the same approvals"
+    )
+    commit = definition.steps[rule.entry_step]
+    assert commit.command == "task_batch_commit"
+    assert _inputs(commit) == {
+        "proposal_id": {"type": "event_ref", "path": "await_id"},
+        "gate_id": {"type": "event_ref", "path": "gate_id"},
+        "project_id": {"type": "event_ref", "path": "project_id"},
+    }
+
+
+def test_pipeline_refusals_never_reach_a_completed_terminal() -> None:
+    """Audit F1: `rejected`/`runtime_error` used to share the success terminal."""
+    from src.playbooks.definition import CommandStep, TerminalStep
+
+    definition = _artifact("default-pipeline")
+    successes = {
+        "ensure_task": {"created", "reused"},
+        "gate_create": {"created", "reused", "skipped"},
+        "task_batch_commit": {"committed", "already_committed"},
+    }
+    commands = [s for s in definition.steps.values() if isinstance(s, CommandStep)]
+    assert {s.command for s in commands} == set(successes)
+    for step in commands:
+        for outcome, target in step.transitions.items():
+            terminal = definition.steps[target]
+            assert isinstance(terminal, TerminalStep), (step.command, outcome)
+            expected = "completed" if outcome in successes[step.command] else "failed"
+            assert terminal.outcome == expected, (step.command, outcome, terminal.outcome)
+        assert {"rejected", "runtime_error"} <= set(step.transitions)
+    commit = next(s for s in commands if s.command == "task_batch_commit")
+    assert definition.steps[commit.transitions["not_approved"]].outcome == "failed"
+
+
+def test_spec_ingest_is_ensured_with_an_explicit_route() -> None:
+    """`ensure_task` suppresses `task.created`; a profile alone is not a route."""
+    definition = _artifact("default-pipeline")
+    ensure = definition.steps["spec-ingest-on-approve--spec_ingest_gate"]
+    assert _inputs(ensure)["profile_id"] == {"type": "literal", "value": "spec-ingest"}
+    assert _inputs(ensure)["intelligence_class"] == {"type": "literal", "value": "standard-high"}
+
+
+def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
+    """The operator-importable copy may not drift from the reviewed recording."""
+    for name in ("artifact.json", "artifact.sha256", "source.md", "manifest.md"):
+        assert (INTEGRATION_ONLY_BUNDLE / name).read_bytes() == (
+            _fixture("default-pipeline") / name
+        ).read_bytes(), f"docs/playbooks/integration-only/default-pipeline/{name} drifted"
 
 
 def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None:
@@ -417,10 +479,10 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
     assert definition.steps["route-task--failed"].outcome == "failed"
 
 def test_review_dedup_key_matches_doctor() -> None:
-    """The prose rewrite must not silently disarm `integration.unreviewed_prs`."""
+    """The doctor's review key still matches the retired review recording."""
     from src.doctor.integration_checks import _review_dedup_key
 
-    definition = _artifact("default-pipeline")
+    definition = load_definition_json(RETIRED_REVIEW_PIPELINE.read_text(encoding="utf-8"))
     step = definition.steps["per-task-review--create-review"]
     template = _inputs(step)["dedup_key"]
     assert template["type"] == "template", template

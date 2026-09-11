@@ -4,13 +4,16 @@ Registers four CommandHandler commands:
 
 - ``task_batch_propose`` — validate + persist a proposed batch, emit
   ``proposal.ready``.
-- ``task_batch_update`` — replace the payload while status is draft/ready.
+- ``task_batch_update`` — replace the payload while status is draft/ready
+  and no approval gate awaits the proposal yet.
 - ``task_batch_discard`` — soft-drop the proposal.
 - ``task_batch_commit`` — atomically materialize the batch into the live
-  work graph.  Double-commit is rejected.
+  work graph, only under a human gate that approves this exact proposal.
+  A replay of an already committed proposal returns the original receipt.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -18,10 +21,20 @@ from typing import Any
 from sqlalchemy import and_, select, update
 
 from src.database.queries import proposal_queries
-from src.database.tables import TASK_DEP_TYPES, task_proposals, tasks
+from src.database.tables import TASK_DEP_TYPES, task_metadata, task_proposals, tasks
 from src.models import DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+#: The ``resolution`` values that approve a proposal's human gate.  The
+#: dashboard's proposal pane and activity drawer write ``approved``; the task
+#: pane writes ``approve``.  The shipped ``default-pipeline`` filters its
+#: commit rule on exactly this set, so the event filter and the command agree.
+APPROVAL_RESOLUTIONS = frozenset({"approve", "approved"})
+
+#: Task metadata key linking each materialised task to its proposal, so a
+#: replayed commit can report the original receipt.
+PROPOSAL_ID_META = "proposal_id"
 
 
 class TaskProposalCommandsMixin:
@@ -177,9 +190,24 @@ class TaskProposalCommandsMixin:
         if cycles:
             return {"success": False, "error": f"cycle(s): {cycles}"}
 
-        await proposal_queries.update_proposal(
-            self.db, proposal_id, payload=payload, status="ready"
-        )
+        if not await proposal_queries.update_ungated_payload(
+            self.db, proposal_id, project_id=row["project_id"], payload=payload
+        ):
+            current = await proposal_queries.get_proposal(self.db, proposal_id)
+            status = current["status"] if current else "missing"
+            if status not in ("draft", "ready"):
+                return {
+                    "success": False,
+                    "error": f"cannot update proposal in status '{status}'",
+                }
+            return {
+                "success": False,
+                "error": (
+                    f"proposal '{proposal_id}' already has an approval gate, so its "
+                    "payload is frozen to the revision that gate asks about; discard "
+                    "it and propose the revised batch instead"
+                ),
+            }
         return {"success": True}
 
     async def _cmd_task_batch_discard(self, args: dict) -> dict:
@@ -207,8 +235,75 @@ class TaskProposalCommandsMixin:
         )
         return {"success": True}
 
+    async def _proposal_approval_error(
+        self, row: dict, *, gate_id: str | None, project_id: str | None
+    ) -> str | None:
+        """Why no human decision approves this exact proposal, or ``None``.
+
+        Materialisation is the authority boundary.  An event filter narrows
+        which resolutions reach the pipeline's commit rule, but any caller can
+        invoke ``task_batch_commit`` directly, so the approving gate is re-read
+        here: a ``human`` gate in the proposal's own project, awaiting this
+        proposal id, resolved with one of :data:`APPROVAL_RESOLUTIONS`.  With
+        no ``gate_id`` the newest such gate is the decision of record.  The
+        payload is frozen once that gate exists (``task_batch_update``), so the
+        gate approves exactly the revision being committed.
+        """
+        proposal_id, owner = row["id"], row["project_id"]
+        if project_id and project_id != owner:
+            return f"proposal '{proposal_id}' belongs to project '{owner}', not '{project_id}'"
+        if gate_id:
+            gate = await self.db.get_gate(str(gate_id))
+            if gate is None:
+                return f"approval gate '{gate_id}' not found"
+        else:
+            candidates = await self.db.list_gates(
+                project_id=owner, gate_type="human", await_id=proposal_id
+            )
+            if not candidates:
+                return f"proposal '{proposal_id}' has no human approval gate"
+            gate = candidates[0]
+        label = f"gate '{gate['id']}'"
+        if gate["gate_type"] != "human":
+            return f"{label} is a '{gate['gate_type']}' gate, not a human approval"
+        if gate["project_id"] != owner:
+            return f"{label} belongs to project '{gate['project_id']}', not '{owner}'"
+        if gate["await_id"] != proposal_id:
+            return f"{label} awaits '{gate['await_id']}', not proposal '{proposal_id}'"
+        if gate["status"] != "resolved":
+            return f"{label} is {gate['status']}, not resolved"
+        if gate["resolution"] not in APPROVAL_RESOLUTIONS:
+            return f"{label} was resolved {gate['resolution']!r}, which is not an approval"
+        return None
+
+    async def _proposal_task_ids(self, proposal_id: str) -> list[str]:
+        """The tasks a committed proposal materialised, oldest first."""
+        async with self.db._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(tasks.c.id)
+                    .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                    .where(
+                        task_metadata.c.key == PROPOSAL_ID_META,
+                        task_metadata.c.value == json.dumps(proposal_id),
+                    )
+                    .order_by(tasks.c.created_at, tasks.c.id)
+                )
+            ).all()
+        return [r[0] for r in rows]
+
     async def _cmd_task_batch_commit(self, args: dict) -> dict:
-        """Atomically materialise a proposal into the live work graph.
+        """Atomically materialise an approved proposal into the live work graph.
+
+        Approval: ``_proposal_approval_error`` must find a human gate that
+        approves this exact project and proposal (``gate_id``/``project_id``
+        pin it when the caller knows them).  Anything else — no gate, an open,
+        expired or rejected one, another project's or another proposal's —
+        returns ``not_approved`` and creates nothing.
+
+        Replay: a second approved call for an already committed proposal is
+        not an error.  It returns ``already_committed`` with the original
+        task ids, so a re-delivered ``gate.resolved`` yields one graph.
 
         Concurrency: the "claim" is a single conditional UPDATE that
         flips ``ready`` → ``committed`` and returns rowcount.  Only one
@@ -233,10 +328,19 @@ class TaskProposalCommandsMixin:
                 "success": False,
                 "error": f"proposal '{proposal_id}' not found",
             }
-        if row["status"] == "committed":
-            return {"success": False, "error": "proposal already committed"}
         if row["status"] == "discarded":
             return {"success": False, "error": "proposal was discarded"}
+        approval_error = await self._proposal_approval_error(
+            row, gate_id=args.get("gate_id"), project_id=args.get("project_id")
+        )
+        if approval_error:
+            return {"success": False, "not_approved": True, "error": approval_error}
+        if row["status"] == "committed":
+            return {
+                "success": True,
+                "already_committed": True,
+                "task_ids": await self._proposal_task_ids(proposal_id),
+            }
 
         project_id: str = row["project_id"]
         payload: dict[str, Any] = row["payload"]
@@ -318,6 +422,7 @@ class TaskProposalCommandsMixin:
                 )
                 created_ids.append(new_id)
                 temp_to_real[t["tempId"]] = new_id
+                await self.db.set_task_meta(new_id, PROPOSAL_ID_META, proposal_id)
 
             for e in edges_in:
                 frm = temp_to_real.get(e["from"], e["from"])
@@ -440,6 +545,9 @@ class TaskProposalCommandsMixin:
                         await self.db._upsert_meta(
                             created["task_id"], "proposal_source", source, conn=conn
                         )
+                        await self.db._upsert_meta(
+                            created["task_id"], PROPOSAL_ID_META, proposal_id, conn=conn
+                        )
                         pending.remove(temp_id)
                     grouped: dict[str, list[str]] = {}
                     for temp_id in ready_children:
@@ -456,6 +564,9 @@ class TaskProposalCommandsMixin:
                             temp_to_real[temp_id] = item["task_id"]
                             await self.db._upsert_meta(
                                 item["task_id"], "proposal_source", source, conn=conn
+                            )
+                            await self.db._upsert_meta(
+                                item["task_id"], PROPOSAL_ID_META, proposal_id, conn=conn
                             )
                             pending.remove(temp_id)
 
