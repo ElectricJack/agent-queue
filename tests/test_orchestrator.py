@@ -1017,14 +1017,16 @@ class TestPlanApprovalBlocking:
         )
         await orch.db.create_task(parent)
 
-        # Create chained subtasks with blocking dep on parent
+        # Chained subtasks under the container.  ``parent-child`` is the edge
+        # the ``is_blocked`` projection releases once the container leaves
+        # DEFINED; the legacy plan-subtask special case for a ``blocks`` edge
+        # to an IN_PROGRESS parent was retired with the legacy scan.
         sub1 = Task(
             id="t-sub-1",
             project_id="p-1",
             title="Sub 1",
             description="First subtask",
             status=TaskStatus.DEFINED,
-            parent_task_id="t-plan",
             is_plan_subtask=True,
         )
         sub2 = Task(
@@ -1033,12 +1035,12 @@ class TestPlanApprovalBlocking:
             title="Sub 2",
             description="Second subtask",
             status=TaskStatus.DEFINED,
-            parent_task_id="t-plan",
             is_plan_subtask=True,
         )
         await orch.db.create_task(sub1)
         await orch.db.create_task(sub2)
-        await orch.db.add_dependency("t-sub-1", depends_on="t-plan")
+        await orch.db.add_dependency("t-sub-1", "t-plan", "parent-child")
+        await orch.db.add_dependency("t-sub-2", "t-plan", "parent-child")
         await orch.db.add_dependency("t-sub-2", depends_on="t-sub-1")
 
         # Release the container: transition parent to IN_PROGRESS
