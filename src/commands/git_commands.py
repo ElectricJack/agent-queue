@@ -3,9 +3,9 @@
 Provides git-related commands that go through the CommandHandler dispatch
 surface.  Currently contains:
 
-- ``pr_merge`` — merge a PR via ``gh pr merge``.  Only callable by profiles
-  that whitelist ``pr_merge`` in ``allowed_tools`` (final-reviewer only in
-  the shipped dv2-phase2 configuration).  A merge is also where the daemon
+- ``pr_merge`` — merge a PR via ``gh pr merge``.  Used only when a task
+  delegates publication and the project's configured publisher is PR-based;
+  callable only by profiles that grant ``pr_merge``.  A merge is also where the daemon
   learns *which branch* the work actually landed on — see
   :meth:`GitCommandsMixin._record_pr_base`.
 """
@@ -22,12 +22,11 @@ class GitCommandsMixin:
     """Mixin that adds git PR commands to CommandHandler."""
 
     async def _cmd_pr_merge(self, args: dict) -> dict:
-        """Merge a PR.  Backs ``aq pr merge`` and the final-reviewer's tool.
+        """Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool.
 
-        Only allowed for profiles that whitelist ``pr_merge`` in
-        ``allowed_tools`` — the profile system enforces the toolset per
-        agent, so worker profiles cannot invoke this even if they discover
-        the command name.
+        Only allowed for profiles that grant ``pr_merge`` — the profile
+        system enforces the toolset per agent, so a profile without it
+        cannot invoke this even if it discovers the command name.
 
         Before merging, the PR's status-check rollup is consulted according
         to ``integration.merge_ci_policy`` — see :meth:`_check_ci_before_merge`.
@@ -153,7 +152,7 @@ class GitCommandsMixin:
 
         ``blocked`` is the only field ``_cmd_pr_merge`` acts on.  Under
         ``warn`` it is always ``False`` — the point of ``warn`` is that the
-        verdict becomes *visible* (in the command result the final-reviewer
+        verdict becomes *visible* (in the command result the caller
         reads, and in the daemon log) without changing what merges, which
         is what makes it safe to ship on by default while ``main`` itself
         is red.  Under ``required`` anything but green blocks, including

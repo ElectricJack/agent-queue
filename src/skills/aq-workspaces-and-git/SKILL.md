@@ -62,9 +62,9 @@ git push -u origin HEAD           # first push on a new branch
 git push                          # subsequent
 ```
 
-Rules of thumb the reviewer stage enforces:
-- **Never `--no-verify`** — pre-commit hooks catch regressions the
-  reviewer would flag anyway.
+Commit rules:
+- **Never `--no-verify`** — pre-commit hooks catch regressions before
+  anyone else has to.
 - **Never amend a pushed commit** — always create a new commit.
 - **One commit per logical change** where practical. If you did five
   small independent things, five commits is better than one giant one.
@@ -84,25 +84,25 @@ EOF
 )"
 ```
 
-The reviewer stage reads the diff from origin/<branch>, so the PR must
-be pushed and reachable before you call `aq task close`.
+Integration and anyone auditing the task read the branch from
+`origin/<branch>`, so push it before you call `aq task close`.
 
-## Stacked branches — and who owns the exit PR
+## Stacked branches
 
 Branch from the default branch (`main`). Stack on a prerequisite task's
-branch **only** when the work genuinely cannot build or run without it, and
-say so in your close summary.
+branch **only** when the work genuinely cannot build or run without it:
+declare the dependency on that task and say so in your close summary.
 
-When a stack is unavoidable:
+Delivery to the default branch belongs to the project's configured
+integration owner, not to the last task in a stack (software-factory policy,
+`docs/concepts/factory-policy.md`). Follow the delivery section of your prime: open a PR
+only when your task or project asks for one, and never merge it yourself.
 
-- Every stacked PR targets the base branch (`gh pr create --base <base>`).
-- The **last** task in the stack owns opening the `<base> -> main` PR, and
-  must name that PR explicitly in its close summary.
-- A PR merged into a feature branch has shipped nothing to `main`. The tasks
-  close COMPLETED and dependents are released, but `main` does not have the
-  code — this is exactly how `feature/playbook-v2-pkg4-core` swallowed three
-  merged PRs. `aq doctor --check pools.stranded_feature_branches` lists
-  branches in that state.
+A PR merged into a feature branch has shipped nothing to `main`. The tasks
+close COMPLETED and dependents are released, but `main` does not have the
+code — this is exactly how `feature/playbook-v2-pkg4-core` swallowed three
+merged PRs. `aq doctor --check pools.stranded_feature_branches` lists
+branches in that state.
 
 ## Never leave commits only in your worktree
 

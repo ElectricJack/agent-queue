@@ -43,6 +43,7 @@ before contributor internals.
 | [Configuration and vault](concepts/configuration-and-vault.md) | Configured policy, editable Markdown, and database projections. |
 | [Providers](concepts/providers.md) | Provider settings, model selection, usage, and budgets. |
 | [Messaging](concepts/messaging.md) | Worker messages, the activity digest, and human escalation replies. |
+| [Software-factory policy](concepts/factory-policy.md) | The normative admission, delivery and recovery contract that every role instruction references. |
 
 ## Guides
 

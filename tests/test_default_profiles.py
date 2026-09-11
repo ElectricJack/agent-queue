@@ -76,8 +76,7 @@ def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
         text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
         parsed = parse_profile(text)
         prompt = f"{parsed.role}\n{parsed.rules}".lower()
-        assert "aq task set" in prompt, profile_id
-        assert "--note" in prompt, profile_id
+        assert "aq task comment" in prompt, profile_id
         assert "material findings" in prompt, profile_id
         assert "decisions" in prompt, profile_id
         assert "while working" in prompt, profile_id

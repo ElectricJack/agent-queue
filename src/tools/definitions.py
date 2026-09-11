@@ -5159,9 +5159,11 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "pr_merge",
         "description": (
             "Merge a GitHub pull request via ``gh pr merge``.  "
-            "Only callable by profiles that whitelist ``pr_merge`` in "
-            "``allowed_tools`` (final-reviewer only in the dv2-phase2 "
-            "configuration).  Returns the merged SHA on success (best-effort "
+            "Use it only when a task delegates publication to you and the "
+            "project's configured publisher is PR-based; where AQ's "
+            "integration service publishes (e.g. ``development`` mode), do "
+            "not merge.  Callable only by profiles that grant ``pr_merge``.  "
+            "Returns the merged SHA on success (best-effort "
             "— callers who need the authoritative SHA should query the branch "
             "head after this command returns).  The PR's status-check rollup "
             "is consulted first according to ``integration.merge_ci_policy``; "
