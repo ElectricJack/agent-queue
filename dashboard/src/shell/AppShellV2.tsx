@@ -14,6 +14,7 @@ import { PaletteStateProvider } from "./palette/paletteState";
 import { Palette } from "./palette/Palette";
 import { useAgentPushBridge } from "../panes/agentPush";
 import { useNavigate } from "react-router-dom";
+import { NavigationHistoryProvider } from "./navigationHistory";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -219,7 +220,9 @@ export default function AppShellV2() {
       <PaletteStateProvider>
         <ActionRegistryProvider>
           <RightSurfaceProvider>
-            <ShellBody />
+            <NavigationHistoryProvider>
+              <ShellBody />
+            </NavigationHistoryProvider>
           </RightSurfaceProvider>
         </ActionRegistryProvider>
       </PaletteStateProvider>
