@@ -420,6 +420,25 @@ class StopTaskValue(CommandValue):
     stopped: str
 
 
+class TaskRecoveryNotifyArgs(CommandArgs):
+    """``task_recovery_notify`` as a playbook step: wake one durable recovery incident.
+
+    The periodic recovery scan reaches the same incident, so a failure event,
+    its replay and the scan share one record and one supervisor notice.
+    """
+
+    task_id: str
+    project_id: str | None = None
+
+
+class TaskRecoveryNotifyValue(CommandValue):
+    task_id: str | None = None
+    incident_id: str | None = None
+    operation_id: str | None = None
+    detail: str | None = None
+    redelivered: bool | None = None
+
+
 _handler_provider: Callable[[], Any] | None = None
 
 
@@ -494,6 +513,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if raw.get("skipped"):
             return "skipped"
         return "created" if raw.get("was_created") else "reused"
+    if name == "task_recovery_notify":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _RECOVERY_NOTIFY_OUTCOMES else "rejected"
     return {
         "create_task": "created",
         "edit_task": "updated",
@@ -565,6 +587,10 @@ _ROUTE_OPTION_OUTCOMES = frozenset({"already_routed", "explicit", "undecided", "
 _PROBE_OUTCOMES = frozenset(
     {"probed", "unparsed", "not_applicable", "unavailable", "disabled"}
 )
+#: Every ``task_recovery_notify`` success.  A task with no stopped attempt
+#: yet, or a delegate its ended integration operation retired, is a fact
+#: about the failure, not a broken step; the scan records it later if needed.
+_RECOVERY_NOTIFY_OUTCOMES = frozenset({"queued", "existing", "not_actionable", "retired"})
 
 
 def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
@@ -903,6 +929,29 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         result_labels={"message_id": "Message", "state": "State"},
         subject_labels={"message": "a message"},
     ),
+    "task_recovery_notify": CommandPresentation(
+        title="Wake a task's recovery incident",
+        summary=(
+            "Record or reuse the one durable recovery incident for a blocked task and queue "
+            "its single supervisor notice; a replayed failure reuses the same incident."
+        ),
+        arg_labels={"task_id": "Task", "project_id": "Project"},
+        outcome_labels={
+            "queued": "Incident queued",
+            "existing": "Existing incident reused",
+            "not_actionable": "Nothing to recover yet",
+            "retired": "Delegate retired",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Task",
+            "incident_id": "Incident",
+            "operation_id": "Integration operation",
+            "detail": "Detail",
+            "redelivered": "Redelivered",
+        },
+        subject_labels={"message": "the supervisor's incident notice"},
+    ),
     "task_route_options": CommandPresentation(
         title="Read a task's routing options",
         summary=(
@@ -1190,6 +1239,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             SideEffectClass.UPDATE,
             (UpdateClause(subject=EffectSubject.TASK_EXECUTION),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_recovery_notify",
+            TaskRecoveryNotifyArgs,
+            TaskRecoveryNotifyValue,
+            _outcomes("queued", "existing", "not_actionable", "retired"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
             IdempotencySpec(mode="natural"),
             True,
         ),

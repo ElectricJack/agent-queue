@@ -335,19 +335,34 @@ task-branch origin for the delegate. Ordinary tasks still require their own
 materialized origins in hierarchy and train modes.
 
 When an operation completes or is cancelled, the integration reconciler
-retires its detached, unfinished repair and verifier tasks. They remain
-`PAUSED`, with no automatic resume time and an `integration_retirement`
-record naming the terminal operation. `aq task explain --task-id <id>` reports
-that the delegate is no longer required. This preserves the original task and
-stage evidence without claiming that an unused delegate passed. Active worker,
-claim, workspace and branch-owner attachments prevent retirement. Active
-operations and operations waiting for a human decision are unchanged.
+(`RepairService.retire_terminal_delegates`) retires its unfinished repair and
+verifier tasks. A retired delegate is terminal `FAILED` — non-success, never
+runnable again — with an `integration_retirement` record whose `disposition` is
+`cancelled` (the operation was cancelled) or `superseded` (it completed without
+this delegate). The record keeps the previous status, the previous
+`needs_attention` code and any cancellation hold as evidence; retry counters,
+branches and stage evidence are untouched, and nothing claims the delegate
+passed. A delegate an earlier release left `PAUSED` rolls forward on the next
+reconciler tick. Only a live session or claim defers retirement: the writer's
+authority is never taken from it. Active operations and operations waiting for a
+human decision are unchanged.
 
-The terminal operation also governs a delegate whose owner has not detached
-yet: explain reports that it is no longer required, rather than suggesting a
-manual resume. Resume/restart cannot make a terminal operation's paused or
-finished delegate runnable, and orphan-pause recovery leaves it held. Retained
-attachments and the original failure metadata remain available for cleanup.
+Retirement and cleanup are separate. A retained branch-owner row (an attached
+dirty checkout, say) or a workspace still locked by the delegate does not keep
+the ticket open, and retirement does not release it either. It stays exactly as
+the cancellation left it. `aq task explain --task-id <id>` reports
+`integration_delegate_retired` for the disposition and one
+`integration_cleanup_blocked` reason for each resource still held, read live.
+Release those only through the guarded integration ownership controls after
+inspecting the checkout for unsent work.
+
+The terminal operation also governs a delegate that has not been retired yet:
+explain reports that it is no longer required, rather than suggesting a manual
+resume. Resume/restart cannot make a terminal operation's delegate runnable,
+orphan-pause recovery leaves it held, and generic `aq task recover` refuses it.
+A live writer that tries to close such a delegate is told the operation ended
+and not to retry the close, instead of a generic stale-close refusal. Its
+pending recovery incident is superseded as retired rather than re-sent.
 
 Every integration command wraps its internal error as
 `{"success": false, "outcome": "blocked", "error": "<message>"}`

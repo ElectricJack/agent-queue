@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -56,6 +57,14 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
     return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
 
 
+def _decoded(raw: Any) -> Any:
+    """A ``task_metadata`` value; older rows may hold an unencoded string."""
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
 # Ownership states in which the stage-0 writer can still be recognised as this
 # operation's primary.  ``attached`` is a live writer whose dirty checkout the
 # debug escalation retains (design spec §9.2); the released pair is a delegate
@@ -87,10 +96,21 @@ class RepairService:
         self._route_validator = route_validator
 
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
-        """Withdraw detached delegates whose owning operation has already ended.
+        """Settle unfinished delegates whose owning operation has already ended.
 
-        This is scheduling cleanup only: retain branches, evidence and stage
-        outcomes, and never manufacture a successful task completion.
+        The ticket's execution disposition and the cleanup of what it still
+        holds are separate facts.  A delegate with no live session or claim
+        becomes terminal ``FAILED`` -- non-success and never runnable again --
+        with ``integration_retirement.disposition`` ``cancelled`` (its
+        operation was cancelled) or ``superseded`` (the operation completed
+        without it), so nothing schedules it, reminds about it or waits on it
+        as paused work.  A retained branch owner or workspace lock does not
+        keep the ticket open: it is preserved exactly as found and recorded as
+        a named cleanup blocker, which ``explain`` re-reads live.  A live
+        writer still defers retirement; its authority is never taken here.
+        Branches, stage evidence and retry counters are untouched, and no
+        successful completion is manufactured.  A delegate an earlier version
+        of this pass left ``PAUSED`` rolls forward on the next tick.
         """
         operation = integration_repair_operations
         stage = integration_repair_stages
@@ -101,22 +121,10 @@ class RepairService:
                 stage.c.repair_task_id == tasks.c.id,
             ).correlate(operation, tasks).exists(),
         )
-        retired = select(task_metadata.c.task_id).where(
-            task_metadata.c.task_id == tasks.c.id,
-            task_metadata.c.key == "integration_retirement",
-        ).exists()
         attached_session = select(sessions.c.id).where(
             sessions.c.task_id == tasks.c.id,
             or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped",
                 sessions.c.claim_phase.is_not(None)),
-        ).exists()
-        locked_workspace = select(workspaces.c.id).where(
-            workspaces.c.locked_by_task_id == tasks.c.id,
-        ).exists()
-        attached_owner = select(integration_branch_owners.c.id).where(
-            integration_branch_owners.c.owner_id == tasks.c.id,
-            or_(integration_branch_owners.c.session_id.is_not(None),
-                integration_branch_owners.c.workspace_id.is_not(None)),
         ).exists()
         results = []
         transitions = []
@@ -129,37 +137,59 @@ class RepairService:
                     operation.c.state.in_(("completed", "cancelled")),
                     tasks.c.status.in_(("DEFINED", "READY", "BLOCKED", "PAUSED")),
                     tasks.c.assigned_agent_id.is_(None),
-                    or_(~retired, tasks.c.status != "PAUSED", tasks.c.resume_after.is_not(None)),
-                    ~attached_session, ~locked_workspace, ~attached_owner,
+                    ~attached_session,
                 )
                 .order_by(operation.c.updated_at, tasks.c.id)
                 .limit(limit)
                 .with_for_update(of=(tasks, operation), skip_locked=True)
             )).mappings().all()
             for task in rows:
-                reason = f"integration operation {task['operation_id']} is {task['operation_state']}"
+                if task["id"] in results:
+                    continue  # owned by more than one ended operation
+                state = task["operation_state"]
+                disposition = "cancelled" if state == "cancelled" else "superseded"
+                reason = f"integration operation {task['operation_id']} is {state}"
+                meta = {
+                    key: _decoded(value)
+                    for key, value in (await conn.execute(
+                        select(task_metadata.c.key, task_metadata.c.value).where(
+                            task_metadata.c.task_id == task["id"],
+                            task_metadata.c.key.in_((
+                                "integration_retirement", "needs_attention", "manual_pause",
+                            )),
+                        )
+                    )).all()
+                }
+                earlier = meta.get("integration_retirement")
+                earlier = earlier if isinstance(earlier, dict) else {}
+                cleanup = await self.db.get_integration_delegate_cleanup(task["id"], conn=conn)
                 transition = await self.db._apply_transition(
-                    conn, task["id"], TaskStatus.PAUSED,
+                    conn, task["id"], TaskStatus.FAILED,
                     context="integration_delegate_retired", force=True,
                     _manual_pause_control=True, resume_after=None,
                 )
                 transitions.append(transition)
-                previous_attention = await conn.scalar(select(task_metadata.c.value).where(
-                    task_metadata.c.task_id == task["id"], task_metadata.c.key == "needs_attention",
-                ))
                 await self.db._upsert_meta(task["id"], "integration_retirement", {
-                    "operation_id": task["operation_id"], "state": task["operation_state"],
-                    "previous_status": task["status"], "retired_at": now, "reason": reason,
-                    "previous_attention": previous_attention,
+                    "operation_id": task["operation_id"], "state": state,
+                    "disposition": disposition,
+                    "previous_status": earlier.get("previous_status", task["status"]),
+                    "retired_at": now, "reason": reason,
+                    "previous_attention": meta.get("needs_attention",
+                                                   earlier.get("previous_attention")),
+                    "previous_hold": meta.get("manual_pause"),
+                    **({"paused_at": earlier["retired_at"]} if "retired_at" in earlier else {}),
+                    "cleanup": {"state": "blocked" if cleanup else "clear", "blockers": cleanup},
                 }, conn=conn)
+                # The hold a cancellation placed is superseded by the terminal
+                # disposition; its snapshot is kept above as evidence.
                 await conn.execute(delete(task_metadata).where(
                     task_metadata.c.task_id == task["id"],
                     task_metadata.c.key.in_(("needs_attention", "claim_prepare_backoff_until",
-                                            "blocked_terminal")),
+                                            "blocked_terminal", "manual_pause")),
                 ))
                 await self.db.log_event(
                     "task.updated", project_id=task["project_id"], task_id=task["id"],
-                    payload=reason, conn=conn,
+                    payload=f"{reason}; delegate retired as {disposition}", conn=conn,
                 )
                 results.append(task["id"])
         for transition in transitions:

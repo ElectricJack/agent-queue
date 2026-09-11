@@ -38,6 +38,50 @@ class IntegrationStateQueriesMixin:
         row = (await conn.execute(statement)).mappings().one_or_none()
         return dict(row) if row else None
 
+    async def get_integration_delegate_cleanup(self, task_id: str, *, conn=None) -> list[dict]:
+        """Name what a delegate still holds, without releasing any of it.
+
+        Retiring a delegate settles its ticket; these are the preserved
+        resources that must still be cleared, each through its own guarded
+        control.  An empty list means the delegate holds nothing.
+        """
+        if conn is None:
+            async with self._engine.connect() as owned:
+                return await self.get_integration_delegate_cleanup(task_id, conn=owned)
+        owners = integration_branch_owners
+        blockers: list[dict] = []
+        for row in (await conn.execute(
+            select(owners).where(
+                owners.c.owner_id == task_id, owners.c.handoff_state != "released",
+            ).order_by(owners.c.repository_id, owners.c.ref)
+        )).mappings():
+            blockers.append({
+                "code": "branch_owner_retained", "owner_row_id": row["id"],
+                "repository_id": row["repository_id"], "ref": row["ref"],
+                "handoff_state": row["handoff_state"], "session_id": row["session_id"],
+                "workspace_id": row["workspace_id"],
+            })
+        for row in (await conn.execute(
+            select(workspaces.c.id, workspaces.c.workspace_path)
+            .where(workspaces.c.locked_by_task_id == task_id)
+            .order_by(workspaces.c.id)
+        )).mappings():
+            blockers.append({
+                "code": "workspace_locked", "workspace_id": row["id"],
+                "workspace_path": row["workspace_path"],
+            })
+        for row in (await conn.execute(
+            select(sessions.c.id, sessions.c.state).where(
+                sessions.c.task_id == task_id,
+                or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped",
+                    sessions.c.claim_phase.is_not(None)),
+            ).order_by(sessions.c.id)
+        )).mappings():
+            blockers.append({
+                "code": "session_attached", "session_id": row["id"], "state": row["state"],
+            })
+        return blockers
+
     async def get_integration_checkpoint(self, task_id: str) -> dict | None:
         statement = select(task_integration_checkpoints).where(
             task_integration_checkpoints.c.task_id == task_id

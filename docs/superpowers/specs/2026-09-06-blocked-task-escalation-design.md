@@ -93,3 +93,23 @@ Like the other reviewed defaults: the source is copied to
 imported and activated per install
 (`aq playbook v2-import --path tests/fixtures/playbooks/v2/blocked-task-escalation`,
 then `aq playbook activate --playbook-id blocked-task-escalation --artifact-sha256 <hash>`).
+
+## Amendment — 2026-09-11 (software-factory policy simplification, Recovery)
+
+The separate triage message above is retired. It and the periodic recovery scan
+(`queue_task_recovery_notifications`) could both notify about one failure with
+no shared identity (policy audit F8). The step now calls the contracted,
+idempotent `task_recovery_notify` (outcomes `queued`, `existing`,
+`not_actionable`, `retired`; plus `rejected`). It wakes the same durable
+`supervisor_recovery_incident` the scan reconciles, so the event, a replay and
+the scan produce one incident and one supervisor notice. The scan now also covers
+terminal close legs (`blocked_terminal`, except an operator's `stop_task`). The
+incident carries its owner (the supervisor, or the live integration operation
+with that stage's attempts and deadline), the remaining worker-retry and
+supervisor-recovery budget, `deadline_kind`, and the next action. Generic
+recovery refuses integration-owned tasks. A delegate of an ended operation is
+retired by `retire_terminal_delegates`, and its pending incident is superseded.
+The command is daemon-internal: it is excluded from MCP, the CLI and the HTTP
+API. The reviewed bundle was rebuilt with
+`scripts/rebuild-reviewed-playbook-artifacts.py`. Installs pick the change up
+by re-importing and activating it.

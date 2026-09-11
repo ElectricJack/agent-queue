@@ -220,6 +220,56 @@ class TestExplainCommand:
         assert "cancelled" in res["reasons"][0]["detail"]
         assert await db.get_task_meta("t", "needs_attention") == "slot_reset_failed"
 
+    async def test_retired_delegate_names_cleanup_separately_from_its_disposition(
+        self, handler, db
+    ):
+        await mktask(db, "t", status=TaskStatus.FAILED)
+        await db.set_task_meta("t", "integration_retirement", {
+            "operation_id": "operation", "state": "cancelled", "disposition": "cancelled",
+            "reason": "integration operation operation is cancelled",
+        })
+        db.get_integration_delegate_cleanup = AsyncMock(return_value=[
+            {"code": "branch_owner_retained", "owner_row_id": "owner", "repository_id": "repo",
+             "ref": "aq/parent", "handoff_state": "attached", "session_id": "writer",
+             "workspace_id": "ws"},
+            {"code": "workspace_locked", "workspace_id": "ws", "workspace_path": "/w"},
+        ])
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        retired = next(r for r in res["reasons"] if r["code"] == "integration_delegate_retired")
+        assert "retired as cancelled, not a pass" in retired["detail"]
+        cleanup = [r for r in res["reasons"] if r["code"] == "integration_cleanup_blocked"]
+        assert [r["ref"] for r in cleanup] == ["aq/parent", "ws"]
+        assert all("not released automatically" in r["detail"] for r in cleanup)
+        db.get_integration_delegate_cleanup.assert_awaited_once_with("t")
+
+    async def test_open_recovery_incident_shows_owner_budget_and_next_action(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("t", "supervisor_recovery_incident", {
+            "id": "recovery-1", "reason": "stuck_timeout", "decision": None,
+            "owner": {"kind": "supervisor", "id": "supervisor-p"},
+            "budget": {
+                "worker_retries": {"used": 1, "limit": 3, "remaining": 2},
+                "supervisor_recoveries": {"used": 2, "limit": 2, "remaining": 0},
+            },
+            "deadline_kind": "runtime",
+            "next_action": "Recovery budget exhausted: hold",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        reason = next(r for r in res["reasons"] if r["code"] == "recovery_incident")
+        assert reason["ref"] == "recovery-1"
+        for fragment in ("project supervisor", "worker retries: 2 of 3 left",
+                         "supervisor recoveries: 0 of 2 left", "runtime deadline",
+                         "next: Recovery budget exhausted"):
+            assert fragment in reason["detail"], fragment
+
+    async def test_decided_recovery_incident_is_not_reported_as_open(self, handler, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        await db.set_task_meta("t", "supervisor_recovery_incident", {
+            "id": "recovery-1", "reason": "stuck_timeout", "decision": "hold",
+        })
+        res = await handler._cmd_explain_task({"task_id": "t"})
+        assert "recovery_incident" not in res["reason_codes"]
+
     async def test_hold_label_reason(self, handler, db):
         await mktask(db, "t", status=TaskStatus.READY)
         await db.add_task_label("t", "hold:alice")

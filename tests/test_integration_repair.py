@@ -282,12 +282,51 @@ async def test_terminal_delegate_retirement_preserves_outcomes(db, operation_sta
         assert await db.get_task_meta("delegate", "needs_attention") == "slot_reset_failed"
         return
     assert result == ["delegate"]
-    assert (await db.get_task("delegate")).status == TaskStatus.PAUSED
-    assert (await db.get_task("delegate")).resume_after is None
+    retired = await db.get_task("delegate")
+    # A terminal, non-success disposition: not indefinite PAUSED, never a pass.
+    assert retired.status == TaskStatus.FAILED
+    assert retired.resume_after is None
+    assert retired.retry_count == 0
     assert await db.get_task_meta("delegate", "needs_attention") is None
-    assert (await db.get_task_meta("delegate", "integration_retirement"))["state"] == operation_state
+    record = await db.get_task_meta("delegate", "integration_retirement")
+    assert record["state"] == operation_state
+    assert record["disposition"] == (
+        "cancelled" if operation_state == "cancelled" else "superseded"
+    )
+    assert record["previous_status"] == task_status.value
+    assert record["previous_attention"] == "slot_reset_failed"
+    assert record["cleanup"] == {"state": "clear", "blockers": []}
     assert await _repair_stage(db, "operation", 0) == before
     assert await service.retire_terminal_delegates(201.0) == []
+    with pytest.raises(ValueError, match="delegate is no longer required"):
+        await db.transition_task("delegate", TaskStatus.READY, context="restart_task", force=True)
+
+
+async def test_legacy_paused_retirement_rolls_forward_to_a_terminal_disposition(db):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(
+        id="delegate", project_id="p", title="Repair", description="", status=TaskStatus.PAUSED,
+    ))
+    await db.set_task_meta("delegate", "integration_retirement", {
+        "operation_id": "operation", "state": "cancelled", "previous_status": "BLOCKED",
+        "retired_at": 150.0, "reason": "integration operation operation is cancelled",
+        "previous_attention": "stuck_timeout",
+    })
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(state="cancelled"))
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate"))
+    assert await service.retire_terminal_delegates(200.0) == ["delegate"]
+    assert (await db.get_task("delegate")).status == TaskStatus.FAILED
+    record = await db.get_task_meta("delegate", "integration_retirement")
+    assert record["disposition"] == "cancelled"
+    assert record["previous_status"] == "BLOCKED"
+    assert record["previous_attention"] == "stuck_timeout"
+    assert record["paused_at"] == 150.0
 
 
 @pytest.mark.parametrize("operation_state", ["completed", "cancelled"])
@@ -344,6 +383,189 @@ async def test_terminal_delegate_retirement_waits_for_session_detachment(db, sta
     ))
     assert await service.retire_terminal_delegates(200.0) == []
     assert (await db.get_task("delegate")).status == TaskStatus.READY
+
+
+async def _blocked_delegate(db, **fields) -> None:
+    await db.create_task(Task(
+        id="delegate", project_id="p", title="Repair", description="",
+        status=TaskStatus.BLOCKED, repo_id="repo", branch_name="aq/parent", **fields,
+    ))
+    await db.update_task("delegate", created_at=1.0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate"))
+
+
+async def _stopped_delegate_writer(db, *, sid: str = "writer") -> None:
+    """The delegate's writer died without closing, as the reconciler records it."""
+    await db.create_session(SessionRecord(
+        id=sid, task_id="delegate", project_id="p", profile_id="repairer",
+        harness="fake", provider="fake", name=sid, lifecycle="task",
+        state="running", desired_state="running", work_dir="/tmp/retained", epoch="epoch",
+        instance_token=sid, started_at=100.0, last_activity=150.0,
+    ))
+    await db.update_session(sid, state="stopped", desired_state="stopped", ended_at=200.0,
+                            end_reason="session_exited_open")
+    await db.set_task_meta("delegate", "needs_attention", "session_exited_open")
+
+
+async def test_integration_owned_failure_is_one_incident_with_its_stage_budget(db):
+    from src.database.tables import messages
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _blocked_delegate(db)
+    await _stopped_delegate_writer(db)
+
+    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "queued"
+    await db.queue_task_recovery_notifications()
+    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "existing"
+    incident = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    assert incident["owner"] == {
+        "kind": "integration_operation", "operation_id": "operation",
+        "operation_state": "active", "role": "delegate", "stage": 0, "stage_state": "active",
+        "attempts": 0, "attempt_limit": 2, "deadline_at": 130.0,
+        "deadline_kind": "stage_runtime",
+    }
+    assert incident["retry_allowed"] is False
+    assert "generic recovery is refused" in incident["next_action"]
+    with pytest.raises(ValueError, match="owned by integration operation operation"):
+        await db.decide_task_recovery(
+            "delegate", incident["id"], "retry", "try again", author_kind="supervisor",
+            author_id="supervisor-p", stopped_session={"id": "writer", "instance_token": "writer"},
+        )
+    assert (await db.get_task("delegate")).status == TaskStatus.BLOCKED
+    assert await db.get_task_meta("delegate", "supervisor_recovery_attempts") is None
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(messages))).all()) == 1
+
+    # Waiting for a passing result to be accepted is its own clock.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(state="awaiting_completion"))
+        owner = await db._recovery_owner(conn, {"id": "delegate", "project_id": "p"})
+    assert owner["deadline_kind"] == "acceptance_wait"
+
+
+async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_names_cleanup(
+    db, tmp_path
+):
+    """Replay of ``repair-repair-batch-integration-batch-2c484c...-1`` (policy audit F5).
+
+    The operation is cancelled while its delegate's dead writer still holds the
+    branch through an attached owner row and a dirty, locked checkout.  The
+    ticket must settle truthfully without taking or releasing either.
+    """
+    from src.database.tables import messages
+    from src.integration.development import DevelopmentIntegration
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await _blocked_delegate(db, retry_count=1)
+    await db.create_workspace(Workspace(
+        id="retained-checkout", project_id="p", workspace_path="/tmp/retained",
+        source_type=RepoSourceType.LINK, locked_by_task_id="delegate", enabled=True,
+    ))
+    await _stopped_delegate_writer(db)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="retained-owner", repository_id="repo", ref="aq/parent", owner_id="delegate",
+            owner_role="repair", fence_token=3, handoff_state="attached", session_id="writer",
+            workspace_id="retained-checkout", created_at=1.0, updated_at=1.0,
+        ))
+    # The dead writer already raised the one incident, owned by the live operation.
+    await db.queue_task_recovery_notifications()
+    open_incident = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    assert open_incident["owner"]["kind"] == "integration_operation"
+
+    cancelled = await DevelopmentIntegration(
+        db, data_dir=str(tmp_path), confirm_stopped=AsyncMock(return_value=True)
+    ).cancel_preserving("operation", reason="operator abort")
+    assert cancelled["outcome"] == "cancelled"
+    assert cancelled["preserved_owners"] == ["aq/parent"]
+
+    # The retained owner and checkout no longer keep the ticket open.
+    assert await service.retire_terminal_delegates(300.0) == ["delegate"]
+    retired = await db.get_task("delegate")
+    assert retired.status == TaskStatus.FAILED
+    assert retired.retry_count == 1
+    record = await db.get_task_meta("delegate", "integration_retirement")
+    assert record["disposition"] == "cancelled"
+    assert record["previous_status"] == "PAUSED"
+    assert record["previous_hold"]["status"] == "BLOCKED"
+    assert record["previous_hold"]["reason"] == "operator abort"
+    assert record["previous_attention"] == "session_exited_open"
+    assert record["cleanup"]["state"] == "blocked"
+    assert [b["code"] for b in record["cleanup"]["blockers"]] == [
+        "branch_owner_retained", "workspace_locked",
+    ]
+
+    # Dirty ownership is preserved exactly as the cancellation left it, and
+    # the cleanup that still has to happen stays named on its own.
+    async with db._engine.connect() as conn:
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.id == "retained-owner"))).mappings().one()
+        checkout = (await conn.execute(select(workspaces).where(
+            workspaces.c.id == "retained-checkout"))).mappings().one()
+    assert (owner["handoff_state"], owner["session_id"], owner["workspace_id"],
+            owner["fence_token"]) == ("attached", "writer", "retained-checkout", 3)
+    assert checkout["locked_by_task_id"] == "delegate"
+    assert [b["code"] for b in await db.get_integration_delegate_cleanup("delegate")] == [
+        "branch_owner_retained", "workspace_locked",
+    ]
+
+    # No stale reminder, no second incident, nothing left to schedule or restart.
+    await db.queue_task_recovery_notifications()
+    superseded = await db.get_task_meta("delegate", "supervisor_recovery_incident")
+    assert superseded["id"] == open_incident["id"]
+    assert superseded["decision"] == "superseded"
+    assert "retired" in superseded["decision_reason"]
+    assert (await db.get_message("msg-" + open_incident["id"])).archived_at is not None
+    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == (
+        "not_actionable"
+    )
+    async with db._engine.connect() as conn:
+        assert len((await conn.execute(select(messages))).all()) == 1
+    with pytest.raises(ValueError, match="no longer required"):
+        await db.transition_task("delegate", TaskStatus.READY, context="restart_task", force=True)
+    assert await service.retire_terminal_delegates(301.0) == []
+
+
+@pytest.mark.parametrize("operation_state,disposition", [
+    ("cancelled", "cancelled"), ("completed", "superseded"),
+])
+async def test_live_writer_of_an_ended_operation_is_told_not_to_retry_its_close(
+    orchestrator_factory, operation_state, disposition
+):
+    """A close that can never be accepted must say so, not look like a stale race."""
+    from src.integration.repair import RepairService
+
+    orchestrator = await orchestrator_factory()
+    db = orchestrator.db
+    await _configure_db(db)
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(
+        id="delegate", project_id="p", title="Repair", description="",
+        status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/parent",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate"))
+        await conn.execute(update(integration_repair_operations).values(state=operation_state))
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+
+    result = await orchestrator.complete_session_task(
+        await db.get_task("delegate"), outcome="pass", session_live=True, session_id="writer",
+    )
+
+    assert result["verification_retry"] is True
+    assert f"Integration operation operation is {operation_state}" in result["feedback"]
+    assert f"retired ({disposition})" in result["feedback"]
+    assert "Do not retry the close" in result["feedback"]
+    assert (await db.get_task("delegate")).status == TaskStatus.IN_PROGRESS
 
 
 @pytest.mark.parametrize("invalid", [None, "stage", "operation", "owner", "branch", "provenance"])

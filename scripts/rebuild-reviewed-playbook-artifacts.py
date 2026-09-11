@@ -673,9 +673,10 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
     """The reviewer-authored deterministic graph for ``blocked-task-escalation``.
 
     One command step and two terminals: a ``task.failed`` event filtered to
-    ``status == "BLOCKED"`` sends the project supervisor one message that
-    names the task and tells it to read the session-log tail.  See
-    ``docs/superpowers/specs/2026-09-06-blocked-task-escalation-design.md``.
+    ``status == "BLOCKED"`` wakes the task's one durable recovery incident
+    through ``task_recovery_notify`` -- the record the periodic recovery scan
+    also reaches, so the event, its replay and the scan never notify twice.
+    See ``docs/superpowers/specs/2026-09-06-blocked-task-escalation-design.md``.
     """
     index = ProseIndex(source, source.vault_path)
     rule = "escalate-blocked-task"
@@ -683,56 +684,8 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
     done = f"{rule}--done"
     failed = f"{rule}--failed"
 
-    def lit(value: Any) -> dict[str, Any]:
-        return {"type": "literal", "value": value}
-
     def event(path: str) -> dict[str, Any]:
         return {"type": "event_ref", "path": path}
-
-    def optional(path: str, fallback: str) -> dict[str, Any]:
-        return {"type": "coalesce", "options": [event(path), lit(fallback)]}
-
-    def template(*parts: dict[str, Any]) -> dict[str, Any]:
-        return {"type": "template", "parts": list(parts)}
-
-    body = template(
-        lit("Task `"), event("task_id"), lit("` (\""), event("title"),
-        lit("\") in project `"), event("project_id"), lit("` ended **blocked**.\n\n"),
-        lit("- close leg (`context`): "), event("context"), lit("\n"),
-        lit("- closing notes / failure detail (`error`): "), optional("error", "n/a"), lit("\n"),
-        lit("- agent that held it (`agent_id`): "), optional("agent_id", "unknown"), lit("\n\n"),
-        lit(
-            "Please check whether anything needs to be done:\n"
-            "1. Find the task's session in the task column of `aq session list`, then read "
-            "the tail of its log with `aq session logs <session-id> -n 200`.\n"
-        ),
-        lit("2. Read `aq task show "), event("task_id"), lit("` and `aq task explain "),
-        event("task_id"), lit("`.\n"),
-        lit(
-            "3. Check `aq integration status "
-        ), event("project_id"), lit(
-            "` for an operation owning this task. For integration-owned repair or "
-            "verification work, do not use generic task recovery or create a replacement "
-            "repair task. Let the operation's primary/debug escalation run; do not reset "
-            "its attempt or time budgets. If the operation requires human action, escalate "
-            "with its operation ID; an authorized operator can use `aq integration resume` "
-            "or `aq integration abort` after inspecting that state.\n"
-            "4. For ordinary tasks not owned by an integration operation, decide: retry "
-            "with concrete feedback via `aq task recover`, hold, or spawn a follow-up task. "
-            "A blocked event is only a supervisor triage notice: ordinary dependency waits, "
-            "active retry legs, and unchanged queue state are not human incidents. When a real "
-            "human decision remains, call `aq escalation create` with `source_kind` "
-            "`task_recovery`, the exact current recovery incident ID as `source_identity`, "
-            "and `task-recovery:<incident-id>` as the stable `incident_key`. Include what was "
-            "tried, the precise decision needed, and task/dashboard links. Replayed terminal "
-            "notices must reuse that incident rather than creating another. Process a later "
-            "reply only through `aq escalation apply-reply` after reloading the task, claim, "
-            "operation/gate and unseen conversation entries. Resolve the escalation only after "
-            "recovery succeeds or the human deliberately chooses hold/cancel; a failed recovery "
-            "remains open in the same conversation.\n\n"
-            "Sent by the `blocked-task-escalation` playbook."
-        ),
-    )
 
     return {
         "rules": [
@@ -750,22 +703,17 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
                 "rule": rule,
                 "title": "notify_supervisor",
                 "source": index.step_ref(rule, 1),
-                "command": "message_send",
+                "command": "task_recovery_notify",
                 "inputs": {
+                    "task_id": event("task_id"),
                     "project_id": event("project_id"),
-                    "to_kind": lit("session"),
-                    "to_id": template(lit("supervisor-"), event("project_id")),
-                    "from_kind": lit("system"),
-                    "from_id": lit("playbook:blocked-task-escalation"),
-                    "priority": lit(50),
-                    "subject": template(
-                        lit("Blocked task: "), event("title"), lit(" ("), event("task_id"), lit(")")
-                    ),
-                    "body": body,
                 },
-                "save_result_as": "notice",
+                "save_result_as": "incident",
                 "transitions": {
                     "queued": done,
+                    "existing": done,
+                    "not_actionable": done,
+                    "retired": done,
                     "rejected": failed,
                     "runtime_error": failed,
                 },

@@ -46,7 +46,11 @@ class Reason(TypedDict):
     joining them: a ``lifecycle: pool`` profile's tasks never reach the push
     scheduler, so ``no_idle_agent`` would describe a queue this task is not
     in (see ``_cmd_explain_task._pool_wait_reason``). ``needs_attention``,
-    ``paused_backoff``, and ``paused_manually`` cover recovery states.  The
+    ``paused_backoff``, and ``paused_manually`` cover recovery states;
+    ``recovery_incident`` names an open incident's owner, remaining budget and
+    next action.  ``integration_delegate_retired`` is a retired delegate's
+    terminal disposition and ``integration_cleanup_blocked`` each resource it
+    still holds -- deliberately separate facts.  The
     integration service contributes its own stable rollout blocker vocabulary.
     ``detail`` is a human string.
     ``ref`` names the specific entity (task id, gate id, workspace id,

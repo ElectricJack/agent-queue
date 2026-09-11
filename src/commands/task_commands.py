@@ -68,6 +68,71 @@ def _fmt_epoch(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
 
 
+def _integration_cleanup_reason(blocker: dict):
+    """One resource a retired delegate still holds, named as its own explain reason."""
+    from src.explain import Reason
+
+    if blocker["code"] == "branch_owner_retained":
+        return Reason(
+            code="integration_cleanup_blocked",
+            detail=(
+                f"branch owner row {blocker['owner_row_id']} on {blocker['ref']} is still "
+                f"{blocker['handoff_state']} (session {blocker['session_id'] or 'none'}, "
+                f"workspace {blocker['workspace_id'] or 'none'}); the checkout is preserved and "
+                "is not released automatically. Inspect it for unsent work, then release it "
+                "only through the guarded integration ownership controls (LOCAL operator)"
+            ),
+            ref=blocker["ref"],
+        )
+    if blocker["code"] == "workspace_locked":
+        return Reason(
+            code="integration_cleanup_blocked",
+            detail=(
+                f"workspace {blocker['workspace_id']} ({blocker['workspace_path']}) is still "
+                "locked by this retired delegate; preserved for inspection and not released "
+                "automatically"
+            ),
+            ref=blocker["workspace_id"],
+        )
+    return Reason(
+        code="integration_cleanup_blocked",
+        detail=(
+            f"session {blocker['session_id']} is still attached ({blocker['state']}); "
+            "retirement completes once it has stopped"
+        ),
+        ref=blocker["session_id"],
+    )
+
+
+def _recovery_incident_reason(incident: dict):
+    """The open recovery incident with its owner, remaining budget and next action."""
+    from src.explain import Reason
+
+    owner = incident.get("owner") or {}
+    parts = [f"open recovery incident for {incident.get('reason')}"]
+    if owner.get("kind") == "integration_operation":
+        parts.append(
+            f"owned by integration operation {owner.get('operation_id')} "
+            f"({owner.get('operation_state')}), stage {owner.get('stage')} "
+            f"{owner.get('stage_state')}, attempts {owner.get('attempts')}/"
+            f"{owner.get('attempt_limit')}, {owner.get('deadline_kind')} clock"
+        )
+    else:
+        parts.append("owned by the project supervisor")
+    for key, label in (
+        ("worker_retries", "worker retries"),
+        ("supervisor_recoveries", "supervisor recoveries"),
+    ):
+        item = (incident.get("budget") or {}).get(key)
+        if isinstance(item, dict):
+            parts.append(f"{label}: {item.get('remaining')} of {item.get('limit')} left")
+    if incident.get("deadline_kind") not in (None, "none"):
+        parts.append(f"stopped by the {incident['deadline_kind']} deadline")
+    if incident.get("next_action"):
+        parts.append("next: " + str(incident["next_action"]))
+    return Reason(code="recovery_incident", detail="; ".join(parts), ref=str(incident["id"]))
+
+
 def _normalize_label_list(raw) -> list[str]:
     """Coerce a label argument into a clean list of strings.
 
@@ -3346,6 +3411,28 @@ class TaskCommandsMixin:
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
 
+    async def _cmd_task_recovery_notify(self, args: dict) -> dict:
+        """Wake the one durable recovery incident for a failed task.
+
+        The ``blocked-task-escalation`` playbook calls this on ``task.failed``;
+        the periodic recovery scan reaches the same record, so an event, its
+        replay and the scan never file a second incident or message.  Writes
+        nothing when the task has no actionable failure yet.
+        """
+        disabled = self._messages_disabled_error()
+        if disabled:
+            return disabled
+        task_id = args.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return {"error": "task_id is required"}
+        error = await self._task_control_scope_error(task_id)
+        if error:
+            return error
+        result = await self.db.notify_task_recovery(task_id, project_id=args.get("project_id"))
+        if result["outcome"] == "not_found":
+            return {"error": f"Task '{task_id}' not found in this project"}
+        return result
+
     async def _cmd_restart_task(self, args: dict) -> dict:
         task = await self.db.get_task(args["task_id"])
         if not task:
@@ -4083,11 +4170,22 @@ class TaskCommandsMixin:
                     "reason": f"integration operation {operation['id']} is {operation['state']}",
                 }
         if retirement:
+            disposition = retirement.get("disposition") or (
+                "cancelled" if "cancelled" in str(retirement["reason"]) else "superseded"
+            )
             reasons.append(Reason(
                 code="integration_delegate_retired",
-                detail=f"{retirement['reason']}; this delegate is no longer required",
+                detail=(f"{retirement['reason']}; this delegate is no longer required "
+                        f"(retired as {disposition}, not a pass)"),
                 ref=retirement["operation_id"],
             ))
+            # Cleanup is a separate fact from the ticket's disposition: read
+            # what is still held now, not the snapshot taken at retirement.
+            for blocker in await self.db.get_integration_delegate_cleanup(str(task_id)):
+                reasons.append(_integration_cleanup_reason(blocker))
+        recovery = await self.db.get_task_meta(str(task_id), "supervisor_recovery_incident")
+        if isinstance(recovery, dict) and recovery.get("id") and not recovery.get("decision"):
+            reasons.append(_recovery_incident_reason(recovery))
         needs_attention = await self.db.get_task_meta(str(task_id), "needs_attention")
         if needs_attention and not retirement:
             detail = str(needs_attention)

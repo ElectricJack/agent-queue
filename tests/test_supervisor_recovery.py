@@ -55,6 +55,12 @@ async def env(tmp_path, request):
 
 
 async def incident(env, sid="s", started=200, reason="stuck_timeout"):
+    await stopped_attempt(env, sid=sid, started=started, reason=reason)
+    await env.db.queue_task_recovery_notifications()
+    return await env.db.get_task_meta("t", "supervisor_recovery_incident")
+
+
+async def stopped_attempt(env, sid="s", started=200, reason="stuck_timeout", attention=True):
     await env.db.create_session(
         SessionRecord(
             id=sid,
@@ -77,9 +83,20 @@ async def incident(env, sid="s", started=200, reason="stuck_timeout"):
     await env.db.update_session(
         sid, state="stopped", desired_state="stopped", ended_at=started + 7200, end_reason=reason
     )
-    await env.db.set_task_meta("t", "needs_attention", reason)
-    await env.db.queue_task_recovery_notifications()
-    return await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if attention:
+        await env.db.set_task_meta("t", "needs_attention", reason)
+
+
+async def notify(env, project_id="p", **extra):
+    """The failure-event half: what the blocked-task-escalation playbook calls."""
+    return await env.handler.execute(
+        "task_recovery_notify", {"task_id": "t", "project_id": project_id, **extra}
+    )
+
+
+async def queued_messages(env):
+    async with env.db._engine.connect() as conn:
+        return (await conn.execute(select(messages))).mappings().all()
 
 
 async def decide(env, current, decision="retry", **extra):
@@ -558,3 +575,108 @@ async def test_strict_tmux_probe_bypasses_cached_absence_and_confirms_missing_na
         await provider.confirm_stopped(SessionHandle("old-worker", "tmux", "old-instance")) is True
     )
     provider._tmux.assert_awaited_once_with("list-sessions", "-F", "#{session_name}")
+
+
+async def test_failure_event_and_scan_share_one_incident_with_visible_budget(env):
+    await stopped_attempt(env)
+    first = await notify(env)
+    assert first["outcome"] == "queued", first
+    await env.db.queue_task_recovery_notifications()
+    replay = await notify(env)
+    assert replay["outcome"] == "existing"
+    assert replay["incident_id"] == first["incident_id"]
+    queued = await queued_messages(env)
+    assert [m["id"] for m in queued] == ["msg-" + first["incident_id"]]
+
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["id"] == first["incident_id"]
+    assert current["owner"] == {"kind": "supervisor", "id": "supervisor-p"}
+    assert current["budget"] == {
+        "worker_retries": {"used": 0, "limit": 3, "remaining": 3},
+        "supervisor_recoveries": {"used": 0, "limit": 2, "remaining": 2},
+    }
+    # A task session's watchdog measures wall-clock runtime, not inactivity.
+    assert current["deadline_kind"] == "runtime"
+    assert current["runtime_seconds"] == 7200 and current["idle_seconds"] == 1
+    assert current["retry_allowed"] is True
+    assert "aq task recover" in current["next_action"]
+    body = queued[0]["body"]
+    assert "one incident for this failure" in body
+    assert '"supervisor_recoveries": {"limit": 2, "remaining": 2, "used": 0}' in body
+
+
+async def test_remaining_budget_counts_down_across_recoveries(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current)
+    await env.db.transition_task("t", TaskStatus.BLOCKED, force=True)
+    following = await incident(env, sid="second", started=9000)
+    assert following["id"] != current["id"]
+    assert following["budget"] == {
+        "worker_retries": {"used": 1, "limit": 3, "remaining": 2},
+        "supervisor_recoveries": {"used": 1, "limit": 2, "remaining": 1},
+    }
+
+
+async def test_terminal_close_leg_is_one_incident_that_needs_operator_review(env):
+    await stopped_attempt(env, reason="closed", attention=False)
+    # The close leg enters BLOCKED from a running state; a same-status write
+    # records no terminal context.
+    await env.db.transition_task("t", TaskStatus.IN_PROGRESS, force=True, context="claim")
+    await env.db.transition_task(
+        "t", TaskStatus.BLOCKED, force=True, context="session_close_hard_failure"
+    )
+    assert await env.db.get_task_meta("t", "blocked_terminal") == "session_close_hard_failure"
+    assert (await notify(env))["outcome"] == "queued"
+    await env.db.queue_task_recovery_notifications()
+    assert len(await queued_messages(env)) == 1
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["reason"] == "session_close_hard_failure"
+    assert current["retry_allowed"] is False
+    assert current["next_action"].startswith("Not an automatically retryable failure")
+    assert "error" in await decide(env, current)
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert "error" not in await decide(env, current, "hold")
+
+
+async def test_operator_stop_is_a_decision_not_an_incident(env):
+    await stopped_attempt(env, reason="manual_stop", attention=False)
+    await env.db.transition_task("t", TaskStatus.IN_PROGRESS, force=True, context="claim")
+    await env.db.transition_task("t", TaskStatus.BLOCKED, force=True, context="stop_task")
+    assert await env.db.get_task_meta("t", "blocked_terminal") == "stop_task"
+    assert (await notify(env))["outcome"] == "not_actionable"
+    await env.db.queue_task_recovery_notifications()
+    assert not await queued_messages(env)
+
+
+async def test_event_before_the_attempt_stops_defers_to_the_scan(env):
+    await env.db.create_session(
+        SessionRecord(
+            id="live",
+            task_id="t",
+            project_id="p",
+            profile_id="worker",
+            harness="fake",
+            provider="fake",
+            name="live",
+            lifecycle="task",
+            state="running",
+            desired_state="running",
+            epoch="test",
+            instance_token="live",
+            work_dir="/never-used",
+            started_at=200,
+        )
+    )
+    await env.db.set_task_meta("t", "needs_attention", "stuck_timeout")
+    early = await notify(env)
+    assert early["outcome"] == "not_actionable"
+    assert "scan" in early["detail"]
+    assert not await queued_messages(env)
+
+
+async def test_incident_hook_is_bound_to_the_event_project_and_operators(env):
+    await stopped_attempt(env)
+    assert "not found" in (await notify(env, project_id="other"))["error"]
+    worker = asdict(RequestScope(kind="session", session_id="x", project_id="p"))
+    assert "scope" in (await notify(env, _scope=worker))["error"].lower()
+    assert not await queued_messages(env)

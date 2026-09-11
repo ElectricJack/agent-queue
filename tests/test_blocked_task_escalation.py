@@ -11,7 +11,11 @@ import pytest
 import yaml
 
 from src.commands.contracts import CONTRACTS
-from src.commands.contracts.builtin import MessageSendArgs, MessageSendValue, set_handler_provider
+from src.commands.contracts.builtin import (
+    TaskRecoveryNotifyArgs,
+    TaskRecoveryNotifyValue,
+    set_handler_provider,
+)
 from src.models import TaskStatus
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.definition import (
@@ -26,6 +30,7 @@ FIXTURE = Path("tests/fixtures/playbooks/v2/blocked-task-escalation")
 SHIPPED = Path("src/prompts/default_playbooks/blocked-task-escalation.md")
 RULE = "escalate-blocked-task"
 NOTIFY = f"{RULE}--notify_supervisor"
+SUCCESSES = ("queued", "existing", "not_actionable", "retired")
 
 
 def _definition():
@@ -56,7 +61,7 @@ def test_source_is_a_system_scoped_prose_playbook_on_task_failed() -> None:
     assert (FIXTURE / "source.md").read_bytes() == SHIPPED.read_bytes()
 
 
-def test_artifact_filters_blocked_closes_and_messages_the_project_supervisor() -> None:
+def test_artifact_filters_blocked_closes_and_wakes_the_one_recovery_incident() -> None:
     definition = _definition()
     assert definition.id == "blocked-task-escalation"
     assert definition.scope.type == "system"
@@ -70,67 +75,48 @@ def test_artifact_filters_blocked_closes_and_messages_the_project_supervisor() -
     done, failed = f"{RULE}--done", f"{RULE}--failed"
     assert set(definition.steps) == {NOTIFY, done, failed}
     notify = definition.steps[NOTIFY]
-    assert notify.command == "message_send"
-    assert notify.save_result_as == "notice"
-    assert notify.transitions == {"queued": done, "rejected": failed, "runtime_error": failed}
-
+    assert notify.command == "task_recovery_notify"
+    assert notify.save_result_as == "incident"
+    assert notify.transitions == {
+        **{outcome: done for outcome in SUCCESSES},
+        "rejected": failed,
+        "runtime_error": failed,
+    }
     inputs = {name: value.model_dump(mode="json") for name, value in notify.inputs.items()}
-    assert inputs["project_id"] == {"type": "event_ref", "path": "project_id"}
-    assert inputs["to_kind"] == {"type": "literal", "value": "session"}
-    assert inputs["from_kind"] == {"type": "literal", "value": "system"}
-    assert inputs["from_id"] == {"type": "literal", "value": "playbook:blocked-task-escalation"}
-    assert inputs["to_id"]["type"] == "template"
+    assert inputs == {
+        "task_id": {"type": "event_ref", "path": "task_id"},
+        "project_id": {"type": "event_ref", "path": "project_id"},
+    }
     assert definition.steps[done].outcome == "completed"
     assert definition.steps[failed].outcome == "failed"
 
 
-def test_the_message_names_the_task_and_tells_the_supervisor_to_read_the_log_tail() -> None:
+def test_the_step_binds_only_the_event_identity() -> None:
+    """Owner, budget and next action come from the durable incident, not the event."""
     notify = _definition().steps[NOTIFY]
     scope = ResolutionScope(event=_blocked_event(), context={}, bindings={}, loop={})
     rendered = {name: resolve_value(value, scope) for name, value in notify.inputs.items()}
-
-    assert rendered["to_id"] == "supervisor-proj"
-    assert rendered["subject"] == "Blocked task: Ship the widget (task-1)"
-    body = rendered["body"]
-    assert "task-1" in body and "Ship the widget" in body
-    assert "max_retries" in body and "tests kept failing" in body and "agent-7" in body
-    assert "aq session logs" in body and "aq session list" in body
-    assert "aq task explain task-1" in body
-    assert "only a supervisor triage notice" in body
-    assert "ordinary dependency waits" in body and "active retry legs" in body
-    assert "aq escalation create" in body
-    assert "task-recovery:<incident-id>" in body
-    assert "aq escalation apply-reply" in body
+    assert rendered == {"task_id": "task-1", "project_id": "proj"}
 
 
-def test_optional_event_fields_render_with_fallbacks_instead_of_failing() -> None:
-    notify = _definition().steps[NOTIFY]
-    event = _blocked_event()
-    event["agent_id"] = None
-    del event["error"]
-    scope = ResolutionScope(event=event, context={}, bindings={}, loop={})
-    body = resolve_value(notify.inputs["body"], scope)
-    assert "(`error`): n/a" in body
-    assert "(`agent_id`): unknown" in body
-
-
-def test_recovery_notice_preserves_integration_operation_authority() -> None:
-    notify = _definition().steps[NOTIFY]
-    scope = ResolutionScope(event=_blocked_event(), context={}, bindings={}, loop={})
-    body = resolve_value(notify.inputs["body"], scope)
-    assert "aq integration status proj" in body
-    assert "do not use generic task recovery" in body
-    assert "aq integration resume" in body
-    assert "do not reset its attempt or time budgets" in body
+def test_the_playbook_writes_no_message_of_its_own() -> None:
+    """A second, event-only notice is what split one failure into two incidents."""
+    definition = _definition()
+    assert {
+        step.command for step in definition.steps.values() if getattr(step, "command", None)
+    } == {"task_recovery_notify"}
+    source = SHIPPED.read_text(encoding="utf-8")
+    assert "writes no message of its own" in source
+    assert "one incident and one" in source
 
 
 def test_every_command_and_outcome_resolves_against_the_live_registry() -> None:
     definition = _definition()
-    registration = CONTRACTS.require("message_send")
+    registration = CONTRACTS.require("task_recovery_notify")
     declared = {spec.name for spec in registration.contract.execution.outcomes}
     for outcome in definition.steps[NOTIFY].transitions:
         assert outcome == "runtime_error" or outcome in declared, outcome
-    assert set(definition.compiled_against.commands) == {"message_send"}
+    assert set(definition.compiled_against.commands) == {"task_recovery_notify"}
     assert definition.compiled_against.profiles == {}
 
 
@@ -150,11 +136,11 @@ def test_artifact_is_canonical_bound_to_the_source_and_its_manifest() -> None:
     assert manifest["artifact_sha256"] == recorded
     assert manifest["source_sha256"] == source_digest(source)
     assert manifest["contract_fingerprint"] == contract_fingerprint(definition)
-    assert manifest["capabilities_granted"]["aq_commands"] == ["message_send"]
+    assert manifest["capabilities_granted"]["aq_commands"] == ["task_recovery_notify"]
 
 
 # ---------------------------------------------------------------------------
-# The ``message_send`` contract the playbook depends on
+# The ``task_recovery_notify`` contract the playbook depends on
 # ---------------------------------------------------------------------------
 
 
@@ -168,36 +154,48 @@ def handler():
         set_handler_provider(None)
 
 
-def test_message_send_is_contracted_as_a_create_with_a_queued_outcome() -> None:
-    registration = CONTRACTS.require("message_send")
+def test_task_recovery_notify_is_contracted_as_an_idempotent_create() -> None:
+    registration = CONTRACTS.require("task_recovery_notify")
     execution = registration.contract.execution
-    assert execution.args_model is MessageSendArgs
-    assert execution.result_model is MessageSendValue
-    assert {spec.name for spec in execution.outcomes} == {"queued", "rejected"}
+    assert execution.args_model is TaskRecoveryNotifyArgs
+    assert execution.result_model is TaskRecoveryNotifyValue
+    assert {spec.name for spec in execution.outcomes} == {*SUCCESSES, "rejected"}
     assert execution.side_effect == "create"
     assert [clause.subject for clause in execution.effects] == ["message"]
-    assert MessageSendArgs(to_kind="session", to_id="supervisor-p", body="x", from_id="pb").from_kind == "system"
 
 
-async def test_message_send_adapter_maps_a_queued_row_and_a_refusal(handler) -> None:
-    registration = CONTRACTS.require("message_send")
-    args = MessageSendArgs(
-        to_kind="session", to_id="supervisor-proj", body="hello", from_id="playbook:x",
-        project_id="proj", subject="s", priority=50,
-    )
+async def test_task_recovery_notify_adapter_maps_every_outcome_and_a_refusal(handler) -> None:
+    registration = CONTRACTS.require("task_recovery_notify")
+    args = TaskRecoveryNotifyArgs(task_id="task-1", project_id="proj")
 
-    handler.execute.return_value = {"message_id": "m-1", "state": "queued", "message": {}}
+    handler.execute.return_value = {
+        "outcome": "queued", "task_id": "task-1", "incident_id": "recovery-1",
+    }
     result = await registration.invoke(args, None)
     assert result.outcome == "queued"
-    assert result.value.message_id == "m-1" and result.value.state == "queued"
+    assert result.value.incident_id == "recovery-1"
     name, sent = handler.execute.await_args.args
-    assert name == "message_send"
-    assert sent == {
-        "to_kind": "session", "to_id": "supervisor-proj", "body": "hello", "from_id": "playbook:x",
-        "from_kind": "system", "project_id": "proj", "subject": "s", "priority": 50,
-    }
+    assert name == "task_recovery_notify"
+    assert sent == {"task_id": "task-1", "project_id": "proj"}
 
-    handler.execute.return_value = {"error": "Project 'proj' not found"}
+    for outcome in SUCCESSES[1:]:
+        handler.execute.return_value = {"outcome": outcome, "task_id": "task-1"}
+        assert (await registration.invoke(args, None)).outcome == outcome
+
+    handler.execute.return_value = {"error": "Task 'task-1' not found in this project"}
     refused = await registration.invoke(args, None)
     assert refused.outcome == "rejected"
     assert "not found" in refused.summary
+
+    handler.execute.return_value = {"outcome": "something-new"}
+    assert (await registration.invoke(args, None)).outcome == "rejected"
+
+
+def test_the_incident_hook_stays_off_every_external_surface() -> None:
+    from src.api.codegen import API_EXCLUDED
+    from src.cli.auto_commands import EXCLUDED
+    from src.mcp_registration import DEFAULT_EXCLUDED_COMMANDS
+
+    assert "task_recovery_notify" in API_EXCLUDED
+    assert "task_recovery_notify" in EXCLUDED
+    assert "task_recovery_notify" in DEFAULT_EXCLUDED_COMMANDS

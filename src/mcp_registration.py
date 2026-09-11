@@ -71,6 +71,11 @@ DEFAULT_EXCLUDED_COMMANDS = {
     # that backs it; an LLM has no reason to hand-write its own subagent
     # telemetry, and exposing it would only invite fabricated counts.
     "subagent_event",
+    # The failure-event half of the durable recovery incident, called by the
+    # ``blocked-task-escalation`` playbook inside the daemon.  The supervisor
+    # decides incidents with ``task_recover``; nothing outside the daemon
+    # needs to file one.
+    "task_recovery_notify",
 }
 
 

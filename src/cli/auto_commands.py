@@ -128,6 +128,9 @@ EXCLUDED = {
     "load_tools",  # supervisor-internal meta-tool
     # Core response tool — not useful from CLI
     "reply_to_user",
+    # Daemon-internal failure-event hook for the recovery incident (called by
+    # the blocked-task-escalation playbook); decide with ``aq task recover``.
+    "task_recovery_notify",
 }
 
 # Map tool_registry category names → CLI group names.

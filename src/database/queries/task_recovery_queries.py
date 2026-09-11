@@ -7,12 +7,14 @@ import json
 import logging
 import time
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.tables import (
     agent_questions,
     agents,
+    integration_repair_operations,
+    integration_repair_stages,
     messages,
     projects,
     project_constraints,
@@ -41,6 +43,22 @@ RETRYABLE_REASONS = frozenset(
     }
 )
 ROUTING_FIELDS = ("profile_id", "intelligence_class", "affinity_agent_id", "preferred_workspace_id")
+#: A terminal ``BLOCKED`` close leg (``blocked_terminal``) is the failure the
+#: ``task.failed`` event reports, so the event and the scan share one incident
+#: for it too.  An operator's own stop is a decision, not an incident.
+TERMINAL_BLOCKED_KEY = "blocked_terminal"
+_NOT_INCIDENTS = frozenset({"stop_task"})
+#: Which clock tripped the attempt.  A task session's watchdog measures
+#: wall-clock runtime since start (or the last answered question); a pool
+#: session's measures inactivity since its last activity.
+DEADLINE_KINDS = {
+    "stuck_timeout": "runtime",
+    "timeout": "runtime",
+    "exited_holding_task": "inactivity",
+    "prepare_timeout": "prepare",
+}
+_INTEGRATION_LIVE = ("active", "escalated", "human_required")
+_INTEGRATION_ENDED = ("completed", "cancelled")
 
 
 def _incident_id(task, attempt, reason):
@@ -55,10 +73,64 @@ def _incident_id(task, attempt, reason):
     return "recovery-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
 
 
+def _decoded(raw):
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw  # Older rows may hold an unencoded string.
+
+
+def incident_reason(meta):
+    """The failure one incident is about: an operational exit, else a terminal close leg."""
+    reason = meta.get("needs_attention")
+    if isinstance(reason, str) and reason:
+        return reason
+    reason = meta.get(TERMINAL_BLOCKED_KEY)
+    if isinstance(reason, str) and reason and reason not in _NOT_INCIDENTS:
+        return reason
+    return None
+
+
+def _budget(task, meta):
+    retries, retry_limit = int(task["retry_count"] or 0), int(task["max_retries"] or 0)
+    recoveries = int(meta.get(COUNT_KEY, 0) or 0)
+    return {
+        "worker_retries": {
+            "used": retries, "limit": retry_limit, "remaining": max(0, retry_limit - retries),
+        },
+        "supervisor_recoveries": {
+            "used": recoveries,
+            "limit": MAX_RECOVERIES,
+            "remaining": max(0, MAX_RECOVERIES - recoveries),
+        },
+    }
+
+
+def _next_action(owner, reason, budget):
+    if owner["kind"] == "integration_operation":
+        return (
+            f"Integration operation {owner['operation_id']} ({owner['operation_state']}) owns "
+            "this task, so generic recovery is refused. Let its bounded stage run without "
+            "resetting attempts or deadlines; if it needs a human decision, escalate with the "
+            "operation id."
+        )
+    if reason not in RETRYABLE_REASONS:
+        return (
+            "Not an automatically retryable failure: hold, reopen with concrete feedback, or "
+            "escalate a genuine human decision."
+        )
+    if not all(item["remaining"] for item in budget.values()):
+        return (
+            "Recovery budget exhausted: hold, and escalate if a human decision is needed. "
+            "Never reset counters."
+        )
+    return "Decide with aq task recover: retry once the cause is understood, otherwise hold."
+
+
 class TaskRecoveryQueryMixin:
     async def _recovery_context(self, conn, task):
         meta = {
-            r.key: json.loads(r.value)
+            r.key: _decoded(r.value)
             for r in (
                 await conn.execute(
                     select(task_metadata).where(task_metadata.c.task_id == task["id"])
@@ -85,6 +157,78 @@ class TaskRecoveryQueryMixin:
         )
         return meta, attempt
 
+    async def _recovery_owner(self, conn, task):
+        """Who decides this task's recovery.
+
+        A live integration operation owns its parent and delegates, with its
+        own stage budget and deadline.  A delegate of an ended operation is
+        retired and owned by nobody.  Everything else is the supervisor's.
+        """
+        operation = integration_repair_operations
+        stage = integration_repair_stages
+        delegate = or_(
+            operation.c.verifier_task_id == task["id"],
+            select(stage.c.operation_id)
+            .where(stage.c.operation_id == operation.c.id, stage.c.repair_task_id == task["id"])
+            .correlate(operation)
+            .exists(),
+        )
+        rows = (
+            await conn.execute(
+                select(
+                    operation.c.id,
+                    operation.c.state,
+                    operation.c.active_stage,
+                    operation.c.parent_task_id,
+                )
+                .where(or_(delegate, operation.c.parent_task_id == task["id"]))
+                .order_by(operation.c.updated_at.desc(), operation.c.id)
+            )
+        ).mappings().all()
+        live = next((r for r in rows if r["state"] in _INTEGRATION_LIVE), None)
+        if live is not None:
+            ordinal = int(live["active_stage"])
+            current = (
+                await conn.execute(
+                    select(stage).where(stage.c.operation_id == live["id"], stage.c.ordinal == ordinal)
+                )
+            ).mappings().first()
+            current = dict(current) if current is not None else {}
+            policy = current.get("policy") or {}
+            return {
+                "kind": "integration_operation",
+                "operation_id": live["id"],
+                "operation_state": live["state"],
+                "role": "parent" if live["parent_task_id"] == task["id"] else "delegate",
+                "stage": ordinal,
+                "stage_state": current.get("state"),
+                "attempts": current.get("attempts"),
+                "attempt_limit": policy.get("primary_attempts" if ordinal == 0 else "debug_attempts"),
+                "deadline_at": current.get("deadline_at"),
+                # Time spent awaiting acceptance of a passing result is not
+                # repair work; say which one the stage clock is measuring.
+                "deadline_kind": (
+                    "acceptance_wait"
+                    if current.get("state") == "awaiting_completion"
+                    else "stage_runtime"
+                ),
+            }
+        ended = next(
+            (
+                r
+                for r in rows
+                if r["state"] in _INTEGRATION_ENDED and r["parent_task_id"] != task["id"]
+            ),
+            None,
+        )
+        if ended is not None:
+            return {
+                "kind": "retired",
+                "operation_id": ended["id"],
+                "operation_state": ended["state"],
+            }
+        return {"kind": "supervisor", "id": "supervisor-" + task["project_id"]}
+
     async def queue_task_recovery_notifications(self) -> int:
         """Reconcile persisted failures, including events missed during downtime.
 
@@ -101,8 +245,9 @@ class TaskRecoveryQueryMixin:
                         .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
                         .where(
                             tasks.c.status == "BLOCKED",
-                            task_metadata.c.key == "needs_attention",
+                            task_metadata.c.key.in_(("needs_attention", TERMINAL_BLOCKED_KEY)),
                         )
+                        .distinct()
                     )
                 )
                 .scalars()
@@ -115,6 +260,23 @@ class TaskRecoveryQueryMixin:
             except Exception:
                 logger.exception("Could not queue recovery incident for %s", task_id)
         return queued
+
+    async def notify_task_recovery(self, task_id, *, project_id=None) -> dict:
+        """Wake the one durable incident for *task_id* from a failure event.
+
+        The periodic scan reaches the same record, so an event, a replayed
+        event and the scan never produce a second incident or message.
+        """
+        async with self._engine.connect() as conn:
+            raw = await conn.scalar(
+                select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == task_id, task_metadata.c.key == INCIDENT_KEY
+                )
+            )
+        pending = _decoded(raw) if raw is not None else None
+        if isinstance(pending, dict) and pending.get("id") and not pending.get("decision"):
+            await self._supersede_stale_task_recovery_incident(task_id, pending["id"])
+        return await self._ensure_task_recovery_incident(task_id, project_id=project_id)
 
     async def _supersede_stale_task_recovery_incidents(self):
         """Archive pending incidents after their task or attempt changes."""
@@ -151,17 +313,29 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if incident.get("id") != expected_id or incident.get("decision"):
                 return
-            reason = meta.get("needs_attention")
+            reason = incident_reason(meta)
             current = (
                 task["status"] == "BLOCKED"
-                and isinstance(reason, str)
                 and bool(reason)
                 and attempt is not None
                 and attempt["state"] in ("stopped", "quarantined")
                 and expected_id == _incident_id(task, attempt, reason)
             )
-            if current:
+            owner = await self._recovery_owner(conn, task) if current else None
+            if current and owner["kind"] != "retired":
                 return
+            retirement = meta.get("integration_retirement")
+            if owner is not None and owner["kind"] == "retired":
+                decision_reason = (
+                    f"Integration operation {owner['operation_id']} is "
+                    f"{owner['operation_state']}; this delegate is retired, not recoverable."
+                )
+            elif isinstance(retirement, dict) and retirement.get("reason"):
+                decision_reason = (
+                    f"{retirement['reason']}; this delegate is retired, not recoverable."
+                )
+            else:
+                decision_reason = "Task or execution attempt changed before supervisor decision."
             now = time.time()
             await self._upsert_meta(
                 task_id,
@@ -169,7 +343,7 @@ class TaskRecoveryQueryMixin:
                 {
                     **incident,
                     "decision": "superseded",
-                    "decision_reason": "Task or execution attempt changed before supervisor decision.",
+                    "decision_reason": decision_reason,
                     "decided_at": now,
                     "decided_by": "system:reconciler",
                 },
@@ -182,24 +356,59 @@ class TaskRecoveryQueryMixin:
             )
 
     async def _queue_task_recovery_notification(self, task_id):
+        result = await self._ensure_task_recovery_incident(task_id)
+        return int(result["outcome"] == "queued" or bool(result.get("redelivered")))
+
+    async def _ensure_task_recovery_incident(self, task_id, *, project_id=None) -> dict:
         async with self.immediate() as conn:
             task = (
                 (await conn.execute(select(tasks).where(tasks.c.id == task_id).with_for_update()))
                 .mappings()
                 .first()
             )
-            if task is None or task["status"] != "BLOCKED":
-                return 0
+            if task is None or (project_id is not None and task["project_id"] != project_id):
+                return {"outcome": "not_found", "task_id": task_id}
+            if task["status"] != "BLOCKED":
+                return {
+                    "outcome": "not_actionable",
+                    "task_id": task_id,
+                    "detail": f"task is {task['status']}, not BLOCKED",
+                }
             meta, attempt = await self._recovery_context(conn, task)
-            reason = meta.get("needs_attention")
-            if not isinstance(reason, str) or not reason or not attempt or "manual_pause" in meta:
-                return 0
-            if attempt["state"] not in ("stopped", "quarantined"):
-                return 0
+            reason = incident_reason(meta)
+            if not reason or "manual_pause" in meta:
+                return {
+                    "outcome": "not_actionable",
+                    "task_id": task_id,
+                    "detail": "operator hold" if reason else "no recorded failure to recover",
+                }
+            if not attempt or attempt["state"] not in ("stopped", "quarantined"):
+                return {
+                    "outcome": "not_actionable",
+                    "task_id": task_id,
+                    "detail": "execution attempt has not stopped; the recovery scan records it",
+                }
+            owner = await self._recovery_owner(conn, task)
+            if owner["kind"] == "retired":
+                return {
+                    "outcome": "retired",
+                    "task_id": task_id,
+                    "operation_id": owner["operation_id"],
+                    "detail": (
+                        f"integration operation {owner['operation_id']} is "
+                        f"{owner['operation_state']}; the delegate is retired, not recovered"
+                    ),
+                }
             incident_id = _incident_id(task, attempt, reason)
             previous = meta.get(INCIDENT_KEY) or {}
             if previous.get("id") == incident_id:
-                return await self._redeliver_task_recovery(conn, task_id, previous)
+                redelivered = await self._redeliver_task_recovery(conn, task_id, previous)
+                return {
+                    "outcome": "existing",
+                    "task_id": task_id,
+                    "incident_id": incident_id,
+                    "redelivered": bool(redelivered),
+                }
             row = (
                 (await conn.execute(select(sessions).where(sessions.c.id == attempt["session_id"])))
                 .mappings()
@@ -210,6 +419,12 @@ class TaskRecoveryQueryMixin:
                 row["last_activity"]
                 if row and row["started_at"] == attempt["session_started_at"]
                 else None
+            )
+            budget = _budget(task, meta)
+            retry_allowed = bool(
+                owner["kind"] == "supervisor"
+                and reason in RETRYABLE_REASONS
+                and all(item["remaining"] for item in budget.values())
             )
             facts = {
                 "id": incident_id,
@@ -224,18 +439,29 @@ class TaskRecoveryQueryMixin:
                 "idle_seconds": max(0, round(end - activity))
                 if end is not None and activity is not None
                 else None,
+                "deadline_kind": DEADLINE_KINDS.get(reason, "none"),
                 "routing": {key: task[key] for key in ROUTING_FIELDS},
                 "retry_count": task["retry_count"],
                 "max_retries": task["max_retries"],
                 "supervisor_recoveries": meta.get(COUNT_KEY, 0),
                 "retry_reason_allowed": reason in RETRYABLE_REASONS,
+                "owner": owner,
+                "budget": budget,
+                "retry_allowed": retry_allowed,
+                "next_action": _next_action(owner, reason, budget),
                 "decision": None,
             }
             body = (
                 "AQ operational incident: a worker attempt stopped and its task needs attention. "
+                "This is the one incident for this failure: the task.failed event and the "
+                "periodic recovery scan both reach it, so a replay never means a second failure. "
+                "Its owner, remaining budget, deadline kind and next action are in the JSON below. "
+                "When the owner is an integration operation, generic recovery is refused: let that "
+                "operation's bounded stage run and do not reset its attempts or deadlines. "
                 "The user has authorized you to decide on bounded safe recovery without another approval. "
                 "Inspect the task, comments, session transcript, dependencies and gates before deciding. "
-                "A watchdog timeout may be wall-clock age, not inactivity; compare runtime and idle seconds. "
+                "deadline_kind names the clock that tripped: runtime is wall-clock age, inactivity is "
+                "time since the last activity; compare runtime_seconds and idle_seconds. "
                 "Use aq task recover --task-id <task_id> --incident-id <id> "
                 "--decision retry|hold --reason <your diagnosis>. This records your decision as a task comment. "
                 "Retry only when the cause is understood and another attempt can safely progress; preserve "
@@ -269,7 +495,7 @@ class TaskRecoveryQueryMixin:
                     body_kind="task_recovery",
                 )
             )
-            return 1
+            return {"outcome": "queued", "task_id": task_id, "incident_id": incident_id}
 
     async def _redeliver_task_recovery(self, conn, task_id, incident):
         """Re-arm the same receipt after an interrupted supervisor, never a busy turn.
@@ -358,10 +584,21 @@ class TaskRecoveryQueryMixin:
             if (
                 task["status"] != "BLOCKED"
                 or not attempt
-                or incident_id != _incident_id(task, attempt, meta.get("needs_attention"))
+                or incident_id != _incident_id(task, attempt, incident_reason(meta))
             ):
                 raise ValueError("Task or execution attempt changed; incident is stale")
             if decision == "retry":
+                owner = await self._recovery_owner(conn, task)
+                if owner["kind"] == "integration_operation":
+                    raise ValueError(
+                        f"Task recovery is owned by integration operation {owner['operation_id']}; "
+                        "use the integration operation's existing controls and budgets"
+                    )
+                if owner["kind"] == "retired":
+                    raise ValueError(
+                        f"Integration operation {owner['operation_id']} is "
+                        f"{owner['operation_state']}; its delegate is retired and cannot be restarted"
+                    )
                 await self._guard_task_recovery(
                     conn, task, meta, attempt, incident, stopped_session
                 )
@@ -446,7 +683,7 @@ class TaskRecoveryQueryMixin:
             or row["state"] not in ("stopped", "quarantined")
         ):
             raise ValueError("The exact old worker's termination must be confirmed")
-        if meta.get("needs_attention") not in RETRYABLE_REASONS:
+        if incident_reason(meta) not in RETRYABLE_REASONS:
             raise ValueError(
                 "This failure requires operator review; automatic recovery is not allowed"
             )
