@@ -116,9 +116,11 @@ three rules — approved specs in, an approved task batch out:
 
 It does **not** create per-task reviewers, final branch reviewers, or
 review/PR gates on downstream work — code validation and delivery come
-from integration. The `reviewer` and `final-reviewer` profiles still
-ship, so a review stage is something a project can wire up, not something
-the default configuration produces.
+from the project's configured integration owner. The `reviewer` and
+`final-reviewer` profiles remain available as explicitly selected
+specialists: a review is one explicit task or gate when a change warrants
+it, never an automatic stage or a chain of passes (software-factory policy,
+`docs/concepts/factory-policy.md`).
 
 Assignment routing is a **separate** playbook,
 `default-assignment-routing`. It fires on `task.route_needed` — emitted

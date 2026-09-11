@@ -18,9 +18,6 @@ semantic bodies, without an LLM:
   class is not explicit, write the route.  Spec:
   ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
 
-``pr-merge-sweep`` follows the same reviewed-artifact approach as
-``default-pipeline``.
-
 Usage::
 
     python scripts/rebuild-reviewed-playbook-artifacts.py            # rewrite fixtures
@@ -53,7 +50,6 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
-    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
@@ -86,13 +82,6 @@ PIPELINE_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
 }
 
 _TERMINAL_HEADING = "## Failure handling, uniformly"
-
-PR_MERGE_SWEEP_STEP_PROSE: Mapping[str, tuple[str, int | None]] = {
-    "sweep-open-prs--ensure_sweep_task": ("sweep-open-prs", 1),
-    "sweep-open-prs--route_sweep_task": ("sweep-open-prs", 2),
-    "sweep-open-prs--done": ("sweep-open-prs", None),
-}
-
 
 class ProseIndex:
     """1-based line numbers for a prose source's rule headings and list items."""
@@ -189,16 +178,6 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _remap_pipeline_refs(json.loads(json.dumps(body)), ProseIndex(source, source.vault_path))
     if playbook_id == "default-assignment-routing":
         return _default_assignment_routing_body(source)
-    if playbook_id == "pr-merge-sweep":
-        body = _recorded_semantic_body(playbook_id)
-        remapped = json.loads(json.dumps(body))
-        index = ProseIndex(source, source.vault_path)
-        for rule in remapped["rules"]:
-            rule["source"] = index.rule_ref(rule["id"])
-        for step_id, step in remapped["steps"].items():
-            rule_id, ordinal = PR_MERGE_SWEEP_STEP_PROSE[step_id]
-            step["source"] = index.step_ref(rule_id, ordinal)
-        return remapped
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
     if playbook_id == "blocked-task-escalation":

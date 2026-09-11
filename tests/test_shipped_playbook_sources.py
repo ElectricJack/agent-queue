@@ -34,9 +34,9 @@ INSTALLED_SOURCE_ROOTS = (
 #: Playbook-shaped Markdown that no code path installs.  The child plan drafted
 #: this against ``src/prompts/example_playbooks/`` and ``src/prompts/default_rules/``;
 #: neither directory exists on the live tree any more (reconciliation, §2).
-#: ``src/prompts/project_playbooks/`` holds the project-scoped ``pr-merge-sweep``
+#: ``src/prompts/project_playbooks/`` holds the project-scoped ``ci-main-sentinel``
 #: source: ``src/vault.py`` never copies it, it reaches a vault only through its
-#: reviewed bundle (``tests/fixtures/playbooks/v2/pr-merge-sweep/``), which
+#: reviewed bundle (``tests/fixtures/playbooks/v2/ci-main-sentinel/``), which
 #: ``tests/test_default_playbook_v2_artifacts.py`` validates against the live
 #: registries.
 EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ("src/prompts/project_playbooks",)

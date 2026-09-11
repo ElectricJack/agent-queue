@@ -45,8 +45,10 @@ Each phase becomes a separate task on its own `aq/<task-id>` branch, cut from
 the default branch. **Do not tell a phase to branch from the previous phase's
 branch.** Stacked branches are only correct when a phase genuinely cannot
 build or run without its predecessor's unmerged code — say so explicitly when
-you write such a phase, and give the **last** phase in the stack an explicit
-step: open the `<base> -> main` pull request and name it in the close summary.
+you write such a phase and declare the dependency. Delivery to the default
+branch belongs to the project's configured integration owner (software-factory
+policy, `docs/concepts/factory-policy.md`); do not add a phase whose job is to open
+or merge the `<base> -> main` pull request.
 
 A PR merged into a feature branch has put nothing on the default branch. Every
 task in the stack closes COMPLETED and every dependent is released, while the

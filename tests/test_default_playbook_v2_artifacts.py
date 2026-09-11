@@ -51,7 +51,6 @@ PROFILE_DEFAULTS = REPO_ROOT / "src" / "profiles" / "defaults"
 SHIPPED_SOURCES: dict[str, str] = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
-    "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",

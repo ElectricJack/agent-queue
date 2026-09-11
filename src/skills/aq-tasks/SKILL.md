@@ -109,7 +109,7 @@ Rules the daemon enforces:
 - Every terminal close also captures the git commit HEAD of the
   workspace automatically. The flag to override it is `--commit <sha>`;
   there is no `--commit-sha`.
-- The evidence flags are what the reviewer reads: `--changes`,
+- The evidence flags are what integration and later readers rely on: `--changes`,
   `--verification`, `--test "<command>"` and `--command "<command>"`
   (both repeatable). If the task listed **Deliverables** and one is
   intentionally not shipped, declare it with
@@ -197,6 +197,11 @@ file emergent work it discovers. A worker-filed task starts DEFINED with a
 routing gate, so triage — not the filer — dedupes and routes it. `--from-spec`,
 `--graph` and `create_task_graph` stay elevated/supervisor-only.
 
+By default a worker-filed task is a **child of the task you hold**: it stays
+visible and, while open, blocks that task's successful close. `--parent <id>`
+(an authorised alternative parent) and `--root` (cross-cutting work) are
+deliberate choices, never a way to move required work out of your task's way.
+
 Profile ids below are examples from the shipped worker ladder
 (`worker-<tier>-<level>-<provider>`). Confirm what this install actually has
 with `aq agent list-profiles` (and `aq system list-intelligence-classes` for
@@ -258,8 +263,8 @@ aq task reparent --task-id <task_id> --parent-id <new_parent_id>  # move under a
 aq task reparent --task-id <task_id> --root           # detach to root (clears parent)
 # On a worker token, reparent moves only unclaimed tasks you filed from the task
 # you hold, to the parents you could have filed under (your task, a descendant,
-# its immediate parent, or --root, which attaches the routing gate). Use it when a
-# finding nested under your own task blocks your close with hierarchy.open_children.
+# its immediate parent, or --root, which attaches the routing gate). Use it only
+# when a filing was misplaced — never to move a child aside so your task can close.
 aq task delete --task-id <task_id> --cascade          # delete a container + its whole subtree
 aq task close <id> --abandon-children \
   --outcome pass|fail --summary "..."                 # close a container, abandoning
@@ -322,7 +327,7 @@ archived id can never be recreated in a different project.
 - Read before writing. `aq task show <id>` before any mutation (`aq task get`
   is an operator read and a worker token is refused it).
 - Explain non-obvious moves. When you close a task with `--outcome pass`, the
-  summary should tell the reviewer what you did and why; link to relevant findings and comments.
+  summary should tell the reader what you did and why; link to relevant findings and comments.
 - File emergent work rather than widening your own scope: `aq task create`
   from a worker session is expected, and lands behind a routing gate for
   triage. Don't build task *graphs* from a worker session — `--graph`,

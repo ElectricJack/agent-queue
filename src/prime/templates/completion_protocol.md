@@ -50,17 +50,19 @@ the task stays yours: push by hand, then close again. Nothing is discarded and
 nothing closes silently — a slot is reset for the next task the moment you let
 go of it, and local-only commits are unreachable from that point on.
 
-## Stacked branches: don't, and if you must, own the exit
+## Stacked branches: avoid them
 
 Branch from the default branch (`main`). Stack on another task's branch only
-when the work genuinely cannot compile or run without it, and say so in your
-close summary.
+when the work genuinely cannot compile or run without it: declare the
+dependency and say so in your close summary.
 
-When you do stack, the **last** task in the stack owns opening the
-`<base> -> main` pull request. Name that PR explicitly in your close summary.
-A PR merged into a feature branch has put nothing on `main`: the tasks close
-COMPLETED, dependents believe the work shipped, and `main` never gains a line
-of it until somebody merges the base.
+Delivery to the default branch belongs to the project's configured integration
+owner, not to the last task in a stack (software-factory policy,
+`docs/concepts/factory-policy.md`). Follow the delivery section of this prime;
+open a PR only when the task or project asks for one, and never merge it
+yourself. A PR merged into a feature branch has put nothing on `main`: the
+tasks close COMPLETED, dependents believe the work shipped, and `main` never
+gains a line of it until the configured owner delivers the base.
 
 ## Stay visible while you work
 
