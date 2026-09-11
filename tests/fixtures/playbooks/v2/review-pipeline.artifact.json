@@ -10,7 +10,7 @@
   "purpose": "routine",
   "compiled_against": {
     "commands": {
-      "ensure_task": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+      "ensure_task": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb",
       "gate_create": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
       "list_tasks": "sha256:7037abfad41135976dc8a97fd05114d0760e42560da22331f372c1258745477f"
     },

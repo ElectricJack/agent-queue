@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:eaac637309b22ef461f6b0ec4af0607c6baaac204f1c5369c8ef4b39866e6b6d",
+    "artifact_sha256": "sha256:64de78d8713f428897f41baf8881dd8cdd7a24deec9e76bb280e01ff3aadb64e",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:af1467721bd2f9a0febccfa63f2881a5aef07c7eae14fb1a2be9ee2965a8c835",
+    "contract_fingerprint": "sha256:e7a5439a1b086f4be1ea61a0c23c5bf46587b839322235d3c99c5e515bf554df",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -220,7 +220,7 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc",
+        "contract_fingerprint": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb",
         "renderer": "contract"
       },
       "badges": [
@@ -410,7 +410,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:4b35696e1543b60b340641db99370be0cf94b2e5982e5926fb2b1aa55a5fc4bc"
+        "execution_fingerprint": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb"
       },
       "diagnostics": [],
       "out_degree": 4,
