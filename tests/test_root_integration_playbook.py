@@ -28,7 +28,6 @@ from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.profiles.capabilities import CapabilityPolicy
-from src.vault import ensure_default_playbooks
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -37,24 +36,11 @@ from tests.playbook_v2_engine_helpers import (
 )
 
 
-FIXTURE = Path("tests/fixtures/playbooks/v2/root-integration-train/artifact.json")
-SOURCE = Path("src/prompts/default_playbooks/root-integration-train.md")
+FIXTURE = Path("tests/fixtures/playbooks/historical-v2/root-integration-train/artifact.json")
 
 
 def _artifact():
     return load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-
-
-def test_root_train_source_is_seeded_disabled_and_never_overwrites(tmp_path):
-    first = ensure_default_playbooks(str(tmp_path))
-    installed = tmp_path / "vault/system/playbooks/root-integration-train.md"
-    assert "root-integration-train.md" in first["created"]
-    assert installed.read_bytes() == SOURCE.read_bytes()
-    assert "enabled: false" in SOURCE.read_text(encoding="utf-8")
-    installed.write_text("operator-owned\n", encoding="utf-8")
-    second = ensure_default_playbooks(str(tmp_path))
-    assert "root-integration-train.md" in second["skipped"]
-    assert installed.read_text(encoding="utf-8") == "operator-owned\n"
 
 
 def test_reviewed_root_routes_use_only_subject_commands():

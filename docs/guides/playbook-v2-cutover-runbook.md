@@ -90,7 +90,6 @@ PLAYBOOK_REVIEW_STAGING=/configured/vault/root/reviewed-playbooks
 install -d "$PLAYBOOK_REVIEW_STAGING"
 cp -R tests/fixtures/playbooks/v2/default-pipeline "$PLAYBOOK_REVIEW_STAGING/"
 cp -R tests/fixtures/playbooks/v2/default-assignment-routing "$PLAYBOOK_REVIEW_STAGING/"
-cp -R tests/fixtures/playbooks/v2/memory-consolidation "$PLAYBOOK_REVIEW_STAGING/"
 cp -R tests/fixtures/playbooks/v2/coding-reflection "$PLAYBOOK_REVIEW_STAGING/"
 ```
 
@@ -101,7 +100,6 @@ import each bundle through the supported operator command:
 ```bash
 aq playbook v2-import --path reviewed-playbooks/default-pipeline --json
 aq playbook v2-import --path reviewed-playbooks/default-assignment-routing --json
-aq playbook v2-import --path reviewed-playbooks/memory-consolidation --json
 aq playbook v2-import --path reviewed-playbooks/coding-reflection --json
 ```
 
@@ -119,7 +117,6 @@ returned import hash is present with `is_active: false`.
 ```bash
 aq playbook artifacts --playbook-id default-pipeline --json
 aq playbook artifacts --playbook-id default-assignment-routing --json
-aq playbook artifacts --playbook-id memory-consolidation --json
 aq playbook artifacts --playbook-id coding-reflection --json
 ```
 

@@ -934,11 +934,10 @@ def test_starter_knowledge_covers_expected_types():
 def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
-    `memory-consolidation.md`, the control-plane `default-pipeline.md` and
-    `default-assignment-routing.md`, and the disabled-by-default
-    `hierarchical-delivery.md` / `root-integration-train.md` policies ship
-    installed by default.  Other playbooks that used to auto-install have
-    been moved to ``docs/example_playbooks/`` as opt-in reference material.
+    The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
+    blocked-task escalation, and provider usage probe ship installed by
+    default. Retired playbooks must stay absent so bootstrap cannot recreate
+    a catalog entry that an operator deleted.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -947,10 +946,7 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
-        "hierarchical-delivery.md",
-        "memory-consolidation.md",
         "provider-usage-probe.md",
-        "root-integration-train.md",
     ]
 
     # All expected files must exist on disk
@@ -966,33 +962,20 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     assert installed == expected_files
 
 
-def test_ensure_default_playbooks_creates_memory_consolidation(tmp_path):
-    """ensure_default_playbooks installs memory-consolidation.md — the only default."""
-    result = ensure_default_playbooks(str(tmp_path))
-
-    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    assert playbook_path.is_file()
-    assert "memory-consolidation.md" in result["created"]
-    assert len(result["skipped"]) == 0
-
-
 def test_ensure_default_playbooks_idempotent(tmp_path):
     """Calling ensure_default_playbooks twice does not overwrite existing files."""
     ensure_default_playbooks(str(tmp_path))
 
-    playbook_path = (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    )
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md"
     custom_content = (
-        "---\nid: memory-consolidation\ntriggers:\n"
-        "  - timer.24h\nscope: system\n---\n# user-customised\n"
+        "---\nid: default-pipeline\nkind: pipeline\nscope: system\n---\n# user-customised\n"
     )
     playbook_path.write_text(custom_content)
 
     result = ensure_default_playbooks(str(tmp_path))
 
     assert playbook_path.read_text() == custom_content
-    assert "memory-consolidation.md" in result["skipped"]
+    assert "default-pipeline.md" in result["skipped"]
 
 
 def test_ensure_default_playbooks_upgrades_known_legacy_pipeline(tmp_path, monkeypatch):
@@ -1059,41 +1042,14 @@ def test_ensure_default_playbooks_partial_existing(tmp_path):
     playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
     playbooks_dir.mkdir(parents=True)
 
-    # Pre-create the memory-consolidation playbook with custom content
-    existing = playbooks_dir / "memory-consolidation.md"
+    # Pre-create a bundled playbook with custom content.
+    existing = playbooks_dir / "default-pipeline.md"
     existing.write_text("# customised\n")
 
     result = ensure_default_playbooks(str(tmp_path))
 
-    assert "memory-consolidation.md" in result["skipped"]
+    assert "default-pipeline.md" in result["skipped"]
     assert existing.read_text() == "# customised\n"
-
-
-def test_memory_consolidation_playbook_has_valid_frontmatter():
-    """The bundled memory-consolidation.md has valid YAML frontmatter."""
-    import os
-
-    import yaml
-
-    playbook_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "src",
-        "prompts",
-        "default_playbooks",
-        "memory-consolidation.md",
-    )
-    content = open(playbook_path, encoding="utf-8").read()
-
-    assert content.startswith("---")
-    lines = content.strip().splitlines()
-    end_idx = next(i for i, line in enumerate(lines[1:], 1) if line == "---")
-    fm_text = "\n".join(lines[1:end_idx])
-    fm = yaml.safe_load(fm_text)
-
-    assert fm["id"] == "memory-consolidation"
-    assert isinstance(fm["triggers"], list)
-    assert "timer.24h" in fm["triggers"]
-    assert fm["scope"] == "system"
 
 
 def test_ensure_default_playbooks_all_skipped_on_second_run(tmp_path):
@@ -1111,19 +1067,15 @@ def test_ensure_vault_layout_installs_default_playbooks(tmp_path):
     """ensure_vault_layout installs the minimal default playbook set."""
     ensure_vault_layout(str(tmp_path))
 
-    assert (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    ).is_file()
+    assert (tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md").is_file()
 
 
 def test_ensure_vault_layout_preserves_custom_playbooks(tmp_path):
     """ensure_vault_layout does not overwrite user-customised playbooks."""
     ensure_vault_layout(str(tmp_path))
 
-    playbook_path = (
-        tmp_path / "vault" / "system" / "playbooks" / "memory-consolidation.md"
-    )
-    custom = "# User's custom memory-consolidation playbook\n"
+    playbook_path = tmp_path / "vault" / "system" / "playbooks" / "default-pipeline.md"
+    custom = "# User's custom default pipeline\n"
     playbook_path.write_text(custom)
 
     ensure_vault_layout(str(tmp_path))
