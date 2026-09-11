@@ -316,6 +316,14 @@ def task_create(
     tools + system prompt). Use ``--agent-type`` to pick the scope the
     task runs under when no explicit profile is given.
 
+    ``--intelligence-class`` without ``--profile`` chooses the profile from
+    the class before the task is written: if the project default (or the
+    caller's own profile) runs another class, an enabled worker whose
+    default_class matches is selected — pool first, then the default's
+    provider, then Claude — and a class no enabled worker runs is an error
+    listing the classes that are available. The result's ``profile_source``
+    reports the rule: explicit, class_match, project_default or inherited.
+
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
     validation report and the ids that would be assigned.
