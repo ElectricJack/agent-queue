@@ -14,6 +14,7 @@ from src.profiles.catalog import (
 )
 from src.profiles.default_selection import select_default_profile_id
 from src.profiles.parser import parse_profile
+from src.profiles.retired_defaults import retire_default
 
 
 def _probes(*ready: str) -> tuple[AuthProbe, ...]:
@@ -82,6 +83,51 @@ def test_refresh_after_provider_removal_deactivates_without_deleting_profiles(tm
     assert active_catalog_profile_ids(tmp_path) == set()
     payload = json.loads(activation_path(tmp_path).read_text(encoding="utf-8"))
     assert payload["profiles"]["worker-deep-high-codex"]["active"] is False
+
+
+def test_refresh_skips_every_retired_catalog_id(tmp_path):
+    for profile in shipped_profile_catalog():
+        assert retire_default(str(tmp_path), profile.id)
+
+    refreshed = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert refreshed["created"] == []
+    assert set(refreshed["retired"]) == {
+        "worker-fast-medium-codex",
+        "worker-standard-medium-codex",
+        "worker-deep-high-codex",
+    }
+
+
+def test_refresh_does_not_shadow_an_existing_harness_class_route(tmp_path):
+    existing = tmp_path / "vault" / "agent-types" / "standard-medium-codex" / "profile.md"
+    existing.parent.mkdir(parents=True)
+    existing.write_text(
+        """---
+id: standard-medium-codex
+name: Standard Codex
+---
+
+## Config
+```json
+{"harness": "codex", "default_class": "standard-medium", "lifecycle": "pool"}
+```
+""",
+        encoding="utf-8",
+    )
+
+    refreshed = refresh_catalog_profiles(tmp_path, _probes("codex"))
+
+    assert "worker-standard-medium-codex" in refreshed["duplicates"]
+    assert not (tmp_path / "vault" / "agent-types" / "worker-standard-medium-codex").exists()
+    assert set(refreshed["created"]) == {"worker-fast-medium-codex", "worker-deep-high-codex"}
+
+
+def test_materialized_non_claude_profile_describes_its_own_harness(tmp_path):
+    refresh_catalog_profiles(tmp_path, _probes("codex"))
+    text = (tmp_path / "vault" / "agent-types" / "worker-standard-medium-codex" / "profile.md").read_text()
+    assert "concrete Codex model" in text
+    assert "A Codex or Gemini equivalent" not in text
 
 
 def test_default_selector_excludes_catalog_profiles_not_in_activation_record():

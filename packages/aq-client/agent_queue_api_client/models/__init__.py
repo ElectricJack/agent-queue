@@ -636,6 +636,7 @@ from .orchestrator_control_request import OrchestratorControlRequest
 from .orchestrator_control_response import OrchestratorControlResponse
 from .orchestrator_control_response_422 import OrchestratorControlResponse422
 from .outcome_explanation_dto import OutcomeExplanationDTO
+from .outside_pool_session_status import OutsidePoolSessionStatus
 from .pause_project_request import PauseProjectRequest
 from .pause_project_response import PauseProjectResponse
 from .pause_project_response_422 import PauseProjectResponse422
@@ -1810,6 +1811,7 @@ __all__ = (
     "OrchestratorControlResponse",
     "OrchestratorControlResponse422",
     "OutcomeExplanationDTO",
+    "OutsidePoolSessionStatus",
     "PauseProjectRequest",
     "PauseProjectResponse",
     "PauseProjectResponse422",

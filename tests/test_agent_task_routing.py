@@ -92,6 +92,18 @@ def test_explicit_codex_deep_task_uses_sol_regardless_of_roster_order(reverse):
     assert [(action.task_id, action.agent_id) for action in actions] == [("task", "sol")]
 
 
+def test_metadata_defined_pool_worker_is_generic_without_a_worker_prefix():
+    """The live pool ladder is identified by execution metadata, not its ID."""
+    profiles = routing_profiles()
+    profiles["deep-pool-codex"] = AgentProfile(
+        id="deep-pool-codex", name="Deep pool", harness="codex",
+        default_class="deep-high", lifecycle="pool",
+    )
+    task = requested_task(profile_id="deep-pool-codex", intelligence_class=None)
+    agent = workers()[-1]
+    assert Scheduler.schedule(routing_state(task, [agent], profiles))
+
+
 @pytest.mark.parametrize("preferred", [None, "sol"])
 def test_busy_sol_never_falls_back_to_fast_or_wrong_provider_after_affinity_timeout(preferred):
     roster = workers()

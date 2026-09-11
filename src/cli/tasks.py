@@ -212,8 +212,8 @@ def _create_task_graph(
     default=None,
     help=(
         "Worker profile id; supervisor is control-plane only. Omit to use the project default. "
-        "Run `aq agent list-profiles` for the ids this install has "
-        "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
+        "Run `aq agent list-profiles` for the profile ids this install currently has; "
+        "prefer an enabled lifecycle: pool profile for ordinary worker work."
     ),
 )
 @click.option(

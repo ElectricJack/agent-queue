@@ -494,6 +494,97 @@ async def _check_pools_disabled(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# pools.task_lifecycle_shadow (report-only — no fix)
+# ---------------------------------------------------------------------------
+
+
+async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
+    """Expose push profiles that duplicate a durable pool execution route.
+
+    A task-lifecycle profile with the same harness and intelligence class as
+    a pool starts an unpooled session.  That session consumes a worktree slot
+    while pool supply remains zero, which is operationally misleading even
+    though both profile definitions parse and launch correctly.
+    """
+    if ctx.db is None:
+        return _no_db_result("pools.task_lifecycle_shadow")
+    profiles = await ctx.db.list_profiles()
+    pool_routes: dict[tuple[str, str], list[str]] = {}
+    for profile in profiles:
+        if getattr(profile, "lifecycle", "task") != "pool":
+            continue
+        harness = str(getattr(profile, "harness", "") or "").strip()
+        default_class = str(getattr(profile, "default_class", "") or "").strip()
+        if harness and default_class:
+            pool_routes.setdefault((harness, default_class), []).append(profile.id)
+
+    duplicates: list[dict] = []
+    duplicate_ids: set[str] = set()
+    for profile in profiles:
+        if getattr(profile, "lifecycle", "task") == "pool":
+            continue
+        route = (
+            str(getattr(profile, "harness", "") or "").strip(),
+            str(getattr(profile, "default_class", "") or "").strip(),
+        )
+        matches = sorted(pool_routes.get(route, [])) if all(route) else []
+        if matches:
+            duplicate_ids.add(profile.id)
+            duplicates.append(
+                {
+                    "profile_id": profile.id,
+                    "harness": route[0],
+                    "default_class": route[1],
+                    "pool_profile_ids": matches,
+                }
+            )
+
+    affected_tasks: list[dict] = []
+    for status in (TaskStatus.READY, TaskStatus.IN_PROGRESS):
+        for task in await ctx.db.list_tasks(status=status):
+            profile_id = task.profile_id
+            if profile_id and profile_id not in duplicate_ids:
+                continue
+            affected_tasks.append(
+                {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "status": task.status.value,
+                    "profile_id": profile_id,
+                    "reason": "missing_profile" if not profile_id else "duplicate_pool_route",
+                    "pool_profile_ids": (
+                        next(
+                            (row["pool_profile_ids"] for row in duplicates if row["profile_id"] == profile_id),
+                            [],
+                        )
+                    ),
+                }
+            )
+
+    if not duplicates and not affected_tasks:
+        return CheckResult(
+            id="pools.task_lifecycle_shadow",
+            severity=Severity.OK,
+            detail="no task-lifecycle profile shadows a pool route and active tasks are explicitly routed",
+            data={"profiles": [], "tasks": [], "count": 0},
+        )
+    detail = (
+        f"{len(duplicates)} task-lifecycle profile(s) duplicate a pool harness/class route; "
+        f"{len(affected_tasks)} READY/IN_PROGRESS task(s) have a missing or duplicate profile route"
+    )
+    return CheckResult(
+        id="pools.task_lifecycle_shadow",
+        severity=Severity.WARN,
+        detail=detail,
+        data={
+            "count": len(duplicates) + len(affected_tasks),
+            "profiles": duplicates[:50],
+            "tasks": affected_tasks[:100],
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # claims.holder_consistency (report-only — no fix)
 # ---------------------------------------------------------------------------
 
@@ -1118,6 +1209,13 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: no ``fix`` — flipping ``swarm.enabled`` is an operator
         # decision, not a repair (they may have disabled it deliberately).
         DoctorCheck(id="pools.disabled", run=_check_pools_disabled, owner=OWNER),
+        # Report-only: either changing a profile lifecycle or rerouting active
+        # work is an operator decision; doctor must not disrupt live sessions.
+        DoctorCheck(
+            id="pools.task_lifecycle_shadow",
+            run=_check_task_lifecycle_shadow,
+            owner=OWNER,
+        ),
         # Report-only: no ``fix`` — a claim/holder mismatch needs a human to
         # decide which side (agent, session, or task) is authoritative.
         DoctorCheck(id="claims.holder_consistency", run=_check_holder_consistency, owner=OWNER),

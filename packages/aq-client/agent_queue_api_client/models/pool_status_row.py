@@ -9,6 +9,7 @@ from attrs import field as _attrs_field
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.outside_pool_session_status import OutsidePoolSessionStatus
     from ..models.pool_instance_status import PoolInstanceStatus
     from ..models.pool_project_status import PoolProjectStatus
 
@@ -39,6 +40,7 @@ class PoolStatusRow:
             min_per_project (int | Unset):  Default: 0.
             projects (list[PoolProjectStatus] | Unset):
             instances (list[PoolInstanceStatus] | Unset):
+            outside_pools (list[OutsidePoolSessionStatus] | Unset):
     """
 
     profile_id: str
@@ -54,6 +56,7 @@ class PoolStatusRow:
     min_per_project: int | Unset = 0
     projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
+    outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -97,6 +100,13 @@ class PoolStatusRow:
                 instances_item = instances_item_data.to_dict()
                 instances.append(instances_item)
 
+        outside_pools: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.outside_pools, Unset):
+            outside_pools = []
+            for outside_pools_item_data in self.outside_pools:
+                outside_pools_item = outside_pools_item_data.to_dict()
+                outside_pools.append(outside_pools_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -121,11 +131,14 @@ class PoolStatusRow:
             field_dict["projects"] = projects
         if instances is not UNSET:
             field_dict["instances"] = instances
+        if outside_pools is not UNSET:
+            field_dict["outside_pools"] = outside_pools
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.outside_pool_session_status import OutsidePoolSessionStatus
         from ..models.pool_instance_status import PoolInstanceStatus
         from ..models.pool_project_status import PoolProjectStatus
 
@@ -177,6 +190,15 @@ class PoolStatusRow:
 
                 instances.append(instances_item)
 
+        _outside_pools = d.pop("outside_pools", UNSET)
+        outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
+        if _outside_pools is not UNSET:
+            outside_pools = []
+            for outside_pools_item_data in _outside_pools:
+                outside_pools_item = OutsidePoolSessionStatus.from_dict(outside_pools_item_data)
+
+                outside_pools.append(outside_pools_item)
+
         pool_status_row = cls(
             profile_id=profile_id,
             min_active=min_active,
@@ -191,6 +213,7 @@ class PoolStatusRow:
             min_per_project=min_per_project,
             projects=projects,
             instances=instances,
+            outside_pools=outside_pools,
         )
 
         pool_status_row.additional_properties = d

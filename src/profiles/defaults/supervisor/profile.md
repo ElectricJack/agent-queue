@@ -171,8 +171,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   originating task.
 - **Set execution requirements when creating work.** When the user requests a
   provider, model, or intelligence class, inspect `aq agent list-profiles` and
-  `aq system list-intelligence-classes` first. Pick a profile whose harness
-  matches the provider and a valid class ID such as `deep-high`. For graphs,
+  `aq system list-intelligence-classes` first. Pick an enabled `lifecycle: pool`
+  profile whose harness matches the provider and a valid class ID such as
+  `deep-high`; profile IDs are installation-specific and must never be inferred
+  from a `worker-` prefix. For graphs,
   set `defaults.profile` and `defaults.intelligence_class` (or each node's
   `profile`/`intelligence_class`); CLI `--profile` and `--intelligence-class`
   fill missing node routes. For individual tasks, pass both at creation.

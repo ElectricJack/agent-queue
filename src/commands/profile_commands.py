@@ -608,6 +608,7 @@ class ProfileCommandsMixin:
             ``{"deleted", "name"}``, plus ``"retired": True`` when a
             tombstone was written.
         """
+        from src.profiles.catalog import shipped_profile_catalog
         from src.profiles.drift import system_profile_ids
         from src.profiles.retired_defaults import retire_default
 
@@ -635,7 +636,8 @@ class ProfileCommandsMixin:
             await self.db.delete_profile(profile_id)
 
         result: dict = {"deleted": profile_id, "name": name}
-        if profile_id in system_profile_ids():
+        catalog_ids = {catalog_profile.id for catalog_profile in shipped_profile_catalog()}
+        if profile_id in system_profile_ids() or profile_id in catalog_ids:
             await asyncio.to_thread(
                 retire_default,
                 self.config.data_dir,

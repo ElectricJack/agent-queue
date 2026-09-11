@@ -1,7 +1,7 @@
 import { UsersIcon } from "@heroicons/react/24/outline";
 import { usePoolSetEnabled } from "../../api/hooks";
 import EnableToggle from "./EnableToggle";
-import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
+import { PoolBadge, PoolOutsidePools, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "./PoolMetadata";
 import type { PoolEntry } from "./pools";
 
 /**
@@ -47,6 +47,7 @@ export default function PoolDirectory({ entries, onOpen }: { entries: PoolEntry[
                 </span>
                 <PoolPlacementRow projects={entry.projects} />
                 <PoolSupplyRow pool={entry.pool} />
+                <PoolOutsidePools pool={entry.pool} />
                 <PoolQuarantine projects={entry.projects} />
                 {!enabled && (
                   <span className="block text-[10px] text-amber-300">

@@ -31398,6 +31398,83 @@
         "title": "OutcomeExplanationDTO",
         "description": "One legal outcome of a step and where it goes."
       },
+      "OutsidePoolSessionStatus": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "harness": {
+            "type": "string",
+            "title": "Harness"
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "started_at": {
+            "type": "number",
+            "title": "Started At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "profile_id",
+          "harness",
+          "intelligence_class",
+          "name",
+          "state",
+          "started_at"
+        ],
+        "title": "OutsidePoolSessionStatus",
+        "description": "A live task-lifecycle session shadowing this pool's execution route."
+      },
       "PauseProjectRequest": {
         "properties": {
           "project_id": {
@@ -34744,6 +34821,14 @@
             },
             "type": "array",
             "title": "Instances",
+            "default": []
+          },
+          "outside_pools": {
+            "items": {
+              "$ref": "#/components/schemas/OutsidePoolSessionStatus"
+            },
+            "type": "array",
+            "title": "Outside Pools",
             "default": []
           }
         },

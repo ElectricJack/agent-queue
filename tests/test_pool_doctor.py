@@ -68,12 +68,44 @@ def test_check_names():
         "pools.orphan_agents",
         "pools.preparing_stuck",
         "pools.disabled",
+        "pools.task_lifecycle_shadow",
         "claims.holder_consistency",
         "pools.global_bounds_migration",
         "pools.floor_exceeds_max",
         "pools.placement_starved",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
+
+
+async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks(db):
+    await db.update_profile("worker", harness="codex", default_class="deep-high")
+    await db.create_profile(
+        AgentProfile(
+            id="legacy-deep-codex", name="legacy", lifecycle="task", harness="codex",
+            default_class="deep-high",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="shadowed", project_id=PROJECT_ID, title="shadowed", description="",
+            status=TaskStatus.READY, profile_id="legacy-deep-codex",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="missing", project_id=PROJECT_ID, title="missing", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.WARN
+    assert finding.data["profiles"] == [{
+        "profile_id": "legacy-deep-codex", "harness": "codex", "default_class": "deep-high",
+        "pool_profile_ids": ["worker"],
+    }]
+    assert {task["task_id"] for task in finding.data["tasks"]} == {"shadowed", "missing"}
 
 
 async def _stale_agent(db, agent_id, **kw):

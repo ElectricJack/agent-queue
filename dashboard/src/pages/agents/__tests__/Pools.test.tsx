@@ -540,6 +540,21 @@ describe("enabling and disabling a pool from the directory", () => {
   // reachable here.  Both fixtures below are idle for exactly that reason.
   const idle = { running_busy: 0, running_idle: 1 };
 
+  it("shows task-lifecycle sessions that run outside the pool", async () => {
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({
+      ...idle,
+      outside_pools: [{
+        session_id: "outside-1", project_id: "agent-queue", profile_id: "legacy-standard",
+        harness: "claude", intelligence_class: "standard-medium", name: "legacy worker",
+        state: "running", task_id: "outside-task", task_title: "Outside task", started_at: 100,
+      }],
+    })] } });
+    renderAgents("/agents");
+
+    const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
+    expect(await directory.findByText(/outside pools: 1 task-lifecycle session/i)).toBeInTheDocument();
+  });
+
   it("disables an idle pool and keeps its row listed for re-enabling", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
     renderAgents("/agents");
