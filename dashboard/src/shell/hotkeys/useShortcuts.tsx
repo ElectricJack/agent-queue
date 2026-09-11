@@ -47,12 +47,41 @@ function makeId(): string {
   return `sc-${++nextId}`;
 }
 
+// A symbol key: anything but a letter, a digit, whitespace or the library's
+// "+", "," and ">" separators.
+const SYMBOL_KEY = /^[^\p{L}\p{N}\s+,>]$/u;
+
+/**
+ * The react-hotkeys-hook binding for a shortcut spec. The library rejects an
+ * event whose Shift state differs from the binding's, but typing a symbol such
+ * as "?" holds Shift on most layouts, so a combo ending in a symbol also binds
+ * its Shift variant: the character typed is the shortcut, however the layout
+ * reaches it. Letters and digits keep an exact Shift match, because Shift turns
+ * "g" into "G" and "1" into "!" (which the library would still match to "1" by
+ * its code).
+ */
+function hotkeyBinding(spec: string): string {
+  return (
+    spec
+      // Accept legacy modifier-key notation as well as the library's modifier+key syntax.
+      .replace(/\b(meta|ctrl|alt|shift)-/g, "$1+")
+      .split(",")
+      .flatMap((combo) => {
+        const parts = combo.trim().toLowerCase().split("+");
+        const symbol = SYMBOL_KEY.test(parts[parts.length - 1] ?? "") && !parts.includes("shift");
+        return symbol ? [combo, `shift+${combo.trim()}`] : [combo];
+      })
+      .join(",")
+  );
+}
+
 /**
  * Register a hotkey. The `key` string uses react-hotkeys-hook syntax with
  * `$mod` as a stand-in for the platform modifier (cmd on mac, ctrl elsewhere).
  * A key matches the character it types (`event.key`, so "[" or "/") or its
- * physical key's code name ("bracketleft"). Also feeds the cheat-sheet via the
- * context registry.
+ * physical key's code name ("bracketleft"); a symbol such as "?" fires whether or
+ * not the layout needs Shift to type it. Also feeds the cheat-sheet via the
+ * context registry, which shows `key` as written.
  */
 export function useShortcut(key: string, opts: ShortcutOpts): void {
   const register = useContext(RegisterC);
@@ -80,8 +109,7 @@ export function useShortcut(key: string, opts: ShortcutOpts): void {
   }, [register, id, expanded, labelDep, sectionDep]);
 
   useHotkeys(
-    // Accept legacy modifier-key notation as well as the library's modifier+key syntax.
-    expanded.replace(/\b(meta|ctrl|alt|shift)-/g, "$1+"),
+    hotkeyBinding(expanded),
     (e) => {
       if (optsRef.current.when && !optsRef.current.when()) return;
       e.preventDefault();
