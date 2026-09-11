@@ -47,3 +47,6 @@ coverage.json
 htmlcov/
 # TypeScript incremental build metadata
 *.tsbuildinfo
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
