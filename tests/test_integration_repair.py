@@ -2416,6 +2416,9 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     assert filed["success"] is True
     child = await db.get_task(filed["task_id"])
     assert child.parent_task_id == "parent"
+    # Filing under the repaired parent must not materialize an origin chain
+    # for the verifier itself, which would re-branch it off ``aq/parent``.
+    assert (await db.get_task("verifier")).branch_name == "aq/parent"
     owner = await BranchOwnership(db).get_owner(
         BranchKey(repository_id="repo", branch="aq/parent")
     )
