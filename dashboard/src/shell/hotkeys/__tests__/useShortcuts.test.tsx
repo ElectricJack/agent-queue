@@ -94,3 +94,49 @@ describe("useShortcut punctuation", () => {
     expect(spy).not.toHaveBeenCalled();
   });
 });
+
+// The library rejects an event whose Shift state differs from the binding's, and
+// typing a symbol such as "?" holds Shift on most layouts.
+describe("useShortcut shifted symbols", () => {
+  test("a binding written as '?' fires once when ? is typed with Shift", async () => {
+    const spy = renderKey("?");
+    await userEvent.keyboard("{Shift>}?{/Shift}");
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a binding written as '?' fires for the browser's Shift+Slash event", () => {
+    const spy = renderKey("?");
+    fireEvent.keyDown(document, { key: "?", code: "Slash", shiftKey: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a binding written as '?' fires on a layout that types ? without Shift", () => {
+    const spy = renderKey("?");
+    fireEvent.keyDown(document, { key: "?", code: "Minus" });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a modified symbol binding accepts Shift too", () => {
+    const spy = renderKey("ctrl+?");
+    fireEvent.keyDown(document, { key: "?", code: "Slash", ctrlKey: true, shiftKey: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a '/' binding does not fire when ? is typed on the same key", () => {
+    const spy = renderKey("/");
+    fireEvent.keyDown(document, { key: "?", code: "Slash", shiftKey: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a letter binding still requires Shift to match", () => {
+    const spy = renderKey("g");
+    fireEvent.keyDown(document, { key: "G", code: "KeyG", shiftKey: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a digit binding does not fire for the symbol Shift types on its key", () => {
+    const spy = renderKey("1");
+    fireEvent.keyDown(document, { key: "!", code: "Digit1", shiftKey: true });
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
@@ -96,5 +96,22 @@ describe("AppShellV2 surface shortcuts", () => {
     await user.keyboard("[BracketRight]");
     expect(pane()).toHaveTextContent("closed");
     expect(surface()).toHaveTextContent("drawer");
+  });
+});
+
+describe("AppShellV2 cheat sheet shortcut", () => {
+  it("? opens and closes the cheat sheet, which lists itself as ?", async () => {
+    const user = userEvent.setup();
+    await renderShell();
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
+
+    // Typing ? holds Shift on a US layout.
+    await user.keyboard("{Shift>}?{/Shift}");
+    const sheet = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    const row = within(sheet).getByText("toggle cheat sheet").closest("li");
+    expect(row?.querySelector("kbd")).toHaveTextContent(/^\?$/);
+
+    await user.keyboard("{Shift>}?{/Shift}");
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).toBeNull();
   });
 });
