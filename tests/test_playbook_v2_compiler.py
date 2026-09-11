@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.playbooks.authoring import PlaybookSource
 from src.playbooks.pipeline_lowering import (
+    _command_transitions,
     _value,
     lower_pipeline,
     shadow_compile,
@@ -221,7 +222,32 @@ def test_command_transitions_use_closed_registered_outcomes():
     ensure = body["steps"]["per-task-review--create-review"]
     assert set(ensure["transitions"]) == {"created", "reused", "rejected", "runtime_error"}
     commit = body["steps"]["commit-on-gate-resolve--commit_proposal"]
-    assert set(commit["transitions"]) == {"committed", "rejected", "runtime_error"}
+    assert set(commit["transitions"]) == {
+        "committed",
+        "already_committed",
+        "not_approved",
+        "rejected",
+        "runtime_error",
+    }
+
+
+def test_command_transitions_route_by_registered_outcome_class():
+    # The frozen V1 graph sends both edges of the commit to one terminal, so
+    # prove the classification with distinct targets: a replay is a success,
+    # a missing approval is a failure (never a silent completion).
+    transitions = _command_transitions(
+        "task_batch_commit",
+        success_target="ok",
+        failure_target="failed",
+        contracts=RegistryContractLookup(),
+    )
+    assert transitions == {
+        "committed": "ok",
+        "already_committed": "ok",
+        "not_approved": "failed",
+        "rejected": "failed",
+        "runtime_error": "failed",
+    }
 
 
 def test_foreach_bodies_reenter_the_foreach_node():
