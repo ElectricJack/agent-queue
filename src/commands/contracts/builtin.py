@@ -86,6 +86,13 @@ class EnsureTaskArgs(CommandArgs):
     profile_id: str | None = None
     intelligence_class: str | None = None
     initial_status: str | None = None
+    # Placement is deliberately tri-state: omitted inherits the task-scoped
+    # emergent-work policy, a string selects that parent, and an explicit
+    # null (or ``root``) deliberately files at the project root.
+    parent_id: str | None = None
+    root: bool | None = None
+    reason: str | None = None
+    discovered_from: str | None = None
 
 
 class EnsureTaskValue(CommandValue):
@@ -500,14 +507,18 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
 def _adapter(name: str, value_type: type[CommandValue]):
     async def invoke(args: CommandArgs, ctx: CommandContext | None) -> CommandResult[Any]:
         if ctx is None:
-            raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+            # ``exclude_none`` collapses an omitted parent and an explicit
+            # ``parent_id: null``.  Parent placement is one of the few
+            # command inputs where that distinction changes durable state;
+            # ``exclude_unset`` preserves it while still omitting defaults.
+            raw = await _handler().execute(name, args.model_dump(exclude_unset=True))
         else:
             # The typed adapter is a dispatch boundary, not merely a value
             # converter.  Re-enter CommandHandler under the principal the
             # executor supplied so delegation narrowing cannot be replaced by
             # a broader ambient request principal.
             with principal_context(ctx):
-                raw = await _handler().execute(name, args.model_dump(exclude_none=True))
+                raw = await _handler().execute(name, args.model_dump(exclude_unset=True))
         outcome = _outcome_of(name, raw)
         if name == "provider_usage_probe" and outcome == "rejected":
             value = value_type(
