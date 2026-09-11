@@ -1423,20 +1423,39 @@ class DevelopmentIntegration:
         return preserved
 
     async def ensure_repair(self, project_id, repository_id, manifest, candidate_sha, *, reason):
-        """File one deliberately-rooted repair with provenance to every source.
+        """File one deliberately-rooted repair with provenance and delivery holds.
 
         Development delivery can park a *set* of source tasks.  It must not
         pick one arbitrary source as a structural parent: that would both hide
         the other origins and make a multi-source repair look like it belongs
         to only one completion.  Repairs are intentionally root tasks, while
-        a non-blocking ``discovered-from`` edge is recorded for every member
-        in the same creation transaction.
+        a non-blocking ``discovered-from`` edge records every origin.
+
+        For one original source, the repair is filed as its child even though the
+        source is already checkpointed.  The hierarchy writer has a narrowly
+        authorised completed-parent exception for this case; it preserves the
+        source placement without asking a completed task to execute again.
+        A repair-of-repair remains rooted so the bounded recovery chain cannot
+        consume structural hierarchy depth.
+
+        For a shared repair, the reverse edge is deliberately different: every parked source
+        ``blocks`` on the repair.  In development mode that edge is satisfied
+        only after the repair has been delivered, rather than merely closed.
+        This makes a shared repair required work for *all* of its sources and
+        prevents a delivered repair from falsely releasing just the arbitrary
+        source chosen as a parent.  Do not use a parent-child edge here: a
+        repair is created after its source has checkpointed/completed, and a
+        parent-child edge plus this required reverse edge would be a blocking
+        cycle.
         """
         from src.models import DepType, Task, TaskType
 
         identity = self._repair_identity(manifest)
         if await self.db.get_task(identity) is not None:
             return identity
+        single_original_source = len(manifest) == 1 and not str(
+            manifest[0]["task_id"]
+        ).startswith("development-repair-")
         generation = 1
         for member in manifest:
             source_task = await self.db.get_task(member["task_id"])
@@ -1483,6 +1502,24 @@ class DevelopmentIntegration:
                 await self.db.add_dependency(
                     identity, source_id, DepType.DISCOVERED_FROM.value,
                     description=reason, conn=conn,
+                )
+                # A provenance edge answers where the repair came from; it
+                # must never be mistaken for a release condition.  The
+                # source's blocking edge supplies that condition without
+                # giving the repair a reverse dependency on any source.
+                if not single_original_source:
+                    await self.db.add_dependency(
+                        source_id, identity, DepType.BLOCKS.value,
+                        description=f"required development repair: {reason}", conn=conn,
+                    )
+            if single_original_source:
+                await self.db.set_parent(
+                    identity,
+                    manifest[0]["task_id"],
+                    conn=conn,
+                    description=f"required development repair: {reason}",
+                    integration_authorized=True,
+                    completed_parent_for_repair=True,
                 )
         await self.db.set_task_meta(identity, "development_repair_sources", manifest)
         return identity

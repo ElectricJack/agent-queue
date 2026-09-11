@@ -294,6 +294,8 @@ class DatabaseBackend(Protocol):
         *,
         conn,
         description: str | None = None,
+        integration_authorized: bool = False,
+        completed_parent_for_repair: bool = False,
     ) -> "TransitionResult": ...
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn

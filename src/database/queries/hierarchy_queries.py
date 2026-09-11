@@ -853,6 +853,7 @@ class HierarchyQueryMixin:
         conn,
         description: str | None = None,
         integration_authorized: bool = False,
+        completed_parent_for_repair: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -921,7 +922,13 @@ class HierarchyQueryMixin:
                     f"{task_id} is in {task_row.project_id}, "
                     f"{parent_id} in {parent_row.project_id}",
                 )
-            if parent_row.status == TaskStatus.COMPLETED.value:
+            # Development conflict repair is filed only after its source has
+            # checkpointed and completed.  The integration service may retain
+            # that completed source as the repair's structural origin, but no
+            # ordinary caller may add work beneath a closed container.
+            if parent_row.status == TaskStatus.COMPLETED.value and not (
+                integration_authorized and completed_parent_for_repair
+            ):
                 raise HierarchyError("container_closed", parent_id)
             # Cycle: the new parent must not be inside task_id's subtree.
             if parent_id in await self.subtree_ids(task_id, conn=conn):

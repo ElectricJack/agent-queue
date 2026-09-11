@@ -747,6 +747,49 @@ async def test_repair_generation_budget_stops_recursive_dispatch(setup):
     )
 
 
+async def test_shared_repair_is_required_by_every_parked_source(setup):
+    """A shared repair keeps provenance separate from its delivery holds."""
+    db, service, _source, _remote, _repo = setup
+    one = await feature(setup, "one")
+    two = await feature(setup, "two")
+
+    identity = await service.ensure_repair(
+        "p",
+        "r",
+        [
+            {"task_id": "one", "source_sha": one},
+            {"task_id": "two", "source_sha": two},
+        ],
+        "b" * 40,
+        reason="shared conflict",
+    )
+
+    repair = await db.get_task(identity)
+    assert repair.parent_task_id is None
+    assert set(await db.get_typed_dependencies(identity)) == {
+        ("one", "discovered-from"),
+        ("two", "discovered-from"),
+    }
+    for source_id in ("one", "two"):
+        assert (identity, "blocks") in await db.get_typed_dependencies(source_id)
+        assert (await db.get_task(source_id)).is_blocked
+
+
+async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
+    db, service, _source, _remote, _repo = setup
+    source_sha = await feature(setup, "source")
+
+    identity = await service.ensure_repair(
+        "p", "r", [{"task_id": "source", "source_sha": source_sha}], "b" * 40,
+        reason="single conflict",
+    )
+
+    repair = await db.get_task(identity)
+    assert repair.parent_task_id == "source"
+    assert ("source", "parent-child") in await db.get_typed_dependencies(identity)
+    assert (identity, "blocks") not in await db.get_typed_dependencies("source")
+
+
 def test_development_prime_omits_strict_review_protocol():
     from src.prime.sections import build_completion_protocol_section
 
