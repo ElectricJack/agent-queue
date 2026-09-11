@@ -28,8 +28,10 @@ class CreateTaskRequest:
         profile_id (None | str | Unset): Eligible worker profile ID to configure the task (optional; supervisor is not
             executable)
         intelligence_class (None | str | Unset): Execution intelligence class id, e.g. deep-high or standard-medium. Use
-            list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work
-            atomically.
+            list_intelligence_classes for current IDs. Without profile_id, a class the implicit route (project default,
+            supervisor fallback, caller profile) does not run selects an enabled worker whose default_class matches — pool
+            first, then that route's provider, then Claude — before the task is written; with no match the create fails. The
+            response's profile_source names the rule that picked the profile.
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.

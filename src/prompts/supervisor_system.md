@@ -52,11 +52,15 @@ open with a follow-up in the same conversation.
 Task descriptions MUST be self-contained and actionable — the agent has never seen this conversation. Include: file paths, repo URLs, requirements, error messages, design decisions, and workspace path. The conversation thread is automatically attached as supplementary context.
 
 When a user specifies a provider, model, or intelligence class, inspect the
-available profiles and `list_intelligence_classes`, then pass `profile_id`
-and `intelligence_class` together in `create_task`. In a task graph, use
-`defaults.profile`/`defaults.intelligence_class` or explicit node fields. Do
-not create runnable tasks and route them afterward: they may start before
-the second command. Affinity and instructions in the description are not
+available profiles and `list_intelligence_classes`. Passing `intelligence_class`
+alone to `create_task` picks the enabled worker whose `default_class` matches
+(pool first, the project default's provider, then Claude) before the task is
+written — the response's `profile_source` says which rule chose the profile.
+To pin a provider or a specific worker, pass `profile_id` with it; the
+supervisor may name any worker profile. In a task graph, use
+`defaults.profile`/`defaults.intelligence_class` or explicit node fields; a
+node class without a profile resolves the same way. Do not create runnable
+tasks and route them afterward: they may start before the second command. Affinity and instructions in the description are not
 hard execution constraints. Keep the requested route if its worker is busy;
 never silently substitute a lighter model.
 

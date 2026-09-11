@@ -1130,8 +1130,12 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": (
                         "Execution intelligence class id, e.g. deep-high or standard-medium. "
-                        "Use list_intelligence_classes for current IDs. Set profile_id and "
-                        "this field together at creation to route work atomically."
+                        "Use list_intelligence_classes for current IDs. Without profile_id, "
+                        "a class the implicit route (project default, supervisor fallback, "
+                        "caller profile) does not run selects an enabled worker whose "
+                        "default_class matches — pool first, then that route's provider, then "
+                        "Claude — before the task is written; with no match the create fails. "
+                        "The response's profile_source names the rule that picked the profile."
                     ),
                 },
                 "preferred_workspace_id": {

@@ -211,7 +211,8 @@ def _create_task_graph(
     "profile_id",
     default=None,
     help=(
-        "Worker profile id; supervisor is control-plane only. Omit to use the project default. "
+        "Worker profile id; supervisor is control-plane only. Omit to let "
+        "--intelligence-class pick it, else the project default. "
         "Run `aq agent list-profiles` for the ids this install has "
         "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
     ),
@@ -219,7 +220,12 @@ def _create_task_graph(
 @click.option(
     "--intelligence-class",
     default=None,
-    help="Intelligence class id (e.g. deep-high); also fills missing graph node classes",
+    help=(
+        "Intelligence class id (e.g. deep-high); also fills missing graph node classes. "
+        "Without --profile, a class the project default does not run picks an enabled "
+        "worker whose default_class matches (pool first, project default's provider, "
+        "then Claude) before the task is created; no match is an error"
+    ),
 )
 @click.option(
     "--agent-type",

@@ -1692,6 +1692,87 @@ class TaskCommandsMixin:
             return None, error or f"system fallback profile '{candidate_id}' is not defined"
         return candidate, None
 
+    @staticmethod
+    def _profile_runs_class(profile, class_id: str) -> bool:
+        """Whether *profile*'s own lane already runs *class_id*.
+
+        A profile that states no ``default_class`` has no lane of its own and
+        agrees with any explicit class, as it always has.
+        """
+        default_class = str(getattr(profile, "default_class", "") or "").strip()
+        return not default_class or default_class == class_id
+
+    async def _eligible_worker_profiles(self) -> list:
+        """Enabled profiles that may execute ordinary queued work."""
+        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
+        from src.profiles.default_selection import SPECIAL_PURPOSE_PROFILE_IDS
+
+        data_dir = getattr(self.config, "data_dir", None)
+        eligible = (
+            active_catalog_profile_ids(data_dir) if isinstance(data_dir, (str, os.PathLike))
+            else None
+        )
+        # Same host-eligibility rule as default selection: a catalog worker
+        # whose provider failed its probe is not a route.
+        ineligible = (
+            {entry.id for entry in shipped_profile_catalog()} - eligible
+            if eligible is not None else set()
+        )
+        return [
+            profile for profile in await self.db.list_profiles()
+            if getattr(profile, "enabled", True)
+            and profile.id not in SPECIAL_PURPOSE_PROFILE_IDS
+            and profile.id not in ineligible
+            and not profile.id.startswith("project:")
+            and self._task_execution_profile_error(profile) is None
+        ]
+
+    async def _resolve_class_route(self, class_id, implicit):
+        """Pick the worker for an explicit class the implicit route does not run.
+
+        *implicit* is the profile creation would otherwise use without being
+        asked for it (project default, supervisor fallback, inherited caller
+        profile).  Returns ``(profile, error)``: ``(None, None)`` when the
+        implicit route already runs *class_id* and should be kept.
+
+        Candidates are enabled worker profiles whose ``default_class`` is the
+        class and whose harness has a model for it, ranked ``lifecycle: pool``
+        first (a pool is what claims READY work), then the implicit route's
+        provider, then Claude, then id.  With no candidate the create fails:
+        storing the class on the implicit route would hand the task to a
+        worker of another tier or provider.
+        """
+        if not class_id or implicit is None or self._profile_runs_class(implicit, class_id):
+            return None, None
+        preferred = _harness_provider(implicit.harness)
+        workers = await self._eligible_worker_profiles()
+        matches = [
+            profile for profile in workers
+            if str(profile.default_class or "").strip() == class_id
+            and self._validate_routing_class(class_id, profile) is None
+        ]
+        if matches:
+            def rank(profile):
+                provider = _harness_provider(profile.harness)
+                return (
+                    profile.lifecycle != "pool",
+                    bool(preferred) and provider != preferred,
+                    provider != "anthropic",
+                    profile.id,
+                )
+
+            return min(matches, key=rank), None
+        available = sorted({
+            str(profile.default_class).strip()
+            for profile in workers if str(profile.default_class or "").strip()
+        })
+        return None, (
+            f"no enabled worker profile runs intelligence class '{class_id}', and the "
+            f"implicit route '{implicit.id}' runs '{implicit.default_class}'; refusing to "
+            "create a task whose profile and class disagree. Pass profile_id explicitly or "
+            f"choose a class an enabled worker runs: {', '.join(available) or '(none)'}"
+        )
+
     async def _cmd_create_task(self, args: dict) -> dict:
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
@@ -1973,13 +2054,34 @@ class TaskCommandsMixin:
 
         profile = caller_profile
         project_default_profile = None
+        class_id = args.get("intelligence_class")
+        # An unknown class must not steer profile selection below.
+        if class_id is not None and (class_error := self._validate_routing_class(class_id)):
+            return {"success": False, "error": class_error}
+        # The supervisor is the control plane: it routes work onto worker
+        # lanes rather than delegating its own capabilities, so the subset
+        # check that bounds a worker's or playbook's delegation does not apply
+        # to it.  ``_task_execution_profile_error`` still refuses the
+        # supervisor profile itself as a route.
+        caller_is_control_plane = (
+            caller_profile is not None
+            and self._task_execution_profile_error(caller_profile) is not None
+        )
+        # Which rule chose the route, reported as ``profile_source``.  Every
+        # rule below settles profile and class *before* the row is written, so
+        # a READY task is never claimable on a lane that runs another class.
+        profile_source: str | None = None
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
                 return {"error": f"Profile '{profile_id}' not found"}
             if error := self._task_execution_profile_error(profile):
                 return {"error": error}
-            if caller_profile is not None and profile.id != caller_profile.id:
+            if (
+                caller_profile is not None
+                and not caller_is_control_plane
+                and profile.id != caller_profile.id
+            ):
                 escalation = _check_capability_escalation(caller_profile, profile)
                 if escalation:
                     return {
@@ -1989,23 +2091,38 @@ class TaskCommandsMixin:
                             f"'{caller_profile.id}'. {escalation}"
                         )
                     }
+            profile_source = "explicit"
+        elif caller_is_control_plane:
+            profile, error = await self._supervisor_default_worker_profile(project)
+            if error:
+                return {"error": error}
+            profile_source = "project_default"
+            routed, error = await self._resolve_class_route(class_id, profile)
+            if error:
+                return {"success": False, "error": error}
+            if routed is not None:
+                profile, profile_source = routed, "class_match"
+            profile_id = profile.id
         elif caller_profile is not None:
-            if self._task_execution_profile_error(caller_profile):
-                profile, error = await self._supervisor_default_worker_profile(project)
-                if error:
-                    return {"error": error}
-                profile_id = profile.id
-                escalation = _check_capability_escalation(caller_profile, profile)
+            # Default-inherit so the child cannot exceed the caller.
+            profile_id = caller_profile.id
+            profile_source = "inherited"
+            routed, error = await self._resolve_class_route(class_id, caller_profile)
+            if error:
+                return {"success": False, "error": error}
+            if routed is not None:
+                # A class match is a delegation the caller did not inherit, so
+                # it is bounded exactly like an explicitly named profile.
+                escalation = _check_capability_escalation(caller_profile, routed)
                 if escalation:
                     return {
                         "error": (
-                            f"Capability escalation rejected: child profile '{profile.id}' is not "
-                            f"a subset of caller profile '{caller_profile.id}'. {escalation}"
+                            f"Capability escalation rejected: child profile '{routed.id}' "
+                            f"is not a subset of caller profile '{caller_profile.id}'. "
+                            f"{escalation}"
                         )
                     }
-            else:
-                # Default-inherit so the child cannot exceed the caller.
-                profile_id = caller_profile.id
+                profile, profile_id, profile_source = routed, routed.id, "class_match"
         elif project.default_profile_id:
             # A persisted default normally remains implicit on the task row,
             # but it is still an execution route. Validate stale/misconfigured
@@ -2028,6 +2145,15 @@ class TaskCommandsMixin:
                     )
                 }
             project_default_profile = default_profile
+            profile_source = "project_default"
+            routed, error = await self._resolve_class_route(class_id, default_profile)
+            if error:
+                return {"success": False, "error": error}
+            if routed is not None:
+                # Pin the matched lane on the row: a NULL profile is claimed by
+                # the project default's pool, which runs another class.
+                profile, profile_id, profile_source = routed, routed.id, "class_match"
+                project_default_profile = None
         # An explicit class paired with an implicit project-default profile
         # is still a concrete route. Validate the provider mapping against
         # that default before accepting it without a routing gate.
@@ -2541,6 +2667,8 @@ class TaskCommandsMixin:
             result["task_type"] = task_type.value
         if profile_id:
             result["profile_id"] = profile_id
+        if profile_source:
+            result["profile_source"] = profile_source
         if task.intelligence_class:
             result["intelligence_class"] = task.intelligence_class
         if preferred_workspace_id:
@@ -2719,10 +2847,43 @@ class TaskCommandsMixin:
             if node.intelligence_class is None and args.get("intelligence_class"):
                 node.intelligence_class = args["intelligence_class"]
 
+        # A node class without a profile would be written with a NULL profile,
+        # which the project default's pool claims regardless of class.  Resolve
+        # each such node onto its class's own lane the way ``create_task``
+        # does, before validation, so nothing is written with a disagreeing
+        # route and a class no worker runs fails the whole graph.
+        from src.task_graph.models import GraphError
+
+        route_findings: list = []
+        class_matched: dict[str, str] = {}
+        if project.default_profile_id and any(
+            node.profile is None and node.intelligence_class for node in graph.nodes
+        ):
+            implicit = await self.db.get_profile(project.default_profile_id)
+            routes: dict[str, tuple] = {}
+            for node in graph.nodes:
+                class_id = node.intelligence_class
+                if implicit is None or node.profile is not None or not class_id:
+                    continue
+                if class_id not in routes:
+                    # An unknown class is reported by the class check below.
+                    routes[class_id] = (
+                        (None, None) if self._validate_routing_class(class_id)
+                        else await self._resolve_class_route(class_id, implicit)
+                    )
+                routed, error = routes[class_id]
+                if error:
+                    route_findings.append(GraphError(
+                        rule="invalid_intelligence_class", detail=error, node=node.key,
+                    ))
+                elif routed is not None:
+                    node.profile = routed.id
+                    class_matched[node.key] = routed.id
+
         findings = await validate_graph(
             graph, project_id=project_id, db=self.db, vault_root=vault_root
         )
-        from src.task_graph.models import GraphError
+        findings.extend(route_findings)
         class_errors: dict[tuple[str | None, str], str | None] = {}
         for node in graph.nodes:
             if node.intelligence_class is None:
@@ -2763,6 +2924,10 @@ class TaskCommandsMixin:
                 await self._emit_task_graph_change("task.updated", container)
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
+        if class_matched:
+            # node key -> the profile its class selected (profile_source
+            # ``class_match``); other nodes kept their explicit or implicit route.
+            report["class_matched_profiles"] = class_matched
         if parent_id:
             report["parent_title"] = parent.title
         if graph.spec:
