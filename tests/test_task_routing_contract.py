@@ -107,6 +107,85 @@ async def test_unknown_creation_class_rejected_without_task(setup):
     assert await db.list_tasks(project_id="p") == []
 
 
+async def test_supervisor_omission_uses_project_worker_default(setup):
+    handler, db = setup
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", harness="claude", lifecycle="named",
+        needs_workspace=False, harness_tools=[], aq_commands=[], plugin_tools=[],
+    ))
+    await db.create_profile(AgentProfile(
+        id="worker", name="Worker", harness="claude", lifecycle="task",
+        needs_workspace=False, harness_tools=[], aq_commands=[], plugin_tools=[],
+    ))
+    await db.update_project("p", default_profile_id="worker")
+    handler._caller_profile_id = "supervisor"
+    try:
+        result = await handler._cmd_create_task({"project_id": "p", "title": "Delegated"})
+    finally:
+        handler._caller_profile_id = None
+    assert "error" not in result
+    assert (await db.get_task(result["created"])).profile_id == "worker"
+
+
+async def test_supervisor_profile_is_rejected_on_creation_edit_route_and_graph(setup):
+    handler, db = setup
+    await db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", harness="claude", lifecycle="named",
+        needs_workspace=False,
+    ))
+    created = await handler._cmd_create_task({
+        "project_id": "p", "title": "No supervisor", "profile_id": "supervisor",
+    })
+    assert "supervisor control-plane" in created["error"]
+
+    await db.create_task(Task(id="legacy", project_id="p", title="Legacy", description=""))
+    edited = await handler._cmd_edit_task({"task_id": "legacy", "profile_id": "supervisor"})
+    assert "supervisor control-plane" in edited["error"]
+
+    await db.update_task("legacy", intelligence_class="standard-medium")
+    routed = await handler._cmd_task_route({"task_id": "legacy", "profile_id": "supervisor"})
+    assert "supervisor control-plane" in routed["error"]
+
+    graph = await handler._cmd_create_task_graph({
+        "project_id": "p",
+        "graph": {"nodes": [{"key": "n", "title": "N", "profile": "supervisor"}]},
+    })
+    assert any(error["rule"] == "supervisor_profile" for error in graph["errors"])
+    assert (await db.get_task("legacy")).profile_id is None
+
+
+async def test_project_default_rejects_supervisor_profile(setup):
+    handler, db = setup
+    await db.create_profile(AgentProfile(id="supervisor", name="Supervisor", lifecycle="named"))
+    result = await handler._cmd_edit_project({"project_id": "p", "default_profile_id": "supervisor"})
+    assert "project default is invalid" in result["error"]
+
+    # A legacy/stale database value is also checked before it can create an
+    # unroutable READY row.
+    await db.update_project("p", default_profile_id="supervisor")
+    created = await handler._cmd_create_task({"project_id": "p", "title": "No stale default"})
+    assert "project default is invalid" in created["error"]
+    assert await db.list_tasks(project_id="p") == []
+
+
+async def test_claim_frontier_skips_legacy_supervisor_route_without_hiding_worker_work(setup):
+    _handler, db = setup
+    await db.create_profile(AgentProfile(id="supervisor", name="Supervisor", lifecycle="named"))
+    await db.create_task(Task(
+        id="legacy-supervisor", project_id="p", title="Legacy", description="",
+        profile_id="supervisor", priority=1, status=TaskStatus.READY,
+    ))
+    await db.create_task(Task(
+        id="normal-worker", project_id="p", title="Normal", description="",
+        profile_id="coder", priority=2, status=TaskStatus.READY,
+    ))
+    async with db._engine.begin() as conn:
+        selected = await db.select_ready_for_profile(
+            conn, project_id="p", profile_id="coder", default_profile_id="coder", agent_id="a",
+        )
+    assert selected == "normal-worker"
+
+
 async def test_routed_child_keeps_creation_class(setup):
     handler, db = setup
     await db.create_task(Task(id="parent", project_id="p", title="Parent", description="",

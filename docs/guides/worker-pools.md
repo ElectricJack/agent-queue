@@ -23,6 +23,11 @@ and the daemon converges towards them every 5-second cascade tick. Those two
 numbers are **fleet-wide**: one pool per profile, shared by every project
 (§3).
 
+The `supervisor` profile is a named control-plane session, never a pool or
+task route. Set project defaults and `aq task create --profile` to an eligible
+worker profile. A supervisor that omits `--profile` uses that worker default;
+an invalid supervisor default is refused before a task is inserted.
+
 This guide is the operational half. The config reference is
 [`docs/specs/config.md` §4.11](../specs/config.md); the design is
 [swarm-work-model §10–§12, §17](../superpowers/specs/2026-08-28-swarm-work-model-design.md)

@@ -645,7 +645,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "default_profile_id": {
                     "type": "string",
                     "description": (
-                        "Agent profile used for tasks in this project that "
+                        "Eligible worker profile used for tasks in this project that "
                         "don't specify their own profile_id.  When omitted, a "
                         "system default is chosen automatically by "
                         "src/profiles/default_selection.py "
@@ -1124,7 +1124,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "profile_id": {
                     "type": "string",
-                    "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)",
+                    "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -1338,7 +1338,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": (
-                        "Pre-route the task to this agent profile on create. "
+                        "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). "
                         "Tasks created via ensure_task skip triage, so the "
                         "ensuring pipeline pins the executing profile directly."
                     ),
@@ -1388,7 +1388,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID to route"},
                 "profile_id": {
                     "type": "string",
-                    "description": "Agent profile ID that should execute the task",
+                    "description": "Eligible worker profile ID that should execute the task (never supervisor)",
                 },
                 "intelligence_class": {
                     "type": "string",
