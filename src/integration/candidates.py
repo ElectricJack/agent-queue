@@ -3058,6 +3058,16 @@ class CandidateService:
         )
         if changed.returncode != 0 or not changed.stdout.strip():
             return "reviewed_source_delta_is_unavailable"
+        source_commits = await self.git.arun_git_result(
+            [
+                "rev-list",
+                "--reverse",
+                f"{lineage.source_base_sha}..{lineage.source_head_sha}",
+            ],
+            cwd=str(store),
+        )
+        if source_commits.returncode != 0 or not source_commits.stdout.strip():
+            return "reviewed_source_commit_lineage_is_unavailable"
         intended_paths = {line.split("\t", 1)[1] for line in changed.stdout.splitlines()}
         repaired = await self.git.arun_git_result(
             ["diff", "--name-only", lineage.partial_head_sha, lineage.resolved_head_sha],
@@ -3078,8 +3088,16 @@ class CandidateService:
             # an operator to create a fake source-path edit.
             if repaired.stdout.strip():
                 return "contained_source_repair_changes_the_candidate"
-        elif set(repaired.stdout.splitlines()) != intended_paths:
-            return "resolved_paths_do_not_match_reviewed_source"
+        else:
+            # Path-only coverage lets a repair carry just the tip of a source
+            # series when several source commits touched the same path. Keep a
+            # one-for-one frozen record of that series: a repair may resolve
+            # conflicts, but it cannot claim delivery of an unaccounted source
+            # commit merely because the final path list happens to match.
+            if len(lineage.repair_commit_shas) != len(source_commits.stdout.split()):
+                return "repair_commit_count_does_not_cover_reviewed_source"
+            if set(repaired.stdout.splitlines()) != intended_paths:
+                return "resolved_paths_do_not_match_reviewed_source"
         merges = await self.git.arun_git_result(
             [
                 "rev-list",

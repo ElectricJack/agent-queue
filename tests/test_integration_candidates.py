@@ -3529,3 +3529,63 @@ async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_
         await service._repair_lineage_failure(store, changed_lineage)
         == "contained_source_repair_changes_the_candidate"
     )
+
+
+async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_path):
+    """Every source commit needs frozen repair coverage, even on one path."""
+    from src.integration.candidates import CandidateRepairLineage, CandidateService
+
+    work = tmp_path / "two-commit-repair-work"
+    _git(tmp_path, "init", "--initial-branch=main", str(work))
+    _git(work, "config", "user.name", "Candidate Repair")
+    _git(work, "config", "user.email", "repair@example.test")
+    (work / "shared.txt").write_text("base\n")
+    _git(work, "add", "shared.txt")
+    _git(work, "commit", "-m", "base")
+    source_base = _git(work, "rev-parse", "HEAD")
+
+    _git(work, "switch", "-c", "reviewed", source_base)
+    (work / "shared.txt").write_text("first\n")
+    _git(work, "commit", "-am", "reviewed first change")
+    (work / "shared.txt").write_text("first and second\n")
+    _git(work, "commit", "-am", "reviewed second change")
+    source_head = _git(work, "rev-parse", "HEAD")
+
+    _git(work, "switch", "-C", "partial", source_base)
+    (work / "shared.txt").write_text("candidate predecessor\n")
+    _git(work, "commit", "-am", "frozen candidate predecessor")
+    partial = _git(work, "rev-parse", "HEAD")
+
+    _git(work, "switch", "-C", "complete-repair", partial)
+    (work / "shared.txt").write_text("first\n")
+    _git(work, "commit", "-am", "repair reviewed first change")
+    first_repair = _git(work, "rev-parse", "HEAD")
+    (work / "shared.txt").write_text("first and second\n")
+    _git(work, "commit", "-am", "repair reviewed second change")
+    complete_repair = _git(work, "rev-parse", "HEAD")
+
+    service = CandidateService(db, data_dir=tmp_path / "data")
+    complete = CandidateRepairLineage(
+        batch_id="batch", revision=0, member_ordinal=0, operation_id="repair-batch-batch",
+        operation_stage=0, partial_head_sha=partial, source_base_sha=source_base,
+        source_head_sha=source_head, resolved_head_sha=complete_repair,
+        repair_commit_shas=(first_repair, complete_repair),
+    )
+    assert await service._repair_lineage_failure(work, complete) is None
+
+    _git(work, "switch", "-C", "tip-only-repair", partial)
+    (work / "shared.txt").write_text("second\n")
+    _git(work, "commit", "-am", "repair only reviewed tip")
+    tip_only_repair = _git(work, "rev-parse", "HEAD")
+    assert (
+        await service._repair_lineage_failure(
+            work,
+            complete.model_copy(
+                update={
+                    "resolved_head_sha": tip_only_repair,
+                    "repair_commit_shas": (tip_only_repair,),
+                }
+            ),
+        )
+        == "repair_commit_count_does_not_cover_reviewed_source"
+    )
