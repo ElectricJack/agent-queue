@@ -170,3 +170,52 @@ def test_register_refuses_a_clause_the_renderer_cannot_render(monkeypatch) -> No
                 "example", _contract(effects=(CreateClause(subject="task"),)), _invoke
             )
         )
+
+
+async def test_the_builtin_adapter_sends_declared_defaults_and_explicit_nulls() -> None:
+    """A declared default reaches the handler, and an explicit null stays distinct from omission.
+
+    ``MessageSendArgs.from_kind`` defaults to ``system``; when the adapter
+    dropped defaults, ``message_send`` fell back to ``user`` for every
+    playbook notice that relied on it.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import (
+        EnsureTaskArgs,
+        MessageSendArgs,
+        set_handler_provider,
+    )
+
+    handler = AsyncMock()
+    set_handler_provider(lambda: handler)
+    try:
+        handler.execute.return_value = {"message_id": "msg-1", "state": "queued"}
+        args = MessageSendArgs(
+            to_kind="session", to_id="supervisor-proj", body="hi", from_id="playbook:x"
+        )
+        result = await CONTRACTS.require("message_send").invoke(args, None)
+        assert result.outcome == "queued"
+        assert result.value.message_id == "msg-1"
+        assert handler.execute.await_args.args == (
+            "message_send",
+            {
+                "to_kind": "session",
+                "to_id": "supervisor-proj",
+                "body": "hi",
+                "from_id": "playbook:x",
+                "from_kind": "system",
+            },
+        )
+
+        handler.execute.return_value = {"task_id": "t-1", "created": True}
+        ensure = CONTRACTS.require("ensure_task")
+        await ensure.invoke(EnsureTaskArgs(dedup_key="k", title="t"), None)
+        assert handler.execute.await_args.args[1] == {"dedup_key": "k", "title": "t"}
+        await ensure.invoke(EnsureTaskArgs(dedup_key="k", title="t", parent_id=None), None)
+        assert handler.execute.await_args.args[1] == {
+            "dedup_key": "k", "title": "t", "parent_id": None,
+        }
+    finally:
+        set_handler_provider(None)

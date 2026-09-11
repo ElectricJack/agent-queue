@@ -537,21 +537,31 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     }[name]
 
 
+def _handler_args(args: CommandArgs) -> dict[str, Any]:
+    """The ``CommandHandler.execute`` payload for one typed step's args.
+
+    ``exclude_none`` alone collapses an omitted parent and an explicit
+    ``parent_id: null`` — parent placement is one of the few command inputs
+    where that distinction changes durable state.  ``exclude_unset`` alone
+    keeps it but drops every declared default, so the handler applies its
+    own instead: ``MessageSendArgs.from_kind`` defaults to ``system`` while
+    ``message_send`` falls back to ``user``.  Send both: every value that is
+    not ``None``, defaults included, plus whatever the step set explicitly.
+    """
+    return {**args.model_dump(exclude_none=True), **args.model_dump(exclude_unset=True)}
+
+
 def _adapter(name: str, value_type: type[CommandValue]):
     async def invoke(args: CommandArgs, ctx: CommandContext | None) -> CommandResult[Any]:
         if ctx is None:
-            # ``exclude_none`` collapses an omitted parent and an explicit
-            # ``parent_id: null``.  Parent placement is one of the few
-            # command inputs where that distinction changes durable state;
-            # ``exclude_unset`` preserves it while still omitting defaults.
-            raw = await _handler().execute(name, args.model_dump(exclude_unset=True))
+            raw = await _handler().execute(name, _handler_args(args))
         else:
             # The typed adapter is a dispatch boundary, not merely a value
             # converter.  Re-enter CommandHandler under the principal the
             # executor supplied so delegation narrowing cannot be replaced by
             # a broader ambient request principal.
             with principal_context(ctx):
-                raw = await _handler().execute(name, args.model_dump(exclude_unset=True))
+                raw = await _handler().execute(name, _handler_args(args))
         outcome = _outcome_of(name, raw)
         if name == "provider_usage_probe" and outcome == "rejected":
             value = value_type(
