@@ -98,6 +98,7 @@ class TestExpectedEventTypes:
             "notify.system_online",
             "notify.task_thread_open",
             "notify.task_message",
+            "notify.task_comment",
             "notify.task_thread_close",
             "notify.text",
         ]

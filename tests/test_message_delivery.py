@@ -215,6 +215,25 @@ class TestDeliveryPolicy:
         assert bus.events[0].payload["method"] == "nudge"
         assert bus.events[0].payload["project_id"] == "p1"
 
+    async def test_task_comment_nudge_includes_its_inline_body(self, db):
+        sessions = FakeSessionManager(activity_map={("task", "task-1", "p1"): "idle"})
+        engine = make_engine(db, sessions)
+        message = await _send(
+            db,
+            to_kind="task",
+            to_id="task-1",
+            body="[Task comment]\\ntask_id: task-1\\n\\nUse the frozen API.",
+            body_kind="task_comment",
+        )
+
+        result = await engine.run_delivery_pass()
+
+        assert result["delivered"] == 1
+        assert sessions.nudges == [
+            ("task", "task-1", "p1", "[Task comment]\\ntask_id: task-1\\n\\nUse the frozen API.")
+        ]
+        assert (await db.get_message(message.id)).via == "nudge"
+
     async def test_busy_recipient_skipped(self, db):
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "busy"})
         bus = RecordingBus()

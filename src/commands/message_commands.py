@@ -214,7 +214,11 @@ class MessageCommandsMixin:
                 return {"error": f"Message '{reply_to_id}' not found (reply_to_id)"}
 
         pane_open = args.get("pane_open")
-        body_kind: str | None = None
+        # Private internal callers can label a message for a delivery policy
+        # without exposing a new public message-send option.
+        body_kind = args.get("_body_kind")
+        if body_kind not in {None, "task_comment"}:
+            return {"error": "invalid internal message body kind"}
         pane_open_json: str | None = None
         if pane_open is not None:
             if not isinstance(pane_open, dict):

@@ -532,6 +532,10 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
             "stream_done",
         ],
     },
+    "notify.task_comment": {
+        "required": [*_NOTIFY_BASE_FIELDS, "task_id", "comment"],
+        "optional": [*_NOTIFY_BASE_OPTIONAL],
+    },
     "notify.task_thread_close": {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "task_id", "final_status", "final_message"],

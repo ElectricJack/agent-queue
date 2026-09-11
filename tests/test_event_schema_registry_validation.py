@@ -555,6 +555,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "severity": "info",
         "category": "task",
     },
+    "notify.task_comment": {
+        "event_type": "notify.task_comment",
+        "severity": "info",
+        "category": "interaction",
+        "task_id": "t-1",
+        "comment": {"id": "comment-1", "body": "Read this."},
+    },
     "notify.task_thread_close": {
         "event_type": "notify.task_thread_close",
         "severity": "info",
@@ -1568,6 +1575,7 @@ class TestAllEventTypesHaveSchemas:
             "notify.system_online",
             "notify.task_thread_open",
             "notify.task_message",
+            "notify.task_comment",
             "notify.task_thread_close",
             "notify.text",
         ]

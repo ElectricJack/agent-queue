@@ -386,5 +386,9 @@ def _message_sent_payload(msg: Message) -> dict[str, Any]:
 
 
 def _render_nudge(batch: list[Message]) -> str:
-    """A single-line reference to the full, durable message body."""
+    """Render the text injected into a live session for a pending message."""
+    if batch[0].body_kind == "task_comment":
+        # Task comments are operational guidance, so the worker must see the
+        # bounded body and metadata without issuing a second inbox command.
+        return batch[0].body
     return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."

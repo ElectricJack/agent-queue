@@ -150,6 +150,55 @@ async def test_comments_are_authored_append_only_paginated_and_deleted_with_task
     assert (await env.db.list_task_comments("t"))["total"] == 0
 
 
+async def test_comment_notifies_live_holder_with_inline_metadata_and_body(env):
+    result = await run(env, "task_comment", {"task_id": "t", "body": "Check the API freeze."})
+
+    pending = await env.db.get_pending_messages("task", "t")
+    assert len(pending) == 1
+    message = pending[0]
+    assert message.body_kind == "task_comment"
+    assert "task_id: t" in message.body
+    assert f"comment_id: {result['comment']['id']}" in message.body
+    assert "author: user:local" in message.body
+    assert f"created_at: {result['comment']['created_at']}" in message.body
+    assert message.body.endswith("Check the API freeze.")
+
+    notifications = [
+        call.args[1]
+        for call in env.orch.bus.emit.await_args_list
+        if call.args[0] == "notify.task_comment"
+    ]
+    assert notifications == [
+        {
+            "event_type": "notify.task_comment",
+            "severity": "info",
+            "category": "interaction",
+            "project_id": "p",
+            "task_id": "t",
+            "comment": result["comment"],
+        }
+    ]
+
+
+async def test_holder_comment_does_not_echo_back_to_its_own_task(env):
+    result = await run(
+        env,
+        "task_comment",
+        {"task_id": "t", "body": "I am running focused tests.", "claim_epoch": 7},
+        scope=env.scope,
+    )
+
+    assert "error" not in result
+    assert await env.db.get_pending_messages("task", "t") == []
+
+
+async def test_comment_on_task_without_live_holder_is_durable_but_not_queued(env):
+    result = await run(env, "task_comment", {"task_id": "peer", "body": "Read this on claim."})
+
+    assert await env.db.get_pending_messages("task", "peer") == []
+    assert (await env.db.list_task_comments("peer"))["comments"] == [result["comment"]]
+
+
 @pytest.mark.parametrize("description,expected", [(42, None), (None, None), ("valid", 42)])
 async def test_description_validation_precedes_all_mutations(env, description, expected):
     args = {"task_id": "t", "description": description, "branch": "bad"}
@@ -332,7 +381,7 @@ async def test_empty_description_and_expected_description_without_write(env):
     assert result["description"] == "Restored"
 
 
-async def test_findings_text_never_enters_invalidation_or_command_bus(env):
+async def test_findings_text_stays_out_of_task_updated_invalidation(env):
     import json
 
     description = "private description finding"
@@ -348,7 +397,10 @@ async def test_findings_text_never_enters_invalidation_or_command_bus(env):
         },
     )
     assert "error" not in await run(env, "task_comment", {"task_id": "t", "body": comment})
-    serialized = json.dumps([call.args for call in env.orch.bus.emit.await_args_list], default=str)
+    invalidations = [
+        call.args for call in env.orch.bus.emit.await_args_list if call.args[0] == "task.updated"
+    ]
+    serialized = json.dumps(invalidations, default=str)
     assert description not in serialized
     assert expected not in serialized
     assert comment not in serialized

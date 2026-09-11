@@ -14,6 +14,11 @@ from src.database.queries.task_comment_queries import (
 logger = logging.getLogger(__name__)
 
 
+# Keep the wake-up payload useful without allowing a single comment to turn
+# into an unbounded terminal injection.  The durable comment remains intact.
+MAX_COMMENT_NOTIFICATION_BODY = 8 * 1024
+
+
 class TaskCommentCommandsMixin:
     def _task_findings_scope_error(self, task) -> dict | None:
         scope = self._current_scope or {}
@@ -121,6 +126,72 @@ class TaskCommentCommandsMixin:
         except Exception:
             logger.warning("Could not publish task.updated for %s", task.id, exc_info=True)
 
+    @staticmethod
+    def _render_comment_notification(task, comment: dict) -> str:
+        """Render the self-contained worker wake-up for one task comment."""
+        body = comment["body"]
+        encoded = body.encode("utf-8")
+        if len(encoded) > MAX_COMMENT_NOTIFICATION_BODY:
+            body = encoded[:MAX_COMMENT_NOTIFICATION_BODY].decode("utf-8", "ignore")
+            body += "\n\n[Comment body truncated at 8 KB; the full comment remains in aq task comments.]"
+        return (
+            "[Task comment]\n"
+            f"task_id: {task.id}\n"
+            f"comment_id: {comment['id']}\n"
+            f"author: {comment['author_kind']}:{comment['author_id']}\n"
+            f"created_at: {comment['created_at']}\n\n"
+            f"{body}"
+        )
+
+    async def _notify_task_comment(self, task, comment: dict) -> None:
+        """Publish a comment event and wake a different live task holder.
+
+        The message is addressed to ``task:<id>`` rather than a session id so
+        the normal delivery engine owns all harness-specific nudge/inbox
+        behavior and cannot target a stale session identity.
+        """
+        payload = {
+            "event_type": "notify.task_comment",
+            "severity": "info",
+            "category": "interaction",
+            "project_id": task.project_id,
+            "task_id": task.id,
+            "comment": comment,
+        }
+        try:
+            await self.orchestrator.bus.emit("notify.task_comment", payload)
+        except Exception:
+            logger.warning("Could not publish task comment notification for %s", task.id, exc_info=True)
+
+        session = await self.db.get_session_for_task(task.id)
+        if (
+            session is None
+            or session.project_id != task.project_id
+            or session.state not in {"starting", "running"}
+            or (
+                comment["author_kind"] == "agent"
+                and comment["author_id"] == session.agent_id
+            )
+        ):
+            return
+
+        # ``messages.from_kind`` intentionally has no supervisor value.
+        # Preserve the exact commenter in the rendered payload while using a
+        # system sender for non-user identities in the durable queue.
+        queued = await self._cmd_message_send(
+            {
+                "project_id": task.project_id,
+                "to_kind": "task",
+                "to_id": task.id,
+                "from_kind": "user" if comment["author_kind"] == "user" else "system",
+                "from_id": f"task-comment:{comment['author_kind']}:{comment['author_id']}",
+                "body": self._render_comment_notification(task, comment),
+                "_body_kind": "task_comment",
+            }
+        )
+        if "error" in queued:
+            logger.warning("Could not queue task comment notification for %s: %s", task.id, queued["error"])
+
     async def _cmd_task_comment(self, args: dict) -> dict:
         task_id = args.get("task_id")
         if not task_id:
@@ -163,6 +234,7 @@ class TaskCommentCommandsMixin:
         except TaskFindingsConflict as error:
             return self._task_findings_conflict(error)
         await self._emit_task_findings_updated(task)
+        await self._notify_task_comment(task, comment)
         return {"comment": comment}
 
     async def _comment_mutation_target(self, args: dict) -> tuple[object | None, dict | None]:
