@@ -20,10 +20,10 @@ class CreateProjectRequest:
         max_concurrent_agents (int | Unset): Max agents working on this project simultaneously Default: 2.
         repo_url (None | str | Unset): Git repository URL for this project (optional)
         default_branch (str | Unset): Default branch name (default: main) Default: 'main'.
-        default_profile_id (None | str | Unset): Agent profile used for tasks in this project that don't specify their
-            own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py
-            (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-
-            profiles` for the ids this install has.
+        default_profile_id (None | str | Unset): Eligible worker profile used for tasks in this project that don't
+            specify their own profile_id.  When omitted, a system default is chosen automatically by
+            src/profiles/default_selection.py (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile
+            alphabetically).  Run `aq agent list-profiles` for the ids this install has.
     """
 
     name: str

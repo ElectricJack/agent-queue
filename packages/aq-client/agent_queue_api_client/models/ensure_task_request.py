@@ -21,8 +21,9 @@ class EnsureTaskRequest:
         title (str): Task title (used on create)
         description (str | Unset): Task description (used on create) Default: ''.
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
-        profile_id (None | str | Unset): Pre-route the task to this agent profile on create. Tasks created via
-            ensure_task skip triage, so the ensuring pipeline pins the executing profile directly.
+        profile_id (None | str | Unset): Pre-route the task to an eligible worker profile on create (supervisor is
+            control-plane only). Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing
+            profile directly.
         intelligence_class (None | str | Unset): Vault intelligence class for the task on create. A pinned profile is
             not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both
             apply only when this call creates the task.
