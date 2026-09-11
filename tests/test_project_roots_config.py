@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -109,12 +109,12 @@ async def test_update_config_round_trips_project_roots_and_comments(tmp_path):
     with open(config_path, "a", encoding="utf-8") as f:
         f.write("# comment outside project roots\n")
     config = load_config(config_path)
-    watcher = MagicMock()
-    watcher.reload = AsyncMock(return_value={"applied": ["project_roots"]})
+    watcher = ConfigWatcher(config_path, EventBus(), config)
     orchestrator = MagicMock(config=config, _config_watcher=watcher)
     from src.commands.handler import CommandHandler
 
-    result = await CommandHandler(orchestrator, config).execute(
+    handler = CommandHandler(orchestrator, config)
+    result = await handler.execute(
         "update_config",
         {
             "section": "project_roots",
@@ -127,6 +127,45 @@ async def test_update_config_round_trips_project_roots_and_comments(tmp_path):
     written = open(config_path, encoding="utf-8").read()
     assert "# comment outside project roots" in written
     assert load_config(config_path).project_roots[0].path == str(root.resolve())
+    assert await handler.execute("list_project_roots", {}) == {
+        "success": True,
+        "roots": [
+            {
+                "id": "local",
+                "label": "Local",
+                "path": str(root.resolve()),
+                "readable": True,
+                "writable": True,
+            }
+        ],
+    }
+
+    invalid = await handler.execute(
+        "update_config",
+        {
+            "section": "project_roots",
+            "data": [{"id": "missing", "label": "Missing", "path": str(root / "missing")}],
+        },
+    )
+    assert invalid["applied"] is False
+    assert await handler.execute("list_project_roots", {}) == {
+        "success": True,
+        "roots": [
+            {
+                "id": "local",
+                "label": "Local",
+                "path": str(root.resolve()),
+                "readable": True,
+                "writable": True,
+            }
+        ],
+    }
+
+    removed = await handler.execute(
+        "update_config", {"section": "project_roots", "data": []}
+    )
+    assert removed["applied"] is True
+    assert await handler.execute("list_project_roots", {}) == {"success": True, "roots": []}
 
 
 @pytest.mark.asyncio

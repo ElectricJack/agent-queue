@@ -1497,8 +1497,14 @@ export function useUpdateSystemConfig() {
     }) =>
       (await updateConfig({ body: input, throwOnError: true }))
         .data as UpdateConfigResponse,
-    onSuccess: () => {
+    onSuccess: (_result, input) => {
       queryClient.invalidateQueries({ queryKey: ["system-config"] });
+      // Project onboarding reads the daemon-authoritative roots through its
+      // own query.  Clear a previously opened dialog's cache after a saved
+      // root edit so the next Add project uses the live configuration.
+      if (input.section === "project_roots") {
+        queryClient.invalidateQueries({ queryKey: ["project-roots"] });
+      }
     },
   });
 }
