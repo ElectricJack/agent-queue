@@ -1348,8 +1348,9 @@ class TaskCommandsMixin:
         would otherwise file the task under a container the held task no
         longer authorises (or under its former parent). When placement was
         unstated the default remains the held task even if that task is
-        reparented; an explicit root remains a root; and a named parent that
-        is no longer in scope is refused with :class:`_FilingScope`.
+        reparented (a parent-target repair writer's default is the repaired
+        parent instead); an explicit root remains a root; and a named parent
+        that is no longer in scope is refused with :class:`_FilingScope`.
 
         Returns ``(task_id, gate_id, discovered_from_origin,
         depth_cap_fallback, parent_id)`` — the last being the parent
@@ -1445,8 +1446,14 @@ class TaskCommandsMixin:
                 # the task that exposed it.  Do not use ``held_parent_id``:
                 # that old sibling policy let a worker close while its
                 # discovered work remained outstanding elsewhere in the
-                # hierarchy.
-                parent_id = held_id
+                # hierarchy.  The one exception is a parent-target repair
+                # writer: its work *is* the repaired parent's branch, and
+                # ``bind_current_parent_subject_on`` below binds this filing
+                # to that parent, so the finding belongs under that parent.
+                if repair_scope is not None and repair_scope["target_kind"] == "parent":
+                    parent_id = repair_scope["parent_task_id"]
+                else:
+                    parent_id = held_id
             elif parent_id and parent_id not in (
                 allowed | ({held_parent_id} if held_parent_id else set())
             ):
@@ -1824,7 +1831,16 @@ class TaskCommandsMixin:
             # the filing outside the held task's scope.
             parent_explicit = parent_was_supplied and args.get("parent_id") is not None
             if not explicit_root and not parent_explicit:
-                args["parent_id"] = held_id
+                # A parent-target repair writer commits on the repaired
+                # parent's branch and ``repair_filing_head`` above is that
+                # branch's head, so its findings default under the repaired
+                # parent (the filing advances that parent's generation and
+                # binds the operation's subject), never under the writer.
+                args["parent_id"] = (
+                    repair_scope["parent_task_id"]
+                    if repair_scope is not None and repair_scope["target_kind"] == "parent"
+                    else held_id
+                )
             allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
             if parent_explicit and args["parent_id"] not in allowed_parents:
                 return {"success": False, "error": _PARENT_SCOPE_ERROR}
