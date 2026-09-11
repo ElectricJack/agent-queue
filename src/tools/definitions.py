@@ -5321,6 +5321,14 @@ _ALL_TOOL_DEFINITIONS = [
                                     "required": ["id", "kind", "target"],
                                 },
                             },
+                            "profile_id": {
+                                "type": "string",
+                                "description": "Explicit worker profile pin; omit to use normal routing admission.",
+                            },
+                            "intelligence_class": {
+                                "type": "string",
+                                "description": "Explicit intelligence class; validated against the pinned profile when present.",
+                            },
                         },
                         "required": ["tempId", "title", "description"],
                     },

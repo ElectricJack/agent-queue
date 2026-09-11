@@ -377,20 +377,38 @@ def _task_from_plan_row(row: dict):
     return Task(**values)
 
 
-async def _file_hierarchical_plan(db, conn, plan: GraphPlan, service) -> None:
+async def _file_hierarchical_plan(
+    db, conn, plan: GraphPlan, service, *, routing_manager=None
+) -> None:
     """Reserve the root and sibling origins with the graph's transaction."""
+    from src.playbooks.routing import requires_routing_gate
+
+    def routing_policy(task) -> bool:
+        return requires_routing_gate(
+            routing_manager, task, {"parent_task_id": task.parent_task_id}
+        )
+
     if plan.parent_row is not None:
         old_parent_id = plan.parent_id
-        created = await service.file_root_on(conn, _task_from_plan_row(plan.parent_row))
+        created = await service.file_root_on(
+            conn, _task_from_plan_row(plan.parent_row), routing_policy=routing_policy
+        )
         plan.parent_id = created["task_id"]
         plan.parent_row["id"] = plan.parent_id
+        if created.get("gate_id"):
+            plan.routing_task_ids.append(plan.parent_id)
         # Parent labels have no node key and are not handled by _rewrite_ids.
         for row in plan.label_rows:
             if row["task_id"] == old_parent_id:
                 row["task_id"] = plan.parent_id
         await db.mark_container(plan.parent_id, conn=conn)
     children = [_task_from_plan_row(row) for row in plan.node_rows]
-    created = await service.file_prepared_children_on(conn, plan.parent_id, children)
+    created = await service.file_prepared_children_on(
+        conn, plan.parent_id, children, routing_policy=routing_policy
+    )
+    plan.routing_task_ids.extend(
+        item["task_id"] for item in created if item.get("gate_id")
+    )
     _rewrite_ids(plan, {
         row["_key"]: result["task_id"]
         for row, result in zip(plan.node_rows, created, strict=True)
@@ -455,7 +473,9 @@ async def write_plan(
         if hierarchy_service is not None and plan.project_id is not None:
             hierarchical = await _graph_route(hierarchy_service, conn, plan) is not None
         if hierarchical:
-            await _file_hierarchical_plan(db, conn, plan, hierarchy_service)
+            await _file_hierarchical_plan(
+                db, conn, plan, hierarchy_service, routing_manager=routing_manager
+            )
         elif plan.project_id is not None:
             # The legacy graph writer inserts rows before linking them.  An
             # enabled project must instead use atomic origin/checkpoint filing,

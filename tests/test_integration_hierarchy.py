@@ -40,7 +40,7 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
 
 BASE = "a" * 40
@@ -364,6 +364,58 @@ async def test_proposal_commit_uses_one_atomic_hierarchy_transaction(
     checkpoint = await db.get_integration_checkpoint(parent.id)
     assert checkpoint["generation"] == 1
     assert len(await _origins(db)) == 3
+
+
+async def test_hierarchical_proposal_preserves_explicit_task_route(
+    db, hierarchy, internal_plugins_handler
+):
+    handler = await internal_plugins_handler(db=db)
+    handler.orchestrator.hierarchy_integration = hierarchy
+    await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
+    proposal = await handler.execute(
+        "task_batch_propose",
+        {
+            "project_id": "p",
+            "source": "spec:route",
+            "tasks": [
+                {
+                    "tempId": "root",
+                    "title": "root",
+                    "description": "",
+                    "profile_id": "worker",
+                }
+            ],
+            "edges": [],
+        },
+    )
+    await _approve_proposal(handler, db, proposal["proposal_id"])
+
+    committed = await handler.execute(
+        "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
+    )
+
+    assert committed["success"] is True
+    assert (await db.get_task(committed["task_ids"][0])).profile_id == "worker"
+
+
+async def test_bulk_hierarchy_children_apply_routing_admission(db, hierarchy):
+    """Bulk graph/batch children use the individual-child routing contract."""
+    await _create(db, "parent")
+    async with db.immediate() as conn:
+        created = await hierarchy.file_prepared_children_on(
+            conn,
+            "parent",
+            [Task(id="", project_id="p", title="child", description="")],
+            routing_policy=lambda _task: True,
+        )
+
+    child_id = created[0]["task_id"]
+    assert created[0]["gate_id"]
+    assert (await db.get_task(child_id)).parent_task_id == "parent"
+    gates = await db.get_gates_for_task(child_id)
+    assert [(gate["id"], gate["gate_type"], gate["status"] ) for gate in gates] == [
+        (created[0]["gate_id"], "routing", "open")
+    ]
 
 
 async def test_reparent_unmaterialized_child_invalidates_both_parents(db, hierarchy):

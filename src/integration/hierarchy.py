@@ -505,8 +505,16 @@ class HierarchyIntegration:
         conn,
         parent_id: str,
         child_tasks: list[Task],
+        *,
+        routing_policy=None,
     ) -> list[dict]:
-        """Insert sibling tasks with one parent-generation advance."""
+        """Insert sibling tasks with one parent-generation advance.
+
+        Graph and proposal materialisation use this bulk path rather than
+        ``file_prepared_child_on``.  Keep routing admission here as well: a
+        profile-less child must receive the same durable routing gate whether
+        it was filed individually or as part of a graph/batch.
+        """
         if not child_tasks:
             return []
         parent = await self._task_row(conn, parent_id)
@@ -532,6 +540,11 @@ class HierarchyIntegration:
             await self.db.set_parent(
                 task_id, parent_id, conn=conn, integration_authorized=True
             )
+            # ``set_parent`` writes the row.  Preserve that placement on the
+            # in-memory task too, because the routing policy evaluates the
+            # same task.created fields as ordinary command-layer creation.
+            task.parent_task_id = parent_id
+            gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
             origin = await self._reserve_origin(
                 conn,
                 task_id=task_id,
@@ -548,7 +561,7 @@ class HierarchyIntegration:
                 branch=origin["branch"],
                 checkpoint_sha=origin["base_sha"],
             )
-            created.append({"task_id": task_id, "origin": origin})
+            created.append({"task_id": task_id, "origin": origin, "gate_id": gate_id})
         return created
 
     async def file_root_on(
@@ -1420,7 +1433,7 @@ class HierarchyIntegration:
     async def _maybe_create_routing_gate(self, conn, task: Task, routing_policy) -> str | None:
         if routing_policy is None or not routing_policy(task):
             return None
-        gate_id = await self.db.create_gate(
+        gate_id, _created = await self.db.create_gate(
             task.project_id,
             "routing",
             "Route task",

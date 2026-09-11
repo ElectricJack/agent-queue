@@ -24,13 +24,15 @@ profile to build agents from.  It is used in two places:
 Selection order (see ``docs/superpowers/specs/2026-05-07-agent-\
 reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 
-1. ``claude-opus``
-2. ``claude-sonnet``
-3. ``worker-standard-medium-claude``
-4. any remaining general-purpose profile, alphabetically by id
-5. any remaining non-supervisor profile, alphabetically by id
+1. ``standard-high-codex``
+2. ``standard-high-claude``
+3. ``claude-opus``
+4. ``claude-sonnet``
+5. ``worker-standard-medium-claude``
+6. any remaining general-purpose profile, alphabetically by id
+7. any remaining non-supervisor profile, alphabetically by id
 
-Steps 4 and 5 differ only in whether special-purpose profiles (reviewer,
+Steps 6 and 7 differ only in whether special-purpose profiles (reviewer,
 planner, triage, …) are eligible: they are a poor default because they
 are written for one pipeline stage, but they beat returning ``None`` and
 stalling the queue.
@@ -50,6 +52,12 @@ from typing import Any
 #: vault seeded before the provider-explicit rename still resolves to the
 #: standard tier instead of falling through to alphabetical order.
 PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
+    # The ordinary factory route is the standard-high pool.  Keep these
+    # provider-specific profiles first so a new/defaultless project is
+    # executable without an LLM/triage round trip; an explicit project or
+    # task pin still wins at routing time.
+    "standard-high-codex",
+    "standard-high-claude",
     "claude-opus",
     "claude-sonnet",
     "worker-standard-medium-claude",

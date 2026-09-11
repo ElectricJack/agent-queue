@@ -216,6 +216,38 @@ async def test_commit_is_atomic_and_idempotent(handler):
     assert len(await handler._db.list_tasks(project_id="p1")) == 2
 
 
+async def test_commit_preserves_explicit_task_route(handler):
+    """A batch route is task intent, not metadata to discard at commit time."""
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    await handler._db.create_profile(
+        AgentProfile(id="worker", name="Worker", harness="claude")
+    )
+    proposal = await handler.execute(
+        "task_batch_propose",
+        {
+            "project_id": "p1",
+            "source": "spec:route",
+            "tasks": [
+                {
+                    "tempId": "a",
+                    "title": "A",
+                    "description": "",
+                    "profile_id": "worker",
+                }
+            ],
+            "edges": [],
+        },
+    )
+    await _approve(handler, proposal["proposal_id"])
+
+    committed = await handler.execute(
+        "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
+    )
+
+    assert committed["success"] is True
+    assert (await handler._db.get_task(committed["task_ids"][0])).profile_id == "worker"
+
+
 async def test_commit_rejects_legacy_supervisor_project_default(handler):
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
     await handler._db.create_profile(AgentProfile(

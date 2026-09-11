@@ -14,6 +14,12 @@ def test_prefers_claude_opus():
     ) == "claude-opus"
 
 
+def test_prefers_standard_high_pool_over_legacy_defaults():
+    assert select_default_profile_id(
+        ["standard-high-claude", "standard-high-codex", "claude-opus"]
+    ) == "standard-high-codex"
+
+
 def test_falls_back_to_claude_sonnet():
     assert select_default_profile_id(
         ["claude-sonnet", "reviewer", "acp-codex"]

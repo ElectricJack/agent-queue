@@ -377,6 +377,21 @@ class TaskProposalCommandsMixin:
                 }
             if error := self._task_execution_profile_error(default_profile):
                 return {"success": False, "error": f"project default is invalid: {error}"}
+        # Batch tasks take the same route fields as direct and graph-created
+        # work.  Validate explicit intent before claiming the proposal so an
+        # invalid profile/class is an actionable admission refusal, not a
+        # partially materialised graph.
+        for spec in tasks_in:
+            profile = None
+            profile_id = spec.get("profile_id")
+            if profile_id:
+                profile = await self.db.get_profile(profile_id)
+                if profile is None:
+                    return {"success": False, "error": f"Profile '{profile_id}' not found"}
+                if error := self._task_execution_profile_error(profile):
+                    return {"success": False, "error": error}
+            if error := self._validate_routing_class(spec.get("intelligence_class"), profile):
+                return {"success": False, "error": error}
         if project is not None and project.hierarchical_integration_mode in {
             "hierarchy",
             "train",
@@ -507,8 +522,18 @@ class TaskProposalCommandsMixin:
         for child, parent in parent_by_temp.items():
             children_by_parent.setdefault(parent, []).append(child)
 
+        from src.playbooks.routing import requires_routing_gate
+
         service = self._hierarchy_integration_service()
+        routing_manager = getattr(self.orchestrator, "playbook_manager", None)
+
+        def routing_policy(task) -> bool:
+            return requires_routing_gate(
+                routing_manager, task, {"parent_task_id": task.parent_task_id}
+            )
+
         temp_to_real: dict[str, str] = {}
+        routing_task_ids: list[str] = []
         try:
             async with self.db.immediate() as conn:
                 claim = await conn.execute(
@@ -540,8 +565,12 @@ class TaskProposalCommandsMixin:
                         raise RuntimeError("hierarchical proposal has an unresolved parent cycle")
                     for temp_id in roots:
                         task = self._proposal_task(project_id, specs[temp_id])
-                        created = await service.file_root_on(conn, task)
+                        created = await service.file_root_on(
+                            conn, task, routing_policy=routing_policy
+                        )
                         temp_to_real[temp_id] = created["task_id"]
+                        if created.get("gate_id"):
+                            routing_task_ids.append(created["task_id"])
                         await self.db._upsert_meta(
                             created["task_id"], "proposal_source", source, conn=conn
                         )
@@ -558,10 +587,15 @@ class TaskProposalCommandsMixin:
                             for temp_id in child_temps
                         ]
                         created = await service.file_prepared_children_on(
-                            conn, temp_to_real[parent_temp], task_models
+                            conn,
+                            temp_to_real[parent_temp],
+                            task_models,
+                            routing_policy=routing_policy,
                         )
                         for temp_id, item in zip(child_temps, created, strict=True):
                             temp_to_real[temp_id] = item["task_id"]
+                            if item.get("gate_id"):
+                                routing_task_ids.append(item["task_id"])
                             await self.db._upsert_meta(
                                 item["task_id"], "proposal_source", source, conn=conn
                             )
@@ -588,6 +622,18 @@ class TaskProposalCommandsMixin:
             "proposal.status_changed",
             {"project_id": project_id, "proposal_id": proposal_id, "status": "committed"},
         )
+        for task_id in routing_task_ids:
+            await self._emit_admitted_routing_gates(task_id)
+            task = await self.db.get_task(task_id)
+            if task is not None:
+                await self.orchestrator._emit_task_event(
+                    "task.created",
+                    task,
+                    parent_task_id=task.parent_task_id,
+                    profile_id=task.profile_id,
+                    created_by_kind=None,
+                    created_by_id=None,
+                )
         return {
             "success": True,
             "task_ids": [temp_to_real[spec["tempId"]] for spec in tasks_in],
@@ -602,6 +648,8 @@ class TaskProposalCommandsMixin:
             description=spec.get("description", ""),
             priority=spec.get("priority", 100),
             deliverables=spec.get("deliverables", []),
+            profile_id=spec.get("profile_id"),
+            intelligence_class=spec.get("intelligence_class"),
             status=TaskStatus.DEFINED,
         )
 
@@ -621,6 +669,8 @@ async def _create_one_task(
             "description": spec.get("description", ""),
             "priority": spec.get("priority", 100),
             "deliverables": spec.get("deliverables", []),
+            "profile_id": spec.get("profile_id"),
+            "intelligence_class": spec.get("intelligence_class"),
             "metadata": {"proposal_source": source},
         },
     )

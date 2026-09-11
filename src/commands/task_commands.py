@@ -1891,6 +1891,7 @@ class TaskCommandsMixin:
                 )
 
         profile = caller_profile
+        project_default_profile = None
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
@@ -1938,7 +1939,20 @@ class TaskCommandsMixin:
                 }
             if error := self._task_execution_profile_error(default_profile):
                 return {"error": f"project default is invalid: {error}"}
-        class_error = self._validate_routing_class(args.get("intelligence_class"), profile)
+            if not getattr(default_profile, "enabled", True):
+                return {
+                    "error": (
+                        f"project default profile '{project.default_profile_id}' is disabled; "
+                        "enable it or select an eligible worker default before creating work"
+                    )
+                }
+            project_default_profile = default_profile
+        # An explicit class paired with an implicit project-default profile
+        # is still a concrete route. Validate the provider mapping against
+        # that default before accepting it without a routing gate.
+        class_error = self._validate_routing_class(
+            args.get("intelligence_class"), profile or project_default_profile
+        )
         if class_error:
             return {"success": False, "error": class_error}
         # Validate optional preferred_workspace_id
@@ -2175,7 +2189,17 @@ class TaskCommandsMixin:
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
         routing_policy = None
-        if manager is not None and not profile_id and not args.get("_suppress_created_event"):
+        # A validated project default is already an executable route.  Do not
+        # make ordinary work wait for an assignment LLM/triage task merely to
+        # rediscover that explicit route.  Missing/invalid defaults still use
+        # the durable routing-gate path, and explicit task/profile/class pins
+        # retain their existing behaviour.
+        if (
+            manager is not None
+            and not profile_id
+            and project_default_profile is None
+            and not args.get("_suppress_created_event")
+        ):
             def routing_policy(created_task: Task) -> bool:
                 # Evaluate after IDs/parent edges are allocated, inside the
                 # creation transaction, against the same fields as task.created.
