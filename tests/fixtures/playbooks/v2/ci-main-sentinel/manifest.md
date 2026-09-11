@@ -1,8 +1,8 @@
 ---
 playbook_id: ci-main-sentinel
-artifact_sha256: sha256:73fbad04387fe9f90291b5ac5425c12d869dc99ee5d5a28cf805fb35762c5700
+artifact_sha256: sha256:c823bd901fd1bfd5ddae922a04a4c89828d1399834f6f2a007e53b292a0f894f
 source_sha256: sha256:45d286d59b7500db112d54d529b330ddef3cfdd369c98b386fe789dcb55aa7e9
-contract_fingerprint: sha256:787834ee710a0d62d5159fd6723f67f7faf6843af65dbd561a1e31e4c75f7c5f
+contract_fingerprint: sha256:83a8885d3b020ef45ca509de66220769e48629923d360bf9e05ef28c7549bec9
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
