@@ -1275,16 +1275,16 @@ class TaskCommandsMixin:
         edges. Any exception rolls the whole transaction back untouched.
 
         ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
-        worker holding a child task files a *sibling* (parent = the held
-        task's own parent) unless it named a parent itself or requested an
-        explicit root. Both the default and the authorisation it rests on are
+        worker holding task T files a *child of T* unless it named a parent
+        itself or requested an explicit root. Both the default and the
+        authorisation it rests on are
         **recomputed here under the row lock**, because the pre-check ran
         before this transaction opened and a reparent that commits in between
         would otherwise file the task under a container the held task no
         longer authorises (or under its former parent). When placement was
-        unstated the default follows the held task to wherever it now lives;
-        an explicit root remains a root; and a named parent that is no longer
-        in scope is refused with :class:`_FilingScope`.
+        unstated the default remains the held task even if that task is
+        reparented; an explicit root remains a root; and a named parent that
+        is no longer in scope is refused with :class:`_FilingScope`.
 
         Returns ``(task_id, gate_id, discovered_from_origin,
         depth_cap_fallback, parent_id)`` — the last being the parent
@@ -1376,11 +1376,12 @@ class TaskCommandsMixin:
             if discovered_from and discovered_from not in allowed:
                 raise _FilingScope(_DISCOVERED_FROM_SCOPE_ERROR)
             if not parent_explicit and not explicit_root:
-                # The sibling default is re-resolved, not re-authorised: it
-                # follows the held task to its current parent (``None`` for a
-                # held task that is now a root, which files a root the same
-                # way a root-held task always did).
-                parent_id = held_parent_id
+                # The task-scoped emergent-work default is always a child of
+                # the task that exposed it.  Do not use ``held_parent_id``:
+                # that old sibling policy let a worker close while its
+                # discovered work remained outstanding elsewhere in the
+                # hierarchy.
+                parent_id = held_id
             elif parent_id and parent_id not in (
                 allowed | ({held_parent_id} if held_parent_id else set())
             ):
@@ -1440,6 +1441,16 @@ class TaskCommandsMixin:
                 task.parent_task_id = parent_id
             else:
                 if parent_id:
+                    # ``child_task_id`` historically converted a naming-cap
+                    # child into an unrelated root task.  That loses the
+                    # parent-blocking guarantee of emergent work, so refuse
+                    # the filing and leave the worker to explicitly choose
+                    # root (or an authorized shallower parent).
+                    if naming_depth(parent_id) >= MAX_NAMING_DEPTH:
+                        raise _FilingScope(
+                            f"parent '{parent_id}' is at naming depth cap "
+                            f"{MAX_NAMING_DEPTH}; choose --root or another authorized parent"
+                        )
                     task.id, depth_cap_fallback = await child_task_id(conn, parent_id)
                 else:
                     task.id = await fresh_root_id(conn)
@@ -1449,8 +1460,8 @@ class TaskCommandsMixin:
                     task.id, parent_id, conn=conn, description=reason
                 )
                 flipped |= result.flipped
-                # Sibling filing (parent = the held task's own parent) or a
-                # filing under a descendant: the parent-child edge places the
+                # A filing under an alternative authorised parent or a
+                # descendant: the parent-child edge places the
                 # task, the ``discovered-from`` edge keeps provenance to the
                 # work that surfaced it. When the parent *is* the origin the
                 # parent-child edge (carrying ``reason``) already says so — a
@@ -1567,8 +1578,14 @@ class TaskCommandsMixin:
         return None
 
     async def _cmd_create_task(self, args: dict) -> dict:
-        explicit_root = bool(args.get("root"))
-        if explicit_root and args.get("parent_id"):
+        parent_was_supplied = "parent_id" in args
+        # An explicit API null is semantically the same deliberate root
+        # choice as CLI ``--root``.  Presence, rather than truthiness, is
+        # essential here: contracts preserve ``parent_id: null``.
+        explicit_root = bool(args.get("root")) or (
+            parent_was_supplied and args.get("parent_id") is None
+        )
+        if bool(args.get("root")) and parent_was_supplied and args.get("parent_id") is not None:
             return {
                 "success": False,
                 "error": "--root and parent_id are mutually exclusive",
@@ -1588,7 +1605,7 @@ class TaskCommandsMixin:
         creator_session_id = scope.get("session_id") if scope.get("kind") == "session" else None
         filing_session = None
         held_id: str | None = None
-        # Whether the worker named a parent itself (vs. the sibling default).
+        # Whether the worker named a parent itself (vs. the child default).
         # Read again by ``_create_worker_filed_task``'s in-transaction check.
         parent_explicit = False
         repair_filing_head: str | None = None
@@ -1685,13 +1702,11 @@ class TaskCommandsMixin:
                 allowed = {held_id} | set(await self.db.subtree_ids(held_id, conn=_conn))
             if args.get("discovered_from") and args["discovered_from"] not in allowed:
                 return {"success": False, "error": _DISCOVERED_FROM_SCOPE_ERROR}
-            # §12: emergent work found while holding a *child* task T is
-            # organised as T's sibling — unless the caller explicitly asks
-            # for a root, the new task defaults to T's own parent (the shared
-            # container/epic) and keeps a
-            # ``discovered-from`` edge back to T. The worker may name exactly
-            # that immediate parent explicitly; nothing further up or across
-            # the tree opens up. A root-held task keeps root filing.
+            # §12: emergent work found while holding task T is organised as a
+            # child of T.  A caller may deliberately select an authorised
+            # parent or root, but omission never silently lifts work to T's
+            # container.  The provenance edge remains independent of that
+            # placement choice.
             #
             # Everything below is a *pre-check*: it fails the obvious cases
             # cheaply, before the rest of ``create_task`` does any work. It
@@ -1699,9 +1714,9 @@ class TaskCommandsMixin:
             # recomputes both the default and the check from rows it has
             # locked, so a reparent that commits after this read cannot land
             # the filing outside the held task's scope.
-            parent_explicit = bool(args.get("parent_id"))
-            if not explicit_root and not parent_explicit and held_parent_id:
-                args["parent_id"] = held_parent_id
+            parent_explicit = parent_was_supplied and args.get("parent_id") is not None
+            if not explicit_root and not parent_explicit:
+                args["parent_id"] = held_id
             allowed_parents = allowed | ({held_parent_id} if held_parent_id else set())
             if parent_explicit and args["parent_id"] not in allowed_parents:
                 return {"success": False, "error": _PARENT_SCOPE_ERROR}
@@ -2142,8 +2157,8 @@ class TaskCommandsMixin:
                     discovered_from_origin,
                     depth_cap_fallback,
                     # The parent actually written: the in-transaction
-                    # re-check may have re-resolved the sibling default
-                    # against a held task that moved. Everything below
+                    # re-check may have re-selected the held task after it
+                    # moved. Everything below
                     # (the event, the response) reports that one.
                     parent_id,
                 ) = await self._create_worker_filed_task(
@@ -4489,6 +4504,13 @@ class TaskCommandsMixin:
             # ensure_task is the ensuring pipeline's responsibility.
             "_suppress_created_event": True,
         }
+        # Do not recreate placement from truthy values: playbook and API
+        # callers need omitted, selected, and explicit-null parent choices to
+        # reach ``_cmd_create_task`` unchanged.  A dedup replay returns above
+        # and therefore never reparents an existing task.
+        for key in ("parent_id", "root", "reason", "discovered_from"):
+            if key in args:
+                create_args[key] = args[key]
         # Presentation tasks such as playbook-run roots must be born in their
         # projected state. Creating them READY and editing them afterward
         # leaves a window where a pull worker can claim control-plane data as

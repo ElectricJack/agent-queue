@@ -1423,8 +1423,16 @@ class DevelopmentIntegration:
         return preserved
 
     async def ensure_repair(self, project_id, repository_id, manifest, candidate_sha, *, reason):
-        """One ordinary resumable task per failed content set, with no wall-clock ladder."""
-        from src.models import Task, TaskType
+        """File one deliberately-rooted repair with provenance to every source.
+
+        Development delivery can park a *set* of source tasks.  It must not
+        pick one arbitrary source as a structural parent: that would both hide
+        the other origins and make a multi-source repair look like it belongs
+        to only one completion.  Repairs are intentionally root tasks, while
+        a non-blocking ``discovered-from`` edge is recorded for every member
+        in the same creation transaction.
+        """
+        from src.models import DepType, Task, TaskType
 
         identity = self._repair_identity(manifest)
         if await self.db.get_task(identity) is not None:
@@ -1442,8 +1450,7 @@ class DevelopmentIntegration:
         if generation > 3:
             return None  # Keep the candidate parked for operator inspection; no unbounded repair chain.
         sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
-        await self.db.create_task(
-            Task(
+        repair = Task(
                 id=identity,
                 project_id=project_id,
                 repo_id=repository_id,
@@ -1463,6 +1470,19 @@ class DevelopmentIntegration:
                 task_type=TaskType.BUGFIX,
                 max_retries=3,
             )
-        )
+        # Service work has no authenticated held-task context, so root
+        # placement is an explicit policy choice rather than an accidental
+        # omission.  Keep all source provenance independently of placement.
+        async with self.db.immediate() as conn:
+            await self.db.create_task(repair, conn=conn)
+            for member in manifest:
+                source_id = member["task_id"]
+                source = await self.db.get_task(source_id)
+                if source is None or source.project_id != project_id:
+                    raise ValueError(f"repair source '{source_id}' is not in project '{project_id}'")
+                await self.db.add_dependency(
+                    identity, source_id, DepType.DISCOVERED_FROM.value,
+                    description=reason, conn=conn,
+                )
         await self.db.set_task_meta(identity, "development_repair_sources", manifest)
         return identity
