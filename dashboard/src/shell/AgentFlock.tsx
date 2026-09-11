@@ -8,8 +8,7 @@ import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
 import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
 import { isPoolAgent, useDebouncedBusyPoolEntries, usePoolFlock } from "../pages/agents/pools";
-
-const COLLAPSED_KEY = "aq:flock:collapsed";
+import { useShellPreferences } from "./useShellPreferences";
 
 export default function AgentFlock() {
   const { data: roster = [], isLoading, error, refetch } = useAgentFlock();
@@ -20,10 +19,9 @@ export default function AgentFlock() {
   // Pool members are reachable through their pool entry; listing each
   // ephemeral instance row here as well would double-count the flock.
   const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return localStorage.getItem(COLLAPSED_KEY) === "true"; }
-    catch { return false; }
-  });
+  // The user's roaming preference on the daemon, not this browser's.
+  const { prefs, update: updatePreferences } = useShellPreferences();
+  const collapsed = prefs.agent_flock_collapsed;
   const [limitAt, setLimitAt] = useState<string | null>(null);
   // One mutation each for the whole list: a row is only in flight one at a
   // time, and ``variables`` names it, so pending/error land on the right row.
@@ -33,10 +31,10 @@ export default function AgentFlock() {
   const Chevron = collapsed ? ChevronRightIcon : ChevronDownIcon;
 
   const toggle = () => {
+    // Set what the user saw flipped, not a relative toggle: if another
+    // machine changed it meanwhile, the click still means this state.
     const next = !collapsed;
-    setCollapsed(next);
-    try { localStorage.setItem(COLLAPSED_KEY, String(next)); }
-    catch { /* The current view still works when storage is unavailable. */ }
+    void updatePreferences((current) => ({ ...current, agent_flock_collapsed: next }));
   };
 
   return (

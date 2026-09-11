@@ -145,6 +145,7 @@ class DigestScheduleService:
         config: Any,
         lease_owner: str,
         base_url: str = "",
+        dashboard_notice: str = "",
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         escalation_priority: Callable[[float], Awaitable[int]] | None = None,
@@ -155,6 +156,7 @@ class DigestScheduleService:
         self._config = config
         self._lease_owner = lease_owner
         self._base_url = base_url
+        self._dashboard_notice = dashboard_notice
         self._clock = clock
         self._rate_guard = rate_guard
         self._escalation_priority = escalation_priority
@@ -311,6 +313,7 @@ class DigestScheduleService:
             project_ids=frozenset(schedule.project_ids) if schedule.project_ids else None,
             categories=categories or None,
             dashboard_url=self._base_url,
+            dashboard_notice=self._dashboard_notice,
             max_chars=MAX_CHARS - MARKER_RESERVE,
         )
 

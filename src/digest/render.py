@@ -90,6 +90,7 @@ def render_digest(
     *,
     project_names: dict[str, str] | None = None,
     dashboard_url: str = "",
+    dashboard_notice: str = "",
     open_escalations: int = 0,
     max_chars: int = MAX_CHARS,
     max_highlights: int = MAX_HIGHLIGHTS,
@@ -134,6 +135,8 @@ def render_digest(
         footer_parts.append(f"{open_escalations} open {word}")
     if dashboard_url:
         footer_parts.append(sanitise(dashboard_url))
+    elif dashboard_notice:
+        footer_parts.append(sanitise(dashboard_notice))
     footer = " · ".join(footer_parts)
 
     def assemble(lines: list[str]) -> str:

@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, Link, useLocation, useParams, type Params } fr
 import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 import { useProjects } from "./api/hooks";
+import { useShellPreferences } from "./shell/useShellPreferences";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
@@ -46,10 +47,12 @@ function ProjectScopePaneSync() {
   const restoredLocation = useRef<string | null>(null);
   const previousProject = useRef(projectId);
   const pane = useShellPaneStore();
+  const { update: updatePreferences } = useShellPreferences();
+  // The last project is the user's roaming preference on the daemon.
   useEffect(() => {
-    if (projectId) {
-      try { window.localStorage.setItem(LAST_PROJECT_STORAGE_KEY, projectId); } catch { /* Storage may be unavailable. */ }
-    }
+    if (projectId) void updatePreferences((current) => ({ ...current, last_project_id: projectId }));
+  }, [projectId, updatePreferences]);
+  useEffect(() => {
     if (previousProject.current !== projectId) {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
@@ -85,16 +88,6 @@ function encodePlaybookParam(params: Readonly<Params<string>>): string {
   return "/playbooks/" + encodeURIComponent(params.playbookId ?? "");
 }
 
-const LAST_PROJECT_STORAGE_KEY = "aq.dashboard.lastProjectId";
-
-function readRememberedProjectId(): string | null {
-  try {
-    return window.localStorage.getItem(LAST_PROJECT_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
 function NoProjectsState() {
   return (
     <div className="flex h-full min-h-[40vh] items-center justify-center p-6">
@@ -116,8 +109,9 @@ function NoProjectsState() {
 
 function CommandCenterRedirect() {
   const { data: projects, isLoading } = useProjects();
+  const { prefs, status } = useShellPreferences();
   const location = useLocation();
-  if (isLoading || !projects) return <RouteFallback />;
+  if (isLoading || !projects || status === "loading") return <RouteFallback />;
   if (projects.length === 0) return <NoProjectsState />;
 
   const requestedTab = location.pathname
@@ -125,7 +119,9 @@ function CommandCenterRedirect() {
     .split("/")
     .filter(Boolean)[0];
   const tab = requestedTab === "tasks" ? "tasks" : "graph";
-  const remembered = readRememberedProjectId();
+  // A remembered project that no longer exists falls back to the first one;
+  // landing there rewrites the preference.
+  const remembered = prefs.last_project_id;
   const project = projects.find((candidate) => candidate.id === remembered) ?? projects[0];
   if (!project) return <NoProjectsState />;
   return <Navigate to={workspaceHref(project.id, tab, location.search)} replace />;

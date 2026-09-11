@@ -90,6 +90,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    # dashboard — durable shared and roaming UI state
+    "dashboard_state_list": "dashboard",
+    "dashboard_state_get": "dashboard",
+    "dashboard_state_put": "dashboard",
+    "dashboard_state_reset": "dashboard",
     # vault — reference stub management
     "scan_stub_staleness": "system",
     # memory — provided by the external aq-memory plugin (install via `aq plugin install`)
@@ -585,9 +590,7 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "with_summaries": {
                 "type": "boolean",
-                "description": (
-                    "Generate an LLM summary for each hub (requires config.llm)"
-                ),
+                "description": ("Generate an LLM summary for each hub (requires config.llm)"),
                 "default": False,
             },
         },
@@ -642,7 +645,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "default_profile_id": {
                     "type": "string",
                     "description": (
-                        "Agent profile used for tasks in this project that "
+                        "Eligible worker profile used for tasks in this project that "
                         "don't specify their own profile_id.  When omitted, a "
                         "system default is chosen automatically by "
                         "src/profiles/default_selection.py "
@@ -1121,7 +1124,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "profile_id": {
                     "type": "string",
-                    "description": "Agent profile ID to configure the agent with specific tools/capabilities (optional)",
+                    "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -1335,7 +1338,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": (
-                        "Pre-route the task to this agent profile on create. "
+                        "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). "
                         "Tasks created via ensure_task skip triage, so the "
                         "ensuring pipeline pins the executing profile directly."
                     ),
@@ -1385,7 +1388,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "task_id": {"type": "string", "description": "Task ID to route"},
                 "profile_id": {
                     "type": "string",
-                    "description": "Agent profile ID that should execute the task",
+                    "description": "Eligible worker profile ID that should execute the task (never supervisor)",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -2055,9 +2058,15 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task ID"},
-                "incident_id": {"type": "string", "description": "Exact recovery incident ID from the supervisor notification"},
+                "incident_id": {
+                    "type": "string",
+                    "description": "Exact recovery incident ID from the supervisor notification",
+                },
                 "decision": {"type": "string", "enum": ["retry", "hold"]},
-                "reason": {"type": "string", "description": "Diagnosis and rationale for this decision"},
+                "reason": {
+                    "type": "string",
+                    "description": "Diagnosis and rationale for this decision",
+                },
             },
             "required": ["task_id", "incident_id", "decision", "reason"],
         },
@@ -3107,7 +3116,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": "Write a versioned, validated .aqbundle containing only portable tuning and global profile definitions. Run preview_portable_config first to curate the exported defaults.",
         "input_schema": {
             "type": "object",
-            "properties": {"destination": {"type": "string", "description": "Output .aqbundle path"}},
+            "properties": {
+                "destination": {"type": "string", "description": "Output .aqbundle path"}
+            },
             "required": ["destination"],
         },
     },
@@ -3118,7 +3129,11 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "source": {"type": "string", "description": "Input .aqbundle path"},
-                "conflict": {"type": "string", "enum": ["keep", "replace", "error"], "default": "keep"},
+                "conflict": {
+                    "type": "string",
+                    "enum": ["keep", "replace", "error"],
+                    "default": "keep",
+                },
                 "dry_run": {"type": "boolean", "default": False},
             },
             "required": ["source"],
@@ -4365,9 +4380,22 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task id to comment on."},
-                "body": {"type": "string", "minLength": 1, "maxLength": 16000, "description": "Comment text (not blank; at most 16000 characters)."},
-                "kind": {"type": "string", "enum": ["note", "progress"], "default": "note", "description": "'progress' records that work actually advanced (a milestone, a green test run, a pushed PR) and is the only comment kind the hourly digest reports; 'note' is ordinary history — a question, a plan, chatter."},
-                "claim_epoch": {"type": "integer", "description": "Current claim epoch; required for pool workers."},
+                "body": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000,
+                    "description": "Comment text (not blank; at most 16000 characters).",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["note", "progress"],
+                    "default": "note",
+                    "description": "'progress' records that work actually advanced (a milestone, a green test run, a pushed PR) and is the only comment kind the hourly digest reports; 'note' is ordinary history — a question, a plan, chatter.",
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": "Current claim epoch; required for pool workers.",
+                },
             },
             "required": ["task_id", "body"],
         },
@@ -4379,8 +4407,19 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "task_id": {"type": "string", "description": "Task id to read."},
-                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200, "description": "Page size (1..200)."},
-                "offset": {"type": "integer", "default": 0, "minimum": 0, "description": "Number of newest comments to skip."},
+                "limit": {
+                    "type": "integer",
+                    "default": 50,
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Page size (1..200).",
+                },
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Number of newest comments to skip.",
+                },
             },
             "required": ["task_id"],
         },
@@ -4393,7 +4432,12 @@ _ALL_TOOL_DEFINITIONS = [
             "properties": {
                 "task_id": {"type": "string", "description": "Task id the comment belongs to."},
                 "comment_id": {"type": "string", "description": "Comment id to edit."},
-                "body": {"type": "string", "minLength": 1, "maxLength": 16000, "description": "Replacement comment text (not blank; at most 16000 characters)."},
+                "body": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 16000,
+                    "description": "Replacement comment text (not blank; at most 16000 characters).",
+                },
             },
             "required": ["task_id", "comment_id", "body"],
         },
@@ -4855,7 +4899,10 @@ _ALL_TOOL_DEFINITIONS = [
                 "target": {"type": "string", "description": "Task, agent, or session id"},
                 "body": {"type": "string", "description": "Message body"},
                 "all_running": {"type": "boolean", "default": False},
-                "profile": {"type": "string", "description": "Optional profile filter for broadcast"},
+                "profile": {
+                    "type": "string",
+                    "description": "Optional profile filter for broadcast",
+                },
                 "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
             },
             "required": ["body"],
@@ -5042,7 +5089,11 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project id"},
-                "variant": {"type": "string", "enum": ["all", "active"], "description": "Omit for both"},
+                "variant": {
+                    "type": "string",
+                    "enum": ["all", "active"],
+                    "description": "Omit for both",
+                },
             },
             "required": ["project_id"],
         },
@@ -5061,7 +5112,10 @@ _ALL_TOOL_DEFINITIONS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "project_id": {"type": "string", "description": "Project whose repository to read."},
+                "project_id": {
+                    "type": "string",
+                    "description": "Project whose repository to read.",
+                },
                 "ref": {
                     "type": "string",
                     "description": "Branch or sha to judge. Default: the project's default branch.",
@@ -5252,7 +5306,13 @@ _ALL_TOOL_DEFINITIONS = [
                                         "id": {"type": "string"},
                                         "kind": {
                                             "type": "string",
-                                            "enum": ["file", "test", "command", "flag", "registration"],
+                                            "enum": [
+                                                "file",
+                                                "test",
+                                                "command",
+                                                "flag",
+                                                "registration",
+                                            ],
                                         },
                                         "target": {"type": "string"},
                                     },
@@ -5460,9 +5520,15 @@ _ALL_TOOL_DEFINITIONS = [
                 "class_id": {"type": "string", "description": "Existing immutable class ID."},
                 "name": {"type": "string", "description": "Human-readable class name."},
                 "description": {"type": "string", "description": "Class description."},
-                "mapping": {"type": "object", "additionalProperties": True,
-                            "description": "Complete provider-to-configuration JSON mapping."},
-                "expected_revision": {"type": "string", "description": "Raw-file revision from the last read."},
+                "mapping": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": "Complete provider-to-configuration JSON mapping.",
+                },
+                "expected_revision": {
+                    "type": "string",
+                    "description": "Raw-file revision from the last read.",
+                },
             },
             "required": ["class_id", "name", "description", "mapping"],
         },
@@ -5583,169 +5649,288 @@ _ALL_TOOL_DEFINITIONS = [
 ]
 
 
-_TOOL_CATEGORIES.update({name: "message" for name in (
-    "question_list", "question_answer", "question_escalate"
-)})
-_ALL_TOOL_DEFINITIONS.extend([
-    {"name": "question_list", "description": "List pending worker questions visible to the human or live supervisor.",
-     "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}}},
-    {"name": "question_answer", "description": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
-     "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
-         "body": {"type": "string", "minLength": 1, "maxLength": 16000}}, "required": ["question_id", "body"]}},
-    {"name": "question_escalate", "description": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
-     "input_schema": {"type": "object", "properties": {"question_id": {"type": "string"},
-         "reason": {"type": "string", "minLength": 1, "maxLength": 4000}}, "required": ["question_id", "reason"]}},
-])
-
-_ALL_TOOL_DEFINITIONS.extend([
-    {
-        "name": "escalation_create",
-        "description": (
-            "Create or reuse a project-scoped human escalation by durable source incident. "
-            "The logical supervisor owner is derived by the server."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-                "task_id": {"type": "string"},
-                "source_kind": {"type": "string"},
-                "source_identity": {"type": "string"},
-                "incident_key": {"type": "string"},
-                "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
-                "investigation": {"type": "string", "minLength": 1, "maxLength": 8000},
-                "decision_requested": {"type": "string", "minLength": 1, "maxLength": 4000},
-                "choices": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-            },
-            "required": [
-                "project_id", "source_kind", "source_identity", "incident_key", "summary",
-                "investigation", "decision_requested", "severity",
-            ],
-            "additionalProperties": False,
+_TOOL_CATEGORIES.update(
+    {name: "message" for name in ("question_list", "question_answer", "question_escalate")}
+)
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "question_list",
+            "description": "List pending worker questions visible to the human or live supervisor.",
+            "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
         },
-    },
-    {
-        "name": "escalation_list",
-        "description": "List visible escalations with current external-delivery status.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "project_id": {"type": "string"},
-                "task_id": {"type": "string"},
-                "states": {"type": "array", "items": {"type": "string"}},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
-            },
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "escalation_get",
-        "description": "Get one visible escalation with immutable messages, deliveries, and actions.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"escalation_id": {"type": "string"}},
-            "required": ["escalation_id"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "escalation_reply",
-        "description": (
-            "Append an authenticated human reply and atomically enqueue its owning supervisor. "
-            "Actor, transport, project, and thread authority are server-derived."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "escalation_id": {"type": "string"},
-                "text": {"type": "string", "minLength": 1, "maxLength": 16000},
-                "external_message_id": {
-                    "type": "string",
-                    "description": "Stable dashboard or adapter message identity for replay collapse.",
+        {
+            "name": "question_answer",
+            "description": "Let the owning supervisor answer a narrow factual worker question in its original claim-fenced session. Direct human replies use escalation_reply and escalation_apply_reply.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string"},
+                    "body": {"type": "string", "minLength": 1, "maxLength": 16000},
                 },
-                "received_sequence": {"type": "integer"},
+                "required": ["question_id", "body"],
             },
-            "required": ["escalation_id", "text", "external_message_id"],
-            "additionalProperties": False,
         },
-    },
-    {
-        "name": "escalation_update",
-        "description": "CAS-update an owned escalation, including explicit terminal resolution.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "escalation_id": {"type": "string"},
-                "expected_revision": {"type": "integer", "minimum": 0},
-                "state": {"type": "string"},
-                "summary": {"type": "string", "maxLength": 4000},
-                "investigation": {"type": "string", "maxLength": 8000},
-                "decision_requested": {"type": "string", "maxLength": 4000},
-                "choices": {"type": "array", "items": {"type": "string"}},
-                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                "terminal_outcome": {"type": "string", "maxLength": 4000},
-                "terminal_evidence": {"type": "object"},
-            },
-            "required": ["escalation_id", "expected_revision"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "escalation_apply_reply",
-        "description": (
-            "Apply one bound verified human reply through the owning supervisor's exact "
-            "question, human-gate, or task-recovery service."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "escalation_id": {"type": "string"},
-                "reply_id": {"type": "string"},
-                "expected_revision": {"type": "integer", "minimum": 0},
-                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
-                "action_kind": {
-                    "type": "string",
-                    "enum": ["question_answer", "gate_resolve", "task_recover"],
+        {
+            "name": "question_escalate",
+            "description": "Create or reuse the durable human escalation for a worker question after supervisor investigation cannot resolve it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string"},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
                 },
-                "target_id": {"type": "string"},
-                "decision": {"type": "string", "enum": ["retry", "hold"]},
+                "required": ["question_id", "reason"],
             },
-            "required": [
-                "escalation_id", "reply_id", "expected_revision", "idempotency_key",
-                "action_kind", "target_id",
-            ],
-            "additionalProperties": False,
         },
-    },
-])
+    ]
+)
 
-_ALL_TOOL_DEFINITIONS.extend([
-    {
-        "name": "digest_preview",
-        "description": (
-            "Dry-run the current hourly digest window: the message that would be sent, or "
-            "the reason it would stay silent. Sends nothing and advances no delivery cursor."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "dashboard_url": {"type": "string"},
-                "now": {"type": "number", "description": "Evaluate as of this epoch time."},
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "dashboard_state_list",
+            "description": "List every shared and caller-owned dashboard state document.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
             },
-            "additionalProperties": False,
         },
-    },
-    {
-        "name": "digest_status",
-        "description": (
-            "Configured digest destination and schedule generation, next evaluation, recent "
-            "windows and pending/unknown/failed delivery health."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"now": {"type": "number"}},
-            "additionalProperties": False,
+        {
+            "name": "dashboard_state_get",
+            "description": "Read one dashboard state document by namespace and optional subject.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "enum": [
+                            "nav_organization",
+                            "shell_preferences",
+                            "command_center_preferences",
+                            "command_center_project_view",
+                            "playbook_graph_view",
+                        ],
+                    },
+                    "subject": {"type": "string"},
+                },
+                "required": ["namespace"],
+                "additionalProperties": False,
+            },
         },
-    },
-])
+        {
+            "name": "dashboard_state_put",
+            "description": "Replace one validated dashboard state document.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "enum": [
+                            "nav_organization",
+                            "shell_preferences",
+                            "command_center_preferences",
+                            "command_center_project_view",
+                            "playbook_graph_view",
+                        ],
+                    },
+                    "subject": {"type": "string"},
+                    "base_revision": {"type": "integer", "minimum": 0},
+                    "value": {"type": "object"},
+                },
+                "required": ["namespace", "value"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "dashboard_state_reset",
+            "description": "Reset one dashboard state document to its typed default.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "namespace": {
+                        "type": "string",
+                        "enum": [
+                            "nav_organization",
+                            "shell_preferences",
+                            "command_center_preferences",
+                            "command_center_project_view",
+                            "playbook_graph_view",
+                        ],
+                    },
+                    "subject": {"type": "string"},
+                },
+                "required": ["namespace"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "escalation_create",
+            "description": (
+                "Create or reuse a project-scoped human escalation by durable source incident. "
+                "The logical supervisor owner is derived by the server."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "source_kind": {"type": "string"},
+                    "source_identity": {"type": "string"},
+                    "incident_key": {"type": "string"},
+                    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "investigation": {"type": "string", "minLength": 1, "maxLength": 8000},
+                    "decision_requested": {"type": "string", "minLength": 1, "maxLength": 4000},
+                    "choices": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                },
+                "required": [
+                    "project_id",
+                    "source_kind",
+                    "source_identity",
+                    "incident_key",
+                    "summary",
+                    "investigation",
+                    "decision_requested",
+                    "severity",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_list",
+            "description": "List visible escalations with current external-delivery status.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "states": {"type": "array", "items": {"type": "string"}},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_get",
+            "description": "Get one visible escalation with immutable messages, deliveries, and actions.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"escalation_id": {"type": "string"}},
+                "required": ["escalation_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_reply",
+            "description": (
+                "Append an authenticated human reply and atomically enqueue its owning supervisor. "
+                "Actor, transport, project, and thread authority are server-derived."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "escalation_id": {"type": "string"},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+                    "external_message_id": {
+                        "type": "string",
+                        "description": "Stable dashboard or adapter message identity for replay collapse.",
+                    },
+                    "received_sequence": {"type": "integer"},
+                },
+                "required": ["escalation_id", "text", "external_message_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_update",
+            "description": "CAS-update an owned escalation, including explicit terminal resolution.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "escalation_id": {"type": "string"},
+                    "expected_revision": {"type": "integer", "minimum": 0},
+                    "state": {"type": "string"},
+                    "summary": {"type": "string", "maxLength": 4000},
+                    "investigation": {"type": "string", "maxLength": 8000},
+                    "decision_requested": {"type": "string", "maxLength": 4000},
+                    "choices": {"type": "array", "items": {"type": "string"}},
+                    "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                    "terminal_outcome": {"type": "string", "maxLength": 4000},
+                    "terminal_evidence": {"type": "object"},
+                },
+                "required": ["escalation_id", "expected_revision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "escalation_apply_reply",
+            "description": (
+                "Apply one bound verified human reply through the owning supervisor's exact "
+                "question, human-gate, or task-recovery service."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "escalation_id": {"type": "string"},
+                    "reply_id": {"type": "string"},
+                    "expected_revision": {"type": "integer", "minimum": 0},
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "action_kind": {
+                        "type": "string",
+                        "enum": ["question_answer", "gate_resolve", "task_recover"],
+                    },
+                    "target_id": {"type": "string"},
+                    "decision": {"type": "string", "enum": ["retry", "hold"]},
+                },
+                "required": [
+                    "escalation_id",
+                    "reply_id",
+                    "expected_revision",
+                    "idempotency_key",
+                    "action_kind",
+                    "target_id",
+                ],
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "digest_preview",
+            "description": (
+                "Dry-run the current hourly digest window: the message that would be sent, or "
+                "the reason it would stay silent. Sends nothing and advances no delivery cursor."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "dashboard_url": {"type": "string"},
+                    "now": {"type": "number", "description": "Evaluate as of this epoch time."},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "digest_status",
+            "description": (
+                "Configured digest destination and schedule generation, next evaluation, recent "
+                "windows and pending/unknown/failed delivery health."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"now": {"type": "number"}},
+                "additionalProperties": False,
+            },
+        },
+    ]
+)

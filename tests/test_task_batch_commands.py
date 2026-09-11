@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from src.database.queries.proposal_queries import detect_cycles
+from src.models import AgentProfile
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +189,24 @@ async def test_commit_is_atomic_and_idempotent(handler):
     c2 = await handler.execute("task_batch_commit", {"proposal_id": prop_id})
     assert c2["success"] is False
     assert "committed" in c2["error"].lower()
+
+
+async def test_commit_rejects_legacy_supervisor_project_default(handler):
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    await handler._db.create_profile(AgentProfile(
+        id="supervisor", name="Supervisor", lifecycle="named",
+    ))
+    await handler._db.update_project("p1", default_profile_id="supervisor")
+    proposal = await handler.execute(
+        "task_batch_propose",
+        {
+            "project_id": "p1", "source": "spec:foo",
+            "tasks": [{"tempId": "a", "title": "A", "description": ""}], "edges": [],
+        },
+    )
+    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
+    assert "project default is invalid" in result["error"]
+    assert await handler._db.list_tasks(project_id="p1") == []
 
 
 async def test_commit_partial_failure_rolls_back(handler, monkeypatch):

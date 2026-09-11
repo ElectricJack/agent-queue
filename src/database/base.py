@@ -131,8 +131,13 @@ class DatabaseBackend(Protocol):
         self, request_id: str, resource: dict, *, now: float | None = None
     ) -> bool: ...
     async def finish_onboarding_request(
-        self, request_id: str, status: str, *, result: dict | None = None,
-        error: dict | None = None, now: float | None = None,
+        self,
+        request_id: str,
+        status: str,
+        *,
+        result: dict | None = None,
+        error: dict | None = None,
+        now: float | None = None,
     ) -> bool: ...
     async def purge_finished_onboarding_requests(
         self, cutoff: float, *, limit: int = 1000
@@ -147,6 +152,27 @@ class DatabaseBackend(Protocol):
     async def list_projects(self, status: ProjectStatus | None = None) -> list[Project]: ...
     async def update_project(self, project_id: str, **kwargs) -> None: ...
     async def delete_project(self, project_id: str) -> None: ...
+
+    # --- Dashboard state ---
+
+    async def get_dashboard_document(
+        self, *, scope: str, owner_id: str, namespace: str, subject: str, conn=None
+    ) -> dict | None: ...
+    async def list_dashboard_documents(self, *, owner_id: str) -> list[dict]: ...
+    async def write_dashboard_document(
+        self,
+        *,
+        scope: str,
+        owner_id: str,
+        namespace: str,
+        subject: str,
+        value: dict | None,
+        base_revision: int | None,
+        now: float,
+    ) -> tuple[dict | None, dict | None]: ...
+    async def list_orphan_dashboard_documents(self, *, project_namespaces) -> list[dict]: ...
+    async def delete_orphan_dashboard_documents(self, *, project_namespaces) -> int: ...
+    async def delete_dashboard_documents_for_project(self, project_id: str, *, conn) -> int: ...
 
     # --- Agent Profiles ---
 

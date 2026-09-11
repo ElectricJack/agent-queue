@@ -117,7 +117,6 @@ beforeEach(() => {
   getViewport.mockReturnValue({ x: 0, y: 0, zoom: 1 });
   tiles.error = null;
   layoutNode.data = undefined;
-  localStorage.clear();
   // The expanded set is one live store, not per-component state.
   setExpandedTaskIds(new Set());
 });
@@ -135,9 +134,6 @@ describe("LayoutCanvas", () => {
     const moved = flow.current!.nodes.find((node) => node.id === "z")!;
     expect(moved.position).toEqual({ x: 720, y: 312 });
     act(() => flow.current!.onNodeDragStop!(null, moved));
-    expect(JSON.parse(localStorage.getItem("aq.command-center.graph-positions")!)).toMatchObject({
-      p1: { z: { x: 3, y: 2 } },
-    });
 
     first.unmount();
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
@@ -172,18 +168,10 @@ describe("LayoutCanvas", () => {
     expect(tiles.params).toMatchObject({ variant: "active", expanded: [] });
   });
 
-  it("uses comfortable density by default and persists a user-selected density", () => {
+  it("uses server-default density while no server document has loaded", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const density = screen.getByRole("combobox", { name: "Graph density" });
     expect(density).toHaveValue("comfortable");
-    fireEvent.change(density, { target: { value: "compact" } });
-    expect(localStorage.getItem("aq.command-center.graph-density")).toBe("compact");
-  });
-
-  it("restores the saved density for this browser user", () => {
-    localStorage.setItem("aq.command-center.graph-density", "spacious");
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.getByRole("combobox", { name: "Graph density" })).toHaveValue("spacious");
   });
 
   it("re-renders only the cards a live refetch actually changed", () => {

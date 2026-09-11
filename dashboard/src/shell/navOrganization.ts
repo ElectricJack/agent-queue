@@ -1,34 +1,30 @@
 /**
- * Per-browser organization of the left rail's Projects section: named folders,
+ * Shared organization of the left rail's Projects section: named folders,
  * project-to-folder assignments, and a rail ordering. Design spec:
  * docs/superpowers/specs/2026-09-07-project-folders-and-drag-drop-design.md.
  *
- * Everything here is a pure function over a plain serialisable value, so the
- * localStorage backing is the only thing that would have to change if the
- * organization ever needs to follow the operator between browsers.
+ * Everything here is a pure function over the generated server value. The
+ * persistence boundary lives in useNavOrganization, not in browser storage.
  */
 
-export const NAV_ORGANIZATION_STORAGE_KEY = "aq.shell.project-organization";
-export const NAV_ORGANIZATION_CHANGED = "aq:project-organization-changed";
+import type {
+  NavFolder as ApiNavFolder,
+  NavOrganization as ApiNavOrganization,
+} from "../api/client";
 
 /** Private drag payloads, so a folder drag is never read as a project drop. */
 export const PROJECT_DRAG_TYPE = "application/x-aq-nav-project";
 export const FOLDER_DRAG_TYPE = "application/x-aq-nav-folder";
 
-export interface NavFolder {
-  id: string;
-  name: string;
-  collapsed: boolean;
-}
-
-export interface NavOrganization {
+export type NavFolder = Omit<ApiNavFolder, "collapsed"> & { collapsed: boolean };
+export type NavOrganization = Omit<ApiNavOrganization, "folders" | "assignments" | "project_order"> & {
   /** Folders in rail order. */
   folders: NavFolder[];
   /** projectId -> folderId. An entry for an unknown folder renders at the root. */
   assignments: Record<string, string>;
   /** One global ranking of project ids; each folder renders its own slice. */
-  order: string[];
-}
+  project_order: string[];
+};
 
 export interface NavProject {
   id: string;
@@ -45,7 +41,7 @@ export interface NavTree<P extends NavProject> {
   loose: P[];
 }
 
-export const EMPTY_ORGANIZATION: NavOrganization = { folders: [], assignments: {}, order: [] };
+export const EMPTY_ORGANIZATION: NavOrganization = { folders: [], assignments: {}, project_order: [] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -76,38 +72,16 @@ export function parseOrganization(raw: unknown): NavOrganization {
       assignments[projectId] = folderId;
     }
   }
-  const order: string[] = [];
+  const project_order: string[] = [];
   const seenProjects = new Set<string>();
-  if (Array.isArray(raw.order)) {
-    for (const id of raw.order) {
+  if (Array.isArray(raw.project_order)) {
+    for (const id of raw.project_order) {
       if (typeof id !== "string" || !id || seenProjects.has(id)) continue;
       seenProjects.add(id);
-      order.push(id);
+      project_order.push(id);
     }
   }
-  return { folders, assignments, order };
-}
-
-export function storedOrganization(): NavOrganization {
-  if (typeof window === "undefined") return EMPTY_ORGANIZATION;
-  try {
-    const raw = window.localStorage.getItem(NAV_ORGANIZATION_STORAGE_KEY);
-    if (!raw) return EMPTY_ORGANIZATION;
-    return parseOrganization(JSON.parse(raw) as unknown);
-  } catch {
-    return EMPTY_ORGANIZATION;
-  }
-}
-
-/** Persist and tell the other rails in this document to re-read. */
-export function saveOrganization(org: NavOrganization): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(NAV_ORGANIZATION_STORAGE_KEY, JSON.stringify(org));
-  } catch {
-    /* Private-mode or quota failures leave the in-memory organization intact. */
-  }
-  window.dispatchEvent(new Event(NAV_ORGANIZATION_CHANGED));
+  return { folders, assignments, project_order };
 }
 
 /**
@@ -120,7 +94,7 @@ export function navTree<P extends NavProject>(
   org: NavOrganization,
 ): NavTree<P> {
   const rank = new Map<string, number>();
-  org.order.forEach((id, index) => {
+  org.project_order.forEach((id, index) => {
     if (!rank.has(id)) rank.set(id, index);
   });
   const ranked = [...projects].sort((a, b) => {
@@ -233,15 +207,15 @@ export function moveProject(
   if (target.folderId === null) delete assignments[projectId];
   else assignments[projectId] = target.folderId;
 
-  const order = org.order.filter((id) => id !== projectId);
+  const project_order = org.project_order.filter((id) => id !== projectId);
   const before = target.beforeProjectId ?? null;
-  const index = before === null ? -1 : order.indexOf(before);
-  order.splice(index < 0 ? order.length : index, 0, projectId);
-  return { ...org, assignments, order };
+  const index = before === null ? -1 : project_order.indexOf(before);
+  project_order.splice(index < 0 ? project_order.length : index, 0, projectId);
+  return { ...org, assignments, project_order };
 }
 
 /**
- * Seed `order` with the current rail order before the first reorder, so that
+ * Seed `project_order` with the current rail order before the first reorder, so that
  * dropping one project does not reshuffle every project that storage has never
  * seen. Returns the organization unchanged when nothing new needs ranking.
  */
@@ -249,11 +223,11 @@ export function withProjectsRanked(
   org: NavOrganization,
   projects: readonly NavProject[],
 ): NavOrganization {
-  const known = new Set(org.order);
+  const known = new Set(org.project_order);
   if (projects.every((project) => known.has(project.id))) return org;
   const tree = navTree(projects, org);
   const ranked = [...tree.folders.flatMap((folder) => folder.projects), ...tree.loose].map((p) => p.id);
   const seen = new Set(ranked);
-  const trailing = org.order.filter((id) => !seen.has(id));
-  return { ...org, order: [...ranked, ...trailing] };
+  const trailing = org.project_order.filter((id) => !seen.has(id));
+  return { ...org, project_order: [...ranked, ...trailing] };
 }

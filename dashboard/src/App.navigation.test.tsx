@@ -7,6 +7,14 @@ import { useShellPaneStore } from "./panes/store";
 import { useRightSurface } from "./shell/useRightSurface";
 import App from "./App";
 import ActivityDrawer from "./shell/ActivityDrawer";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { SHELL_PREFERENCE_DEFAULTS, type ShellPrefs } from "./shell/useShellPreferences";
+import {
+  createFakeDashboardStateServer,
+  TestDashboardState,
+  testQueryClient,
+  type FakeDashboardStateServer,
+} from "./testUtils/dashboardState";
 
 const actions = vi.hoisted(() => ({ pause: vi.fn(), resume: vi.fn(), remove: vi.fn() }));
 const projects = [{ id: "p1", name: "First project" }, { id: "p2", name: "Second project" }];
@@ -28,7 +36,14 @@ vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
 vi.mock("./shell/TopBar", () => ({ default: () => null }));
 vi.mock("./shell/RightSurface", () => ({ default: () => <PaneProbe /> }));
-vi.mock("./shell/palette/Palette", () => ({ Palette: () => null }));
+vi.mock("./shell/palette/Palette", async () => {
+  const { useActions } = await import("./shell/palette/registerActions");
+  return {
+    Palette: () => <>{useActions().map((action) => (
+      <button key={action.id} type="button" onClick={action.run}>{action.label}</button>
+    ))}</>,
+  };
+});
 vi.mock("./shell/hotkeys/CheatSheetModal", () => ({ default: () => null }));
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
 vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Command Center tasks" /> }));
@@ -73,14 +88,23 @@ function Location() {
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
 }
 
+let server: FakeDashboardStateServer;
+
 function renderApp(path: string) {
-  return render(<MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>);
+  return render(
+    <QueryClientProvider client={testQueryClient()}>
+      <TestDashboardState server={server}>
+        <MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>
+      </TestDashboardState>
+    </QueryClientProvider>,
+  );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  server = createFakeDashboardStateServer();
+  delete document.documentElement.dataset.theme;
   projects.splice(0, projects.length, ...initialProjects.map((project) => ({ ...project })));
-  window.localStorage.clear();
   actions.remove.mockImplementation(async ({ project_id }: { project_id: string }) => {
     const index = projects.findIndex((project) => project.id === project_id);
     if (index >= 0) projects.splice(index, 1);
@@ -173,7 +197,7 @@ describe("Dashboard navigation", () => {
     expect(projectsToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("link", { name: "First project" })).toBeInTheDocument();
     await userEvent.click(projectsToggle);
-    expect(projectsToggle).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() => expect(projectsToggle).toHaveAttribute("aria-expanded", "false"));
     expect(screen.queryByRole("link", { name: "First project" })).not.toBeInTheDocument();
   });
 
@@ -313,5 +337,91 @@ describe("Shared project workspace navigation", () => {
     await userEvent.click(deleteButtons[deleteButtons.length - 1]!);
     expect(actions.remove).toHaveBeenCalledWith({ project_id: "p2" });
     await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph"));
+  });
+});
+
+describe("Roaming shell preferences", () => {
+  const saved = (patch: Partial<ShellPrefs>): ShellPrefs => ({ ...SHELL_PREFERENCE_DEFAULTS, ...patch });
+  const savedSurface = (patch: Partial<ShellPrefs["right_surface"]>) =>
+    saved({ right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, ...patch } });
+
+  it("returns to the user's last project from the server", async () => {
+    server.write("shell_preferences", saved({ last_project_id: "p2" }));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/graph");
+  });
+
+  it("follows the user's last project to another dashboard", async () => {
+    const first = renderApp("/projects/p2/tasks");
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p2" }));
+    first.unmount();
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p2/graph");
+  });
+
+  it("falls back to the first project when the remembered one is gone and repairs the preference", async () => {
+    server.write("shell_preferences", saved({ last_project_id: "deleted-project" }));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ last_project_id: "p1" }));
+  });
+
+  it("keeps the Projects disclosure the user chose on every dashboard", async () => {
+    const first = renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await userEvent.click(screen.getByRole("button", { name: "Projects" }));
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({ projects_section_open: false }));
+    first.unmount();
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("reopens the activity drawer on the tab the user last left open", async () => {
+    server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
+    renderApp("/projects/p1/tasks");
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    await waitFor(() => expect(screen.getByLabelText("Current surface")).toHaveTextContent("drawer"));
+    expect(await screen.findByText("Waiting for events…")).toBeInTheDocument();
+  });
+
+  it("lets a one-shot ?openDrawer= command win over the saved tab, then saves it", async () => {
+    server.write("shell_preferences", savedSurface({ kind: "drawer", activity_tab: "events" }));
+    renderApp("/system/gates");
+    await screen.findByRole("heading", { name: "Command Center tasks" });
+    expect(await screen.findByText("No open gates.")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(server.document("shell_preferences").value).toMatchObject({
+        right_surface: { kind: "drawer", activity_tab: "gates" },
+      }));
+    expect(screen.getByLabelText("Current location")).not.toHaveTextContent("openDrawer");
+  });
+
+  it("applies the theme preference and resets every shell preference from the palette", async () => {
+    server.write("shell_preferences", saved({ theme: "light", projects_section_open: false }));
+    renderApp("/projects/p1/graph");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("light"));
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Reset shell preferences" }));
+    await waitFor(() => expect(server.document("shell_preferences")).toMatchObject({ exists: false }));
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows the defaults and keeps navigating when preferences are unavailable", async () => {
+    server.failWith(new Error("API 503: daemon unavailable"));
+    renderApp("/command-center");
+    await screen.findByRole("heading", { name: "Command Center graph" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
+    expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
   });
 });

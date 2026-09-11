@@ -10,6 +10,7 @@ import { ActionRegistryProvider } from "../registerActions";
 import { ShortcutsProvider } from "../../hotkeys/useShortcuts";
 import { ShellPaneProvider, useShellPaneStore } from "../../../panes/store";
 import type { PaneEntry } from "../../../panes/registry";
+import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
 
 const data = vi.hoisted(() => ({
   projects: [] as { id: string; name?: string }[],
@@ -60,6 +61,7 @@ function harness(initialEntry = "/projects/current/tasks?q=work") {
   const qc = new QueryClient();
   return render(
     <QueryClientProvider client={qc}>
+      <TestDashboardState server={createFakeDashboardStateServer()}>
       <MemoryRouter initialEntries={[initialEntry]}>
         <ShellPaneProvider registryOverride={paneRegistry}>
           <PaletteStateProvider>
@@ -74,6 +76,7 @@ function harness(initialEntry = "/projects/current/tasks?q=work") {
           </PaletteStateProvider>
         </ShellPaneProvider>
       </MemoryRouter>
+      </TestDashboardState>
     </QueryClientProvider>,
   );
 }

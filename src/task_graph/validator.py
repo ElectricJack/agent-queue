@@ -419,14 +419,12 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
     if db is None:
         return []
     errors: list[GraphError] = []
-    cache: dict[str, str | None] = {}
+    cache: dict[str, Any | None] = {}
 
-    async def resolve(profile_id: str) -> str | None:
-        """Resolve to the profile id that actually exists, or ``None``."""
+    async def resolve(profile_id: str) -> Any | None:
+        """Resolve to the profile that actually exists, or ``None``."""
         if profile_id not in cache:
-            cache[profile_id] = (
-                profile_id if await db.get_profile(profile_id) is not None else None
-            )
+            cache[profile_id] = await db.get_profile(profile_id)
         return cache[profile_id]
 
     def report(profile_id: str, node_key: str | None) -> None:
@@ -457,7 +455,13 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
         resolved = await resolve(profile_id)
         if resolved is None:
             report(profile_id, node_key)
-        return resolved
+            return None
+        from src.profiles.task_execution import task_execution_profile_error
+
+        if error := task_execution_profile_error(resolved):
+            errors.append(_error("supervisor_profile", error, node_key))
+            return None
+        return resolved.id
 
     if graph.parent and graph.parent.profile:
         resolved = await check(graph.parent.profile, None)

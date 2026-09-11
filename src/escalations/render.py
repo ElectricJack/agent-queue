@@ -82,9 +82,14 @@ def _task_line(facts: EscalationFacts) -> str:
     return f"**Task:** {title} (`{_one_line(facts.task_id, limit=64)}`){suffix}"
 
 
-def escalation_url(base_url: str, escalation_id: str) -> str:
+def escalation_url(base_url: str, escalation_id: str, *, unavailable_notice: str = "") -> str:
     """Deep link to the dashboard escalation inbox entry."""
     base = (base_url or "").rstrip("/")
+    if not base:
+        return (
+            unavailable_notice
+            or "Remote dashboard link unavailable (no remote dashboard URL configured)."
+        )
     return f"{base}/settings/messaging#escalation-reply-{escalation_id}"
 
 
@@ -102,6 +107,7 @@ def render_root(
     *,
     mentions: MentionPolicy,
     base_url: str,
+    dashboard_notice: str = "",
     dedup_key: str,
     replacement: bool = False,
 ) -> str:
@@ -128,7 +134,7 @@ def render_root(
         lines.append(f"**Options:** {rendered}")
     lines.append(
         "Reply in the thread below — the project supervisor reads it and decides. "
-        f"Details: {escalation_url(base_url, facts.id)}"
+        f"Details: {escalation_url(base_url, facts.id, unavailable_notice=dashboard_notice)}"
     )
     lines.append(f"-# escalation `{facts.id}` · {marker_for(dedup_key)}")
     return _clamp("\n".join(lines))
@@ -138,6 +144,7 @@ def render_resolved_root(
     facts: EscalationFacts,
     *,
     base_url: str,
+    dashboard_notice: str = "",
     dedup_key: str,
 ) -> str:
     """The root edited into its terminal state — deliberately mention-free."""
@@ -151,12 +158,16 @@ def render_resolved_root(
     ]
     if facts.terminal_outcome:
         lines.append(f"**Outcome:** {_one_line(facts.terminal_outcome)}")
-    lines.append(f"No reply is needed here. Details: {escalation_url(base_url, facts.id)}")
+    lines.append(
+        f"No reply is needed here. Details: {escalation_url(base_url, facts.id, unavailable_notice=dashboard_notice)}"
+    )
     lines.append(f"-# escalation `{facts.id}` · {marker_for(dedup_key)}")
     return _clamp("\n".join(lines))
 
 
-def render_thread_opener(facts: EscalationFacts, *, base_url: str, dedup_key: str) -> str:
+def render_thread_opener(
+    facts: EscalationFacts, *, base_url: str, dedup_key: str, dashboard_notice: str = ""
+) -> str:
     """First message inside the thread: context, not a second copy of the post."""
     lines = [
         (
@@ -168,7 +179,9 @@ def render_thread_opener(facts: EscalationFacts, *, base_url: str, dedup_key: st
     if facts.investigation:
         lines.append(f"**Investigation so far:** {sanitise(facts.investigation, limit=900)}")
     lines.append(f"**Decision needed:** {_one_line(facts.decision_requested)}")
-    lines.append(f"Dashboard: {escalation_url(base_url, facts.id)}")
+    lines.append(
+        f"Dashboard: {escalation_url(base_url, facts.id, unavailable_notice=dashboard_notice)}"
+    )
     lines.append(f"-# {marker_for(dedup_key)}")
     return _clamp("\n".join(lines))
 
@@ -209,7 +222,9 @@ def render_relay(text: str, *, dedup_key: str) -> str:
     )
 
 
-def render_resolution(facts: EscalationFacts, *, base_url: str, dedup_key: str) -> str:
+def render_resolution(
+    facts: EscalationFacts, *, base_url: str, dedup_key: str, dashboard_notice: str = ""
+) -> str:
     """The in-thread record of what was done, posted before the root is edited."""
     verb = {"resolved": "Resolved", "cancelled": "Cancelled", "stale": "Closed as stale"}.get(
         facts.state, facts.state.title()
@@ -219,7 +234,7 @@ def render_resolution(facts: EscalationFacts, *, base_url: str, dedup_key: str) 
         lines.append(f"**Action and outcome:** {sanitise(facts.terminal_outcome, limit=1200)}")
     lines.append(
         "This incident is closed; a later reply here will not reopen it. "
-        f"Details: {escalation_url(base_url, facts.id)}"
+        f"Details: {escalation_url(base_url, facts.id, unavailable_notice=dashboard_notice)}"
     )
     lines.append(f"-# {marker_for(dedup_key)}")
     return _clamp("\n".join(lines))

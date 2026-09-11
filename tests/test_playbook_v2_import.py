@@ -37,8 +37,6 @@ REVIEWED_FIXTURES = Path("tests/fixtures/playbooks/v2")
 PLAYBOOK_IDS = (
     "default-pipeline",
     "default-assignment-routing",
-    "hierarchical-delivery",
-    "memory-consolidation",
     "pr-merge-sweep",
     "ci-main-sentinel",
     "blocked-task-escalation",

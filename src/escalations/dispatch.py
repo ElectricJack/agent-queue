@@ -103,6 +103,7 @@ class EscalationDeliveryService:
         config: Any,
         lease_owner: str,
         base_url: str = "",
+        dashboard_notice: str = "",
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         on_status: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
@@ -113,6 +114,7 @@ class EscalationDeliveryService:
         self._config = config
         self._lease_owner = lease_owner
         self._base_url = base_url
+        self._dashboard_notice = dashboard_notice
         self._clock = clock
         self._rate_guard = rate_guard
         self._on_status = on_status
@@ -414,12 +416,18 @@ class EscalationDeliveryService:
         marker = marker_for(dedup_key)
         replacement = bool((row.get("payload") or {}).get("replacement"))
         content = (
-            render_resolved_root(facts, base_url=self._base_url, dedup_key=dedup_key)
+            render_resolved_root(
+                facts,
+                base_url=self._base_url,
+                dedup_key=dedup_key,
+                dashboard_notice=self._dashboard_notice,
+            )
             if facts.is_terminal
             else render_root(
                 facts,
                 mentions=self._mentions(),
                 base_url=self._base_url,
+                dashboard_notice=self._dashboard_notice,
                 dedup_key=dedup_key,
                 replacement=replacement,
             )
@@ -542,7 +550,12 @@ class EscalationDeliveryService:
             row,
             report,
             binding=current,
-            content=render_thread_opener(facts, base_url=self._base_url, dedup_key=opener_key),
+            content=render_thread_opener(
+                facts,
+                base_url=self._base_url,
+                dedup_key=opener_key,
+                dashboard_notice=self._dashboard_notice,
+            ),
             dedup_key=opener_key,
             reconcile=opener_may_exist,
         )
@@ -752,7 +765,12 @@ class EscalationDeliveryService:
                 row,
                 report,
                 binding=binding,
-                content=render_resolution(facts, base_url=self._base_url, dedup_key=dedup_key),
+                content=render_resolution(
+                    facts,
+                    base_url=self._base_url,
+                    dedup_key=dedup_key,
+                    dashboard_notice=self._dashboard_notice,
+                ),
                 dedup_key=dedup_key,
             )
             if outcome is not None:
@@ -774,7 +792,10 @@ class EscalationDeliveryService:
                 channel_id=str(binding.channel_id or self._channel_id),
                 root_message_id=str(binding.root_message_id),
                 content=render_resolved_root(
-                    facts, base_url=self._base_url, dedup_key=f"{dedup_key}:root"
+                    facts,
+                    base_url=self._base_url,
+                    dedup_key=f"{dedup_key}:root",
+                    dashboard_notice=self._dashboard_notice,
                 ),
             )
         except TransportMissing as exc:

@@ -88,16 +88,10 @@ def _dedup_key_prefix(artifact: dict, step_id: str) -> str:
 
 
 def test_reviewed_pipeline_artifact_uses_these_prefixes():
-    """The reviewed artifact is the source of truth; the constants must not drift."""
+    """The integration-only pipeline must not recreate retired review keys."""
     artifact = _reviewed_pipeline_artifact()
-    assert (
-        _dedup_key_prefix(artifact, "per-task-review--create-review")
-        == REVIEW_TASK_DEDUP_PREFIX
-    )
-    assert (
-        _dedup_key_prefix(artifact, "per-branch-final-review--ensure-final")
-        == BRANCH_REVIEW_DEDUP_PREFIX
-    )
+    assert "per-task-review--create-review" not in artifact["steps"]
+    assert "per-branch-final-review--ensure-final" not in artifact["steps"]
 
 
 @pytest.mark.parametrize(
@@ -160,14 +154,14 @@ def test_shipped_review_profiles_exist_with_these_ids():
 
 
 def test_reviewed_pipeline_artifact_pins_the_review_profiles():
-    """The reviewed artifact is the source of truth for the profile ids too."""
+    """The integration-only pipeline does not delegate retired review roles."""
     artifact = _reviewed_pipeline_artifact()
     pinned = {
         step["inputs"]["profile_id"]["value"]
         for step in artifact["steps"].values()
         if isinstance(step.get("inputs"), dict) and "profile_id" in step["inputs"]
     }
-    assert set(REVIEW_PROFILE_IDS) <= pinned
+    assert not set(REVIEW_PROFILE_IDS) & pinned
 
 
 @pytest.mark.parametrize(

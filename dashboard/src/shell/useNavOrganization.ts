@@ -1,57 +1,38 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  NAV_ORGANIZATION_CHANGED,
-  NAV_ORGANIZATION_STORAGE_KEY,
-  type NavOrganization,
-  saveOrganization,
-  storedOrganization,
-} from "./navOrganization";
+import { useCallback, useMemo } from "react";
+import { useDashboardDocumentState, type DocumentStatus } from "../api/dashboardStateStore";
+import { parseOrganization, type NavOrganization } from "./navOrganization";
+
+export interface NavOrganizationState {
+  organization: NavOrganization;
+  status: DocumentStatus;
+  error: string | null;
+  update: (next: (org: NavOrganization) => NavOrganization) => Promise<void>;
+}
 
 /**
- * The rail's project organization, kept in sync with localStorage and with any
- * other rail in this document or another tab.
+ * The shared Projects-rail organization (`nav_organization`, one workspace
+ * document on the daemon). It reads the address-keyed query entry that the
+ * bootstrap seeds, a reconnect re-seeds and `dashboard_state.changed.v1`
+ * invalidates, so a folder created, renamed, reordered or assigned on one
+ * dashboard appears on every other open one without a reload.
+ *
+ * Writes go through the shared store's per-address CAS queue: each is an
+ * operation over the current value, re-applied to the server's document on a
+ * revision conflict instead of overwriting another dashboard.
  */
-export function useNavOrganization(): {
-  organization: NavOrganization;
-  update: (next: (org: NavOrganization) => NavOrganization) => void;
-} {
-  const [organization, setOrganization] = useState<NavOrganization>(storedOrganization);
-  // Written by the state updater, flushed after commit: saving notifies every
-  // other rail synchronously, which must not happen during a render.
-  const pending = useRef<NavOrganization | null>(null);
-
-  useEffect(() => {
-    const reread = () =>
-      setOrganization((current) => {
-        const stored = storedOrganization();
-        return JSON.stringify(stored) === JSON.stringify(current) ? current : stored;
-      });
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === null || event.key === NAV_ORGANIZATION_STORAGE_KEY) reread();
-    };
-    window.addEventListener(NAV_ORGANIZATION_CHANGED, reread);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(NAV_ORGANIZATION_CHANGED, reread);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
-
-  useEffect(() => {
-    const next = pending.current;
-    if (!next) return;
-    pending.current = null;
-    saveOrganization(next);
-  });
-
-  const update = useCallback((next: (org: NavOrganization) => NavOrganization) => {
-    setOrganization((current) => {
-      const updated = next(current);
-      if (updated === current) return current;
-      pending.current = updated;
-      return updated;
-    });
-  }, []);
-
-  return { organization, update };
+export function useNavOrganization(): NavOrganizationState {
+  const document = useDashboardDocumentState("nav_organization");
+  const organization = useMemo(() => parseOrganization(document.value), [document.value]);
+  const { update: updateDocument } = document;
+  // The rail's handlers fire and forget. A failed write is not rethrown: the
+  // store has already put the server's document back on screen, and `error`
+  // says why.
+  const update = useCallback(
+    (next: (org: NavOrganization) => NavOrganization) =>
+      updateDocument((value) => next(parseOrganization(value))).catch(() => undefined),
+    [updateDocument],
+  );
+  const error = document.error?.message
+    ?? (document.status === "unavailable" ? "Project organization is unavailable" : null);
+  return { organization, status: document.status, error, update };
 }

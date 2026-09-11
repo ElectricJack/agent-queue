@@ -48,6 +48,7 @@ def build_digest(
     project_ids: frozenset[str] | None = None,
     categories: frozenset[str] | None = None,
     dashboard_url: str = "",
+    dashboard_notice: str = "",
     max_chars: int = MAX_CHARS,
     max_highlights: int = MAX_HIGHLIGHTS,
 ) -> DigestResult:
@@ -70,6 +71,7 @@ def build_digest(
         inputs.window,
         project_names=inputs.project_names,
         dashboard_url=dashboard_url,
+        dashboard_notice=dashboard_notice,
         open_escalations=inputs.open_escalations,
         max_chars=max_chars,
         max_highlights=max_highlights,

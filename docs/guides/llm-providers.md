@@ -196,20 +196,14 @@ reads — there is nothing to enable. Claude publishes no local equivalent, so
 the only way to learn what the subscription has left is to ask the CLI, on a
 timer, from a playbook.
 
-The playbook ships as vault markdown but is **not active until an operator
-activates it** — only `default-assignment-routing` is reconciled active at
-startup ([`src/playbooks/required.py`](../../src/playbooks/required.py)). Its
-source is
+The daemon reconciles the reviewed `provider-usage-probe` bundle as a required
+system activation at startup, so a configured Claude account starts receiving
+readings without an operator action. Set `usage_probe_enabled: false` to opt
+out; that disables subprocess launches while leaving the last verified reading
+honestly visible as it becomes stale. Its source is
 [`src/prompts/default_playbooks/provider-usage-probe.md`](../../src/prompts/default_playbooks/provider-usage-probe.md),
-seeded to `~/.agent-queue/vault/system/playbooks/`, and a reviewed bundle for
-it lives at `tests/fixtures/playbooks/v2/provider-usage-probe/`. Import and
-activate it the way you would any V2 playbook:
-
-```bash
-aq playbook v2-import --help      # import one approved review bundle
-aq playbook activate --help       # activate one validated artifact hash
-aq playbook list                  # confirm provider-usage-probe is active
-```
+seeded to `~/.agent-queue/vault/system/playbooks/`, and its reviewed bundle is
+shipped under `src/prompts/reviewed_playbooks/provider-usage-probe/`.
 
 The relevant settings, with their shipped defaults:
 
@@ -338,7 +332,7 @@ sweep, along with the analytics flush.
 | Steps return `budget_exceeded` with no tokens spent | The step sets `max_total_tokens` and the adapter does not report usage | Use a reporting provider, or drop `max_total_tokens` |
 | A class edit did nothing | The file failed to parse, so the previous entry is still in memory | `aq doctor --check intelligence_classes.parse`, then `aq system reload-config` |
 | Requests go to the wrong vendor | Anthropic's fixed credential order matched something in the environment (Vertex, then Bedrock, then key, then OAuth) | Unset the stray variable, or set the one you want higher in the order |
-| The Claude quota card never appears | The probe playbook is not active, the CLI is missing, or the account is API-key billed | `aq doctor --check providers.claude_usage` names which |
+| The Claude quota card never appears | The CLI is missing, the account is API-key billed, or the probe was disabled | `aq doctor --check providers.claude_usage` names which |
 | The Claude card froze | The `/usage` wording moved and the parser reads nothing | The doctor check says so; a human updates the regex in [`src/providers/claude_usage.py`](../../src/providers/claude_usage.py) |
 | A Codex card is hours old | No Codex session has run since | Nothing. The card says `stale` because it is, and that is the honest state |
 | `aq costs` totals $0.00 | `pricing:` is empty, which is the shipped default | [Add your rates](#give-the-cost-rollup-some-prices) |

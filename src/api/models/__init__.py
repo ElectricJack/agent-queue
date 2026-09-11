@@ -46,10 +46,10 @@ class TaskBrief(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def get_all_response_models() -> dict[str, type[BaseModel]]:
-    """Collect RESPONSE_MODELS from every category module."""
+def _category_modules() -> tuple[object, ...]:
     from src.api.models import (
         agent,
+        dashboard,
         digest,
         discord,
         escalation,
@@ -70,10 +70,41 @@ def get_all_response_models() -> dict[str, type[BaseModel]]:
         task,
     )
 
+    return (
+        task,
+        project,
+        project_onboarding,
+        agent,
+        dashboard,
+        git,
+        memory,
+        files,
+        system,
+        plugin,
+        mcp,
+        playbook,
+        playbook_v2,
+        session,
+        gate,
+        message,
+        discord,
+        digest,
+        escalation,
+        graph,
+    )
+
+
+def get_all_response_models() -> dict[str, type[BaseModel]]:
+    """Collect RESPONSE_MODELS from every category module."""
     merged: dict[str, type[BaseModel]] = {}
-    for mod in (
-        task, project, project_onboarding, agent, git, memory, files, system,
-        plugin, mcp, playbook, playbook_v2, session, gate, message, discord, digest, escalation, graph,
-    ):
+    for mod in _category_modules():
         merged.update(mod.RESPONSE_MODELS)
+    return merged
+
+
+def get_all_request_models() -> dict[str, object]:
+    """Collect explicit request-model overrides for commands with nested types."""
+    merged: dict[str, object] = {}
+    for mod in _category_modules():
+        merged.update(getattr(mod, "REQUEST_MODELS", {}))
     return merged

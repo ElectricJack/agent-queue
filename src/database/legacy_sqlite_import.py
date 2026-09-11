@@ -28,6 +28,8 @@ from src.database.tables import (
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    dashboard_state_documents,
+    development_deliveries,
     digest_windows,
     escalation_actions,
     escalation_deliveries,
@@ -149,6 +151,7 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    dashboard_state_documents,
     agent_questions,
     subagent_events,
     metrics_samples,
@@ -221,6 +224,7 @@ _ORDERED_TABLES = [
     # --- Hierarchical integration trains (topologically sorted by FK; no
     # --- pre-existing table references any of these and none is self-referential)
     # No FK dependencies
+    development_deliveries,
     integration_batches,
     integration_branch_owners,
     integration_candidate_revisions,

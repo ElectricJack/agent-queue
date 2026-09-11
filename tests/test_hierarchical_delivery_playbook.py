@@ -14,7 +14,6 @@ from src.playbooks.definition import DecisionStep, TerminalStep, load_definition
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors.base import EngineServices
 from src.profiles.capabilities import CapabilityPolicy
-from src.vault import ensure_default_playbooks
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -26,27 +25,11 @@ from src.database.tables import tasks
 from src.models import AgentProfile, Project, TaskStatus
 
 
-FIXTURE = Path("tests/fixtures/playbooks/v2/hierarchical-delivery/artifact.json")
-SOURCE = Path("src/prompts/default_playbooks/hierarchical-delivery.md")
+FIXTURE = Path("tests/fixtures/playbooks/historical-v2/hierarchical-delivery/artifact.json")
 
 
 def _artifact():
     return load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-
-
-def test_hierarchy_source_is_seeded_write_if_absent_and_remains_disabled(tmp_path):
-    first = ensure_default_playbooks(str(tmp_path))
-    installed = tmp_path / "vault/system/playbooks/hierarchical-delivery.md"
-
-    assert "hierarchical-delivery.md" in first["created"]
-    assert installed.read_bytes() == SOURCE.read_bytes()
-    installed.write_text("operator-owned\n", encoding="utf-8")
-
-    second = ensure_default_playbooks(str(tmp_path))
-
-    assert "hierarchical-delivery.md" in second["skipped"]
-    assert installed.read_text(encoding="utf-8") == "operator-owned\n"
-    assert "enabled: false" in SOURCE.read_text(encoding="utf-8")
 
 
 def test_reviewed_hierarchy_routes_lifecycle_without_invented_success():

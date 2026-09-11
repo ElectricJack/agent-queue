@@ -76,10 +76,13 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "escalation_list",
     "escalation_update",
     "explain_task",
+    "formula_list",
+    "formula_show",
     "gate_list",
     "get_schema",
     "get_task",
     "integration_status",
+    "integration_resolve_candidate_member",
     "list_intelligence_classes",
     "list_projects",
     "list_profiles",
@@ -91,6 +94,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "pool_status",
     "prime",
     "project_ready",
+    "pr_merge",
     "question_answer",
     "question_escalate",
     "question_list",
@@ -104,12 +108,14 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "task_comments",
     "task_handoff",
     "task_heartbeat",
+    "task_claim",
     "task_recover",
     "task_route",
     "task_set",
     "task_show"
   ],
   "plugin_tools": [
+    "git_diff",
     "count_project_memory_files",
     "memory_save",
     "memory_search",
@@ -174,6 +180,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   A task's description or agent affinity is not an execution constraint.
   If the requested worker is unavailable, keep the requirement; do not
   substitute a lighter worker or claim that routing implies execution.
+- **Never route work to yourself.** The supervisor profile is control-plane
+  only and cannot execute queued tasks. When omitting `--profile`, AQ selects
+  the configured eligible worker default; fix that default rather than trying
+  `--profile supervisor`.
 - **Attach spec references.** Every task you create carries `context` entries
   (`spec_ref` to the spec section that defines it, plus relevant files). A
   task an agent cannot understand from its own prompt is a task you wrote

@@ -7,7 +7,8 @@ import { RightSurfaceProvider, useRightSurface } from "./useRightSurface";
 import { ShortcutsProvider, useShortcut } from "./hotkeys/useShortcuts";
 import CheatSheetModal from "./hotkeys/CheatSheetModal";
 import { useShellPaneStore } from "../panes/store";
-import { ActionRegistryProvider } from "./palette/registerActions";
+import { ActionRegistryProvider, useRegisterAction } from "./palette/registerActions";
+import { useShellPreferences } from "./useShellPreferences";
 import { PaletteStateProvider } from "./palette/paletteState";
 import { Palette } from "./palette/Palette";
 import { useAgentPushBridge } from "../panes/agentPush";
@@ -110,10 +111,30 @@ function useSectionJumps() {
   return pending;
 }
 
+/**
+ * Publishes the user's theme preference on the root element (the shell is
+ * styled dark today; a theme stylesheet or selector keys off `data-theme`) and
+ * offers resetting every shell preference to its default from the palette.
+ */
+function useShellPreferenceControls() {
+  const { prefs, reset } = useShellPreferences();
+  useEffect(() => {
+    document.documentElement.dataset.theme = prefs.theme;
+  }, [prefs.theme]);
+  useRegisterAction({
+    id: "shell.reset-preferences",
+    label: "Reset shell preferences",
+    section: "Preferences",
+    keywords: ["defaults", "layout", "theme", "width"],
+    run: () => void reset(),
+  });
+}
+
 function ShellBody() {
   useAgentPushBridge();
   usePaneSurfaceBridge();
   useOpenDrawerParam();
+  useShellPreferenceControls();
   const gotoPending = useSectionJumps();
   const [cheat, setCheat] = useState(false);
   const pane = useShellPaneStore();

@@ -3,6 +3,7 @@ import { useRightSurface } from "./useRightSurface";
 import { useShellPaneStore } from "../panes/store";
 import { useAllOpenGates } from "../api/hooks";
 import { usePaletteState } from "./palette/paletteState";
+import { useShellPreferences } from "./useShellPreferences";
 
 export default function TopBar() {
   const { kind, setKind } = useRightSurface();
@@ -10,6 +11,19 @@ export default function TopBar() {
   const palette = usePaletteState();
   const { data: gates } = useAllOpenGates();
   const humanGates = (gates ?? []).filter((g) => g.gate_type === "human").length;
+  const preferences = useShellPreferences();
+  const preferenceProblem =
+    preferences.status === "unavailable"
+      ? {
+          label: "Preferences unavailable",
+          detail: "The daemon's preference store did not answer; defaults are shown and changes are not saved.",
+        }
+      : preferences.error
+        ? {
+            label: "Preference not saved",
+            detail: "The daemon did not accept the last change; the saved value is shown.",
+          }
+        : null;
 
   const toggleDrawer = () => {
     if (kind === "drawer") {
@@ -26,6 +40,12 @@ export default function TopBar() {
         <span className="text-sm font-semibold">Agent Q</span>
       </div>
       <div className="flex items-center gap-1">
+        {preferenceProblem && (
+          <span role="status" title={preferenceProblem.detail}
+            className="rounded px-2 py-1 text-[11px] text-amber-300">
+            {preferenceProblem.label}
+          </span>
+        )}
         <button
           onClick={palette.toggle}
           className="rounded p-2 text-gray-400 hover:bg-gray-800"

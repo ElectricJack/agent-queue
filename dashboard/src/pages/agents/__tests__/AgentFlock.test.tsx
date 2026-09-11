@@ -6,6 +6,7 @@ import LeftRail from "../../../shell/LeftRail";
 import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
+import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../testUtils/terminal")).FitAddonMock }));
@@ -42,6 +43,8 @@ let rollup: {
   spawned_total: number; complete: boolean;
 } | null = null;
 const clients: QueryClient[] = [];
+// One daemon per test, shared by every dashboard the test renders.
+let dashboardState = createFakeDashboardStateServer();
 
 function Location() {
   const location = useLocation();
@@ -53,17 +56,19 @@ function renderFlock(initial: string | { pathname: string; search?: string; stat
   clients.push(client);
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[initial]}>
-        <LeftRail />
-        {workspace && <Routes><Route path="/agents" element={<AgentWorkspace />} /><Route path="*" element={null} /></Routes>}
-        <Location />
-      </MemoryRouter>
+      <TestDashboardState server={dashboardState}>
+        <MemoryRouter initialEntries={[initial]}>
+          <LeftRail />
+          {workspace && <Routes><Route path="/agents" element={<AgentWorkspace />} /><Route path="*" element={null} /></Routes>}
+          <Location />
+        </MemoryRouter>
+      </TestDashboardState>
     </QueryClientProvider>,
   );
 }
 
 beforeEach(() => {
-  localStorage.clear();
+  dashboardState = createFakeDashboardStateServer();
   vi.clearAllMocks();
   TerminalSocketMock.instances = [];
   TerminalMock.instances = [];
@@ -258,9 +263,13 @@ describe("Agent flock sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: /agent flock/i }));
     expect(screen.queryByRole("button", { name: /open supervisor/i })).not.toBeInTheDocument();
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=a");
+    await waitFor(() => expect(dashboardState.document("shell_preferences").value)
+      .toMatchObject({ agent_flock_collapsed: true }));
     view.unmount();
+    // The collapse is the user's server preference, so a fresh dashboard gets it too.
     renderFlock("/agents?agent=a");
-    expect(screen.getByRole("button", { name: /agent flock/i })).toHaveAttribute("aria-expanded", "false");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /agent flock/i })).toHaveAttribute("aria-expanded", "false"));
     expect(screen.queryByRole("button", { name: /open supervisor/i })).not.toBeInTheDocument();
   });
 

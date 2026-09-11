@@ -211,7 +211,7 @@ def _create_task_graph(
     "profile_id",
     default=None,
     help=(
-        "Agent profile id; omit to use the project default. "
+        "Worker profile id; supervisor is control-plane only. Omit to use the project default. "
         "Run `aq agent list-profiles` for the ids this install has "
         "(shipped worker ladder: worker-<tier>-<level>-<provider>)."
     ),
@@ -250,14 +250,14 @@ def _create_task_graph(
     default=None,
     help=(
         "Create under this container (single task or graph). Worker filings default "
-        "to the held task's own parent, so a sibling under the same epic needs no flag"
+        "to the task currently held by the worker, so emergent work blocks its source"
     ),
 )
 @click.option(
     "--root",
     is_flag=True,
     default=False,
-    help="For a worker filing: create at project root instead of beside the held task",
+    help="For a worker filing: create at project root instead of under the held task",
 )
 @click.option(
     "--reason",

@@ -140,7 +140,7 @@ export default function ProjectRoots() {
         setServerError(otherErrors.length ? otherErrors.join("\n") : null);
         return;
       }
-      setNotice(result.requires_restart ? "Saved. Restart required to apply this change." : "Project roots saved.");
+      setNotice("Project roots saved. Available when you add a project.");
     } catch (error) {
       setServerError(error instanceof Error ? error.message : String(error));
     }

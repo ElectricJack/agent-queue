@@ -18,10 +18,7 @@ semantic bodies, without an LLM:
   class is not explicit, write the route.  Spec:
   ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
 
-``memory-consolidation`` uses a deterministic, reviewer-authored semantic body
-that preserves the prose as the LLM prompt and adds the typed envelope:
-triggers, profiles, budgets, tool ceilings, output schemas, and terminal
-transitions. ``pr-merge-sweep`` follows the same reviewed-artifact approach as
+``pr-merge-sweep`` follows the same reviewed-artifact approach as
 ``default-pipeline``.
 
 Usage::
@@ -56,11 +53,8 @@ FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
-    "memory-consolidation": "src/prompts/default_playbooks/memory-consolidation.md",
     "pr-merge-sweep": "src/prompts/project_playbooks/agent-queue/pr-merge-sweep.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
-    "hierarchical-delivery": "src/prompts/default_playbooks/hierarchical-delivery.md",
-    "root-integration-train": "src/prompts/default_playbooks/root-integration-train.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
 }
@@ -205,14 +199,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
             rule_id, ordinal = PR_MERGE_SWEEP_STEP_PROSE[step_id]
             step["source"] = index.step_ref(rule_id, ordinal)
         return remapped
-    if playbook_id == "memory-consolidation":
-        return _memory_consolidation_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
-    if playbook_id == "hierarchical-delivery":
-        return _recorded_semantic_body(playbook_id)
-    if playbook_id == "root-integration-train":
-        return _root_integration_train_body(source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "provider-usage-probe":
@@ -807,76 +795,6 @@ def _terminal(rule: str, outcome: str, source_ref: dict[str, Any]) -> dict[str, 
         "title": outcome.title(),
         "source": source_ref,
         "outcome": outcome,
-    }
-
-
-def _memory_consolidation_body(source: PlaybookSource) -> dict[str, Any]:
-    rule = "memory-consolidation"
-    run = "memory-consolidation--run"
-    done = "memory-consolidation--done"
-    failed = "memory-consolidation--failed"
-    source_ref = _source_ref_for_heading(source, "# Memory Consolidation")
-    terminal_ref = _source_ref_for_heading(source, "## Step 3 — No-op terminal")
-    return {
-        "rules": [
-            {
-                "id": rule,
-                "name": "Consolidate project memories",
-                "trigger": {"event_type": "timer.24h"},
-                "entry_step": run,
-                "source": source_ref,
-            }
-        ],
-        "steps": {
-            run: {
-                "type": "llm",
-                "rule": rule,
-                "title": "Select projects and create consolidation tasks",
-                "source": source_ref,
-                "profile_id": "supervisor",
-                "prompt": {"type": "literal", "value": source.body.strip()},
-                "inputs": {
-                    "tick_time": {"type": "event_ref", "path": "tick_time"},
-                    "interval": {"type": "event_ref", "path": "interval"},
-                },
-                "output_schema": {
-                    "type": "object",
-                    "properties": {
-                        "tasks_created": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "project_id": {"type": "string"},
-                                    "task_id": {"type": "string"},
-                                },
-                                "required": ["project_id", "task_id"],
-                                "additionalProperties": False,
-                            },
-                        }
-                    },
-                    "required": ["tasks_created"],
-                    "additionalProperties": False,
-                },
-                "budget": {
-                    "max_calls": 50,
-                    "max_output_tokens": 4096,
-                    "max_total_tokens": 65536,
-                    "timeout_seconds": 900,
-                },
-                "tool_use": {
-                    "enabled": True,
-                    "aq_commands": ["list_projects", "render_prompt", "create_task"],
-                    "plugin_tools": [
-                        "read_project_memory_file",
-                        "count_project_memory_files",
-                    ],
-                },
-                "transitions": _llm_transitions(done, failed),
-            },
-            done: _terminal(rule, "completed", terminal_ref),
-            failed: _terminal(rule, "failed", terminal_ref),
-        },
     }
 
 

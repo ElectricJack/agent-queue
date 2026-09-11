@@ -10,20 +10,14 @@ import AgentAvatarLayer from "../AgentAvatarLayer";
 import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
 import { edgeStyleForType } from "./edgeStyle";
-import { useExpandedTaskIds } from "../useGraphHierarchy";
+import { useGraphState } from "../useGraphHierarchy";
 import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
 import { CELL, fromPx, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
-import { DENSITY_STORAGE_KEY, DEFAULT_DENSITY, storedDensity, type LayoutDensity } from "./density";
-import {
-  GRAPH_POSITIONS_CHANGED,
-  PLAYBOOK_POSITION_SCOPE,
-  saveGraphPosition,
-  storedGraphPositions,
-  type ManualPositions,
-} from "./manualPositions";
+import { DEFAULT_DENSITY, type LayoutDensity } from "./density";
+import { PLAYBOOK_POSITION_SCOPE } from "./manualPositions";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
   type SelectableTask, type TaskNodeData,
@@ -213,7 +207,7 @@ function Inner(props: LayoutCanvasProps) {
     projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
-  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
+  const { expandedTaskIds, expandedFinishedIds, toggleExpanded, density, setDensity, manualPositions, saveGraphPosition } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -223,8 +217,6 @@ function Inner(props: LayoutCanvasProps) {
   const [layers, setLayers] = useState<ReadonlyMap<string, LayerElements>>(new Map());
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [kbFocusId, setKbFocusId] = useState<string | null>(null);
-  const [density, setDensity] = useState<LayoutDensity>(storedDensity);
-  const [manualPositions, setManualPositions] = useState<ManualPositions>(storedGraphPositions);
   const [dragPositions, setDragPositions] = useState<Record<string, { x: number; y: number }>>({});
   const frame = useRef<number | null>(null);
   const trailing = useRef<Viewport | null>(null);
@@ -240,12 +232,6 @@ function Inner(props: LayoutCanvasProps) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => () => { if (frame.current !== null) cancelAnimationFrame(frame.current); }, []);
-  useEffect(() => { window.localStorage.setItem(DENSITY_STORAGE_KEY, density); }, [density]);
-  useEffect(() => {
-    const reload = () => setManualPositions(storedGraphPositions());
-    window.addEventListener(GRAPH_POSITIONS_CHANGED, reload);
-    return () => window.removeEventListener(GRAPH_POSITIONS_CHANGED, reload);
-  }, []);
 
   // Leading-edge rAF throttle: the first move of a gesture lands immediately
   // (so the level of detail reacts at once) and the rest coalesce into the
@@ -366,7 +352,7 @@ function Inner(props: LayoutCanvasProps) {
         sawLoading: false,
       };
     }
-    toggleExpanded(id, finished);
+    toggleExpanded(id, finished, node ? positionScope(node) ?? undefined : undefined);
   }, [getViewport, toggleExpanded]);
 
   const handlers = useMemo<FlowHandlers>(
@@ -446,14 +432,14 @@ function Inner(props: LayoutCanvasProps) {
     const world = fromPx(node.position, density);
     const offsetY = scope === PLAYBOOK_POSITION_SCOPE ? 0 : (offsets.get(scope) ?? 0);
     const position = { x: snapPosition(world.x), y: snapPosition(world.y - offsetY) };
-    setManualPositions(saveGraphPosition(scope, node.id, position));
+    saveGraphPosition(scope, node.id, position);
     setDragPositions((current) => {
       if (!(node.id in current)) return current;
       const next = { ...current };
       delete next[node.id];
       return next;
     });
-  }, [density, offsets]);
+  }, [density, offsets, saveGraphPosition]);
   const edges = useMemo(
     () => projectIds.flatMap((pid) => layers.get(pid)?.edges ?? []),
     [projectIds, layers],

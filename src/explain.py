@@ -40,7 +40,8 @@ class Reason(TypedDict):
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
     ``no_compatible_agent``, ``awaiting_intelligence_route``,
     ``workspace_locked``, ``budget_exhausted``, ``rate_limited``,
-    ``held``, ``project_paused``, ``awaiting_pool_session``, ``pool_disabled``.  The last two are
+    ``held``, ``project_paused``, ``awaiting_pool_session``, ``pool_disabled``, and
+    ``supervisor_profile``. The last three are
     the pull path's answer and *replaces* the capacity codes rather than
     joining them: a ``lifecycle: pool`` profile's tasks never reach the push
     scheduler, so ``no_idle_agent`` would describe a queue this task is not

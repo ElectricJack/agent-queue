@@ -36,6 +36,7 @@ from src.database.migration_guard import DAEMON, set_process_scope
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
 from src.runtimes import default_registry
+from src.remote_links import resolve_remote_link_base
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
@@ -313,15 +314,17 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             from src.escalations import EscalationDeliveryService
 
             handler = orch._get_handler()
-            base_url = (
+            local_base_url = (
                 config.health_check.base_url or f"http://localhost:{config.health_check.port}"
             )
+            remote_link_base = resolve_remote_link_base(local_base_url)
             orch.escalation_delivery = EscalationDeliveryService(
                 orch.db,
                 DiscordEscalationTransport(bot, config),
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
-                base_url=base_url,
+                base_url=remote_link_base.url,
+                dashboard_notice=remote_link_base.unavailable_notice,
                 rate_guard=_bot_rate_guard(bot),
                 on_status=(
                     handler.emit_escalation_delivery_status if handler is not None else None
@@ -340,7 +343,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 DiscordEscalationTransport(bot, config),
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
-                base_url=base_url,
+                base_url=remote_link_base.url,
+                dashboard_notice=remote_link_base.unavailable_notice,
                 rate_guard=_bot_rate_guard(bot),
                 escalation_priority=orch.db.count_due_escalation_deliveries,
             )

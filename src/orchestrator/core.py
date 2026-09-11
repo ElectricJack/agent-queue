@@ -3236,6 +3236,14 @@ class Orchestrator(
         # Route freshness is resolved before agent supply. This prevents an
         # unspecified task from creating a worker from a profile default.
         task_snapshot = await self.db.list_active_tasks()
+        from src.profiles.task_execution import is_supervisor_profile
+
+        # Historical supervisor-routed rows remain visible to task explain and
+        # can be repaired with task_route, but a named supervisor must never
+        # turn into a queued worker or consume a scheduler/reconciler slot.
+        task_snapshot = [
+            task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
+        ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY]
         )
