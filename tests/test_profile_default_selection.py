@@ -21,28 +21,28 @@ def test_prefers_standard_high_pool_over_legacy_defaults():
     ) == "standard-high-codex"
 
 
-def test_prefers_enabled_standard_medium_pool_from_profile_metadata():
+def test_prefers_enabled_standard_high_pool_from_profile_metadata():
     assert select_default_profile_id(
         [
             AgentProfile(
-                id="standard-medium-claude", name="Standard Claude", harness="claude",
-                default_class="standard-medium", lifecycle="pool",
+                id="standard-high-claude", name="Standard Claude", harness="claude",
+                default_class="standard-high", lifecycle="pool",
             ),
             AgentProfile(
                 id="worker-standard-medium-claude", name="Legacy", harness="claude",
-                default_class="standard-medium", lifecycle="task",
+                default_class="standard-high", lifecycle="task",
             ),
             "standard-high-codex",
         ]
-    ) == "standard-medium-claude"
+    ) == "standard-high-claude"
 
 
 def test_disabled_pool_is_not_selected_from_metadata():
     assert select_default_profile_id(
         [
             AgentProfile(
-                id="standard-medium-codex", name="Disabled", harness="codex",
-                default_class="standard-medium", lifecycle="pool", enabled=False,
+                id="standard-high-codex-pool", name="Disabled", harness="codex",
+                default_class="standard-high", lifecycle="pool", enabled=False,
             ),
             "standard-high-codex",
         ]

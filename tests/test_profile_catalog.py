@@ -91,25 +91,21 @@ def test_refresh_skips_every_retired_catalog_id(tmp_path):
     refreshed = refresh_catalog_profiles(tmp_path, _probes("codex"))
 
     assert refreshed["created"] == []
-    assert set(refreshed["retired"]) == {
-        "worker-fast-medium-codex",
-        "worker-standard-medium-codex",
-        "worker-deep-high-codex",
-    }
+    assert set(refreshed["retired"]) == {"worker-codex"}
 
 
 def test_refresh_does_not_shadow_an_existing_harness_class_route(tmp_path):
-    existing = tmp_path / "vault" / "agent-types" / "standard-medium-codex" / "profile.md"
+    existing = tmp_path / "vault" / "agent-types" / "astra-high-codex" / "profile.md"
     existing.parent.mkdir(parents=True)
     existing.write_text(
         """---
-id: standard-medium-codex
-name: Standard Codex
+id: astra-high-codex
+name: Astra Codex
 ---
 
 ## Config
 ```json
-{"harness": "codex", "default_class": "standard-medium", "lifecycle": "pool"}
+{"harness": "codex", "default_class": "astra-high", "lifecycle": "pool"}
 ```
 """,
         encoding="utf-8",
@@ -117,16 +113,17 @@ name: Standard Codex
 
     refreshed = refresh_catalog_profiles(tmp_path, _probes("codex"))
 
-    assert "worker-standard-medium-codex" in refreshed["duplicates"]
-    assert not (tmp_path / "vault" / "agent-types" / "worker-standard-medium-codex").exists()
-    assert set(refreshed["created"]) == {"worker-fast-medium-codex", "worker-deep-high-codex"}
+    assert "worker-codex" in refreshed["duplicates"]
+    assert not (tmp_path / "vault" / "agent-types" / "worker-codex").exists()
+    assert refreshed["created"] == []
 
 
-def test_materialized_non_claude_profile_describes_its_own_harness(tmp_path):
+def test_seeded_codex_worker_describes_its_own_harness(tmp_path):
+    """Each provider's worker is a shipped file, so nothing describes a sibling."""
     refresh_catalog_profiles(tmp_path, _probes("codex"))
-    text = (tmp_path / "vault" / "agent-types" / "worker-standard-medium-codex" / "profile.md").read_text()
-    assert "concrete Codex model" in text
-    assert "A Codex or Gemini equivalent" not in text
+    text = (tmp_path / "vault" / "agent-types" / "worker-codex" / "profile.md").read_text()
+    assert '"harness": "codex"' in text
+    assert "The Claude equivalent is `worker-claude`" in text
 
 
 def test_default_selector_excludes_catalog_profiles_not_in_activation_record():
