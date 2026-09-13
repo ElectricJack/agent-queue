@@ -125,11 +125,27 @@ def _is_customized(path: Path) -> bool:
     return False
 
 
+def _id_names_the_class(profile_id: str, class_id: str) -> bool:
+    """True when the profile's id declares which class it exists to serve.
+
+    The convention is ``<class>-<harness>`` — ``standard-medium-claude`` —
+    used by both the derived rungs and the profiles operators wrote by hand
+    before derivation existed.
+    """
+    return profile_id.startswith(f"{class_id}-")
+
+
 def repoint_vault_profile_classes(vault_root: str | Path) -> list[tuple[str, str, str]]:
     """Rewrite every profile ``default_class`` that names a retired class.
 
     Returns one ``(path, from, to)`` per rewritten file.  A profile whose class
     still exists is untouched, so re-running this is a no-op.
+
+    A profile whose **id names the retired class** is deliberately *not*
+    repointed: turning ``standard-medium-claude`` into a ``standard-high``
+    worker would leave an id that lies about what it runs, and on a vault that
+    already has ``standard-high-claude`` it would silently duplicate a route.
+    Those are disabled by :func:`retire_orphaned_worker_rungs` instead.
     """
     changed: list[tuple[str, str, str]] = []
     for path in Path(vault_root).glob("**/agent-types/**/profile.md"):
@@ -150,6 +166,10 @@ def repoint_vault_profile_classes(vault_root: str | Path) -> list[tuple[str, str
         current = str(config.get("default_class") or "").strip()
         replacement = RETIRED_CLASS_REPLACEMENTS.get(current)
         if not replacement:
+            continue
+        # ``agent-types/<id>/profile.md`` — the directory is the id, which is
+        # what ``src.profiles.sync.derive_profile_id`` uses too.
+        if _id_names_the_class(path.parent.name, current):
             continue
         # Rewrite the literal rather than re-serializing the block: a profile
         # is operator-owned markdown, and reformatting its config would show
@@ -205,11 +225,15 @@ def retire_orphaned_worker_rungs(data_dir: str | Path) -> list[tuple[str, str]]:
         class_id = str(parsed.config.get("default_class") or "").strip()
         if not class_id or class_id in known:
             continue
-        if not parsed.frontmatter.extends:
+        profile_id = parsed.frontmatter.id or path.parent.name
+        if not parsed.frontmatter.extends and not _id_names_the_class(profile_id, class_id):
+            # An operator's own profile that merely happens to name a vanished
+            # class is theirs; say so and leave it.  One whose *id* names the
+            # class exists to serve it, derived or not, and is disabled below.
             logger.warning(
                 "profile %s names intelligence class '%s', which no longer exists; "
                 "it is operator-authored, so it is left as it is",
-                parsed.frontmatter.id or path.parent.name, class_id,
+                profile_id, class_id,
             )
             continue
         if parsed.config.get("enabled") is False:
@@ -223,7 +247,7 @@ def retire_orphaned_worker_rungs(data_dir: str | Path) -> list[tuple[str, str]]:
         logger.info(
             "worker rung %s disabled: its intelligence class '%s' no longer exists. "
             "Running work finishes; delete the file once it is idle.",
-            parsed.frontmatter.id or path.parent.name, class_id,
+            profile_id, class_id,
         )
     return disabled
 

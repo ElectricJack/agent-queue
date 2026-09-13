@@ -199,3 +199,24 @@ def test_an_empty_class_vault_disables_nothing(tmp_path):
     _write_rung(tmp_path, "standard-high-claude", "standard-high")
 
     assert retire_orphaned_worker_rungs(tmp_path) == []
+
+
+def test_a_profile_whose_id_names_the_retired_class_is_disabled_not_repointed(tmp_path):
+    """``standard-medium-claude`` must not quietly become a standard-high worker."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    named = _write_rung(tmp_path, "standard-medium-claude", "standard-medium", extends=None)
+    plain = _write_profile(tmp_path, "house-worker", "standard-medium")
+
+    result = retire_vault_intelligence_classes(tmp_path)
+
+    # The id says what it is for, and that no longer exists.
+    named_config = parse_profile(named.read_text(encoding="utf-8")).config
+    assert named_config["default_class"] == "standard-medium"
+    assert named_config["enabled"] is False
+    # A profile that merely uses the class is repointed as before.
+    assert [(row[1], row[2]) for row in result.repointed_profiles] == [
+        ("standard-medium", "standard-high")
+    ]
+    assert parse_profile(plain.read_text(encoding="utf-8")).config["default_class"] == (
+        "standard-high"
+    )
