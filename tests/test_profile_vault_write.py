@@ -706,21 +706,20 @@ name: Namespaced Worker
         profile = await handler.db.get_profile("test-reviewer")
         assert profile is None
 
-    async def test_delete_catalog_codex_profile_records_a_tombstone(self, handler):
-        """Generated provider siblings must not return on the next install."""
+    async def test_delete_derived_rung_records_a_tombstone(self, handler):
+        """A deleted rung must not be re-derived on the next start or install."""
         from src.profiles.retired_defaults import is_retired
 
         await handler.execute(
-            "create_profile",
-            {"id": "worker-standard-medium-codex", "name": "Catalog Codex"},
+            "create_profile", {"id": "astra-high-codex", "name": "Codex Astra High"},
         )
 
         result = await handler.execute(
-            "delete_profile", {"profile_id": "worker-standard-medium-codex"},
+            "delete_profile", {"profile_id": "astra-high-codex"},
         )
 
         assert result["retired"] is True
-        assert is_retired(handler.config.data_dir, "worker-standard-medium-codex")
+        assert is_retired(handler.config.data_dir, "astra-high-codex")
 
     async def test_duplicate_detection_via_vault(self, handler):
         """Creating a profile with an existing vault file should fail."""

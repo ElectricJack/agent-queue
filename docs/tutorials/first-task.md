@@ -27,15 +27,15 @@ invents no filesystem location, so `project_roots` starts empty and
 example](#a-realistic-disposable-example) below configures one; that is the
 step the installer is asking for.
 
-Choose one active worker profile for this demonstration, and let it run at a
-cheap class: pass `--intelligence-class fast-low` rather than letting a
-one-file hello-world change run at `deep-high`. The example below uses Codex
-only when it appears as active on *your* daemon; otherwise substitute the
-active `worker-<provider>` profile shown by the command.
+Choose one cheap active worker profile for this demonstration: a rung is a
+class, so `fast-low-<harness>` is the one to use for a one-file hello-world
+change rather than `deep-high-<harness>`. The example below uses Codex only
+when it appears as active on *your* daemon; otherwise substitute a `fast-low-`
+profile shown by the command.
 
 ```bash
 aq agent list-profiles
-export AQ_FIRST_PROFILE=worker-codex
+export AQ_FIRST_PROFILE=fast-low-codex
 aq agent check-profile --profile-id "$AQ_FIRST_PROFILE"
 ```
 

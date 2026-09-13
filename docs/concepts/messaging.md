@@ -165,7 +165,7 @@ canonical human recipient is `user:dashboard`.
 |---|---|---|---|
 | `session` | `supervisor-agent-queue`, or a session name | Nudged into the live terminal; a supervisor address is woken if asleep | Yes — after 24 h it is re-addressed to the sender |
 | `task` | a task id | Rides into the next `aq prime` for that task | No — it waits for the next session |
-| `profile` | a profile id such as `worker-claude` | Consumed by `aq inbox` / prime; the engine never touches a session for it | No |
+| `profile` | a profile id such as `standard-high-claude` | Consumed by `aq inbox` / prime; the engine never touches a session for it | No |
 | `user` | `dashboard` | Marked delivered immediately and emitted as `message.sent` for the dashboard chat | No |
 
 Senders (`from_kind`) are `session`, `user` or `system`. A message whose

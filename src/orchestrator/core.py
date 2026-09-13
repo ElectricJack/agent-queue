@@ -2021,6 +2021,22 @@ class Orchestrator(
         except Exception:
             logger.warning("Vault intelligence-class retirement failed", exc_info=True)
 
+        # Workers are derived per (intelligence class x harness): adding a
+        # class file makes its rungs launchable without waiting for the next
+        # ``aq install``.  Seeding only ever writes a missing stub, so this is
+        # a no-op on a steady-state vault.
+        from src.profiles.catalog import derive_rungs_from_vault
+
+        try:
+            derived = derive_rungs_from_vault(self.config.data_dir)
+            if derived["created"]:
+                logger.info(
+                    "Derived %d worker rung(s): %s",
+                    len(derived["created"]), ", ".join(sorted(derived["created"])),
+                )
+        except Exception:
+            logger.warning("Worker rung derivation failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would

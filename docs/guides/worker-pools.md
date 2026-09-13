@@ -75,9 +75,9 @@ Two commands, and **the order is not optional**: `pool scale` refuses a
 profile that is not already `lifecycle: pool`.
 
 ```bash
-aq pool set-lifecycle --profile-id worker-claude --lifecycle pool
+aq pool set-lifecycle --profile-id standard-high-claude --lifecycle pool
 
-aq pool scale --profile-id worker-claude --min 0 --max 3
+aq pool scale --profile-id standard-high-claude --min 0 --max 3
 ```
 
 Both write the **system** profile:
@@ -197,8 +197,8 @@ When a tier runs low on remaining usage — a fable-level pool, say — turn it
 off rather than unpicking its definition:
 
 ```bash
-aq pool set-enabled --profile-id worker-codex --no-enabled
-aq pool set-enabled --profile-id worker-codex --enabled
+aq pool set-enabled --profile-id astra-high-codex --no-enabled
+aq pool set-enabled --profile-id astra-high-codex --enabled
 ```
 
 The switch lives in the system profile's `## Config` (so it survives the next
@@ -343,11 +343,11 @@ the placement summary — one compact token per project,
 ```
                                 Worker pools
  Profile                      Min Max Min/pp Desired Idle Busy Start Drain Ready Projects
- worker-claude                  0   3      0       3    1    2     0     0     4 agent-queue:1i/1b  api:1b
- worker-codex                   0   1      1       1    1    0     0     0     0 agent-queue:1i
+ standard-high-claude           0   3      0       3    1    2     0     0     4 agent-queue:1i/1b  api:1b
+ astra-high-codex               0   1      1       1    1    0     0     0     0 agent-queue:1i
 
 Quarantined
-  worker-codex in api — quarantined until 14:02:11 — harness 'codex' is not registered
+  astra-high-codex in api — quarantined until 14:02:11 — harness 'codex' is not registered
 ```
 
 Quarantine is a property of a `(project, profile)` pair, never of the pool, so
@@ -397,7 +397,7 @@ of RAM. So the fleet shrinks, and says so:
 Decide the fleet size you actually want and set it:
 
 ```bash
-aq pool scale --profile-id worker-claude --max 12
+aq pool scale --profile-id standard-high-claude --max 12
 ```
 
 There is no `--fix`: choosing a fleet size is an operator decision. The notice
@@ -650,7 +650,7 @@ scaling policy. Live-session and ownership checks still prevent unsafe deletion.
 The rollback is one command per profile and needs no restart:
 
 ```bash
-aq pool set-lifecycle --profile-id worker-claude --lifecycle task
+aq pool set-lifecycle --profile-id standard-high-claude --lifecycle task
 ```
 
 What it does, in order:
@@ -722,8 +722,8 @@ least-loaded profile first and watch a full tick before continuing.
 
 ```bash
 P=agent-queue
-aq pool set-lifecycle --profile-id worker-codex --lifecycle pool
-aq pool scale         --profile-id worker-codex --min 0 --max 1
+aq pool set-lifecycle --profile-id astra-high-codex --lifecycle pool
+aq pool scale         --profile-id astra-high-codex --min 0 --max 1
 aq pool status --project-id $P
 ```
 
@@ -775,21 +775,22 @@ numbers for the *whole* fleet, not per project — see §3a before reusing them.
 
 | Profile | Harness | `min` | `max` |
 |---|---|---|---|
-| `worker-claude` | claude | 0 | 6 |
-| `worker-codex` | codex | 0 | 3 |
+| `standard-high-claude` | claude | 0 | 4 |
+| `deep-high-claude` | claude | 0 | 2 |
+| `astra-high-codex` | codex | 0 | 3 |
+| `fast-low-claude` | claude | 0 | 2 |
 
-The maxima sum to 9 against a cap of 8 — deliberate over-subscription, so a
-quiet profile's headroom is usable by a busy one (§3).
+The maxima sum to 11 against a cap of 8 — deliberate over-subscription, so a
+quiet pool's headroom is usable by a busy one (§3).
 
-Note what a pool can and cannot separate now that there is one worker per
-harness: bounds are per *profile*, so they cap how many Claude and how many
-Codex sessions run, and **not** how many expensive ones do. Capability is
-per-task (`intelligence_class`), so a fleet that wants "at most two `deep-high`
-runs at a time" needs a second profile of its own — see §7c.
+Bounds are per rung, and a rung *is* a class, so this is also the spend
+control: `deep-high-claude` at `max 2` is "at most two Fable sessions at a
+time", independent of how much cheap work is running. Rungs you do not size
+stay on `lifecycle: task` and take push work as before.
 
 ```bash
 P=agent-queue
-for spec in worker-codex:3 worker-claude:6; do
+for spec in fast-low-claude:2 deep-high-claude:2 astra-high-codex:3 standard-high-claude:4; do
   profile=${spec%:*}; max=${spec#*:}
   aq pool set-lifecycle --profile-id "$profile" --lifecycle pool
   aq pool scale         --profile-id "$profile" --min 0 --max "$max"
@@ -822,32 +823,76 @@ are not the ones you want.
 
 ---
 
-## 7b. Migrating a vault seeded before the one-worker-per-harness cutover
+## 7b. Workers are derived, not authored
 
-Shipped worker profiles have been through two shapes. They were first
-provider-implicit — `worker-fast`, `worker-standard`, `worker-deep`, all of
-them silently on the `claude` harness. They then stated provider *and* level in
-the id (`worker-<tier>-<level>-<provider>`), which produced a ladder of up to
-tier x level x provider near-identical profiles.
+A pool session is welded at launch to one intelligence class — it runs a CLI
+whose model cannot change between claims — so pull-mode work genuinely needs
+one worker identity per class. Hand-written, that was a ladder of
+`worker-<tier>-<level>-<provider>` files: the same role, rules and
+capabilities copied once per rung, drifting the moment anyone edited one.
 
-The ladder is retired. A task's `intelligence_class` already picks the model
-and reasoning level for the run, so a second profile differing only in its
-`default_class` bought nothing. There is now **one worker per harness**:
+They are now a **cross-product**, derived at startup and by `aq install`:
 
-| Old ids | New id | Display name | Fallback class |
-|---|---|---|---|
-| `worker-fast`, `worker-<tier>-<level>-claude` | `worker-claude` | Claude · Worker | `standard-high` |
-| `worker-<tier>-<level>-codex` | `worker-codex` | Codex · Worker | `astra-high` |
+```
+(intelligence class) x (harness whose CLI is installed and authenticated)
+```
 
-The fallback class applies only to a task that names no class of its own.
-There is no shipped Gemini worker: every class from the deep tier upward
-deliberately has no `google` slice, so a Gemini worker's only usable classes
-would be the two cheap ones. A `gemini`-harness profile is still perfectly
-authorable by hand (§7c).
+A class yields a rung for a harness only when it has a slice naming a model
+for that harness's provider — so `astra-*`, which is OpenAI-only, produces no
+Claude rung, and nothing from the deep tier upward produces a Gemini one. That
+is not a rule in the code; it is what the class files say.
 
-**Nothing renames itself.** An existing vault keeps its old directories, and
-startup seeding is write-if-absent, so an upgrade adds the three new ids
-alongside the three old ones. Migrate deliberately:
+| Piece | Id | What it holds |
+|---|---|---|
+| Template | `worker-claude`, `worker-codex` | role, rules, capabilities, harness, workspaces |
+| Rung | `<class>-<harness>`, e.g. `deep-high-claude` | its class, and its pool state |
+
+A rung is a stub of about ten lines:
+
+```markdown
+---
+id: deep-high-claude
+name: "Claude · Deep · High"
+extends: worker-claude
+---
+
+## Config
+```json
+{"default_class": "deep-high", "lifecycle": "task"}
+```
+```
+
+`extends` is resolved on the way into the database, so **editing a template
+changes every rung of that harness at once, with nothing to regenerate**. The
+only thing that ever rewrites a rung file is a change to its own state —
+`aq pool scale` writes the bounds there, never into the template.
+
+A template carries `template: true`: it is never synced to `agent_profiles`
+and nothing can be routed to it. The runnable workers are exactly the rungs.
+
+**Adding a class.** Drop a file in `vault/intelligence-classes/` and its rungs
+appear at the next daemon start (or `aq install`) — one per harness whose
+provider it has a slice for.
+
+**Removing a class.** Its rungs are *disabled*, not deleted: a rung can own a
+running pool session, an in-flight task and an agent row, and removing the
+profile under a live worker orphans all three. Work in flight finishes; the
+rung takes nothing new. Delete the directory once it is idle.
+
+**Deleting a rung you do not want.** `aq agent delete-profile` tombstones the
+id, and derivation skips a tombstoned id forever after — use that rather than
+`rm -rf`, which the next start simply undoes.
+
+### Migrating a vault seeded before this
+
+Shipped worker profiles have been through two earlier shapes:
+provider-implicit (`worker-fast`, `worker-standard`, `worker-deep`, all
+silently on `claude`), then provider-explicit
+(`worker-<tier>-<level>-<provider>`). Neither renames itself.
+
+An existing vault keeps its old directories, and seeding is write-if-absent,
+so an upgrade adds the derived rungs alongside whatever you already had.
+Migrate deliberately:
 
 **1. See what you have.**
 
@@ -861,16 +906,16 @@ at the old profile, and deleting it clears those references.
 
 ```bash
 aq task list --project agent-queue --status READY   # find the ones still pinned
-aq task route --task-id <task-id> --profile-id worker-claude
-aq project set agent-queue default-profile worker-claude
+aq task route --task-id <task-id> --profile-id standard-high-claude
+aq project set agent-queue default-profile standard-high-claude
 ```
 
 **3. Move pool bounds across.** Bounds live on the profile itself, so they do
 not follow a rename — set them on the new id and stand the old one down:
 
 ```bash
-aq pool set-lifecycle --profile-id worker-claude --lifecycle pool
-aq pool scale         --profile-id worker-claude --min 0 --max 2
+aq pool set-lifecycle --profile-id standard-high-claude --lifecycle pool
+aq pool scale         --profile-id standard-high-claude --min 0 --max 2
 aq pool set-lifecycle --profile-id worker-standard-medium-claude --lifecycle task
 ```
 
@@ -896,24 +941,6 @@ aq system list-intelligence-classes
 ls ~/.agent-queue/vault/intelligence-classes/*.retired   # your old bytes
 ```
 
-### 7c. Keeping a capability-specific pool
-
-One worker per harness means pool bounds no longer cap a *tier*. If you want a
-standing limit on expensive runs — "at most two `deep-high` sessions" — copy
-the shipped worker, give it an id that says so, and pin its class:
-
-```bash
-cp -r ~/.agent-queue/vault/agent-types/worker-claude \
-      ~/.agent-queue/vault/agent-types/worker-deep-claude
-# edit id/name in the frontmatter and set "default_class": "deep-high"
-aq pool set-lifecycle --profile-id worker-deep-claude --lifecycle pool
-aq pool scale         --profile-id worker-deep-claude --min 0 --max 2
-```
-
-That is a deliberate fleet policy rather than a shipped default, and a task
-still has to be routed to it (`aq task route --profile-id worker-deep-claude`)
-— a class on the task alone does not choose a profile.
-
 ### Retiring a shipped default
 
 Deleting one of the *current* shipped defaults is the case that used to
@@ -922,13 +949,14 @@ write-if-absent, so "no `vault/agent-types/<id>/`" read as *fresh install* and
 the profile came straight back — along with any pool that had been sized
 against it.
 
-`aq agent delete-profile` now records a shipped id in
-`~/.agent-queue/vault/agent-types/.retired-defaults`, and seeding skips every
-id listed there:
+`aq agent delete-profile` now records the id in
+`~/.agent-queue/vault/agent-types/.retired-defaults`, and both seeding **and
+rung derivation** skip every id listed there — so a rung you delete stays
+deleted rather than reappearing at the next start:
 
 ```bash
-aq agent delete-profile --profile-id worker-codex \
-    --reason "this box has no Codex login"
+aq agent delete-profile --profile-id astra-low-codex \
+    --reason "we never run Astra at low effort"
 ```
 
 The response carries `retired: true`, and `aq agent profile-drift` reports the
@@ -940,7 +968,7 @@ and syncs the restored profile to the database without waiting for the vault
 watcher:
 
 ```bash
-aq agent profile-reseed --profile-id worker-codex
+aq agent profile-reseed --profile-id astra-low-codex
 ```
 
 The tombstone is a small JSON file (`{"version": 1, "retired": {...}}`) that

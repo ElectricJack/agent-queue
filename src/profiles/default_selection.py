@@ -27,15 +27,18 @@ reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 1. an enabled pool profile with ``default_class: standard-high``
 2. ``standard-high-codex``
 3. ``standard-high-claude``
-4. ``worker-claude``
-5. ``worker-codex``
-6. ``claude-opus``
-7. ``claude-sonnet``
-8. the retired ladder's ids (legacy compatibility)
-9. any remaining general-purpose profile, alphabetically by id
-10. any remaining non-supervisor profile, alphabetically by id
+4. ``claude-opus``
+5. ``claude-sonnet``
+6. the retired worker ladder's ids (legacy compatibility)
+7. any remaining general-purpose profile, alphabetically by id
+8. any remaining non-supervisor profile, alphabetically by id
 
-Steps 9 and 10 differ only in whether special-purpose profiles (reviewer,
+The ``standard-high-<harness>`` ids are the derived rungs of the ordinary
+implementation class (:mod:`src.profiles.catalog`).  ``worker-claude`` and
+``worker-codex`` are deliberately absent: they are *templates*, never synced
+to ``agent_profiles``, so nothing can be routed to one.
+
+Steps 7 and 8 differ only in whether special-purpose profiles (reviewer,
 planner, triage, …) are eligible: they are a poor default because they
 are written for one pipeline stage, but they beat returning ``None`` and
 stalling the queue.
@@ -58,10 +61,6 @@ PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
     # The ordinary factory route is the standard-high pool.
     "standard-high-codex",
     "standard-high-claude",
-    # The generic workers: one per harness, with the level of a run supplied
-    # by the task's intelligence class rather than by the profile.
-    "worker-claude",
-    "worker-codex",
     "claude-opus",
     "claude-sonnet",
     "worker-standard-medium-claude",

@@ -114,6 +114,16 @@ class ProfileFrontmatter:
     id: str = ""
     name: str = ""
     tags: list[str] = field(default_factory=list)
+    #: Id of the profile this one inherits its prompt and capabilities from.
+    #: One level only — a template may not itself extend another, so there is
+    #: no chain to resolve and no cycle to detect.  See
+    #: :mod:`src.profiles.inheritance`.
+    extends: str = ""
+    #: A template is a source for :data:`extends`, not a profile in its own
+    #: right: it is never synced to ``agent_profiles`` and nothing can be
+    #: routed to it.  Shipped worker templates carry the prompt, capabilities
+    #: and harness that every derived rung of that harness shares.
+    template: bool = False
     # Preserve any extra frontmatter keys for forward-compatibility.
     extra: dict = field(default_factory=dict)
 
@@ -264,6 +274,8 @@ def parse_frontmatter(text: str) -> tuple[ProfileFrontmatter, str]:
         id=str(data.pop("id", "")),
         name=str(data.pop("name", "")),
         tags=data.pop("tags", []),
+        extends=str(data.pop("extends", "") or "").strip(),
+        template=data.pop("template", False) is True,
         extra=data,
     )
     if not isinstance(fm.tags, list):

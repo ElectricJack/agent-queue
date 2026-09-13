@@ -5060,3 +5060,93 @@ name: {agent_type.title()} Agent
         with caplog.at_level(logging.WARNING, logger="src.profiles.sync"):
             found = _find_profile_files(str(vault))
         assert found == []
+
+
+# ---------------------------------------------------------------------------
+# Derived worker rungs on the real sync path (src/profiles/inheritance.py)
+# ---------------------------------------------------------------------------
+
+
+class TestDerivedRungSync:
+    """A rung is a stub on disk and a complete profile in the database."""
+
+    def _vault(self, tmp_path):
+        from src.profiles.catalog import derive_rungs_from_vault
+        from src.vault import ensure_default_intelligence_classes, ensure_default_profiles
+
+        ensure_default_intelligence_classes(str(tmp_path))
+        ensure_default_profiles(str(tmp_path))
+        derive_rungs_from_vault(str(tmp_path))
+        return tmp_path / "vault" / "agent-types"
+
+    @pytest.mark.asyncio
+    async def test_a_rung_lands_in_the_database_fully_resolved(self, db, tmp_path):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "deep-high-claude" / "profile.md"
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        assert result.success, result.errors
+        profile = await db.get_profile("deep-high-claude")
+        # Its own state...
+        assert profile.default_class == "deep-high"
+        assert profile.lifecycle == "task"
+        # ...and everything inherited from the template.
+        assert profile.harness == "claude"
+        assert "Bash" in profile.harness_tools
+        assert "task_close" in profile.aq_commands
+
+    @pytest.mark.asyncio
+    async def test_editing_the_template_changes_every_rung_with_no_regeneration(
+        self, db, tmp_path
+    ):
+        agent_types = self._vault(tmp_path)
+        template = agent_types / "worker-claude" / "profile.md"
+        template.write_text(
+            template.read_text(encoding="utf-8").replace('"Bash",', '"Bash",\n    "Agent",'),
+            encoding="utf-8",
+        )
+
+        for rung in ("deep-high-claude", "fast-low-claude"):
+            path = agent_types / rung / "profile.md"
+            assert (await sync_profile_text_to_db(
+                path.read_text(encoding="utf-8"), db, source_path=str(path)
+            )).success
+            assert "Agent" in (await db.get_profile(rung)).harness_tools
+
+    @pytest.mark.asyncio
+    async def test_a_template_never_becomes_a_profile_row(self, db, tmp_path):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "worker-claude" / "profile.md"
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        # Reported as a success with no action: a scan must not log it as a
+        # failure on every boot, and nothing may be routed to it.
+        assert result.success is True
+        assert result.action == "none"
+        assert await db.get_profile("worker-claude") is None
+
+    @pytest.mark.asyncio
+    async def test_a_stub_whose_template_is_gone_does_not_overwrite_the_live_row(
+        self, db, tmp_path
+    ):
+        agent_types = self._vault(tmp_path)
+        path = agent_types / "deep-high-claude" / "profile.md"
+        assert (await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )).success
+        (agent_types / "worker-claude" / "profile.md").unlink()
+
+        result = await sync_profile_text_to_db(
+            path.read_text(encoding="utf-8"), db, source_path=str(path)
+        )
+
+        assert result.success is False
+        assert any("to extend" in error for error in result.errors)
+        # The previously synced row is still whole.
+        assert (await db.get_profile("deep-high-claude")).harness == "claude"

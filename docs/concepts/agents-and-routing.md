@@ -59,10 +59,15 @@ Two more that this page leans on:
   out of the queue until something writes a route.
 
 > **Note.** A profile is *not* a model and a class is *not* a profile. The
-> shipped profile `worker-claude` names the harness `claude` and the fallback
-> class `standard-high`; the class file names the model. Two files and one task
-> column, three separate jobs. There is one worker per harness, not one per
-> tier — the *level* of a run comes from the task's class.
+> worker profile `standard-high-claude` names the harness `claude` and the
+> class `standard-high`; the class file names the model. Two files and one
+> task column, three separate jobs.
+>
+> Worker profiles are **derived**, not authored: one rung per (class x
+> harness), generated from a `worker-<harness>` template that holds the role,
+> rules and capabilities they share. A rung is a stub carrying only its class
+> and its pool state, and it inherits the rest through `extends` — see
+> [worker pools §7b](../guides/worker-pools.md).
 
 ## A realistic example
 
@@ -94,7 +99,8 @@ thinking: xhigh
 ```
 ````
 
-Read the profile that says which CLI runs, and what it is allowed to do:
+Read the template that says which CLI runs, and what it is allowed to do.
+Every Claude rung inherits this; only the class differs between them:
 
 ````bash
 sed -n '/## Config/,/^```$/p' src/profiles/defaults/worker-claude/profile.md
@@ -114,12 +120,13 @@ sed -n '/## Config/,/^```$/p' src/profiles/defaults/worker-claude/profile.md
 ````
 
 Now put them together for one task. Say the routing playbook decided the task
-needs `deep-high` and picked the profile above:
+needs `deep-high` and routed it to the `deep-high-claude` rung:
 
-1. The profile's `harness` is `claude`, so the provider is `anthropic`
-   ([`_infer_provider_from_harness`](../../src/sessions/spec.py)).
-2. The task's class `deep-high` beats the profile's `default_class`
-   `standard-high` ([`_resolve_class_config`](../../src/sessions/spec.py)).
+1. The rung inherits `harness: claude` from its template, so the provider is
+   `anthropic` ([`_infer_provider_from_harness`](../../src/sessions/spec.py)).
+2. Its own `## Config` overrides `default_class` with `deep-high`, and the
+   task's class — also `deep-high` — agrees
+   ([`_resolve_class_config`](../../src/sessions/spec.py)).
 3. That class's `anthropic` slice supplies `model: claude-fable-5` and
    `thinking: xhigh`.
 4. The session launches the `claude` CLI with that model and that thinking
@@ -192,7 +199,7 @@ fields:
 
 ```bash
 aq task edit --task-id demo.4 --intelligence-class deep-high
-aq task edit --task-id demo.4 --profile-id worker-claude
+aq task edit --task-id demo.4 --profile-id deep-high-claude
 ```
 
 A pinned class makes the next routing run take the `explicit` path — the class
@@ -273,13 +280,13 @@ or the project's `max_concurrent_agents` rather than deleting workers.
 
 A task with no profile of its own falls back to its project's
 `default_profile_id`. A project with none of those gets one picked
-deterministically, in this order: `worker-claude`, `worker-codex`,
-`claude-opus`, `claude-sonnet`, the ids of the retired worker ladder, then the
-alphabetically first general-purpose profile, then the alphabetically first
-non-supervisor profile ([`src/profiles/default_selection.py`](../../src/profiles/default_selection.py)).
-The shipped workers are named explicitly because plain alphabetical order used
-to pick the most expensive rung of the ladder out of a vault seeded before it
-was retired.
+deterministically: an enabled `standard-high` pool profile first, then
+`standard-high-codex`, `standard-high-claude`, `claude-opus`, `claude-sonnet`,
+the ids of the retired worker ladder, then the alphabetically first
+general-purpose profile, then the alphabetically first non-supervisor profile
+([`src/profiles/default_selection.py`](../../src/profiles/default_selection.py)).
+The standard rungs are named explicitly because plain alphabetical order used
+to pick the most expensive rung, quietly making it every project's default.
 
 ## Inputs and outputs
 

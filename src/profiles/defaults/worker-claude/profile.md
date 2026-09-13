@@ -1,8 +1,9 @@
 ---
 id: worker-claude
-name: "Claude · Worker"
-description: "The generic coding worker on the Claude harness. Capability comes from the task's intelligence class, not from the profile — there is one worker per harness, not one per tier."
-tags: [profile, agent-type, shipped, worker, generic]
+name: "Claude · Worker (template)"
+description: "Template for every Claude worker rung: the role, rules and capabilities shared by each derived <class>-claude profile. Not a profile in its own right — nothing is routed to a template."
+template: true
+tags: [profile, agent-type, shipped, worker, template]
 ---
 
 # Claude · Worker
@@ -21,13 +22,18 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
-This profile is provider-explicit: its id names the harness it runs on, and
-nothing else. Capability is *not* baked into the profile — a task's
-`intelligence_class` selects the model and reasoning level for the run, and
-the `default_class` below is only the fallback for a task that names none.
-That is why there is one worker per harness rather than a tier x level ladder
-of near-identical profiles. The Codex equivalent is `worker-codex`; repointing
-this profile's harness would make its id stop describing what actually runs.
+This file is a **template**, not a profile. Nothing is routed to it and it is
+never synced to `agent_profiles`. The workers that actually run are derived
+from it — one `<class>-claude` rung per intelligence class with an `anthropic`
+slice — and each rung is a stub that inherits everything below through
+`extends: worker-claude`. Editing this file changes every Claude rung at once,
+with nothing to regenerate.
+
+The `## Config` here is the shared part: the harness that runs, the workspace
+it needs, the lifecycle a rung starts on. A rung overrides `default_class`
+with its own class, and `aq pool scale` writes that rung's bounds into the
+rung, never here. `default_class` below is only what a rung inherits if it
+somehow declares none.
 
 ## Config
 ```json

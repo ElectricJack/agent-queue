@@ -559,7 +559,7 @@ def test_only_authenticated_providers_are_activated_for_routing(tmp_path):
     refresh_catalog_profiles(host.aq_home, _probes(host))
 
     active = active_catalog_profile_ids(host.aq_home)
-    assert "worker-standard-medium-claude" in active
+    assert "standard-high-claude" in active
     # Installed but never signed in, and not installed at all: neither routes.
     assert not [profile for profile in active if profile.endswith("-codex")]
     assert not [profile for profile in active if profile.endswith("-gemini")]
@@ -576,15 +576,15 @@ def test_a_later_login_activates_its_profiles_without_replacing_an_edited_one(tm
     host.set_env(AQ_DB_PASSWORD="existing-password")
     host.sign_in("claude")
     refresh_catalog_profiles(host.aq_home, _probes(host))
-    edited = host.aq_home / "vault" / "agent-types" / "worker-deep-high-claude" / "profile.md"
+    edited = host.aq_home / "vault" / "agent-types" / "deep-high-claude" / "profile.md"
     edited.write_text(edited.read_text(encoding="utf-8") + "\nOperator note.\n", encoding="utf-8")
 
     host.sign_in("codex")  # the human finishes the second login and reruns
     refresh_catalog_profiles(host.aq_home, _probes(host))
 
     active = active_catalog_profile_ids(host.aq_home)
-    assert "worker-deep-high-codex" in active
-    assert "worker-deep-high-claude" in active
+    assert "deep-high-codex" in active
+    assert "deep-high-claude" in active
     assert edited.read_text(encoding="utf-8").endswith("Operator note.\n")
 
 
@@ -633,9 +633,9 @@ def test_the_cli_run_writes_the_activation_record_and_reports_unready_providers(
     activation = json.loads(
         (host.aq_home / "vault" / "profile-activation.json").read_text(encoding="utf-8")
     )
-    assert activation["profiles"]["worker-standard-medium-claude"]["active"] is True
-    assert activation["profiles"]["worker-standard-medium-codex"]["active"] is False
-    assert activation["profiles"]["worker-standard-medium-codex"]["remediation"]
+    assert activation["profiles"]["standard-high-claude"]["active"] is True
+    assert activation["profiles"]["standard-high-codex"]["active"] is False
+    assert activation["profiles"]["standard-high-codex"]["remediation"]
 
 
 # ---------------------------------------------------------------------------

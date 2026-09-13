@@ -51,33 +51,77 @@ Three deliberate properties:
 answer to "this needs less thought" is a cheaper *model*, not a cheaper
 setting on an expensive one.
 
-## 3. One worker per harness
+## 3. Workers are derived, not authored
 
-`worker-{fast,standard,deep}-{off,low,medium,high}-{claude,codex,gemini}` is
-replaced by two shipped profiles:
+A pool session is welded at launch to one class: `pools.py` stamps
+`session.intelligence_class` from the profile's `default_class`,
+`_pool_claim_routing` refuses to claim anything else, and that becomes a hard
+`tasks.intelligence_class = …` predicate in the claim frontier. A running CLI
+cannot change model between claims, so pull-mode work needs one worker
+identity **per class** — the ladder was the mechanism for that, not decoration.
 
-| Profile | Harness | Fallback class |
+So the ladder is not deleted; it is *generated*. `src/profiles/catalog.py`
+produces the cross-product:
+
+```
+(intelligence class) x (harness whose CLI is installed and authenticated)
+```
+
+A class yields a rung for a harness only when it has a slice naming a model
+for that harness's provider, so the two provider rules from §2 stop being code
+and become consequences of the class files: `astra-*` yields no Claude rung,
+nothing above `standard` yields a Gemini one. Gemini ships no template, so it
+derives nothing at all; adding one entry to `WORKER_PROVIDERS` plus a
+`worker-gemini` template is the whole change if that is ever wanted.
+
+| Piece | Id | Holds |
 |---|---|---|
-| `worker-claude` | `claude` | `standard-high` |
-| `worker-codex` | `codex` | `astra-high` |
+| Template | `worker-claude`, `worker-codex` | role, rules, capabilities, harness, workspaces |
+| Rung | `<class>-<harness>` | its class, and its pool state |
 
-`default_class` is only the fallback for a task that names no class of its
-own. There is no shipped Gemini worker: its only usable classes would be the
-two cheap ones, which is not a default anyone wants; a `gemini`-harness
-profile remains authorable by hand.
+### Why a stub rather than a regenerated file
 
-`src/profiles/catalog.py` still gates each on its provider's login probe, so a
-box with no Codex CLI never gets `worker-codex` seeded or routed to.
-`src/profiles/default_selection.py` prefers `worker-claude`, then
-`worker-codex`, and keeps the retired ladder's ids as trailing entries so a
-vault seeded before this change still resolves to a worker.
+A rung is ~10 lines: frontmatter, `extends: worker-<harness>`, and a `## Config`
+holding `default_class` plus whatever `aq pool scale` has written. Everything
+else resolves through `src/profiles/inheritance.py` on the way into the
+database.
 
-### Consequence for pools
+The alternative — regenerate the whole file and merge the operator's state
+forward — was rejected: a crash between read and write loses pool bounds, and
+every template edit becomes a 130-line rewrite times N rungs of churn in a
+version-controlled vault. With a stub there is nothing to regenerate when a
+template changes, and the only thing that ever rewrites a rung is a change to
+its own state.
 
-Pool bounds are per profile, so they now cap *harness* concurrency, not
-*capability* concurrency. A fleet that wants a standing limit on expensive
-runs authors a profile of its own pinned to a class — `docs/guides/worker-pools.md`
-§7c is that recipe.
+Inheritance is deliberately **one level**: a template may not extend another.
+That makes "where does this value come from" a lookup rather than a search,
+and cycles impossible by construction. Config merges key by key; prompt
+sections and the capability namespaces are whole-value, because a partial
+capability merge is how a copied profile silently loses a command it needs.
+
+A template carries `template: true` and is skipped by `sync_profile_to_db`, so
+it never reaches `agent_profiles` and nothing can be routed to it. The
+runnable set is exactly the rungs.
+
+### Lifecycle, seeding and removal
+
+* A fresh rung is `lifecycle: task`, so push behaviour is unchanged until an
+  operator sizes it into a pool. Bounds are then per rung — and a rung is a
+  class, so a pool bound is also a spend ceiling (`deep-high-claude max 2` is
+  "at most two Fable sessions"), which the two-profile shape could not express.
+* `derive_rungs_from_vault` runs at startup (no login probes) so adding a class
+  file yields its rungs without waiting for `aq install`; `aq install` still
+  writes the activation record that gates *routing* eligibility.
+* An activation record naming none of the current rungs is treated as *no
+  evidence* rather than "nothing is eligible" — otherwise an upgrade would
+  leave every project with no default profile until the installer next ran.
+* `aq agent delete-profile` tombstones a rung and derivation skips a tombstoned
+  id, so a deleted rung stays deleted.
+* A class that disappears leaves its rungs **disabled, not deleted**
+  (`retire_orphaned_worker_rungs`): a rung can own a running pool session, an
+  in-flight task and an agent row, and deleting the profile under a live worker
+  orphans all three. An authored (non-`extends`) profile naming a vanished
+  class is the operator's and gets a warning instead.
 
 ## 4. Migrating an existing install
 
@@ -121,6 +165,10 @@ migration runbook is `docs/guides/worker-pools.md` §7b.
   provider coverage, `gpt-6-astra`, and that every `-high` class is `xhigh`.
 * `tests/test_class_retirement.py` covers both halves of the vault migration,
   including idempotence and the customized opt-out.
-* `tests/test_profile_catalog.py` pins one worker per harness and its class.
+* `tests/test_profile_catalog.py` pins the cross-product, the two provider
+  rules as consequences of the class files, the stub shape, and that a stage
+  profile no longer blocks the rung of its own class.
+* `tests/test_profile_inheritance.py` covers the merge, the one-level limit
+  and the missing-template error.
 * `tests/test_codex_fast_classes.py` follows `fast-high` through every launch
   shape now that it means `xhigh`.

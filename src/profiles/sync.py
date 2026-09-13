@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.profiles.capabilities import WILDCARD_CHARS
 from src.models import AgentProfile
+from src.profiles.inheritance import resolve_inheritance
 from src.profiles.parser import (
     ParsedProfile,
     parse_profile,
@@ -60,6 +61,31 @@ logger = logging.getLogger(__name__)
 PROFILE_PATTERNS: list[str] = [
     "agent-types/*/profile.md",
 ]
+
+
+def _template_loader(source_path: str):
+    """Build the ``extends`` resolver for a profile living at *source_path*.
+
+    Templates are siblings: ``agent-types/<template-id>/profile.md`` beside
+    ``agent-types/<rung-id>/profile.md``.  Deriving the directory from the
+    file being synced keeps this working for a temporary vault in a test as
+    well as the real one, and means the sync path needs no config object.
+
+    A profile synced from text with no path (an API write, a test) resolves
+    no template; a stub reaching that path is an authoring error the caller
+    sees as a missing-template error rather than a silent half-profile.
+    """
+
+    def load(template_id: str) -> ParsedProfile | None:
+        if not source_path:
+            return None
+        path = Path(source_path).parent.parent / template_id / "profile.md"
+        try:
+            return parse_profile(path.read_text(encoding="utf-8"))
+        except OSError:
+            return None
+
+    return load
 
 
 def is_retired_scoped_path(rel_path: str) -> bool:
@@ -229,6 +255,28 @@ async def sync_profile_to_db(
             action="none",
             errors=parsed.errors,
         )
+
+    # 1b. A template is a source for ``extends``, not a profile: it has no
+    #     class of its own and nothing may be routed to it, so it never
+    #     reaches ``agent_profiles``.  Reported as a success with no action
+    #     so a scan does not log it as a failure every boot.
+    if parsed.frontmatter.template:
+        return ProfileSyncResult(
+            success=True,
+            action="none",
+            profile_id=parsed.frontmatter.id or fallback_id or "",
+        )
+
+    # 1c. Resolve ``extends`` before anything reads the config: a stub rung
+    #     carries only its class and its pool state, and inherits the role,
+    #     rules, capabilities and harness of its ``worker-<harness>``
+    #     template.  A missing template is an error — installing a worker
+    #     with no capabilities is worse than keeping the previous row.
+    parsed, inheritance_errors = resolve_inheritance(
+        parsed, _template_loader(source_path)
+    )
+    if inheritance_errors:
+        return ProfileSyncResult(success=False, action="none", errors=inheritance_errors)
 
     # 2. Convert parsed profile to AgentProfile-compatible dict.
     profile_dict = parsed_profile_to_agent_profile(parsed)

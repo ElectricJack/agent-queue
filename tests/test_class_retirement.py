@@ -14,6 +14,7 @@ from pathlib import Path
 from src.profiles.class_retirement import (
     RETIRED_CLASS_REPLACEMENTS,
     repoint_vault_profile_classes,
+    retire_orphaned_worker_rungs,
     retire_vault_intelligence_classes,
 )
 from src.profiles.parser import parse_profile
@@ -134,3 +135,67 @@ def test_profiles_are_repointed_before_their_class_file_moves(tmp_path):
 
 def test_missing_vault_is_not_an_error(tmp_path):
     assert retire_vault_intelligence_classes(tmp_path / "nothing-here").retired_files == ()
+
+
+# ---------------------------------------------------------------------------
+# Derived worker rungs whose class has gone (src/profiles/catalog.py)
+# ---------------------------------------------------------------------------
+
+
+def _write_rung(data_dir: Path, profile_id: str, class_id: str, *, extends="worker-claude") -> Path:
+    path = data_dir / "vault" / "agent-types" / profile_id / "profile.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = f"extends: {extends}\n" if extends else ""
+    path.write_text(
+        f"---\nid: {profile_id}\nname: {profile_id}\n{frontmatter}---\n\n"
+        f"# {profile_id}\n\n## Config\n```json\n"
+        f'{{"default_class": "{class_id}", "lifecycle": "task"}}\n```\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_rung_whose_class_is_gone_is_disabled_not_deleted(tmp_path):
+    """It can own a live session and an in-flight task; deleting orphans both."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    gone = _write_rung(tmp_path, "standard-medium-claude", "standard-medium")
+    kept = _write_rung(tmp_path, "deep-high-claude", "deep-high")
+
+    disabled = retire_orphaned_worker_rungs(tmp_path)
+
+    assert [row[1] for row in disabled] == ["standard-medium"]
+    assert gone.is_file()
+    assert parse_profile(gone.read_text(encoding="utf-8")).config["enabled"] is False
+    assert "enabled" not in parse_profile(kept.read_text(encoding="utf-8")).config
+
+
+def test_disabling_an_orphaned_rung_is_idempotent_and_re_disables_a_re_enable(tmp_path):
+    ensure_default_intelligence_classes(str(tmp_path))
+    path = _write_rung(tmp_path, "standard-medium-claude", "standard-medium")
+    assert retire_orphaned_worker_rungs(tmp_path)
+
+    assert retire_orphaned_worker_rungs(tmp_path) == []
+
+    # Turning it back on does not make its class exist: a rung that cannot
+    # resolve a model would only quarantine on launch, so it goes back off.
+    path.write_text(
+        path.read_text(encoding="utf-8").replace('"enabled": false', '"enabled": true'),
+        encoding="utf-8",
+    )
+    assert [row[1] for row in retire_orphaned_worker_rungs(tmp_path)] == ["standard-medium"]
+
+
+def test_an_authored_profile_naming_a_vanished_class_is_left_alone(tmp_path):
+    """Only derived rungs are ours to disable."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    authored = _write_rung(tmp_path, "house-worker", "standard-medium", extends=None)
+
+    assert retire_orphaned_worker_rungs(tmp_path) == []
+    assert "enabled" not in parse_profile(authored.read_text(encoding="utf-8")).config
+
+
+def test_an_empty_class_vault_disables_nothing(tmp_path):
+    """No classes loaded is a broken vault, not proof every class was retired."""
+    _write_rung(tmp_path, "standard-high-claude", "standard-high")
+
+    assert retire_orphaned_worker_rungs(tmp_path) == []

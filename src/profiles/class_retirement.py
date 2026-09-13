@@ -24,6 +24,15 @@ every daemon start.
 
 Tasks, agents and routes that are *pinned* to a retired class live in the
 database, not the vault; alembic revision ``a0000000000f`` repoints those.
+
+The third thing a retired class leaves behind is its **worker rungs**.
+Workers are derived per (class x harness) by :mod:`src.profiles.catalog`, so a
+class that stops existing leaves stubs whose ``default_class`` names nothing.
+:func:`retire_orphaned_worker_rungs` disables those rather than deleting them:
+a rung can own a running pool session, an in-flight task and an agent row, and
+removing the profile under a live worker orphans all three.  ``enabled:
+false`` stops it being sized up or routed to while letting what is already
+running finish; an operator deletes the file once it is idle.
 """
 
 from __future__ import annotations
@@ -34,6 +43,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.profiles.parser import parse_profile, update_config_keys
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +172,62 @@ def repoint_vault_profile_classes(vault_root: str | Path) -> list[tuple[str, str
     return changed
 
 
+def retire_orphaned_worker_rungs(data_dir: str | Path) -> list[tuple[str, str]]:
+    """Disable every derived rung whose class no longer exists.
+
+    Returns one ``(path, class_id)`` per rung disabled.  Idempotent while the
+    rung stays disabled.  A rung an operator re-enables by hand *is* disabled
+    again on the next start, and deliberately so: its class does not exist, so
+    it cannot resolve a model, and leaving it enabled would only produce a
+    worker that quarantines on launch.  Restoring the class is the fix.
+
+    Only *derived* rungs are touched.  An authored profile that happens to
+    name a vanished class is the operator's, and gets a warning instead.
+    """
+    from src.intelligence_classes import load_intelligence_classes
+
+    root = Path(data_dir)
+    known = set(load_intelligence_classes(str(root)))
+    if not known:
+        # No classes loaded at all is a broken or empty vault, not evidence
+        # that every class was retired.  Disabling the whole fleet on that
+        # reading would be the worst possible failure mode.
+        return []
+    disabled: list[tuple[str, str]] = []
+    for path in sorted((root / "vault" / "agent-types").glob("*/profile.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        parsed = parse_profile(text)
+        if not parsed.is_valid:
+            continue
+        class_id = str(parsed.config.get("default_class") or "").strip()
+        if not class_id or class_id in known:
+            continue
+        if not parsed.frontmatter.extends:
+            logger.warning(
+                "profile %s names intelligence class '%s', which no longer exists; "
+                "it is operator-authored, so it is left as it is",
+                parsed.frontmatter.id or path.parent.name, class_id,
+            )
+            continue
+        if parsed.config.get("enabled") is False:
+            continue
+        try:
+            path.write_text(update_config_keys(text, {"enabled": False}), encoding="utf-8")
+        except OSError:
+            logger.warning("Could not disable orphaned worker rung %s", path)
+            continue
+        disabled.append((str(path), class_id))
+        logger.info(
+            "worker rung %s disabled: its intelligence class '%s' no longer exists. "
+            "Running work finishes; delete the file once it is idle.",
+            parsed.frontmatter.id or path.parent.name, class_id,
+        )
+    return disabled
+
+
 def retire_vault_intelligence_classes(data_dir: str | Path) -> ClassRetirementResult:
     """Move retired class files aside and repoint the profiles that used them.
 
@@ -168,6 +235,7 @@ def retire_vault_intelligence_classes(data_dir: str | Path) -> ClassRetirementRe
     whose file has just moved, even if the process dies between the two.
     """
     repointed = repoint_vault_profile_classes(Path(data_dir) / "vault")
+    retire_orphaned_worker_rungs(data_dir)
     root = _classes_root(data_dir)
     if not root.is_dir():
         return ClassRetirementResult(repointed_profiles=tuple(repointed))
@@ -215,5 +283,6 @@ __all__ = [
     "RETIRED_CLASS_REPLACEMENTS",
     "ClassRetirementResult",
     "repoint_vault_profile_classes",
+    "retire_orphaned_worker_rungs",
     "retire_vault_intelligence_classes",
 ]

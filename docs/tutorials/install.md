@@ -390,9 +390,10 @@ failure, retain the redacted JSON result and follow the command reference's
 | A harness login | Lets a selected worker profile run its CLI | `aq agent list-profiles` shows available profiles; `aq agent check-profile <id>` checks one. |
 | A project root (next tutorial) | Limits where AQ can create/link projects | `aq project list-roots` lists the approved roots. |
 
-Shipped worker profiles are provider-explicit — one per harness
-(`worker-claude`, `worker-codex`) — and only the ones whose harness is
-installed *and* authenticated are activated — `aq install` refreshes that eligibility on every
+Worker profiles are *derived*, one per (intelligence class x harness) — the
+`worker-<harness>` templates carry the shared prompt and capabilities, and the
+rungs (`standard-high-claude`, `astra-high-codex`, …) carry the class. Only
+the rungs whose harness is installed *and* authenticated are activated — `aq install` refreshes that eligibility on every
 run, so a default route never points at a provider you do not have.
 
 ## State ownership
