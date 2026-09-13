@@ -112,7 +112,7 @@ aq task show demo.1
 
 ```text
 demo.1  READY  Add a health endpoint
-  profile: worker-standard-medium-claude   class: standard-medium
+  profile: worker-claude   class: standard-high
 ```
 ````
 

@@ -52,7 +52,7 @@ For each PR your task names:
   "harness": "codex",
   "lifecycle": "task",
   "needs_workspace": true,
-  "default_class": "deep-medium",
+  "default_class": "deep-high",
   "workspaces": ["project-repo"]
 }
 ```

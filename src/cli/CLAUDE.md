@@ -116,8 +116,8 @@ by `auto_commands.py`, and hooks were replaced by playbooks (`aq playbook`).
 - Plugin install/update logic lives in `src/plugins/loader.py` (`install_plugin_from_url`) —
   CLI and registry both call it. Don't duplicate that logic here.
 - **Profile ids in help text and examples**: never hard-code a historical id. Shipped worker
-  defaults are `worker-standard-medium-claude`, `worker-deep-high-claude` and
-  `worker-fast-medium-claude` (`src/profiles/default_selection.py`); point the reader at
+  defaults are `worker-claude` and `worker-codex` — one per harness, with the level
+  supplied by the intelligence class (`src/profiles/default_selection.py`); point the reader at
   `aq agent list-profiles` and `aq system list-intelligence-classes` instead of a literal
   list that will rot.
 - **Agent-facing docs**: `src/skills/*/SKILL.md` are shipped into the harness skill dirs by

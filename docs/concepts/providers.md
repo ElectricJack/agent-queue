@@ -159,12 +159,12 @@ PY
 ```
 
 ```text
-classes: deep-high, deep-low, deep-medium, deep-off, fast-high, fast-low, fast-medium, fast-off, spark-low, standard-high, standard-low, standard-medium, standard-off
+classes: astra-high, astra-low, deep-high, deep-low, fast-high, fast-low, spark-low, standard-high
 fast-low       anthropic -> 'claude-sonnet-5' extras={'thinking': 'low'}
-standard-high  anthropic -> 'claude-opus-5' extras={'thinking': 'high'}
-standard-high/anthropic -> {'model': 'claude-opus-5', 'thinking': 'high'}
-standard-high/openai    -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'high'}
-standard-high/codex     -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'high'}
+standard-high  anthropic -> 'claude-opus-5' extras={'thinking': 'xhigh'}
+standard-high/anthropic -> {'model': 'claude-opus-5', 'thinking': 'xhigh'}
+standard-high/openai    -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'xhigh'}
+standard-high/codex     -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'xhigh'}
 standard-high/google    -> {'model': 'gemini-2.5-pro', 'thinking_budget': 24576}
 ```
 

@@ -1667,22 +1667,17 @@ def test_ensure_vault_layout_does_not_seed_legacy_claude_profiles(tmp_path):
     were genuinely wrong after 156315f2, which deliberately dropped the
     ``ensure_claude_opus_profile`` / ``ensure_claude_sonnet_profile`` /
     ``ensure_shared_claude_memory_dir`` calls from ``ensure_vault_layout``.
-    The hardcoded model-per-profile pairs were superseded by the 3-tier x
-    4-thinking intelligence-class matrix plus the provider-explicit
-    ``worker-{fast,standard,deep}-<level>-claude`` profiles (bdf4d19e); the helper
-    functions and ``CLAUDE_*_PROFILE`` constants survive only as an
-    opt-in migration seam, covered by their own tests above.
+    The hardcoded model-per-profile pairs were superseded by the intelligence
+    classes plus one generic worker per harness (``worker-claude``,
+    ``worker-codex``); the helper functions and ``CLAUDE_*_PROFILE`` constants
+    survive only as an opt-in migration seam, covered by their own tests above.
     """
     ensure_vault_layout(str(tmp_path))
 
     agent_types = tmp_path / "vault" / "agent-types"
     # The shipped defaults are seeded from src/profiles/defaults/.
     assert (agent_types / "supervisor" / "profile.md").is_file()
-    for worker in (
-        "worker-fast-medium-claude",
-        "worker-standard-medium-claude",
-        "worker-deep-high-claude",
-    ):
+    for worker in ("worker-claude", "worker-codex"):
         assert (agent_types / worker / "profile.md").is_file(), worker
 
     # None of the legacy hardcoded claude-* profiles are auto-installed.

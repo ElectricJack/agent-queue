@@ -63,12 +63,14 @@ refactoring, tests, and coordinated changes across modules. Most development
 tasks belong in this class. Use a fast class only for clearly trivial, localized
 work whose requirements are already settled.
 
-Use `deep-high` only for exceptionally difficult work: a genuinely unresolved
-architectural problem, a hard investigation with concrete evidence that standard
-reasoning was insufficient, or unusually complex correctness reasoning. The
-reason must name that specific difficulty and explain why `standard-high` is
-insufficient. C++, multiple files, native builds, integration tests, high priority,
-and a failing CI run alone are not reasons to select `deep-high`.
+Use `deep-high` or `astra-high` only for exceptionally difficult work: a
+genuinely unresolved architectural problem, a hard investigation with concrete
+evidence that standard reasoning was insufficient, or unusually complex
+correctness reasoning. The reason must name that specific difficulty and explain
+why `standard-high` is insufficient. C++, multiple files, native builds,
+integration tests, high priority, and a failing CI run alone are not reasons to
+select one of them. `astra-*` exists only on OpenAI, so it is selectable only
+when a supplied row offers it.
 
 Choose a class and compatible profile only from the supplied options. Preserve
 explicit operator assignments. If `standard-high` is absent, select the closest

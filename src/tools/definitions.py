@@ -1129,7 +1129,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Execution intelligence class id, e.g. deep-high or standard-medium. "
+                        "Execution intelligence class id, e.g. deep-high or standard-high. "
                         "Use list_intelligence_classes for current IDs. Set profile_id and "
                         "this field together at creation to route work atomically."
                     ),
@@ -1393,7 +1393,7 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high') "
+                        "Intelligence class id (e.g. 'fast-low', 'standard-high', 'astra-high') "
                         "from vault/intelligence-classes/. Requires a matching worker at "
                         "launch. Omit to preserve the task's existing class or profile default."
                     ),

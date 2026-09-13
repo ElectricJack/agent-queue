@@ -142,9 +142,10 @@ aq system list-intelligence-classes       # the classes that exist here
 Worker profile IDs are installation-specific. For ordinary queued work, prefer
 an enabled `lifecycle: pool` profile from `aq agent list-profiles`; do not
 infer a route from an ID prefix or an example in documentation. Shipped
-intelligence classes are the `{fast,standard,deep}-{off,low,medium,high}`
-ladder. Anything you see in an example is not a guarantee that the id exists
-here.
+intelligence classes are `fast-{low,high}`, `standard-high`, `deep-{low,high}`
+and `astra-{low,high}` — Astra is OpenAI-only, and nothing from the deep tier
+upward runs on Gemini. Anything you see in an example is not a guarantee that
+the id exists here.
 
 ## When to reach for a specialized aq-* skill
 

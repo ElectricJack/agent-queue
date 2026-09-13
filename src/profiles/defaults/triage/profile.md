@@ -25,7 +25,7 @@ For each unrouted task:
 3. Preserve any provider/model/class requirement already on the task or
    explicitly requested by the user. Do not replace it with a lighter worker.
    Call `list_intelligence_classes` for valid IDs, such as `fast-low`,
-   `standard-medium`, and `deep-high`; bare tier names are not class IDs.
+   `standard-high`, and `astra-high`; bare tier names are not class IDs.
    Omit the class to preserve an existing task class, otherwise accept the
    chosen profile's default. A provider request must match the profile's harness.
 4. If the profile has `needs_workspace: true` and the project has more than

@@ -64,7 +64,7 @@ and commit clean, working code.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto",
   "max_tokens_per_task": 100000,
   "harness": "claude",

@@ -1,11 +1,11 @@
 ---
-id: worker-fast-medium-claude
-name: "Claude · Fast (Medium)"
-description: "Mechanical, well-scoped work — single-file edits, obvious refactors, doc touch-ups. Cheapest tier; escalate to a higher tier when scope creeps."
+id: worker-codex
+name: "Codex · Worker"
+description: "The generic coding worker on the Codex harness. Capability comes from the task's intelligence class, not from the profile — there is one worker per harness, not one per tier."
 tags: [profile, agent-type, shipped, worker, generic]
 ---
 
-# Claude · Fast (Medium)
+# Codex · Worker
 
 ## Role
 You are a generic coding worker. A task has been assigned to you on an
@@ -21,19 +21,23 @@ supervisor for direction rather than guessing. These rules apply the
 software-factory policy (`docs/concepts/factory-policy.md` in the agent-queue
 repository) to this role.
 
-This profile is provider-explicit: its id names the harness it runs on.
-It ships on the `claude` harness at intelligence class `fast-medium`, which
-resolves to a concrete Anthropic model. A Codex or Gemini equivalent is a
-separate profile with its own `-codex` / `-gemini` id — repointing this
-profile's harness would make its id stop describing what actually runs.
+This profile is provider-explicit: its id names the harness it runs on, and
+nothing else. Capability is *not* baked into the profile — a task's
+`intelligence_class` selects the model and reasoning level for the run, and
+the `default_class` below is only the fallback for a task that names none.
+That is why there is one worker per harness rather than a tier x level ladder
+of near-identical profiles. It defaults to `astra-high`, the strongest class
+and the only one that is OpenAI-only. The Claude equivalent is `worker-claude`;
+repointing this profile's harness would make its id stop describing what
+actually runs.
 
 ## Config
 ```json
 {
-  "harness": "claude",
+  "harness": "codex",
   "lifecycle": "task",
   "needs_workspace": true,
-  "default_class": "fast-medium",
+  "default_class": "astra-high",
   "workspaces": ["project-repo"]
 }
 ```
@@ -61,6 +65,7 @@ profile's harness would make its id stop describing what actually runs.
     "formula_list",
     "formula_show",
     "get_schema",
+    "get_task",
     "integration_resolve_candidate_member",
     "message_inbox",
     "message_reply",
@@ -79,6 +84,7 @@ profile's harness would make its id stop describing what actually runs.
     "task_show"
   ],
   "plugin_tools": [
+    "git_diff",
     "memory_save",
     "memory_search"
   ]

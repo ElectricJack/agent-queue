@@ -34,7 +34,7 @@ def profile(level="low", *, pin=None):
 
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool", "named"])
-@pytest.mark.parametrize(("level", "effort"), [("off", "low"), ("low", "low"), ("medium", "medium"), ("high", "high")])
+@pytest.mark.parametrize(("level", "effort"), [("low", "low"), ("high", "xhigh")])
 def test_fast_codex_defaults_reach_every_launch_and_snapshot(tmp_path, codex, lifecycle, level, effort):
     specs = builder(tmp_path)
     effective = profile(level)
@@ -58,7 +58,7 @@ def test_fast_codex_defaults_reach_every_launch_and_snapshot(tmp_path, codex, li
 
 def test_agent_model_pin_still_wins_while_codex_class_controls_effort(tmp_path, codex):
     specs = builder(tmp_path)
-    effective = profile("off", pin="operator-pinned-model")
+    effective = profile("low", pin="operator-pinned-model")
     argv = specs._compose_argv(harness=codex, profile=effective, session_id="s",
                               resume_key=None, prompt=None, session_name="s", files=[])
     assert argv[argv.index("-m") + 1] == "operator-pinned-model"
@@ -70,18 +70,23 @@ def test_other_openai_harnesses_keep_api_mapping(tmp_path, hid, command):
     specs = builder(tmp_path)
     harness = Harness(id=hid, command=command, model_flag="-m")
     harness = SimpleNamespace(**vars(harness), provider="openai", env_map={})
-    cfg = specs._resolve_class_config(profile("off"), harness, None)
-    assert cfg == {"model": "gpt-5.6-luna", "reasoning_effort": "none"}
-    assert specs._resolve_model(profile("off"), harness, None) == "gpt-5.6-luna"
+    cfg = specs._resolve_class_config(profile("low"), harness, None)
+    assert cfg == {"model": "gpt-5.6-luna", "reasoning_effort": "low"}
+    assert specs._resolve_model(profile("low"), harness, None) == "gpt-5.6-luna"
 
 
 def test_google_mapping_is_unchanged_and_other_tiers_use_current_models(tmp_path):
     specs = builder(tmp_path)
     assert specs._resolve_model(profile(), Harness(id="claude", command="claude"), None) == "claude-sonnet-5"
     assert specs._resolve_model(profile(), Harness(id="gemini", command="gemini"), None) == "gemini-2.5-flash"
+    expected = {"deep-": "gpt-5.6-sol", "astra-": "gpt-6-astra", "standard-": "gpt-5.6-terra"}
     for cid, cls in specs._intelligence_classes.items():
-        if not cid.startswith("fast-"):
-            assert cls.mapping["openai"]["model"] == ("gpt-5.6-sol" if cid.startswith("deep-") else "gpt-5.6-terra")
+        if cid.startswith("fast-"):
+            continue
+        prefix = next(key for key in expected if cid.startswith(key))
+        assert cls.mapping["openai"]["model"] == expected[prefix], cid
+        # Gemini has no place from the deep tier upward, and Astra is OpenAI-only.
+        assert "google" not in cls.mapping or prefix == "standard-", cid
 
 
 def write_class(tmp_path, cid, mapping):
@@ -92,7 +97,7 @@ def write_class(tmp_path, cid, mapping):
     return path
 
 
-@pytest.mark.parametrize(("level", "legacy_effort", "effort"), [("off", "minimal", "low"), ("low", "low", "low"), ("medium", "medium", "medium"), ("high", "high", "high")])
+@pytest.mark.parametrize(("level", "legacy_effort", "effort"), [("low", "low", "low"), ("high", "high", "xhigh")])
 def test_legacy_fast_backfill_is_in_memory_and_preserves_other_settings(tmp_path, codex, level, legacy_effort, effort):
     cid = f"fast-{level}"
     mapping = {"openai": {"model": "gpt-5-mini", "reasoning_effort": legacy_effort},
@@ -101,7 +106,7 @@ def test_legacy_fast_backfill_is_in_memory_and_preserves_other_settings(tmp_path
     original = path.read_bytes()
     cls = load_intelligence_classes(str(tmp_path))[cid]
     assert cls.mapping["codex"] == {"model": "gpt-5.6-luna", "reasoning_effort": effort}
-    assert cls.mapping["openai"] == {"model": "gpt-5.6-luna", "reasoning_effort": "none" if level == "off" else level}
+    assert cls.mapping["openai"] == {"model": "gpt-5.6-luna", "reasoning_effort": effort}
     assert cls.mapping["anthropic"] == mapping["anthropic"]
     assert cls.name == "Custom name" and path.read_bytes() == original
     specs = SessionSpecBuilder(SimpleNamespace(security=None), intelligence_classes={cid: cls})

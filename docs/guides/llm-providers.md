@@ -59,7 +59,7 @@ llm:
   api_key: ""                # optional — the environment is usually better
   base_url: ""               # openai only: an OpenAI-compatible endpoint
   max_tokens: 4096
-  default_class: standard-medium   # class used when a call names none
+  default_class: standard-high   # class used when a call names none
 ```
 
 Those are the shipped defaults except `default_class`, which ships empty

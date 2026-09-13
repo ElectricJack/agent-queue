@@ -1,11 +1,19 @@
 """Provider-aware shipped worker-profile catalog.
 
 Vault profile markdown is user-owned once seeded, but a profile is not a
-promise that its matching CLI can run on this host.  This module derives the
-provider-specific worker ladder from canonical templates, observes the
-existing secret-free login probes, and records which generated profiles are
-safe defaults.  Rerunning ``aq install`` after login, removal, or repair thus
-refreshes routing eligibility without erasing operator profile choices.
+promise that its matching CLI can run on this host.  This module names the
+shipped worker per provider, observes the existing secret-free login probes,
+and records which profiles are safe defaults.  Rerunning ``aq install`` after
+login, removal, or repair thus refreshes routing eligibility without erasing
+operator profile choices.
+
+There is **one worker per harness**, not a tier x level ladder: a task's
+``intelligence_class`` selects the model and reasoning level for the run, so a
+second profile that differs only in its ``default_class`` buys nothing.  The
+``default_class`` recorded here is only the fallback for a task that names no
+class of its own, and it differs per provider because the classes do: Astra is
+OpenAI-only, so the Codex worker defaults to it and the Claude worker defaults
+to ``standard-high``.
 """
 
 from __future__ import annotations
@@ -28,12 +36,16 @@ logger = logging.getLogger(__name__)
 
 ACTIVATION_FILENAME = "profile-activation.json"
 ACTIVATION_SCHEMA_VERSION = 1
-WORKER_TIERS: tuple[tuple[str, str], ...] = (
-    ("fast-medium", "Fast (Medium)"),
-    ("standard-medium", "Standard (Medium)"),
-    ("deep-high", "Deep (High)"),
+#: Provider -> (display title, the shipped worker's fallback class).  Gemini
+#: ships no worker: every class from the deep tier upward is deliberately
+#: without a ``google`` slice, and a worker whose only usable classes are the
+#: two cheap ones is not a default anyone wants.  A ``gemini``-harness profile
+#: remains perfectly authorable by hand.
+WORKER_PROVIDERS: tuple[tuple[str, str, str], ...] = (
+    ("claude", "Claude", "standard-high"),
+    ("codex", "Codex", "astra-high"),
 )
-SUPPORTED_PROVIDER_IDS = frozenset({"claude", "codex", "gemini"})
+SUPPORTED_PROVIDER_IDS = frozenset(provider for provider, _, _ in WORKER_PROVIDERS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,20 +79,22 @@ def shipped_profile_catalog(
     providers: Iterable[str] = tuple(sorted(SUPPORTED_PROVIDER_IDS)),
 ) -> tuple[CatalogProfile, ...]:
     """Return the provider-explicit worker ladder in stable order."""
+    defaults = {provider: (title, cls) for provider, title, cls in WORKER_PROVIDERS}
     entries: list[CatalogProfile] = []
     for provider_id in providers:
         if provider_id not in SUPPORTED_PROVIDER_IDS:
             raise ValueError(f"unsupported profile-catalog provider: {provider_id}")
-        title = {"claude": "Claude", "codex": "Codex", "gemini": "Gemini"}[provider_id]
-        for tier, display_tier in WORKER_TIERS:
-            entries.append(
-                CatalogProfile(
-                    id=f"worker-{tier}-{provider_id}", provider_id=provider_id,
-                    harness=provider_id, intelligence_class=tier,
-                    name=f"{title} · {display_tier}",
-                    source_profile_id=f"worker-{tier}-claude",
-                )
+        title, default_class = defaults[provider_id]
+        profile_id = f"worker-{provider_id}"
+        entries.append(
+            CatalogProfile(
+                id=profile_id, provider_id=provider_id, harness=provider_id,
+                intelligence_class=default_class, name=f"{title} · Worker",
+                # Each provider's worker is a shipped file in its own right,
+                # so nothing is rewritten from a sibling template.
+                source_profile_id=profile_id,
             )
+        )
     return tuple(entries)
 
 
@@ -187,7 +201,14 @@ def refresh_catalog_profiles(
 
 
 def _materialize_profile(template: str, profile: CatalogProfile) -> str:
-    """Render a provider sibling without maintaining nine prompt copies."""
+    """Render *profile* from its template.
+
+    Now that every catalog entry ships its own file this is the identity on
+    the shipped text; it stays because the seam is what lets a provider be
+    added from an existing template rather than a new prompt copy.
+    """
+    if profile.source_profile_id == profile.id:
+        return template
     title = profile.name.split(" · ")[0]
     text = template.replace(profile.source_profile_id, profile.id)
     text = text.replace('"Claude ·', f'"{title} ·').replace("# Claude ·", f"# {title} ·")
@@ -249,6 +270,7 @@ def _write_activation(path: Path, payload: Mapping[str, Any]) -> None:
 
 __all__ = [
     "ACTIVATION_FILENAME", "ACTIVATION_SCHEMA_VERSION", "CatalogProfile", "ProfileActivation",
+    "WORKER_PROVIDERS",
     "active_catalog_profile_ids", "activation_path", "evaluate_catalog",
     "refresh_catalog_profiles", "shipped_profile_catalog",
 ]

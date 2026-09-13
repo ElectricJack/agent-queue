@@ -287,7 +287,7 @@ system prompt as-is.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```
@@ -1007,7 +1007,7 @@ broad rewrites unless the task explicitly calls for refactoring.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```
@@ -1146,7 +1146,7 @@ to Opus only when the work genuinely requires deeper reasoning.
 ## Config
 ```json
 {
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "permission_mode": "auto"
 }
 ```

@@ -2011,6 +2011,16 @@ class Orchestrator(
         except Exception:
             logger.warning("Vault profile model-pin migration failed", exc_info=True)
 
+        # The shipped class ladder collapsed to seven classes.  Repoint any
+        # profile still naming a retired one and move the retired files aside
+        # before the scan below syncs profiles into the database.
+        from src.profiles.class_retirement import retire_vault_intelligence_classes
+
+        try:
+            retire_vault_intelligence_classes(self.config.data_dir)
+        except Exception:
+            logger.warning("Vault intelligence-class retirement failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would

@@ -24,16 +24,18 @@ profile to build agents from.  It is used in two places:
 Selection order (see ``docs/superpowers/specs/2026-05-07-agent-\
 reconciliation-design.md`` §2, "Auto-picking a project default profile"):
 
-1. ``standard-high-codex``
-2. ``standard-high-claude``
-3. ``claude-opus``
-4. ``claude-sonnet``
-5. an enabled pool profile with ``default_class: standard-medium``
-6. ``worker-standard-medium-claude`` (legacy compatibility)
-7. any remaining general-purpose profile, alphabetically by id
-8. any remaining non-supervisor profile, alphabetically by id
+1. an enabled pool profile with ``default_class: standard-high``
+2. ``standard-high-codex``
+3. ``standard-high-claude``
+4. ``worker-claude``
+5. ``worker-codex``
+6. ``claude-opus``
+7. ``claude-sonnet``
+8. the retired ladder's ids (legacy compatibility)
+9. any remaining general-purpose profile, alphabetically by id
+10. any remaining non-supervisor profile, alphabetically by id
 
-Steps 6 and 7 differ only in whether special-purpose profiles (reviewer,
+Steps 9 and 10 differ only in whether special-purpose profiles (reviewer,
 planner, triage, …) are eligible: they are a poor default because they
 are written for one pipeline stage, but they beat returning ``None`` and
 stalling the queue.
@@ -45,20 +47,21 @@ from collections.abc import Iterable
 from typing import Any
 
 #: Tried first, in this exact order, when picking a project default.
-#: ``worker-standard-medium-claude`` is named explicitly because the
-#: alphabetical fallback below picked ``worker-deep-high-claude`` out of the
-#: shipped worker ladder (deep < fast < standard), quietly making the most
-#: expensive tier every project's default for tasks that carry no profile of
-#: their own.  The legacy pre-rename ids are kept as trailing entries so a
-#: vault seeded before the provider-explicit rename still resolves to the
-#: standard tier instead of falling through to alphabetical order.
+#: The literal ids exist so a new or defaultless project is executable
+#: without an LLM/triage round trip; an explicit project or task pin still
+#: wins at routing time.  The ids of the retired ``worker-<tier>-<level>-``
+#: ``<provider>`` ladder are kept as trailing entries so a vault seeded
+#: before it was retired still resolves to a mid-cost worker rather than
+#: falling through to alphabetical order, which used to pick the most
+#: expensive rung.
 PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
-    # The ordinary factory route is the standard-high pool.  Keep these
-    # provider-specific profiles first so a new/defaultless project is
-    # executable without an LLM/triage round trip; an explicit project or
-    # task pin still wins at routing time.
+    # The ordinary factory route is the standard-high pool.
     "standard-high-codex",
     "standard-high-claude",
+    # The generic workers: one per harness, with the level of a run supplied
+    # by the task's intelligence class rather than by the profile.
+    "worker-claude",
+    "worker-codex",
     "claude-opus",
     "claude-sonnet",
     "worker-standard-medium-claude",
@@ -128,8 +131,8 @@ def select_default_profile_id(
     if not candidates:
         return None
 
-    # The installed pool ladder is operator-owned and has no stable naming
-    # convention.  Prefer its ordinary lane before historical literal ids:
+    # The installed pool rungs are operator-owned and have no stable naming
+    # convention.  Prefer the ordinary lane before historical literal ids:
     # that keeps omitted task profiles on the durable pull workers rather
     # than reintroducing a task-lifecycle worker merely because its id sorts
     # first.  Strings preserve the old compatibility path below because they
@@ -140,7 +143,7 @@ def select_default_profile_id(
         for profile_id in (_profile_id(value),)
         if profile_id in candidates
         and _profile_lifecycle(value) == "pool"
-        and _profile_default_class(value) == "standard-medium"
+        and _profile_default_class(value) == "standard-high"
         and _profile_harness(value)
     )
     if pool_standard:

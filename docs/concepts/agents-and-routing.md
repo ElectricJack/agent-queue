@@ -59,9 +59,10 @@ Two more that this page leans on:
   out of the queue until something writes a route.
 
 > **Note.** A profile is *not* a model and a class is *not* a profile. The
-> shipped profile `worker-standard-medium-claude` names the harness `claude`
-> and the class `standard-medium`; the class file names the model. Two files
-> and one task column, three separate jobs.
+> shipped profile `worker-claude` names the harness `claude` and the fallback
+> class `standard-high`; the class file names the model. Two files and one task
+> column, three separate jobs. There is one worker per harness, not one per
+> tier — the *level* of a run comes from the task's class.
 
 ## A realistic example
 
@@ -78,16 +79,16 @@ cat src/prompts/default_intelligence_classes/standard-high.md
 ---
 id: standard-high
 name: "Standard · High"
-description: "Balanced mid-tier — most implementation, multi-file refactors, clear-spec work. Thinking: extended reasoning."
+description: "Balanced mid-tier — most implementation, multi-file refactors, clear-spec work. Thinking: extra-high reasoning."
 tier: standard
-thinking: high
+thinking: xhigh
 ---
 
 ```json
 {
-  "anthropic": {"model": "claude-opus-5", "thinking": "high"},
-  "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
-  "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
+  "anthropic": {"model": "claude-opus-5", "thinking": "xhigh"},
+  "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
+  "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
   "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 24576}
 }
 ```
@@ -96,7 +97,7 @@ thinking: high
 Read the profile that says which CLI runs, and what it is allowed to do:
 
 ````bash
-sed -n '/## Config/,/^```$/p' src/profiles/defaults/worker-standard-medium-claude/profile.md
+sed -n '/## Config/,/^```$/p' src/profiles/defaults/worker-claude/profile.md
 ````
 
 ````text
@@ -106,21 +107,21 @@ sed -n '/## Config/,/^```$/p' src/profiles/defaults/worker-standard-medium-claud
   "harness": "claude",
   "lifecycle": "task",
   "needs_workspace": true,
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "workspaces": ["project-repo"]
 }
 ```
 ````
 
 Now put them together for one task. Say the routing playbook decided the task
-needs `standard-high` and picked the profile above:
+needs `deep-high` and picked the profile above:
 
 1. The profile's `harness` is `claude`, so the provider is `anthropic`
    ([`_infer_provider_from_harness`](../../src/sessions/spec.py)).
-2. The task's class `standard-high` beats the profile's `default_class`
-   `standard-medium` ([`_resolve_class_config`](../../src/sessions/spec.py)).
-3. The class's `anthropic` slice supplies `model: claude-opus-5` and
-   `thinking: high`.
+2. The task's class `deep-high` beats the profile's `default_class`
+   `standard-high` ([`_resolve_class_config`](../../src/sessions/spec.py)).
+3. That class's `anthropic` slice supplies `model: claude-fable-5` and
+   `thinking: xhigh`.
 4. The session launches the `claude` CLI with that model and that thinking
    level, and the model actually used is written to the attempt row — never
    inferred back from the profile. See [sessions](sessions.md).
@@ -191,7 +192,7 @@ fields:
 
 ```bash
 aq task edit --task-id demo.4 --intelligence-class deep-high
-aq task edit --task-id demo.4 --profile-id worker-deep-high-claude
+aq task edit --task-id demo.4 --profile-id worker-claude
 ```
 
 A pinned class makes the next routing run take the `explicit` path — the class
@@ -272,13 +273,13 @@ or the project's `max_concurrent_agents` rather than deleting workers.
 
 A task with no profile of its own falls back to its project's
 `default_profile_id`. A project with none of those gets one picked
-deterministically, in this order: `claude-opus`, `claude-sonnet`,
-`worker-standard-medium-claude`, `worker-standard`, then the alphabetically
-first general-purpose profile, then the alphabetically first non-supervisor
-profile ([`src/profiles/default_selection.py`](../../src/profiles/default_selection.py)).
-The standard tier is named explicitly because plain alphabetical order picks
-`worker-deep-high-claude` out of the shipped ladder, which would quietly make
-the most expensive tier every project's default.
+deterministically, in this order: `worker-claude`, `worker-codex`,
+`claude-opus`, `claude-sonnet`, the ids of the retired worker ladder, then the
+alphabetically first general-purpose profile, then the alphabetically first
+non-supervisor profile ([`src/profiles/default_selection.py`](../../src/profiles/default_selection.py)).
+The shipped workers are named explicitly because plain alphabetical order used
+to pick the most expensive rung of the ladder out of a vault seeded before it
+was retired.
 
 ## Inputs and outputs
 

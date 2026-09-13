@@ -18,11 +18,10 @@ from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
-WORKER_PROFILE_IDS = (
-    "worker-fast-medium-claude",
-    "worker-standard-medium-claude",
-    "worker-deep-high-claude",
-)
+#: One generic worker per harness.  The tier x level x provider ladder was
+#: retired: a task's ``intelligence_class`` picks the model and reasoning level
+#: for the run, so profiles that differ only in ``default_class`` bought nothing.
+WORKER_PROFILE_IDS = ("worker-claude", "worker-codex")
 
 
 def _vault_profile_path(root: Path, profile_id: str) -> Path:
@@ -111,7 +110,7 @@ def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
         assert policy.allows_aq_command(command)
 
 
-def test_seeded_supervisor_can_delegate_to_shipped_standard_and_deep_workers(tmp_path):
+def test_seeded_supervisor_can_delegate_to_every_shipped_worker(tmp_path):
     """Delegation checks every namespace; plugin grants do not imply AQ grants."""
     ensure_default_profiles(str(tmp_path))
     profile_fields = {field.name for field in fields(AgentProfile)}
@@ -122,7 +121,7 @@ def test_seeded_supervisor_can_delegate_to_shipped_standard_and_deep_workers(tmp
         return AgentProfile(**{key: value for key, value in values.items() if key in profile_fields})
 
     supervisor = load("supervisor")
-    for profile_id in ("worker-standard-medium-claude", "worker-deep-high-claude"):
+    for profile_id in WORKER_PROFILE_IDS:
         worker = load(profile_id)
         assert _check_capability_escalation(supervisor, worker) == "", profile_id
 

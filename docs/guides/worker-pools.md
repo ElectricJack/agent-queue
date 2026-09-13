@@ -75,9 +75,9 @@ Two commands, and **the order is not optional**: `pool scale` refuses a
 profile that is not already `lifecycle: pool`.
 
 ```bash
-aq pool set-lifecycle --profile-id worker-standard-high-claude --lifecycle pool
+aq pool set-lifecycle --profile-id worker-claude --lifecycle pool
 
-aq pool scale --profile-id worker-standard-high-claude --min 0 --max 3
+aq pool scale --profile-id worker-claude --min 0 --max 3
 ```
 
 Both write the **system** profile:
@@ -197,8 +197,8 @@ When a tier runs low on remaining usage — a fable-level pool, say — turn it
 off rather than unpicking its definition:
 
 ```bash
-aq pool set-enabled --profile-id worker-fast-medium-claude --no-enabled
-aq pool set-enabled --profile-id worker-fast-medium-claude --enabled
+aq pool set-enabled --profile-id worker-codex --no-enabled
+aq pool set-enabled --profile-id worker-codex --enabled
 ```
 
 The switch lives in the system profile's `## Config` (so it survives the next
@@ -343,11 +343,11 @@ the placement summary — one compact token per project,
 ```
                                 Worker pools
  Profile                      Min Max Min/pp Desired Idle Busy Start Drain Ready Projects
- worker-standard-high-claude    0   3      0       3    1    2     0     0     4 agent-queue:1i/1b  api:1b
- worker-standard-low-codex      0   1      1       1    1    0     0     0     0 agent-queue:1i
+ worker-claude                  0   3      0       3    1    2     0     0     4 agent-queue:1i/1b  api:1b
+ worker-codex                   0   1      1       1    1    0     0     0     0 agent-queue:1i
 
 Quarantined
-  worker-standard-low-codex in api — quarantined until 14:02:11 — harness 'codex' is not registered
+  worker-codex in api — quarantined until 14:02:11 — harness 'codex' is not registered
 ```
 
 Quarantine is a property of a `(project, profile)` pair, never of the pool, so
@@ -397,7 +397,7 @@ of RAM. So the fleet shrinks, and says so:
 Decide the fleet size you actually want and set it:
 
 ```bash
-aq pool scale --profile-id worker-standard-high-claude --max 12
+aq pool scale --profile-id worker-claude --max 12
 ```
 
 There is no `--fix`: choosing a fleet size is an operator decision. The notice
@@ -650,7 +650,7 @@ scaling policy. Live-session and ownership checks still prevent unsafe deletion.
 The rollback is one command per profile and needs no restart:
 
 ```bash
-aq pool set-lifecycle --profile-id worker-standard-high-claude --lifecycle task
+aq pool set-lifecycle --profile-id worker-claude --lifecycle task
 ```
 
 What it does, in order:
@@ -722,8 +722,8 @@ least-loaded profile first and watch a full tick before continuing.
 
 ```bash
 P=agent-queue
-aq pool set-lifecycle --profile-id worker-standard-low-claude --lifecycle pool
-aq pool scale         --profile-id worker-standard-low-claude --min 0 --max 1
+aq pool set-lifecycle --profile-id worker-codex --lifecycle pool
+aq pool scale         --profile-id worker-codex --min 0 --max 1
 aq pool status --project-id $P
 ```
 
@@ -771,25 +771,25 @@ git -C ~/.agent-queue/vault status --short   # if the vault is version-controlle
 The bounds agreed for a single-project fleet (`agent-queue`), under a project
 cap of 8 and the default global cap of 8. On a multi-project box these are the
 numbers for the *whole* fleet, not per project — see §3a before reusing them.
-`triage`, `supervisor` and `worker-deep-high-claude` stay on `lifecycle: task`.
+`triage` and `supervisor` stay on `lifecycle: task`.
 
 | Profile | Harness | `min` | `max` |
 |---|---|---|---|
-| `worker-standard-high-claude` | claude | 0 | 3 |
-| `worker-standard-medium-claude` | claude | 0 | 2 |
-| `worker-standard-low-claude` | claude | 0 | 1 |
-| `worker-standard-high-codex` | codex | 0 | 2 |
-| `worker-deep-medium-codex` | codex | 0 | 2 |
-| `worker-standard-low-codex` | codex | 0 | 1 |
+| `worker-claude` | claude | 0 | 6 |
+| `worker-codex` | codex | 0 | 3 |
 
-The maxima sum to 11 against a cap of 8 — deliberate over-subscription, so a
+The maxima sum to 9 against a cap of 8 — deliberate over-subscription, so a
 quiet profile's headroom is usable by a busy one (§3).
+
+Note what a pool can and cannot separate now that there is one worker per
+harness: bounds are per *profile*, so they cap how many Claude and how many
+Codex sessions run, and **not** how many expensive ones do. Capability is
+per-task (`intelligence_class`), so a fleet that wants "at most two `deep-high`
+runs at a time" needs a second profile of its own — see §7c.
 
 ```bash
 P=agent-queue
-for spec in worker-standard-low-claude:1  worker-standard-low-codex:1 \
-            worker-standard-medium-claude:2 worker-deep-medium-codex:2 \
-            worker-standard-high-codex:2   worker-standard-high-claude:3; do
+for spec in worker-codex:3 worker-claude:6; do
   profile=${spec%:*}; max=${spec#*:}
   aq pool set-lifecycle --profile-id "$profile" --lifecycle pool
   aq pool scale         --profile-id "$profile" --min 0 --max "$max"
@@ -822,21 +822,28 @@ are not the ones you want.
 
 ---
 
-## 7b. Migrating a vault seeded before the provider-explicit rename
+## 7b. Migrating a vault seeded before the one-worker-per-harness cutover
 
-Shipped worker profiles used to have provider-implicit ids — `worker-fast`,
-`worker-standard`, `worker-deep`, all of them silently on the `claude`
-harness. They now state their provider, and their level, in the id:
+Shipped worker profiles have been through two shapes. They were first
+provider-implicit — `worker-fast`, `worker-standard`, `worker-deep`, all of
+them silently on the `claude` harness. They then stated provider *and* level in
+the id (`worker-<tier>-<level>-<provider>`), which produced a ladder of up to
+tier x level x provider near-identical profiles.
 
-| Old id | New id | Display name |
-|---|---|---|
-| `worker-fast` | `worker-fast-medium-claude` | Claude · Fast (Medium) |
-| `worker-standard` | `worker-standard-medium-claude` | Claude · Standard (Medium) |
-| `worker-deep` | `worker-deep-high-claude` | Claude · Deep (High) |
+The ladder is retired. A task's `intelligence_class` already picks the model
+and reasoning level for the run, so a second profile differing only in its
+`default_class` bought nothing. There is now **one worker per harness**:
 
-The convention is `worker-<tier>-<level>-<provider>`, so a Codex sibling is a
-separate profile (`worker-standard-medium-codex`) rather than the same profile
-with its harness repointed — the id always describes what actually runs.
+| Old ids | New id | Display name | Fallback class |
+|---|---|---|---|
+| `worker-fast`, `worker-<tier>-<level>-claude` | `worker-claude` | Claude · Worker | `standard-high` |
+| `worker-<tier>-<level>-codex` | `worker-codex` | Codex · Worker | `astra-high` |
+
+The fallback class applies only to a task that names no class of its own.
+There is no shipped Gemini worker: every class from the deep tier upward
+deliberately has no `google` slice, so a Gemini worker's only usable classes
+would be the two cheap ones. A `gemini`-harness profile is still perfectly
+authorable by hand (§7c).
 
 **Nothing renames itself.** An existing vault keeps its old directories, and
 startup seeding is write-if-absent, so an upgrade adds the three new ids
@@ -854,28 +861,58 @@ at the old profile, and deleting it clears those references.
 
 ```bash
 aq task list --project agent-queue --status READY   # find the ones still pinned
-aq task route --task-id <task-id> --profile-id worker-standard-medium-claude
-aq project set agent-queue default-profile worker-standard-medium-claude
+aq task route --task-id <task-id> --profile-id worker-claude
+aq project set agent-queue default-profile worker-claude
 ```
 
 **3. Move pool bounds across.** Bounds live on the profile itself, so they do
 not follow a rename — set them on the new id and stand the old one down:
 
 ```bash
-aq pool set-lifecycle --profile-id worker-standard-medium-claude --lifecycle pool
-aq pool scale         --profile-id worker-standard-medium-claude --min 0 --max 2
-aq pool set-lifecycle --profile-id worker-standard --lifecycle task
+aq pool set-lifecycle --profile-id worker-claude --lifecycle pool
+aq pool scale         --profile-id worker-claude --min 0 --max 2
+aq pool set-lifecycle --profile-id worker-standard-medium-claude --lifecycle task
 ```
 
 **4. Delete the old profile.**
 
 ```bash
-aq agent delete-profile --profile-id worker-standard \
-    --reason "moved to the provider-explicit ladder"
+aq agent delete-profile --profile-id worker-standard-medium-claude \
+    --reason "moved to one worker per harness"
 ```
 
-Nothing re-creates it: `worker-standard` is no longer a shipped id, so startup
-seeding has nothing to seed it from.
+Nothing re-creates it: `worker-standard-medium-claude` is no longer a shipped
+id, so startup seeding has nothing to seed it from.
+
+**5. Check what the classes did.** The class ladder collapsed in the same
+release — `fast-{off,medium}`, `standard-{off,low,medium}` and
+`deep-{off,medium}` are gone. The daemon repoints profiles and live task pins
+to the surviving class in the same tier on first start, and moves each retired
+class file to `<id>.md.retired` in the vault rather than deleting it. A class
+file you had marked `customized: true` is left alone.
+
+```bash
+aq system list-intelligence-classes
+ls ~/.agent-queue/vault/intelligence-classes/*.retired   # your old bytes
+```
+
+### 7c. Keeping a capability-specific pool
+
+One worker per harness means pool bounds no longer cap a *tier*. If you want a
+standing limit on expensive runs — "at most two `deep-high` sessions" — copy
+the shipped worker, give it an id that says so, and pin its class:
+
+```bash
+cp -r ~/.agent-queue/vault/agent-types/worker-claude \
+      ~/.agent-queue/vault/agent-types/worker-deep-claude
+# edit id/name in the frontmatter and set "default_class": "deep-high"
+aq pool set-lifecycle --profile-id worker-deep-claude --lifecycle pool
+aq pool scale         --profile-id worker-deep-claude --min 0 --max 2
+```
+
+That is a deliberate fleet policy rather than a shipped default, and a task
+still has to be routed to it (`aq task route --profile-id worker-deep-claude`)
+— a class on the task alone does not choose a profile.
 
 ### Retiring a shipped default
 
@@ -890,8 +927,8 @@ against it.
 id listed there:
 
 ```bash
-aq agent delete-profile --profile-id worker-fast-medium-claude \
-    --reason "fleet runs the -high variants only"
+aq agent delete-profile --profile-id worker-codex \
+    --reason "this box has no Codex login"
 ```
 
 The response carries `retired: true`, and `aq agent profile-drift` reports the
@@ -903,7 +940,7 @@ and syncs the restored profile to the database without waiting for the vault
 watcher:
 
 ```bash
-aq agent profile-reseed --profile-id worker-fast-medium-claude
+aq agent profile-reseed --profile-id worker-codex
 ```
 
 The tombstone is a small JSON file (`{"version": 1, "retired": {...}}`) that

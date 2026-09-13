@@ -53,9 +53,8 @@ EXPECTED_UNREACHABLE: dict[str, set[str]] = {
     "spec-ingest": {"get_downstream_tasks", "task_batch_propose"},
     "supervisor": set(),
     "triage": {"edit_task"},
-    "worker-deep-high-claude": {"pr_merge"},
-    "worker-fast-medium-claude": {"pr_merge"},
-    "worker-standard-medium-claude": {"pr_merge"},
+    "worker-claude": {"pr_merge"},
+    "worker-codex": {"pr_merge"},
 }
 
 REACHABLE = AGENT_COMMAND_SET | _TRIAGE_COMMANDS | _PLAYBOOK_COMPILER_COMMANDS
@@ -68,7 +67,7 @@ def _parsed(profile_id: str):
 def test_every_shipped_profile_is_covered():
     """The pin lists exactly the shipped profiles — no drift either way."""
     assert set(PROFILE_IDS) == set(EXPECTED_UNREACHABLE)
-    assert len(PROFILE_IDS) == 11
+    assert len(PROFILE_IDS) == 10
 
 
 @pytest.mark.parametrize("profile_id", PROFILE_IDS)

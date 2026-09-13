@@ -10,7 +10,7 @@ tags: [system, review, merge-authority, dv2-phase2]
 {
   "needs_workspace": true,
   "read_only": true,
-  "default_class": "standard-medium",
+  "default_class": "standard-high",
   "description": "Explicitly assigned merge review for a project whose configured publisher is pull-request based: checks the PR against the work it claims, requires the project's checks green on the exact head, and merges through pr_merge only when its task delegates publication.",
   "harness": "claude",
   "lifecycle": "task"

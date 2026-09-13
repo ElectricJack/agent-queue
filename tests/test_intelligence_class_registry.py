@@ -73,8 +73,8 @@ def registry(data_dir):
 
 
 def test_registry_is_a_live_mapping(registry):
-    assert "standard-medium" in registry
-    assert dict(registry)["standard-medium"].id == "standard-medium"
+    assert "standard-high" in registry
+    assert dict(registry)["standard-high"].id == "standard-high"
     assert registry.get("nope") is None
     assert sorted(registry) == sorted(registry.snapshot())
 
@@ -104,7 +104,7 @@ def test_reload_keeps_the_previous_entry_for_a_malformed_file(registry, data_dir
     assert errors and "fast-low.md" in errors[0]
     assert "intelligence-classes/fast-low.md" in registry.errors
     # Unrelated classes survive the bad file.
-    assert "standard-medium" in registry
+    assert "standard-high" in registry
 
 
 def test_reload_clears_a_previous_error_once_the_file_parses(registry, data_dir):
@@ -240,7 +240,7 @@ async def test_list_reports_whether_each_class_is_live(handler):
     result = await handler._cmd_list_intelligence_classes({})
     rows = {row["id"]: row for row in result["classes"]}
     assert rows["spark-low"]["loaded"] is False, "on disk but not yet in the live registry"
-    assert rows["standard-medium"]["loaded"] is True
+    assert rows["standard-high"]["loaded"] is True
 
     handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
     result = await handler._cmd_list_intelligence_classes({})

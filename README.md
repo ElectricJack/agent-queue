@@ -74,7 +74,7 @@ flowchart TD
    asks a small model to pick a class and a profile from the catalog of what this install
    can actually run, and writes both onto the task. A *profile* is the markdown role —
    what the agent is for, which tools it may use, which harness runs it. An *intelligence
-   class* maps a level such as `standard-medium` onto provider-specific model and
+   class* maps a level such as `standard-high` onto provider-specific model and
    reasoning settings.
 3. **A shared worker runs it.** Workers are global identities reused across projects. For
    each assignment the daemon starts the profile's harness in an observable tmux session;

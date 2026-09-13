@@ -160,13 +160,13 @@ async def test_ensure_task_records_explicit_intelligence_class(handler, db, revi
             "dedup_key": "review:task:t1",
             "title": "Review",
             "profile_id": reviewer,
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
     assert res["success"] is True, res
     task = await db.get_task(res["task_id"])
     assert task.profile_id == "reviewer"
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_without_class_invents_none(handler, db, reviewer):
@@ -209,7 +209,7 @@ async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
             "dedup_key": "review:task:t4",
             "title": "Review",
             "profile_id": reviewer,
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
     second = await handler.execute(
@@ -225,7 +225,7 @@ async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
     assert second["created"] is False
     assert second["task_id"] == first["task_id"]
     task = await db.get_task(first["task_id"])
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_routes_canonical_triage_task(handler, db):
@@ -244,13 +244,13 @@ async def test_ensure_task_routes_canonical_triage_task(handler, db):
             "dedup_key": "triage-open",
             "title": "Triage",
             "profile_id": "triage",
-            "intelligence_class": "standard-low",
+            "intelligence_class": "deep-low",
         },
     )
     assert res["success"] is True, res
     assert res["created"] is True, res
     task = await db.get_task(res["task_id"])
-    assert task.intelligence_class == "standard-low"
+    assert task.intelligence_class == "deep-low"
 
 
 async def test_ensure_task_rejects_unknown_class_for_triage(handler, db):

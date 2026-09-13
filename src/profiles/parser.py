@@ -942,13 +942,13 @@ def parse_profile(
     ...
     ... ## Config
     ... ```json
-    ... {"default_class": "standard-medium"}
+    ... {"default_class": "standard-high"}
     ... ```
     ... ''')
     >>> result.is_valid
     True
     >>> result.config
-    {'default_class': 'standard-medium'}
+    {'default_class': 'standard-high'}
     >>> result.frontmatter.id
     'coding'
     """

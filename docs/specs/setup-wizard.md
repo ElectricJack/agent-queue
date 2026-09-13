@@ -42,7 +42,7 @@ The wizard runs via `./setup.sh` (which handles venv and dependencies) or direct
 8. Step 7: Launch daemon
 
 There is no chat-provider step. The wizard writes a fixed `llm:` block
-(`provider: anthropic`, `default_class: fast-medium`) to `config.yaml` — see
+(`provider: anthropic`, `default_class: fast-low`) to `config.yaml` — see
 §9 below — and leaves any further tuning of the direct LLM path (`docs/specs/config.md` §4.6) to manual config editing.
 
 If an existing `~/.agent-queue/config.yaml` or `~/.agent-queue/.env` is found, values are loaded and used as defaults throughout.
@@ -192,7 +192,7 @@ Prompts for model name with default from existing config or `claude-sonnet-4-202
 > there is no in-process chat agent to configure an LLM for (the Supervisor
 > was deleted; see `docs/superpowers/specs/2026-08-30-llm-direct-path-design.md`).
 > `step_write_config` (§11 below) writes a fixed `llm:` block
-> (`provider: anthropic`, `default_class: fast-medium`); provider/model/`base_url`
+> (`provider: anthropic`, `default_class: fast-low`); provider/model/`base_url`
 > tuning — including pointing it at Ollama via `openai` + `base_url` — is a
 > manual edit to `config.yaml`, documented in [specs/config](config.md) §4.6.
 
@@ -224,7 +224,7 @@ Written to `~/.agent-queue/.env` with mode `0o600`:
 Written to `~/.agent-queue/config.yaml`. Includes:
 - `workspace_dir` and `database_path`
 - `discord` section: bot token as `${DISCORD_BOT_TOKEN}`, guild ID and one explicit shared `channel_id` (quoted), plus optional authorized users
-- `llm` section: fixed `provider: anthropic`, `default_class: fast-medium` (see note in §9 above)
+- `llm` section: fixed `provider: anthropic`, `default_class: fast-low` (see note in §9 above)
 - `global_token_budget_daily`: only written if set
 - `scheduling` section: rolling window hours, min_task_guarantee always true
 - `pause_retry` section: rate limit backoff, token exhaustion retry
