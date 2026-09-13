@@ -121,6 +121,24 @@ def test_a_class_re_authored_under_a_retired_id_is_not_retired_twice(tmp_path):
     assert record["retired"] == ["fast-medium"]
 
 
+def test_a_rung_is_disabled_on_the_same_pass_that_retires_its_class(tmp_path):
+    """Regression: "orphaned" is decided by loading the classes still present.
+
+    Running the rung pass before the files move meant every class still
+    resolved, nothing was ever disabled, and it took a second daemon start to
+    catch up — which is what happened on the first real restart.
+    """
+    ensure_default_intelligence_classes(str(tmp_path))
+    _write_class(tmp_path, "standard-medium")  # as an existing vault still has it
+    rung = _write_rung(tmp_path, "standard-medium-claude", "standard-medium")
+
+    result = retire_vault_intelligence_classes(tmp_path)
+
+    assert "standard-medium" in result.retired_files
+    assert [row[1] for row in result.disabled_rungs] == ["standard-medium"]
+    assert parse_profile(rung.read_text(encoding="utf-8")).config["enabled"] is False
+
+
 def test_profiles_are_repointed_before_their_class_file_moves(tmp_path):
     """A half-finished pass must never leave a profile naming a vanished class."""
     profile = _write_profile(tmp_path, "worker-old", "fast-off")

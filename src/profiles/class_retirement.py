@@ -76,6 +76,7 @@ class ClassRetirementResult:
     """What one vault pass changed, for logging and tests."""
 
     repointed_profiles: tuple[tuple[str, str, str], ...] = ()  # (path, from, to)
+    disabled_rungs: tuple[tuple[str, str], ...] = ()  # (path, class_id)
     retired_files: tuple[str, ...] = ()
     kept_customized: tuple[str, ...] = ()
 
@@ -253,16 +254,24 @@ def retire_orphaned_worker_rungs(data_dir: str | Path) -> list[tuple[str, str]]:
 
 
 def retire_vault_intelligence_classes(data_dir: str | Path) -> ClassRetirementResult:
-    """Move retired class files aside and repoint the profiles that used them.
+    """Move retired class files aside and settle the profiles that used them.
 
-    The profile half runs first: a profile must never be left naming a class
-    whose file has just moved, even if the process dies between the two.
+    Order matters in both directions:
+
+    * Repointing runs **first** — a profile must never be left naming a class
+      whose file has just moved, even if the process dies between the two.
+    * Disabling orphaned rungs runs **last**, because "orphaned" is decided by
+      loading the classes that are still in the vault.  Run before the files
+      move and every class still resolves, so nothing is ever disabled; it
+      took a second daemon start to catch up.
     """
     repointed = repoint_vault_profile_classes(Path(data_dir) / "vault")
-    retire_orphaned_worker_rungs(data_dir)
     root = _classes_root(data_dir)
     if not root.is_dir():
-        return ClassRetirementResult(repointed_profiles=tuple(repointed))
+        return ClassRetirementResult(
+            repointed_profiles=tuple(repointed),
+            disabled_rungs=tuple(retire_orphaned_worker_rungs(data_dir)),
+        )
 
     processed = _load_processed(root)
     retired: list[str] = []
@@ -295,8 +304,12 @@ def retire_vault_intelligence_classes(data_dir: str | Path) -> ClassRetirementRe
         )
     if retired or customized:
         _save_processed(root, processed)
+    # Last: the class files are gone from the loader's view now, so a rung
+    # that has lost its class is finally visible as one.
+    disabled = retire_orphaned_worker_rungs(data_dir)
     return ClassRetirementResult(
         repointed_profiles=tuple(repointed),
+        disabled_rungs=tuple(disabled),
         retired_files=tuple(retired),
         kept_customized=tuple(customized),
     )
