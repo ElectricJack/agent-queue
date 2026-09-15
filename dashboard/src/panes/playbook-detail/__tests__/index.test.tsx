@@ -22,9 +22,9 @@ vi.mock("../../store", () => ({ useShellPaneStore: () => ({ open: mock.open }) }
 afterEach(cleanup);
 beforeEach(() => { mock.run.mockClear(); mock.toggle.mockClear(); mock.open.mockClear();
   mock.del.mockReset(); mock.del.mockResolvedValue({ success: true, deleted: true }); mock.error = null; mock.earlierPaused = false; mock.playbook.enabled = true; mock.playbook.running_count = 0; });
-function show(client = new QueryClient()) {
+function show(client = new QueryClient(), playbookId = "audit") {
   const close = vi.fn();
-  return { close, ...render(<Pane args={{ playbookId: "audit" }} close={close} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} />, {
+  return { close, ...render(<Pane args={{ playbookId }} close={close} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} />, {
     wrapper: ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}><MemoryRouter initialEntries={["/projects/alpha/graph"]}>{children}</MemoryRouter></QueryClientProvider>,
   }) };
 }
@@ -37,6 +37,20 @@ it("shows waiting state, inspectable history, and an editor link back to the gra
   expect(edit).toHaveAttribute("href", "/playbooks/audit");
   fireEvent.click(edit); expect(close).toHaveBeenCalledOnce();
 });
+it("jumps the selected playbook straight to its graph on the shared playbook route", () => {
+  const { close } = show();
+  const graph = screen.getByRole("link", { name: "View graph" });
+  expect(graph).toHaveAttribute("href", "/playbooks/audit?tab=graph");
+  fireEvent.click(graph);
+  expect(close).toHaveBeenCalledOnce();
+});
+
+it("offers no graph jump when no playbook is selected in the graph", () => {
+  show(new QueryClient(), "retired");
+  expect(screen.getByText("This playbook is no longer available.")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "View graph" })).not.toBeInTheDocument();
+});
+
 it("requires an explicit launch and supplies the definition's own project", () => {
   show();
   expect(mock.run).not.toHaveBeenCalled();
