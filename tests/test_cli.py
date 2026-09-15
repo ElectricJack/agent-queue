@@ -640,6 +640,14 @@ class TestAutoCommands:
         assert "--project-id" in result.output
         assert "--query" in result.output
 
+    def test_playbook_commands_catalog_is_auto_registered(self, runner):
+        """The contract catalog is available as ``aq playbook commands``."""
+        from src.cli.app import cli
+
+        result = runner.invoke(cli, ["playbook", "commands", "--help"])
+        assert result.exit_code == 0
+        assert "registered Playbook V2 command" in result.output
+
     def test_prefix_stripping(self):
         """Category prefixes/suffixes should be stripped from command names."""
         from src.cli.auto_commands import _strip_category_prefix

@@ -11,6 +11,7 @@ from src.api.scope import AGENT_COMMAND_SET
 from src.commands.handler import CommandHandler
 from src.commands.playbook_v2_commands import PLAYBOOK_V2_COMMANDS
 from src.config import LLMConfig
+from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
 VALID_SHA = "sha256:" + "a" * 64
 
@@ -33,6 +34,21 @@ def _make_handler() -> CommandHandler:
 
 async def _call(handler: CommandHandler, name: str, args: dict) -> dict:
     return await getattr(handler, f"_cmd_{name}")(args)
+
+
+async def test_command_catalog_lists_every_contract_with_schema_and_docs_url():
+    from src.commands.contracts import CONTRACTS
+
+    result = await _make_handler()._cmd_playbook_commands({})
+
+    assert result["success"] is True
+    assert result["count"] == len(CONTRACTS.names()) == len(result["commands"])
+    assert {entry["name"] for entry in result["commands"]} == CONTRACTS.names()
+    for entry in result["commands"]:
+        assert entry["title"]
+        assert entry["summary"]
+        assert entry["docs_url"] == command_docs_url(DEFAULT_DOCS_BASE_URL, entry["name"])
+        assert entry["parameters_schema"]["type"] == "object"
 
 
 class TestGraphArguments:
