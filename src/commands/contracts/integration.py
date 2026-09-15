@@ -1914,7 +1914,6 @@ async def _recover_candidate_member_adapter(
 ):
     return await _hierarchy_adapter(
         "integration_recover_candidate_member",
-        "integration_recover_unwritten_resolution",
         args,
         ctx,
         IntegrationRecoverCandidateMemberValue,

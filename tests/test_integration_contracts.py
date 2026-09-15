@@ -544,6 +544,120 @@ async def test_candidate_member_contract_adapter_preserves_typed_result_fields(o
     }
 
 
+@pytest.mark.parametrize(
+    "outcome, invariant",
+    [
+        ("accepted", None),
+        ("already_accepted", None),
+        ("rejected", "candidate_member_tree_mismatch"),
+        ("stale", None),
+        ("wait", None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_recover_candidate_member_adapter_dispatches_its_own_command(outcome, invariant):
+    """The operator recovery adapter must reach its handler, not raise TypeError.
+
+    `aq integration recover-candidate-member RESERVATION_ID` is the documented
+    recovery for a frozen pushed candidate-member repair, so the registered
+    contract has to be invocable, carry `reservation_id` through, and project the
+    handler result onto its typed value.
+    """
+    seen: dict[str, object] = {}
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            seen["command"] = command
+            seen["payload"] = payload
+            return {
+                "success": outcome in {"accepted", "already_accepted", "rejected"},
+                "outcome": outcome,
+                "batch_id": "batch-1",
+                "revision": 3,
+                "member_ordinal": 2,
+                "invariant": invariant,
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_recover_candidate_member")
+    args = registration.contract.execution.args_model(reservation_id="frozen-resolution")
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert seen["command"] == "integration_recover_candidate_member"
+    assert seen["payload"]["reservation_id"] == "frozen-resolution"
+    assert result.outcome == outcome
+    assert result.value.model_dump() == {
+        "batch_id": "batch-1",
+        "revision": 3,
+        "member_ordinal": 2,
+        "invariant": invariant,
+    }
+
+
+@pytest.mark.asyncio
+async def test_recover_candidate_member_adapter_rejects_an_outcome_outside_its_contract():
+    class StubHandler:
+        async def execute(self, command, payload):
+            return {"success": True, "outcome": "invariant_error"}
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_recover_candidate_member")
+    args = registration.contract.execution.args_model(reservation_id="frozen-resolution")
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == "contract_violation"
+
+
+def test_every_hierarchy_adapter_call_site_passes_exactly_five_positional_arguments():
+    """Ratchet for the arity bug that made `integration_recover_candidate_member` unusable.
+
+    `_hierarchy_adapter(command, args, ctx, value_model, outcomes)` is called from
+    ~35 thin adapters.  A stray extra argument only fails when the command is
+    actually invoked, which registration-only tests never do, so check the call
+    sites statically as well.
+    """
+    import ast
+    import inspect
+
+    from src.commands.contracts import integration as integration_contracts
+
+    tree = ast.parse(inspect.getsource(integration_contracts))
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_hierarchy_adapter"
+    ]
+
+    assert call_sites, "no _hierarchy_adapter call sites found"
+    signature = inspect.signature(integration_contracts._hierarchy_adapter)
+    bad: list[tuple[int, str]] = []
+    for node in call_sites:
+        if any(isinstance(arg, ast.Starred) for arg in node.args) or any(
+            keyword.arg is None for keyword in node.keywords
+        ):
+            continue  # unpacked call — arity is not decidable statically
+        try:
+            signature.bind(
+                *([object()] * len(node.args)),
+                **{keyword.arg: object() for keyword in node.keywords},
+            )
+        except TypeError as exc:
+            bad.append((node.lineno, str(exc)))
+    assert bad == []
+
+
 @pytest.mark.asyncio
 async def test_root_promotion_command_is_registered_and_strictly_typed():
     handler = object.__new__(CommandHandler)
