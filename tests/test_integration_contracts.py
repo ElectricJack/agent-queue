@@ -14,7 +14,7 @@ from src.commands.contracts.integration import (
     DESIGN_INTEGRATION_COMMANDS,
     register_integration_contracts,
 )
-from src.commands.contracts.models import EffectSubject
+from src.commands.contracts.models import EffectSubject, OutcomeClass
 from src.commands.contracts.registry import ContractRegistry
 from src.commands.handler import CommandHandler
 from src.database.tables import (
@@ -418,9 +418,18 @@ def test_parent_completion_contracts_expose_prescribed_outcomes():
     assert {row.name for row in registry.require("integration_parent_verify").contract.execution.outcomes} == {
         "verified", "stale_generation", "stale_head", "invalid_evidence"
     }
-    assert {row.name for row in registry.require("integration_complete_parent").contract.execution.outcomes} == {
-        "completed", "waiting", "stale_verification", "invariant_error"
+    completion = registry.require("integration_complete_parent").contract.execution
+    assert {row.name for row in completion.outcomes} == {
+        "completed",
+        "already_completed",
+        "waiting",
+        "failed",
+        "stale_verification",
+        "invariant_error",
     }
+    assert {
+        row.name for row in completion.outcomes if row.classification is OutcomeClass.SUCCESS
+    } == {"completed", "already_completed"}
 
 
 def test_promotion_contracts_declare_retry_and_domain_identity():
@@ -541,6 +550,59 @@ async def test_candidate_member_contract_adapter_preserves_typed_result_fields(o
         "member_ordinal": 2,
         "partial_head_sha": "e" * 40,
         "continuation": continuation,
+    }
+
+
+@pytest.mark.parametrize(
+    ("outcome", "success"),
+    [
+        ("completed", True),
+        # The crash-retry replay path and an ordinary failed child are states a
+        # playbook must be able to route, not adapter wiring bugs.
+        ("already_completed", True),
+        ("waiting", False),
+        ("failed", False),
+        ("stale_verification", False),
+        ("invariant_error", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_complete_parent_adapter_passes_every_reachable_outcome_through(outcome, success):
+    raw = {
+        "success": success,
+        "outcome": outcome,
+        "task_id": "parent",
+        "generation": 3,
+        "head_sha": "a" * 40,
+        "operation_id": "operation-1",
+        # The readiness projection carries fields the completion value model does
+        # not declare; the adapter must drop them rather than reject the result.
+        "blockers": [{"task_id": "child", "reason": "failed_child"}],
+    }
+
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_complete_parent"
+            return raw
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_complete_parent")
+    args = registration.contract.execution.args_model(
+        task_id="parent", generation=3, head_sha="a" * 40
+    )
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == outcome
+    assert result.value.model_dump() == {
+        "task_id": "parent",
+        "generation": 3,
+        "head_sha": "a" * 40,
+        "operation_id": "operation-1",
     }
 
 

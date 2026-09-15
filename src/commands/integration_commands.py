@@ -1245,7 +1245,13 @@ class IntegrationCommandsMixin:
             )
         except HierarchyError as exc:
             return _failure("invariant_error", str(exc))
-        return {"success": result["outcome"] == "completed", **result}
+        # ``already_completed`` is the crash-retry replay of a durable completion
+        # for this exact operation, generation, head and verification, so it is a
+        # success like every other ``already_*`` outcome in this module.
+        return {
+            "success": result["outcome"] in {"completed", "already_completed"},
+            **result,
+        }
 
     async def _cmd_delivery_promote(self, args: dict) -> dict:
         from pydantic import ValidationError
