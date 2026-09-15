@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 338,
+    "leaf_commands": 339,
     "registration": {
-      "generated": 242,
+      "generated": 243,
       "handwritten": 96
     },
     "ownership": {
-      "core": 299,
+      "core": 300,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 337
+      "supported": 338
     },
     "evidence_level": {
       "behavioral": 10,
-      "dispatch": 242,
+      "dispatch": 243,
       "registration": 86
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 282
+      "untested": 283
     }
   },
   "commands": [
@@ -4310,6 +4310,37 @@
         "required": [
           "--run-id"
         ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq playbook commands",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "playbook_commands",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
         "optional": [
           "--json",
           "--brief",

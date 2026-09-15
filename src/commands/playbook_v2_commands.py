@@ -188,6 +188,7 @@ def _unreadable_activation_payload(
 #: registration surface.
 PLAYBOOK_V2_COMMANDS: frozenset[str] = frozenset(
     {
+        "playbook_commands",
         "playbook_v2_graph",
         "playbook_graph_layout_save",
         "playbook_activation_health",
@@ -962,6 +963,25 @@ class PlaybookV2CommandsMixin:
     # Reads
     # ------------------------------------------------------------------
 
+    def _configure_command_docs_urls(self) -> None:
+        """Keep presentation links aligned with the active config on reads."""
+        from src.commands.contracts import CONTRACTS
+        from src.docs_urls import DEFAULT_DOCS_BASE_URL
+
+        docs = getattr(self.config, "docs", None)
+        base_url = getattr(docs, "base_url", DEFAULT_DOCS_BASE_URL)
+        CONTRACTS.configure_docs_base_url(base_url)
+
+    async def _cmd_playbook_commands(self, args: dict) -> dict:
+        """List every registered playbook command and its typed input schema."""
+        if not self._v2_api_enabled():
+            return {"error": V2_API_DISABLED_ERROR}
+        self._configure_command_docs_urls()
+        from src.commands.contracts import CONTRACTS
+
+        commands = list(CONTRACTS.catalog())
+        return {"success": True, "commands": commands, "count": len(commands)}
+
     async def _cmd_playbook_v2_graph(self, args: dict) -> dict:
         """Return the event-grouped semantic graph of one playbook artifact.
 
@@ -986,6 +1006,7 @@ class PlaybookV2CommandsMixin:
         """
         if not self._v2_api_enabled():
             return {"error": V2_API_DISABLED_ERROR}
+        self._configure_command_docs_urls()
 
         playbook_id = _clean_str(args, "playbook_id")
         if not playbook_id:

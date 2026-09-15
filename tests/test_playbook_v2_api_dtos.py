@@ -30,6 +30,7 @@ from src.commands.playbook_v2_commands import (
 from src.tools.definitions import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
 GRAPH_COMMANDS = {
+    "playbook_commands",
     "playbook_v2_graph",
     "playbook_graph_layout_save",
     "playbook_activation_health",

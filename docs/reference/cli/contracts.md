@@ -79,8 +79,13 @@ can be explained" true by construction rather than by convention.
 
 `CommandPresentation` carries the title, summary, and human labels for
 arguments, outcomes, results and subjects — the strings a dashboard shows next
-to a playbook step. It is deliberately excluded from the fingerprint: renaming
-a label must not invalidate every artifact compiled against the command.
+to a playbook step. Its `help_url` is derived for every registered command as
+`<docs.base_url>reference/playbook-commands/<command>.md`, rather than copied
+into each contract. `aq playbook commands` exposes the name, title, summary,
+documentation URL, and parameter JSON Schema as the read-only catalog used by
+the dashboard. Presentation metadata is deliberately excluded from the
+fingerprint: renaming a label or moving the documentation host must not
+invalidate every artifact compiled against the command.
 
 ## Fingerprints and staleness
 

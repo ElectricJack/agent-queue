@@ -183,6 +183,7 @@ class StepExplanationDTO(V2Model):
     result: ExplanationRowDTO | None = None
     outcomes: list[OutcomeExplanationDTO] = []
     contract_fingerprint: str | None = None  # None for non-command steps
+    docs_url: str | None = None  # Contract help page; None for non-command steps
     renderer: ExplanationRenderer = "contract"
 
 
@@ -588,6 +589,22 @@ class PlaybookGraphLayoutSaveResponse(V2Model):
     positions: dict[str, GridPositionDTO] = {}
 
 
+class PlaybookCommandCatalogEntryDTO(V2Model):
+    """One contract's dashboard- and CLI-facing discovery metadata."""
+
+    name: str
+    title: str
+    summary: str
+    docs_url: str
+    parameters_schema: dict[str, Any] = {}
+
+
+class PlaybookCommandCatalogResponse(V2Model):
+    success: bool = True
+    commands: list[PlaybookCommandCatalogEntryDTO] = []
+    count: int = 0
+
+
 # ---------------------------------------------------------------------------
 # §4.5 Semantic diff
 # ---------------------------------------------------------------------------
@@ -950,6 +967,7 @@ class PlaybookV2ShadowCompileResponse(V2Model):
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "playbook_v2_graph": PlaybookV2GraphResponse,
+    "playbook_commands": PlaybookCommandCatalogResponse,
     "playbook_graph_layout_save": PlaybookGraphLayoutSaveResponse,
     "playbook_activation_health": PlaybookActivationHealthResponse,
     "playbook_activate": SetPlaybookActivationResponse,
