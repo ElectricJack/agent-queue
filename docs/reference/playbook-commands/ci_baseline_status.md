@@ -67,24 +67,153 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Judge a branch head's CI and derive, from what is red, the repair task that
+should fix it. `ci_baseline_status` is read-only: it asks GitHub (through `gh`)
+for the head commit of a ref and the check runs on it, classifies the rollup with
+the same function the merge gate uses, digs the failing pytest node ids out of
+the job logs, and computes a **failure signature** from them.
+
+The signature is the interesting part. It is a digest of *what* is red,
+independent of *which commit* is red, so a new commit that leaves the same tests
+failing is the same problem and must reuse the in-flight repair, while a
+different set of failing tests is a new problem that deserves its own task. The
+command hands back the `dedup_key`, `title` and `description` of that repair
+task, and — once the signature has spent its attempts — the key, title and
+question for a human escalation.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md)
+is the shipped caller: every `timer.15m` tick, rule `keep-main-green` step 1
+calls it with `project_id: agent-queue` and binds the result as `baseline`. The
+five success outcomes are the whole control flow of the rule:
+
+| Outcome | What the rule does |
+|---|---|
+| `green` | Ends the rule — nothing to repair. |
+| `pending` | Ends the rule — nothing to repair *yet*; the next tick looks again. |
+| `unknown` | Ends the rule — the checks could not be read. |
+| `red` | Step 2 — [`ensure_task`](ensure_task.md) keyed `baseline.dedup_key`. |
+| `red_escalated` | Step 3 — `escalation_create` keyed `baseline.escalation_key`. |
+
+The design is
+[`docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`](../../superpowers/specs/2026-09-05-ci-main-sentinel-design.md);
+the reviewed bundle lives at
+[`tests/fixtures/playbooks/v2/ci-main-sentinel/`](../../../tests/fixtures/playbooks/v2/ci-main-sentinel).
+Keeping the judgement in a command is what lets the playbook stay a
+deterministic command graph with no prose and no state of its own.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `CiBaselineStatusArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_ci_baseline_status`.
+2. `_cmd_ci_baseline_status`
+   ([`src/commands/ci_commands.py:101`](../../../src/commands/ci_commands.py)):
+   - Requires `project_id` and reads the project; `ref` defaults to
+     `project.repo_default_branch` or `main`; `max_attempts` defaults to 2 and
+     must be an integer ≥ 1.
+   - Derives the GitHub slug from `project.repo_url`. No slug means the state is
+     `unknown` with an explanatory `error` — an install with no GitHub remote is
+     not a broken step.
+   - `git.acommit_head_sha(slug, ref)` then `git.acommit_check_runs(slug,
+     head_sha)`, both run in `config.data_dir`.
+   - `classify_rollup` ([`src/git/ci_gate.py`](../../../src/git/ci_gate.py)) —
+     the same classifier the merge gate uses — yields `state`, `failing` and
+     `pending`. `green`, `pending` and `unknown` return immediately with no
+     signature and no repair fields.
+   - For `red`, it walks the failing entries, takes the first `html_url` /
+     `details_url` as `run_url`, and calls `git.ajob_failed_tests(slug, job_id)`
+     for each, unioning the pytest node ids.
+   - `failure_signature` (`ci_commands.py:34`) is the first 12 hex characters of
+     a SHA-256 over the sorted node ids, falling back to `check:<name>` entries
+     when no test ids could be read — so an unreadable log still yields one
+     repair per distinct red matrix rather than none.
+   - `db.list_tasks_by_dedup_prefix(project_id, "ci-baseline:<signature>:")`
+     enumerates prior attempts. A **live** attempt (any status outside
+     `COMPLETED` / `FAILED` / `BLOCKED`) means the current attempt number is the
+     count of attempts and its existing `dedup_key` is reused, with
+     `escalated: False`. With no live attempt the number is `len(attempts) + 1`
+     and `escalated` is `len(spent) >= max_attempts`.
+   - `render_repair_task` (`ci_commands.py:48`) builds the repair task's title
+     (`Fix red CI on <ref> @ <sha8> (attempt n)`) and its description: failing
+     checks, the run URL, up to 40 failing tests, and a "What to do" section
+     that tells the repair agent to reproduce first, fix the defect rather than
+     the test, land through a PR, never push the default branch, and — if the
+     failure is outside the repository's control — close `fail` with a hard
+     failure class so the sentinel escalates instead of filing another attempt.
+   - The escalation fields are keyed `ci-baseline-escalation:<signature>` — on
+     the signature alone, so the human gate is opened once however many attempts
+     were spent.
+3. `_outcome_of` (`builtin.py:476`) maps `state == "red"` **and**
+   `escalated: True` to `red_escalated`, otherwise passes `green` / `red` /
+   `pending` / `unknown` through, and maps an `error`-carrying result to
+   `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None in the database: `side effect: read`, no effect clauses, no writes, no
+events. What it *does* do is run `gh` subprocesses through the async
+`GitManager`, which is network I/O — a `timer.15m` cadence is chosen with that in
+mind.
+
+Nothing about the verdict is persisted. The durable state that makes the sentinel
+converge lives entirely in the tasks the *next* steps create: the repair task's
+`tasks.dedup_key`, which is what `list_tasks_by_dedup_prefix` reads back on the
+following tick, and the escalation incident keyed on the signature. That is why
+the attempt counter survives a daemon restart without this command storing
+anything.
+
+`unknown` and `pending` also carry no signature and no repair fields — a caller
+must branch on the outcome before reading `dedup_key`.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `unknown` (success) | The project has no GitHub `repo_url`, or the check runs for `<slug>@<ref>` could not be read; `error` says which. Not a broken step — the next tick tries again. |
+| `pending` (success) | Checks are still running on the head commit. |
+| `red_escalated` (success) | The branch is red and `max_attempts` repair tasks for this exact signature have already reached `COMPLETED`, `FAILED` or `BLOCKED` while it stayed red. |
+| `rejected` | Missing `project_id`; unknown project; a non-integer or `< 1` `max_attempts`; or a `gh`/`GitManager` exception escaping into `CommandHandler.execute`'s error path. |
+| `unauthorized` | The capability gate refused `ci_baseline_status`. |
+| `contract_violation` | The dict did not satisfy `CiBaselineStatusValue` (`state` and `ref` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `CiBaselineStatusArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` has no input, and
+`unmapped_business_outcome` for any of the six declared outcomes without a
+transition — with five successes that branch three different ways, this is the
+check that catches a half-written sentinel rule.
+
+The rule has no retry: the next timer tick is a better retry than any the run
+could schedule, and deduplication is the guard against a repair storm.
+Diagnose with `aq git ci-baseline-status --project-id <id>` for the same verdict from
+the CLI, and `aq task show <repair-task-id>` for what a spent attempt concluded.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "keep-main-green",
+  "title": "read_baseline",
+  "source": {"path": "ci-main-sentinel.md", "start_line": 29, "end_line": 33},
+  "command": "ci_baseline_status",
+  "inputs": {
+    "project_id": {"type": "literal", "value": "agent-queue"}
+  },
+  "save_result_as": "baseline",
+  "transitions": {
+    "green": "keep-main-green--done",
+    "pending": "keep-main-green--done",
+    "unknown": "keep-main-green--done",
+    "red": "keep-main-green--ensure_repair_task",
+    "red_escalated": "keep-main-green--escalate_to_human",
+    "rejected": "keep-main-green--failed",
+    "runtime_error": "keep-main-green--failed"
+  }
+}
+```

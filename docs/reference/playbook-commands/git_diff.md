@@ -51,24 +51,109 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Read a project's diff — either the working tree of its checkout, or the checkout
+against a base branch. `git_diff` is a read-only window onto what a project's
+workspace currently contains, returned as one text blob.
+
+It is the coarse, project-level read: pass `base_branch` to see the branch's
+accumulated change, omit it to see uncommitted working-tree modifications. Pass
+`workspace` to pick a specific workspace when the project has more than one.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it, and for review-shaped work it is the wrong tool: integration owns validation
+and delivery, and the commands that carry *evidence* about a change are the
+integration and delivery contracts — [`delivery_receipts`](delivery_receipts.md)
+for what was delivered, `integration_ci_evidence` for what CI said. A diff blob
+is not evidence; it is a snapshot of a mutable checkout.
+
+Where it does belong in a graph is as input to an LLM step that has to *read*
+the change — a policy that summarises a branch, or classifies whether a change
+touches a sensitive area. `side effect: read` with `retry_safe: yes` makes it
+safe to retry, with the caveat that the answer can differ between attempts
+because the checkout is live.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `GitDiffArgs` (`project_id`, optional `base_branch`,
+   optional `workspace`); the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)).
+2. There is no `_cmd_git_diff`; the built-in lookup misses and `execute` falls
+   through to the plugin registry (`handler.py:1008`). The command is served by
+   the **internal** `aq-git` plugin, registered at
+   [`src/plugins/internal/git.py:545`](../../../src/plugins/internal/git.py), so
+   it is always available.
+3. `cmd_git_diff`
+   ([`src/plugins/internal/git.py:951`](../../../src/plugins/internal/git.py)):
+   - `self._resolve(args)` (`git.py:568`) delegates to
+     `resolve_repo_path`
+     ([`src/plugins/services.py:400`](../../../src/plugins/services.py)), which
+     resolves the checkout in a fixed order: a named `workspace` (by name, then
+     by id), else the project's first workspace, else the first repo's
+     `source_path` (for a `LINK` repo) or `checkout_base_path` (for `CLONE` /
+     `INIT`). With nothing found it refuses with *"Project '<id>' has no
+     workspaces."* A missing `project_id` falls back to the handler's active
+     project, and an unknown one is refused.
+   - With `base_branch`: `git.aget_diff(checkout_path, base)`. Without it:
+     `git._arun(["diff"], cwd=checkout_path)` — the plain working-tree diff.
+     Both go through the async `GitManager`; a `GitError` is returned as
+     `{"error": str(e)}`.
+   - Returns `project_id`, `base_branch` (the given base, or the literal
+     `(working tree)`), and `diff` (or the literal `(no changes)` when empty).
+4. `_outcome_of` (`builtin.py:476`) maps the dict to `read`, or `rejected` on any
+   error.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None in AQ: no row, no event, `side effect: read`. It does run `git` in a
+project checkout, which is I/O against a directory other sessions may be using.
+
+Nothing is persisted, and the placeholder strings matter for a consumer: a
+successful read of a clean tree returns `diff: "(no changes)"`, not an empty
+string, and `base_branch: "(working tree)"` when no base was given — so a step
+that branches on emptiness must compare against those literals rather than
+truthiness.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | No `project_id` and no active project; an unknown project; a named `workspace` that does not resolve; a project with no workspaces and no usable repo path; or any `GitError` — an unknown base branch, a corrupt or missing checkout, a `git` invocation failure. |
+| `unauthorized` | The capability gate refused `git_diff` for the step principal. |
+| `contract_violation` | The dict did not satisfy `GitDiffValue` (`project_id`, `base_branch` and `diff` are all required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `state_limit_exceeded` | The bound `diff` exceeded the per-result byte limit (`command.py:147`). This is the *likely* failure for any real branch: a whole diff is large. Prefer a narrower read, or hand the diff to a step that consumes it directly instead of binding it. |
+| `input_resolution_failed` | A resolved input failed `GitDiffArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` has no input and
+`unmapped_business_outcome` when `read` or `rejected` has no transition.
+
+`aq git diff --project-id <id> [--base-branch <ref>]` is the same read from the
+CLI, and `aq project get --project-id <id>` shows which workspaces exist to choose between.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "classify-branch-change",
+  "title": "read_diff",
+  "source": {"path": "change-classifier.md", "start_line": 14, "end_line": 19},
+  "command": "git_diff",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "base_branch": {"type": "literal", "value": "main"}
+  },
+  "save_result_as": "diff",
+  "transitions": {
+    "read": "classify-branch-change--classify",
+    "rejected": "classify-branch-change--failed",
+    "runtime_error": "classify-branch-change--failed"
+  }
+}
+```

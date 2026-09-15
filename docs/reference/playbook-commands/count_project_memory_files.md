@@ -54,24 +54,117 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Count the files in a project's memory directory, optionally only those modified
+after a timestamp. `count_project_memory_files` exists to answer one question
+cheaply: **how much has changed since the last pass?** A consolidation policy
+needs the churn number to decide whether a project is worth a consolidation task,
+and doing that by listing and filtering client-side would mean shipping every
+filename over the wire.
+
+The server-side `mtime` filter is the whole reason this is a command rather than
+a directory listing: there is no `aq://` equivalent for "files newer than *t*".
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+The historical `memory-consolidation` policy is the canonical caller:
+[`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md)
+calls it with `path: "insights"` and `newer_than: <last_consolidated>` — the
+value [`read_project_memory_file`](read_project_memory_file.md) recovered from
+`consolidation.md` — and omits `newer_than` when there has never been a pass, so
+the count becomes "all insights" and bootstraps the first one. A missing
+directory answers `{"count": 0, "missing": true}`, which the policy treats as
+zero churn rather than an error.
+
+No playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it. `side effect: read` and `retry_safe: yes` make it safe anywhere.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `CountProjectMemoryFilesArgs` (`project_id`, `path`,
+   optional `newer_than`); the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)).
+2. There is no `_cmd_count_project_memory_files`; the built-in lookup misses and
+   `execute` falls through to the plugin registry (`handler.py:1008`). The
+   command is served by the **internal** `aq-files` plugin, registered at
+   [`src/plugins/internal/files.py:573`](../../../src/plugins/internal/files.py),
+   so it is always available.
+3. `cmd_count_project_memory_files`
+   ([`src/plugins/internal/files.py:993`](../../../src/plugins/internal/files.py)):
+   - `_resolve_project_memory_path` (`files.py:907`) applies the same security
+     boundary as the read command: `project_id` must match
+     `^[A-Za-z0-9][A-Za-z0-9_\-]*$`, the candidate is `realpath`d and must be the
+     project's memory directory or a descendant. Unlike the read command, an
+     **empty** `path` is legal here and means the memory directory itself.
+   - A non-existent directory returns `{count: 0, total: 0, missing: true}` —
+     a success, not an error.
+   - A path that exists but is not a directory returns
+     `Not a directory: <path>`.
+   - `newer_than` is parsed with `datetime.fromisoformat` after replacing a
+     trailing `Z` with `+00:00`, so RFC 3339 UTC works; an unparseable value is
+     refused with a message naming the expected format.
+   - It lists the directory (an `OSError` becomes `List failed: <e>`) and walks
+     the entries: every regular file increments `total`, and increments `count`
+     too when there is no cutoff or its `mtime` is strictly greater than the
+     cutoff. Subdirectories are skipped, and the walk is **not** recursive.
+   - Returns `project_id`, the resolved absolute `path`, `count`, `total`, and
+     `newer_than` echoed back when one was given.
+4. `_outcome_of` (`builtin.py:476`) maps the dict to `counted`, or `rejected` on
+   any error.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read`, no clauses. One `listdir` plus one `getmtime` per
+entry; no database row, no event, nothing written.
+
+Two properties are worth relying on: `total` is always the full file count and
+`count` is the filtered one, so `total > 0` with `count == 0` distinguishes "a
+directory with nothing new" from "an empty directory"; and `missing: true` with
+both counters at zero distinguishes both of those from "no directory at all".
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `counted` with `missing: true` (success) | The directory does not exist. `count` and `total` are 0. |
+| `rejected` | A `project_id` that is not a plain identifier; a path resolving outside the project's memory directory; a path that exists but is not a directory; an unparseable `newer_than` (the error names ISO 8601); or an `OSError` while listing. |
+| `unauthorized` | The capability gate refused `count_project_memory_files`. |
+| `contract_violation` | The dict did not satisfy `CountProjectMemoryFilesValue` (`project_id`, `path`, `count` and `total` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `CountProjectMemoryFilesArgs` — for instance `newer_than` bound to a number instead of an ISO string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` or `path` has no input — note that `path` is
+*required by the contract* even though the plugin accepts an empty string for it,
+so a step counting the memory directory itself must pass `""` explicitly — and
+`unmapped_business_outcome` when `counted` or `rejected` has no transition.
+
+`aq file count-project-memory` is the same count from the CLI, and
+`ls ~/.agent-queue/vault/projects/<id>/memory/insights` is the direct check on
+the host. Remember that `mtime` is the filter, so a file that was touched
+without being changed still counts as churn.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "consolidate-memory",
+  "title": "count_insights",
+  "source": {"path": "memory-consolidation.md", "start_line": 59, "end_line": 66},
+  "command": "count_project_memory_files",
+  "inputs": {
+    "project_id": {"type": "loop_ref", "binding": "project", "path": "id"},
+    "path": {"type": "literal", "value": "insights"},
+    "newer_than": {"type": "binding_ref", "binding": "marker", "path": "last_consolidated"}
+  },
+  "save_result_as": "churn",
+  "transitions": {
+    "counted": "consolidate-memory--decide_targets",
+    "rejected": "consolidate-memory--failed",
+    "runtime_error": "consolidate-memory--failed"
+  }
+}
+```

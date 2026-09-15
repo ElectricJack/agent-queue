@@ -95,18 +95,17 @@ def test_a_missing_page_and_an_unknown_page_are_reported(generator, docs_copy: P
 
 
 def test_regeneration_preserves_hand_written_sections(generator, docs_copy: Path):
+    # Appending rather than rewriting a stub keeps this guard about the
+    # generator's splice, not about whatever prose a page happens to carry.
     page = docs_copy / "gate_create.md"
+    sentinel = "Hand-written prose a regeneration must not touch."
     page.write_text(
-        page.read_text(encoding="utf-8").replace(
-            "TODO: what this command is for, in the reader's terms.",
-            "Hand-written prose a regeneration must not touch.",
-        ),
-        encoding="utf-8",
+        page.read_text(encoding="utf-8") + f"\n## Sentinel\n\n{sentinel}\n", encoding="utf-8"
     )
 
     generator.write(docs_copy)
 
-    assert "Hand-written prose a regeneration must not touch." in page.read_text(encoding="utf-8")
+    assert sentinel in page.read_text(encoding="utf-8")
     assert generator.write(docs_copy) == []
 
 

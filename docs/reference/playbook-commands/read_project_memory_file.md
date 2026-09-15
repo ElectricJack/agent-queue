@@ -52,24 +52,121 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Read one file out of a project's memory directory in the vault —
+`{data_dir}/vault/projects/<project_id>/memory/<path>`. It exists because the
+ordinary file tools sandbox paths to the workspace and to known repo/workspace
+paths, so the vault, which lives under `~/.agent-queue/` by default, is
+unreachable from them.
+
+This is the sanctioned read for a policy that needs the vault's own bookkeeping —
+`consolidation.md`, a knowledge file, a facts file — and it is read-only by
+design: there is no writing counterpart.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+The historical `memory-consolidation` policy is the canonical caller:
+[`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md)
+reads `consolidation.md` per active project to recover `last_consolidated` from
+its YAML frontmatter, treating a missing file as `last_consolidated: null`, and
+then counts insight churn with
+[`count_project_memory_files`](count_project_memory_files.md) to decide which
+projects qualify for a pass.
+
+No playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it. The `missing` outcome is the reason this command is pleasant to use from a
+graph: "the file is not there" is a *declared success*, so the step branches on
+it rather than treating a first run as a failure.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `ReadProjectMemoryFileArgs` (`project_id`, `path`); the
+   adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)).
+2. There is no `_cmd_read_project_memory_file`: the built-in lookup misses and
+   `execute` falls through to the plugin registry (`handler.py:1008`). The
+   command is served by the **internal** `aq-files` plugin, registered at
+   [`src/plugins/internal/files.py:570`](../../../src/plugins/internal/files.py),
+   so unlike the memory commands it is always available.
+3. `cmd_read_project_memory_file`
+   ([`src/plugins/internal/files.py:948`](../../../src/plugins/internal/files.py)):
+   - Requires a non-empty `path`.
+   - `_resolve_project_memory_path` (`files.py:907`) is the security boundary. It
+     validates `project_id` against `^[A-Za-z0-9][A-Za-z0-9_\-]*$`, which is what
+     stops traversal through a crafted id like `../other`; builds
+     `realpath({data_dir}/vault/projects/<id>/memory)`; joins the caller's
+     `path` with any leading slash stripped so the join stays relative;
+     `realpath`s the candidate; and refuses anything that is not the memory
+     directory itself or a descendant of it (*"Access denied: path is outside the
+     project's memory directory."*).
+   - A path that does not exist returns `missing: True` alongside an `error`, so
+     both the "absent" flag and a readable message are present.
+   - A directory returns `Not a file: <path>`; a non-UTF-8 file returns
+     `Binary file -- cannot display contents`; an `OSError` returns
+     `Read failed: <e>`.
+   - Success returns `project_id`, the **resolved absolute** `path`, and
+     `content`.
+4. `_outcome_of` (`builtin.py:476`) has a dedicated branch: an error result that
+   also carries `missing` becomes the `missing` outcome (`builtin.py:481`), and a
+   successful result is `read` (or `missing`, if the handler ever set the flag on
+   a success). Every other error is `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read`, no effect clauses, `retry_safe: yes`. One filesystem
+read; no database row, no event, no cache.
+
+The thing to be aware of is that the vault is the source of truth here, and it is
+edited by *agents* — the consolidation task rewrites these files with ordinary
+Read/Edit/Write tools. So the content a step reads is whatever the last
+consolidating agent left, and the file may legitimately not exist yet on a
+project that has never been consolidated.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `missing` (success) | No file at that path under the project's memory directory. `missing: true` and `error` say so; `content` is absent. |
+| `rejected` | An empty `path`; a `project_id` that is not a plain identifier; a path that resolves outside the memory directory; a path that is a directory; a non-UTF-8 file; or an `OSError` while reading. |
+| `unauthorized` | The capability gate refused `read_project_memory_file`. |
+| `contract_violation` | The outcome has no transition and there is no `runtime_error` edge. The value model itself is forgiving — every field on `ReadProjectMemoryFileValue` is optional. |
+| `state_limit_exceeded` | The bound `content` exceeded the per-result byte limit (`command.py:147`). A large knowledge file will hit this; read a narrower file or drop `save_result_as`. |
+| `input_resolution_failed` | A resolved input failed `ReadProjectMemoryFileArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` or `path` has no input, and
+`unmapped_business_outcome` for `read`, `missing` or `rejected` left without a
+transition — `missing` is the one that is easy to forget and the one a first run
+will produce.
+
+`aq file read-project-memory` is this exact read from the CLI — the general
+`aq file read` cannot reach the vault, since it is sandboxed to workspaces. The
+other direct diagnostic is the host filesystem,
+`~/.agent-queue/vault/projects/<id>/memory/`;
+`aq system vault-rebuild-index` regenerates the hub files around it.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "consolidate-memory",
+  "title": "read_consolidation_marker",
+  "source": {"path": "memory-consolidation.md", "start_line": 52, "end_line": 58},
+  "command": "read_project_memory_file",
+  "inputs": {
+    "project_id": {"type": "loop_ref", "binding": "project", "path": "id"},
+    "path": {"type": "literal", "value": "consolidation.md"}
+  },
+  "save_result_as": "marker",
+  "transitions": {
+    "read": "consolidate-memory--count_insights",
+    "missing": "consolidate-memory--count_insights",
+    "rejected": "consolidate-memory--failed",
+    "runtime_error": "consolidate-memory--failed"
+  }
+}
+```

@@ -58,24 +58,156 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Find-or-create a task by `(project_id, dedup_key)`. `ensure_task` is the
+replay-safe way for a playbook to make sure some piece of work exists exactly
+once: the first call creates the task and answers `created`, every later call
+with the same key finds the live row and answers `reused` without touching it.
+
+The key is a *semantic* identity chosen by the author —
+`spec-ingest:<path>`, `ci-baseline:<signature>:<attempt>`,
+`review:task:<id>` — which is what makes two deliveries of one event, or two
+different events about the same subject, converge on one task. A task that
+already reached a terminal status (`COMPLETED`, `FAILED`) is ignored, so the key
+becomes reusable for the next round of the same work.
+
+`profile_id` and `intelligence_class` are *create-time* intent only. An existing
+task is returned untouched, so re-running the step never re-routes work that is
+already in flight.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Two shipped playbooks call it, and between them they show both halves of the
+pattern:
+
+- [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
+  rule `spec-ingest-on-approve`: one ingest task per approved spec file, keyed
+  `spec-ingest:{event.spec_path}`, pinned to the `spec-ingest` profile with an
+  explicit `standard-high` class. The explicit class matters because
+  `ensure_task` suppresses `task.created` — a task with only a pinned profile
+  would wait forever for a routing decision nothing requests.
+- [`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md),
+  rule `keep-main-green` step 2: the repair task for a red default branch, keyed
+  `ci-baseline:<signature>:<attempt>` by
+  [`ci_baseline_status`](ci_baseline_status.md). A new commit that leaves the
+  same tests red reuses the in-flight repair; a different failure gets its own
+  task.
+
+Use it whenever the step can run more than once for the same subject — a timer
+rule, a retried event, or an event type the bus may redeliver. The contract is
+`idempotency: keyed on dedup_key` and `retry_safe: yes`, so the engine is free
+to retry it.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `LiveCommandExecutor.execute`
+   ([`src/playbooks/executors/command.py:264`](../../../src/playbooks/executors/command.py))
+   builds `EnsureTaskArgs`. Because the contract is keyed, `_keyed_argument`
+   (`command.py:186`) fills `dedup_key` from — in order — the step's
+   `idempotency_key` override, the step's own binding of `dedup_key`, and only
+   then the engine's attempt key. Presence wins over value: a key the author
+   bound to something that resolved to `null` stays `null`. Overwriting an
+   authored `dedup_key` with an attempt key would turn "create or reuse" into
+   "create every time".
+2. The adapter (`_adapter`,
+   [`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)) under the
+   step principal; the pause and capability gates run there.
+3. `_cmd_ensure_task`
+   ([`src/commands/task_commands.py:4641`](../../../src/commands/task_commands.py)):
+   - Requires `project_id` (falling back to the handler's active project),
+     `dedup_key` and `title`.
+   - **Triage special case.** `profile_id: triage` with `dedup_key:
+     triage-open` is delegated to `ensure_triage_task`
+     ([`src/database/queries/triage_queries.py`](../../../src/database/queries/triage_queries.py)),
+     which also restarts a spent triage task; a `created` or `restarted` result
+     emits `task.updated` on the graph channel.
+   - **Review-of-a-review guard.** A `review:task:<X>` key whose `X` is itself a
+     pipeline review row is refused outright — the guard that stopped
+     `Review: Review: Review: …` chains from reaching the live queue
+     (`task_commands.py:4703-4720`).
+   - **The lookup.** `db.find_task_by_dedup_key`
+     ([`src/database/queries/task_queries.py:1856`](../../../src/database/queries/task_queries.py))
+     returns the live non-terminal row for the key. A hit returns
+     `{"task_id": …, "created": false}` immediately — no reparenting, no field
+     writes, no events.
+   - **The creation.** Otherwise it builds a `create_task` payload with
+     `_suppress_created_event: True` (control-plane bookkeeping must not
+     re-trigger the pipeline against itself and attach a routing gate only the
+     triage agent could resolve), forwards `parent_id` / `root` / `reason` /
+     `discovered_from` by *presence* rather than truthiness so an explicit
+     `parent_id: null` still means "file at the root", and delegates to
+     `_cmd_create_task` (`task_commands.py:1695`).
+   - `initial_status` is reserved for `playbook-run:*` presentation tasks and
+     restricted to `IN_PROGRESS` / `PAUSED` / `COMPLETED` / `FAILED`, so a
+     playbook-run root is born in its projected state instead of spending a
+     window as claimable `READY` work.
+   - The new row's `task.updated` graph event is emitted after the create
+     returns.
+4. `_outcome_of` (`builtin.py:476`) maps `created: true` to `created`,
+   `created: false` to `reused`, and any `error` to `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+On `reused`: nothing is written. On `created`: everything
+[`create_task`](create_task.md) writes — a `tasks` row plus any labels, edges,
+requirement and metadata rows — with `tasks.dedup_key` carrying the key that
+makes the next call idempotent.
+
+`task.created` is deliberately **not** emitted. `task.updated` is, on the graph
+channel, so the dashboard's graph refreshes. The durable dedup guarantee is the
+`dedup_key` column itself, so it survives a restart, a replayed event, and a
+daemon that missed the bus message.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `reused` (success) | A live non-terminal task already holds the key. |
+| `rejected` | Missing `project_id` / `dedup_key` / `title`; a `review:task:` key naming another pipeline review; `initial_status` on a non-`playbook-run:` key or with a value outside the allowed four; an invalid `intelligence_class` for the pinned profile; or any refusal `create_task` itself raises (unknown project/profile, `hierarchy.*`, a capability-narrowed delegation). |
+| `unauthorized` | The capability gate refused `ensure_task` for the step's principal. |
+| `contract_violation` | The handler's dict did not satisfy `EnsureTaskValue`, or the step has no transition for the returned outcome and no `runtime_error` edge. |
+| `input_resolution_failed` | The resolved inputs failed `EnsureTaskArgs` — most often a `dedup_key` that resolved to a non-string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `dedup_key` or `title` has no input — the mistake that
+would otherwise fall through to the engine's attempt key and create a task per
+attempt — and `unmapped_business_outcome` when `created` or `reused` has no
+transition.
+
+`retry_safe: yes` means the engine may retry the step; the key makes the retry
+converge. To diagnose, `aq task show <id>` prints the row (its `dedup_key`
+included) and `aq task explain --task-id <id>` says why an ensured task is not running —
+usually an unresolved routing gate because no class was pinned.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+One entry of the artifact's `steps` map, taken from the shape the CI sentinel
+compiles to
+([`tests/fixtures/playbooks/v2/ci-main-sentinel/artifact.json`](../../../tests/fixtures/playbooks/v2/ci-main-sentinel/artifact.json)):
+
+```json
+{
+  "type": "command",
+  "rule": "keep-main-green",
+  "title": "ensure_repair_task",
+  "source": {"path": "ci-main-sentinel.md", "start_line": 34, "end_line": 41},
+  "command": "ensure_task",
+  "inputs": {
+    "project_id": {"type": "literal", "value": "agent-queue"},
+    "dedup_key": {"type": "binding_ref", "binding": "baseline", "path": "dedup_key"},
+    "title": {"type": "binding_ref", "binding": "baseline", "path": "title"},
+    "description": {"type": "binding_ref", "binding": "baseline", "path": "description"},
+    "priority": {"type": "literal", "value": 5},
+    "intelligence_class": {"type": "literal", "value": "deep-high"}
+  },
+  "save_result_as": "repair",
+  "transitions": {
+    "created": "keep-main-green--done",
+    "reused": "keep-main-green--done",
+    "rejected": "keep-main-green--failed",
+    "runtime_error": "keep-main-green--failed"
+  }
+}
+```

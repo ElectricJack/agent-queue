@@ -55,24 +55,124 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Record that one task depends on another. `add_dependency` writes a single typed
+edge `task_id → depends_on` into the work graph and recomputes the blocked-state
+projection in the same transaction, so the dependent task's `is_blocked` is
+correct before anything can schedule it.
+
+The edge *type* decides what the edge means. Blocking kinds (`blocks`,
+`waits-for`, `conditional-blocks`, `parent-child`) gate readiness and go through
+cycle detection; provenance kinds (`discovered-from`, `related`, `duplicates`,
+`supersedes`) are pure audit trail and skip the DAG check. One pair of tasks can carry several edges of
+different types — a `blocks` edge and a `discovered-from` edge, say — because
+the duplicate check is per (pair, type).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+`add_dependency` as a step. The default pipeline builds graphs the other way
+round: [`task_batch_commit`](task_batch_commit.md) materialises a whole approved
+proposal — tasks *and* edges — in one guarded operation, and
+[`create_task`](create_task.md) accepts `depends_on` at creation time, which is
+the right shape when the dependency is known before the task exists.
+
+A custom playbook reaches for `add_dependency` when the two tasks already exist
+and something it just learned links them: a repair task that must precede a
+release, a newly filed finding that blocks the deliverable it was found in.
+`retry_safe: yes` with `idempotency: natural` is honest here — the underlying
+insert is idempotent on the composite primary key, and the command reports a
+pre-existing edge as the distinct `already_linked` outcome rather than a failure.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `AddDependencyArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_add_dependency`.
+2. `_cmd_add_dependency`
+   ([`src/commands/task_commands.py:3003`](../../../src/commands/task_commands.py)):
+   - Requires both ids and refuses a self-edge.
+   - Defaults `dep_type` to `blocks` and checks it against `DEP_TYPE_VALUES`.
+   - Reads both tasks back (`db.get_task`) — a dangling edge is never written.
+   - Checks `db.get_typed_dependencies`
+     ([`src/database/queries/dependency_queries.py:174`](../../../src/database/queries/dependency_queries.py))
+     for an existing edge *of this type* and returns an
+     `already exists` error if there is one; the adapter turns that specific
+     message into the `already_linked` outcome (`builtin.py:483`).
+   - For a blocking type, loads the whole edge set and runs
+     `validate_dag_with_new_edge`, which raises `CyclicDependencyError` if the
+     edge would close a cycle over the blocking subgraph.
+   - For `waits-for`, additionally runs `validate_waits_for` against the
+     parent-child edges: a waiter that is itself a descendant of the container
+     would fan in over a set containing itself and could never be satisfied.
+   - Calls `db.add_dependency`
+     ([`src/database/queries/dependency_queries.py:52`](../../../src/database/queries/dependency_queries.py)).
+     That helper inserts the row **and** recomputes the blocked projection in one
+     transaction; a `parent-child` edge is delegated to
+     `HierarchyQueryMixin.set_parent`, the single writer that keeps the edge and
+     the `tasks.parent_task_id` cache in sync.
+   - Logs `dependency.added` to the event log and publishes `task.updated` on the
+     graph channel (`_emit_task_graph_change`, `task_commands.py:861`).
+3. `_outcome_of` (`builtin.py:476`) maps a clean dict to `linked`, the duplicate
+   message to `already_linked`, and everything else to `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes one `task_dependencies` row (or, for `parent-child`, the hierarchy edge
+plus the `tasks.parent_task_id` cache) and the recomputed `is_blocked` flags for
+every task the new edge affects. Appends a `dependency.added` audit row. Emits
+`task.updated` on the graph channel and, from inside `db.add_dependency`, the
+blocked/settled/ready notifications the scheduler listens for.
+
+All of it is committed database state. Because the projection is recomputed in
+the same transaction as the insert, a reader can never see the edge without the
+blocked flag it implies — which is exactly the invariant that keeps a newly
+blocked task from being claimed a moment later.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `already_linked` (success) | The pair already carries an edge of this exact type. Nothing was written. |
+| `rejected` | Missing `task_id` or `depends_on`; a self-edge; an unknown `dep_type` (the error lists the allowed set); either task not found; `Cannot add dependency: <cycle>` from `validate_dag_with_new_edge`; the `waits-for` descendant-deadlock refusal; or a `hierarchy.*` refusal from `set_parent` such as `hierarchy.depth` or `hierarchy.container_closed`. |
+| `unauthorized` | The capability gate refused `add_dependency`. |
+| `contract_violation` | The dict did not satisfy `AddDependencyValue`, or the returned outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `AddDependencyArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for a missing `task_id` or `depends_on`, and
+`unmapped_business_outcome` when `linked` or `already_linked` has no
+transition — worth noting, because a step that maps only `linked` fails on the
+perfectly ordinary replay case.
+
+`aq task deps --task-id <id>` shows the edges that exist, `aq task show <id>` shows
+`is_blocked`, and `aq task explain --task-id <id>` names the upstream task that is
+actually holding a dependent back.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "link-repair-to-release",
+  "title": "link_dependency",
+  "source": {"path": "release-policy.md", "start_line": 30, "end_line": 35},
+  "command": "add_dependency",
+  "inputs": {
+    "task_id": {"type": "binding_ref", "binding": "release", "path": "task_id"},
+    "depends_on": {"type": "binding_ref", "binding": "repair", "path": "task_id"},
+    "dep_type": {"type": "literal", "value": "blocks"},
+    "reason": {"type": "literal", "value": "the release waits for the CI repair"}
+  },
+  "save_result_as": "edge",
+  "transitions": {
+    "linked": "link-repair-to-release--done",
+    "already_linked": "link-repair-to-release--done",
+    "rejected": "link-repair-to-release--failed",
+    "runtime_error": "link-repair-to-release--failed"
+  }
+}
+```

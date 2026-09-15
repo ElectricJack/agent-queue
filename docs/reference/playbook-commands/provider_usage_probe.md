@@ -54,24 +54,144 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Ask a provider's own CLI what is left of the account's rate-limit windows, and
+store what it says. Codex publishes its limits passively on the transcript lines
+the watcher already reads, but Claude has no local equivalent — the only way to
+learn what the subscription has left is to ask the CLI, and the only thing that
+can ask it on a schedule is a playbook.
+
+The command is deliberately dull: it runs one subprocess, hands the text to a
+pure parser, writes whatever snapshots came back, and records its own verdict so
+`aq doctor --check providers.claude_usage` can tell "the CLI's wording moved"
+from "nobody has probed lately". Every failure path returns without writing a
+snapshot, so the last good reading survives a timeout, a crash, or a CLI that
+started printing something else.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/provider-usage-probe.md`](../../../src/prompts/default_playbooks/provider-usage-probe.md)
+is its only caller: every `timer.10m` tick, rule `probe-claude-usage` calls it
+with `provider: claude` and ends. Naming the provider explicitly in the shipped
+playbook keeps the step readable and keeps a second provider from silently
+inheriting the first one's timer.
+
+Five of the six declared outcomes are successes, and that is the design: a box
+without the CLI, an account billed per token, and a probe an operator turned off
+are all facts about the install rather than broken steps. A step that failed
+every ten minutes on any of them would fill the run overlay with noise nobody
+can act on. The design is
+[`docs/superpowers/specs/2026-09-07-provider-usage-design.md`](../../superpowers/specs/2026-09-07-provider-usage-design.md).
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `ProviderUsageProbeArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_provider_usage_probe`.
+2. `_cmd_provider_usage_probe`
+   ([`src/commands/provider_commands.py:36`](../../../src/commands/provider_commands.py)):
+   - Lower-cases `provider`, defaulting to `claude`, and checks it against
+     `PROBEABLE` (`provider_commands.py:30`) — `claude` and nothing else. Codex
+     is absent on purpose: it needs no probe, and inventing a reading for an idle
+     Codex session is exactly the "frozen number that looks live" the design
+     forbids.
+   - If `providers.claude.usage_probe_enabled` is false, returns the `disabled`
+     outcome through `_finish_probe` with `detail` naming the config key — a
+     decision, not a fault.
+   - Calls `probe_claude_usage`
+     ([`src/providers/probe.py`](../../../src/providers/probe.py)) with the
+     configured binary and `config.data_dir` as the working directory. That
+     function owns the subprocess and the parsing; the command never inspects
+     the text itself.
+   - A `result.ok` of false returns `success: False` with `error` and `reason`
+     set from the probe's own outcome — and **no** snapshot write.
+   - Otherwise `db.record_provider_usage(result.snapshots)` stores whatever came
+     back and returns how many rows it actually wrote. That query
+     ([`src/database/queries/provider_usage_queries.py:213`](../../../src/database/queries/provider_usage_queries.py))
+     discards a snapshot older than the newest row in its
+     `(provider, window, scope)` series outright, and for one whose
+     `(used_percent, resets_at)` is unchanged pushes `last_seen_at` forward
+     without writing a row — so an idle account at a ten-minute cadence adds
+     nothing.
+   - The payload carries `outcome`, `provider`, the public projection of each
+     snapshot (`_public`, `provider_commands.py:138`), `recorded`, `unparsed`
+     and an optional `detail`.
+3. `_finish_probe` (`provider_commands.py:113`) runs on **every** path, success
+   or failure, and writes the probe's own verdict with
+   `db.record_probe_health(provider, health)`: `ok`, `outcome`, `unparsed`,
+   `not_applicable`, `error`, `detail`, `recorded` and a timestamp. The doctor
+   check has no other way to distinguish a probe whose output stopped parsing
+   from one that has not run. A failure to record the verdict is logged and
+   swallowed — it must not turn a good probe into a bad one.
+4. `_outcome_of` (`builtin.py:476`) passes the handler's `outcome` through when
+   it is one of `probed` / `unparsed` / `not_applicable` / `unavailable` /
+   `disabled` (`_PROBE_OUTCOMES`, `builtin.py:597`) and maps anything else to
+   `rejected`. The adapter special-cases a rejected probe so `provider` and
+   `detail` still reach the caller (`builtin.py:566-571`).
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes zero or more `provider_usage_snapshots` rows (only on `probed`, and only
+when the reading differs from the newest stored one) and, on every single call,
+the probe-health record. Runs one local subprocess. Emits no bus event.
+
+The stored snapshot is what the API and the dashboard card read; the last good
+one survives every failure mode, and the surface labels it stale from its
+`last_seen_at` rather than pretending it is current — a blank card beats a wrong
+number, and a number labelled stale beats a blank card. Four of the five success
+outcomes store no snapshot at all.
+
+Each probe leaves a zero-turn session file under `~/.claude/projects/`. The
+transcript watcher only reads transcripts belonging to live session rows, so
+those files are inert and are deliberately not suppressed.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `unparsed` (success) | The CLI answered, but no limit-line regex matched. The verdict is recorded with `unparsed: true`, which is what the doctor check reads. |
+| `not_applicable` (success) | An API-key account has no subscription window to report. |
+| `unavailable` (success) | This box has no Claude CLI, or the probe timed out. A timeout reports `unavailable` exactly like a missing CLI. |
+| `disabled` (success) | `providers.claude.usage_probe_enabled` is false. |
+| `rejected` | An unknown `provider` (the error lists `PROBEABLE`), a non-zero exit, or an unreadable body. Nothing is written except the health verdict. |
+| `unauthorized` | The capability gate refused `provider_usage_probe`. |
+| `contract_violation` | The dict did not satisfy `ProviderUsageProbeValue` (`outcome` and `provider` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | `provider` resolved to something that is not a string. |
+
+Statically,
+[`src/playbooks/validation.py:1508`](../../../src/playbooks/validation.py) emits
+`argument_unknown` for any input other than `provider` (the only argument), and
+`unmapped_business_outcome` for any of the six declared outcomes left without a
+transition. With five successes that all mean "healthy", the shipped playbook
+maps all five to one `completed` terminal.
+
+The rule has no retry: the next tick is ten minutes away and is a better retry
+than any the run could schedule. `aq doctor --check providers.claude_usage`
+turns a probe that stopped working into a human's problem, and
+`aq system provider-usage-probe` runs the same probe by hand.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "probe-claude-usage",
+  "title": "probe_usage",
+  "source": {"path": "provider-usage-probe.md", "start_line": 30, "end_line": 37},
+  "command": "provider_usage_probe",
+  "inputs": {
+    "provider": {"type": "literal", "value": "claude"}
+  },
+  "save_result_as": "usage",
+  "transitions": {
+    "probed": "probe-claude-usage--done",
+    "unparsed": "probe-claude-usage--done",
+    "not_applicable": "probe-claude-usage--done",
+    "unavailable": "probe-claude-usage--done",
+    "disabled": "probe-claude-usage--done",
+    "rejected": "probe-claude-usage--failed",
+    "runtime_error": "probe-claude-usage--failed"
+  }
+}
+```

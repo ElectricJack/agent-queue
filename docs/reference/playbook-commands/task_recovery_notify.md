@@ -53,24 +53,152 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Wake the one durable recovery incident for a failed task. When a worker attempt
+stops and leaves its task `BLOCKED`, exactly one incident record should exist and
+exactly one notice should reach the party that can decide about it —
+the project supervisor, or the integration operation that owns the task.
+`task_recovery_notify` is the event-driven way to reach that record.
+
+The point of the command is convergence, not creation. The daemon's periodic
+recovery scan reconciles the same record, so a `task.failed` event, a replay of
+that event and the scan all land on one incident and one `msg-recovery-*`
+notice. Nothing is written when there is no actionable failure yet.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/blocked-task-escalation.md`](../../../src/prompts/default_playbooks/blocked-task-escalation.md)
+is its only caller and the only rule in that playbook: every `task.failed` event
+whose `status` field is `BLOCKED` runs one step — `task_recovery_notify` with
+`task_id` and `project_id` bound from the event — and then ends. The playbook
+never repairs, retries, reopens or closes anything and writes no message of its
+own. The design is
+[`docs/superpowers/specs/2026-09-06-blocked-task-escalation-design.md`](../../superpowers/specs/2026-09-06-blocked-task-escalation-design.md).
+
+This command exists **only** for that path. It is deliberately excluded from
+every other surface: from the CLI
+([`src/cli/auto_commands.py:133`](../../../src/cli/auto_commands.py)), from MCP
+([`src/mcp_registration.py:78`](../../../src/mcp_registration.py)) and from the
+generated HTTP routes
+([`src/api/codegen.py:64`](../../../src/api/codegen.py)). A supervisor *decides*
+an incident with `aq task recover`; nothing outside the daemon needs to file one.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `TaskRecoveryNotifyArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_task_recovery_notify`.
+2. `_cmd_task_recovery_notify`
+   ([`src/commands/task_commands.py:3430`](../../../src/commands/task_commands.py)):
+   - `_messages_disabled_error`
+     ([`src/commands/message_commands.py:78`](../../../src/commands/message_commands.py))
+     refuses first when the messages substrate is paused — the notice is the
+     whole point, so a paused substrate is a failure rather than a silent no-op.
+   - Requires a non-empty string `task_id`.
+   - `_task_control_scope_error` (`task_commands.py:3347`) refuses a
+     session-scoped, non-elevated caller (*"out of scope: task Pause/Resume
+     requires an operator"*) and applies the findings-scope check to the task.
+   - Calls `db.notify_task_recovery`
+     ([`src/database/queries/task_recovery_queries.py:264`](../../../src/database/queries/task_recovery_queries.py))
+     and converts its `not_found` outcome into an error naming the project
+     boundary.
+3. `notify_task_recovery` reads the task's stored incident. If one is pending
+   with no decision, `_supersede_stale_task_recovery_incident`
+   (`task_recovery_queries.py:303`) archives it when the task or its attempt has
+   moved on. It then calls `_ensure_task_recovery_incident`
+   (`task_recovery_queries.py:362`), which — inside one `immediate()`
+   transaction that takes `SELECT … FOR UPDATE` on the task row — checks, in
+   order:
+   - the task exists and belongs to `project_id` when one was given, else
+     `not_found`;
+   - the task is `BLOCKED`, else `not_actionable` (`task is <status>, not
+     BLOCKED`);
+   - a failure reason is recorded and no `manual_pause` is set, else
+     `not_actionable` (`operator hold` / `no recorded failure to recover`);
+   - the execution attempt has reached `stopped` or `quarantined`, else
+     `not_actionable` — *"the recovery scan records it"* once it has;
+   - the owner is not a retired integration delegate, else `retired` with the
+     operation id;
+   - the derived incident id (`_incident_id(task, attempt, reason)`) differs from
+     the stored one, else `existing` — and `_redeliver_task_recovery`
+     (`task_recovery_queries.py:500`) may re-arm the same notice after an
+     interrupted supervisor, bounded to two redeliveries and a five-minute
+     backoff.
+   Only past all of that does it build the incident facts — owner, remaining
+   worker-retry and supervisor-recovery budget, `deadline_kind` (runtime,
+   inactivity, stage runtime or acceptance wait), `runtime_seconds`,
+   `idle_seconds`, routing fields and `next_action` — write them to the
+   `supervisor_recovery_incident` task metadata key, insert the
+   `msg-<incident-id>` message to `session:supervisor-<project>`, and return
+   `queued`.
+4. `_outcome_of` (`builtin.py:476`) passes the handler's `outcome` through when
+   it is one of `queued` / `existing` / `not_actionable` / `retired`
+   (`_RECOVERY_NOTIFY_OUTCOMES`, `builtin.py:603`) and maps anything else to
+   `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+On `queued`: one `task_metadata` row under `supervisor_recovery_incident`
+holding the full incident facts, and one `messages` row with a deterministic id
+of `msg-<incident-id>`, `priority: 60`, `archive_after_inject`, and
+`body_kind: task_recovery`. Both are written in the same transaction as the
+task-row lock, which is what makes "one incident, one notice" an invariant
+rather than a hope.
+
+On `existing`: nothing new — at most the same message's delivery is re-armed.
+On `not_actionable` and `retired`: nothing at all.
+
+The deterministic message id is the durable dedup: a replayed event cannot
+insert a second notice, and a restarted or replacement supervisor still finds
+the notice waiting because the delivery cascade holds it rather than dropping
+it. `aq task explain --task-id <id>` surfaces the record as `recovery_incident`.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `existing` (success) | The same incident was already recorded — by an earlier event or by the periodic scan. |
+| `not_actionable` (success) | The task is not `BLOCKED`, has no recorded failure, is under an operator hold, or its attempt has not stopped yet. The scan records the incident once there is one. |
+| `retired` (success) | An ended integration operation retired the delegate. Nothing is recovered; the operation's own disposition (`cancelled` / `superseded`) is the record. |
+| `rejected` | The messages substrate is disabled; a missing or non-string `task_id`; a session-scoped non-elevated caller; or a task outside the event's `project_id` (`Task '<id>' not found in this project`). |
+| `unauthorized` | The capability gate refused `task_recovery_notify`. |
+| `contract_violation` | The dict did not satisfy `TaskRecoveryNotifyValue`, or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `TaskRecoveryNotifyArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `task_id` has no input and `unmapped_business_outcome`
+for any of the five declared outcomes left without a transition. The shipped
+playbook maps all four successes to its `completed` terminal and both `rejected`
+and `runtime_error` to `failed`; copying that mapping is the right default.
+
+The rule has no retry: the command is idempotent, and the next blocked task
+starts a fresh run. Diagnose with `aq task explain --task-id <id>` (which prints the
+incident, its owner, budget and next action) and `aq task recover --task-id <id>
+--incident-id <id> --decision retry|hold --reason …` to act on it.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "escalate-blocked-task",
+  "title": "wake_incident",
+  "source": {"path": "blocked-task-escalation.md", "start_line": 39, "end_line": 47},
+  "command": "task_recovery_notify",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"},
+    "project_id": {"type": "event_ref", "path": "project_id"}
+  },
+  "save_result_as": "incident",
+  "transitions": {
+    "queued": "escalate-blocked-task--done",
+    "existing": "escalate-blocked-task--done",
+    "not_actionable": "escalate-blocked-task--done",
+    "retired": "escalate-blocked-task--done",
+    "rejected": "escalate-blocked-task--failed",
+    "runtime_error": "escalate-blocked-task--failed"
+  }
+}
+```
