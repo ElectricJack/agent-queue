@@ -1336,7 +1336,10 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, s
             ),
             receipt_projection=tuple(result_model.model_fields),
         ),
-        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=summary),
+        presentation=CommandPresentation(
+            title=name.replace("_", " ").title(),
+            summary=summary,
+        ),
     )
 
 
