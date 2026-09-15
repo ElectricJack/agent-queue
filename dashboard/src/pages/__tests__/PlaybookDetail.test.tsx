@@ -81,9 +81,9 @@ vi.mock("../../api/hooks", () => ({
   useDeletePlaybook: () => ({ mutateAsync: state.deletePlaybook, isPending: false }),
 }));
 
-function page() {
+function page(search = "") {
   return (
-    <MemoryRouter initialEntries={["/settings/playbooks/review-flow"]}>
+    <MemoryRouter initialEntries={[`/settings/playbooks/review-flow${search}`]}>
       <Routes>
         <Route path="/settings/playbooks/:playbookId" element={<PlaybookDetail />} />
         <Route path="/settings/playbooks" element={<p>Playbook list</p>} />
@@ -139,6 +139,18 @@ describe("PlaybookDetail tabs", () => {
     expect(screen.getByRole("region", { name: "Playbook semantic graph" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Inspect step Ensure a review task/ })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Playbook graph" })).not.toBeInTheDocument();
+  });
+
+  it("opens the tab the URL names so a link lands on the graph with no extra clicks", () => {
+    render(page("?tab=graph"));
+    expect(screen.getByRole("region", { name: "Playbook semantic graph" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Graph" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("falls back to Source for a tab this page does not have", () => {
+    render(page("?tab=not-a-tab"));
+    expect(screen.getByRole("heading", { name: "review-flow source" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Playbook semantic graph" })).not.toBeInTheDocument();
   });
 
   it("no longer renders the playbook-summary JSON block anywhere", async () => {
