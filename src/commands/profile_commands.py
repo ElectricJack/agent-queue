@@ -591,13 +591,20 @@ class ProfileCommandsMixin:
     async def _cmd_delete_profile(self, args: dict) -> dict:
         """Delete a profile from the vault and the database.
 
-        Deleting a *shipped* default also leaves a tombstone in
-        ``vault/agent-types/.retired-defaults``.  Without it
-        ``vault.ensure_default_profiles()`` — which is write-if-absent and
-        runs every daemon start — reads the missing directory as a fresh
-        install and re-creates the profile, silently undoing the operator's
-        decision at the next restart.  ``aq agent profile-reseed <id>``
-        clears the tombstone and is the explicit way back.
+        Deleting a *shipped* default or a **derived worker rung** also leaves
+        a tombstone in ``vault/agent-types/.retired-defaults``.  Without it
+        ``vault.ensure_default_profiles()`` and
+        ``catalog.derive_rungs_from_vault()`` — both write-if-absent and both
+        run every daemon start — read the missing directory as something to
+        create, silently undoing the operator's decision at the next restart.
+        ``aq agent profile-reseed <id>`` clears the tombstone and is the
+        explicit way back.
+
+        The rung half reads the **vault's** intelligence classes, not the
+        shipped ones, because that is what derivation reads: a rung built from
+        an operator's own class (``spark-low-codex``) must be as deletable as
+        one built from a shipped class, and checking the shipped set left it
+        untombstoned and reappearing on the next start.
 
         Args:
             profile_id (str): Required — the profile to delete.
@@ -608,6 +615,7 @@ class ProfileCommandsMixin:
             ``{"deleted", "name"}``, plus ``"retired": True`` when a
             tombstone was written.
         """
+        from src.intelligence_classes import load_intelligence_classes
         from src.profiles.catalog import shipped_profile_catalog
         from src.profiles.drift import system_profile_ids
         from src.profiles.retired_defaults import retire_default
@@ -636,7 +644,11 @@ class ProfileCommandsMixin:
             await self.db.delete_profile(profile_id)
 
         result: dict = {"deleted": profile_id, "name": name}
-        catalog_ids = {catalog_profile.id for catalog_profile in shipped_profile_catalog()}
+        classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+        catalog_ids = {
+            catalog_profile.id
+            for catalog_profile in shipped_profile_catalog(classes=classes or None)
+        }
         if profile_id in system_profile_ids() or profile_id in catalog_ids:
             await asyncio.to_thread(
                 retire_default,
@@ -646,8 +658,8 @@ class ProfileCommandsMixin:
             )
             result["retired"] = True
             result["note"] = (
-                f"'{profile_id}' is a shipped default; recorded as retired so "
-                f"startup does not re-seed it. Restore it with "
+                f"'{profile_id}' is seeded or derived at startup; recorded as "
+                f"retired so it is not re-created. Restore it with "
                 f"'aq agent profile-reseed {profile_id}'."
             )
         return result
