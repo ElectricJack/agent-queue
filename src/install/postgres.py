@@ -966,6 +966,11 @@ CONFIG_HEADER = """\
 # The daemon refuses to load a config that selects Discord without credentials,
 # so a freshly installed machine starts with no messaging platform selected.
 messaging_platform: none
+
+# Playbook command cards link to this documentation root. Point private
+# deployments at their mirrored docs site if needed.
+docs:
+  base_url: https://github.com/ElectricJack/agent-queue/blob/main/docs/
 """
 
 

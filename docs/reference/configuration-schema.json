@@ -426,6 +426,20 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "docs": {
+      "additionalProperties": false,
+      "default": {
+        "base_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/"
+      },
+      "properties": {
+        "base_url": {
+          "default": "https://github.com/ElectricJack/agent-queue/blob/main/docs/",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "env": {
       "default": "production",
       "type": "string",
@@ -2074,6 +2088,7 @@
       "agents_config",
       "archive",
       "auto_task",
+      "docs",
       "global_token_budget_daily",
       "graph_layout",
       "llm_logging",

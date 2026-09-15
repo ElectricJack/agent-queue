@@ -22,6 +22,7 @@ from src.commands.contracts.registry import (
     ContractRegistrationError,
     ContractRegistry,
 )
+from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
 
 class Args(CommandArgs):
@@ -123,6 +124,20 @@ def test_a_bare_registry_registers_nothing_and_the_singleton_autoloads() -> None
     assert {"create_task", "ensure_task", "message_send", "stop_task"} <= CONTRACTS.names()
     # Idempotent: a second read does not re-register and raise "already registered".
     assert CONTRACTS.names() == CONTRACTS.names()
+
+
+def test_every_builtin_contract_has_the_convention_derived_help_url() -> None:
+    """New commands gain documentation links at registry registration time."""
+    from src.commands.contracts import register_builtin_contracts
+
+    registry = ContractRegistry()
+    register_builtin_contracts(registry)
+
+    assert registry.names()
+    for name in registry.names():
+        assert registry.require(name).contract.presentation.help_url == command_docs_url(
+            DEFAULT_DOCS_BASE_URL, name
+        )
 
 
 def test_the_explanation_module_can_be_imported_first() -> None:

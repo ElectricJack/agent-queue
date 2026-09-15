@@ -17,7 +17,7 @@ class TaskRouteRequest:
     Attributes:
         task_id (str): Task ID to route
         profile_id (str): Eligible worker profile ID that should execute the task (never supervisor)
-        intelligence_class (None | str | Unset): Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high')
+        intelligence_class (None | str | Unset): Intelligence class id (e.g. 'fast-low', 'standard-high', 'astra-high')
             from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing
             class or profile default.
         workspace_id (None | str | Unset): Workspace to prefer for execution (optional)

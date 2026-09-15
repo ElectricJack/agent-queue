@@ -659,6 +659,11 @@ from .playbook_artifact_diff_response_422 import PlaybookArtifactDiffResponse422
 from .playbook_artifact_summary_dto import PlaybookArtifactSummaryDTO
 from .playbook_artifacts_request import PlaybookArtifactsRequest
 from .playbook_artifacts_response_422 import PlaybookArtifactsResponse422
+from .playbook_command_catalog_entry_dto import PlaybookCommandCatalogEntryDTO
+from .playbook_command_catalog_entry_dto_parameters_schema import PlaybookCommandCatalogEntryDTOParametersSchema
+from .playbook_command_catalog_response import PlaybookCommandCatalogResponse
+from .playbook_commands_request import PlaybookCommandsRequest
+from .playbook_commands_response_422 import PlaybookCommandsResponse422
 from .playbook_delete_request import PlaybookDeleteRequest
 from .playbook_delete_response import PlaybookDeleteResponse
 from .playbook_delete_response_422 import PlaybookDeleteResponse422
@@ -1834,6 +1839,11 @@ __all__ = (
     "PlaybookArtifactsRequest",
     "PlaybookArtifactsResponse422",
     "PlaybookArtifactSummaryDTO",
+    "PlaybookCommandCatalogEntryDTO",
+    "PlaybookCommandCatalogEntryDTOParametersSchema",
+    "PlaybookCommandCatalogResponse",
+    "PlaybookCommandsRequest",
+    "PlaybookCommandsResponse422",
     "PlaybookDeleteRequest",
     "PlaybookDeleteResponse",
     "PlaybookDeleteResponse422",

@@ -35,6 +35,7 @@ class StepExplanationDTO:
             result (ExplanationRowDTO | None | Unset):
             outcomes (list[OutcomeExplanationDTO] | Unset):
             contract_fingerprint (None | str | Unset):
+            docs_url (None | str | Unset):
             renderer (StepExplanationDTORenderer | Unset):  Default: StepExplanationDTORenderer.CONTRACT.
     """
 
@@ -45,6 +46,7 @@ class StepExplanationDTO:
     result: ExplanationRowDTO | None | Unset = UNSET
     outcomes: list[OutcomeExplanationDTO] | Unset = UNSET
     contract_fingerprint: None | str | Unset = UNSET
+    docs_url: None | str | Unset = UNSET
     renderer: StepExplanationDTORenderer | Unset = StepExplanationDTORenderer.CONTRACT
 
     def to_dict(self) -> dict[str, Any]:
@@ -89,6 +91,12 @@ class StepExplanationDTO:
         else:
             contract_fingerprint = self.contract_fingerprint
 
+        docs_url: None | str | Unset
+        if isinstance(self.docs_url, Unset):
+            docs_url = UNSET
+        else:
+            docs_url = self.docs_url
+
         renderer: str | Unset = UNSET
         if not isinstance(self.renderer, Unset):
             renderer = self.renderer.value
@@ -111,6 +119,8 @@ class StepExplanationDTO:
             field_dict["outcomes"] = outcomes
         if contract_fingerprint is not UNSET:
             field_dict["contract_fingerprint"] = contract_fingerprint
+        if docs_url is not UNSET:
+            field_dict["docs_url"] = docs_url
         if renderer is not UNSET:
             field_dict["renderer"] = renderer
 
@@ -180,6 +190,15 @@ class StepExplanationDTO:
 
         contract_fingerprint = _parse_contract_fingerprint(d.pop("contract_fingerprint", UNSET))
 
+        def _parse_docs_url(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        docs_url = _parse_docs_url(d.pop("docs_url", UNSET))
+
         _renderer = d.pop("renderer", UNSET)
         renderer: StepExplanationDTORenderer | Unset
         if isinstance(_renderer, Unset):
@@ -195,6 +214,7 @@ class StepExplanationDTO:
             result=result,
             outcomes=outcomes,
             contract_fingerprint=contract_fingerprint,
+            docs_url=docs_url,
             renderer=renderer,
         )
 
