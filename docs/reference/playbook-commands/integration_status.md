@@ -93,24 +93,127 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_status` is the one read that answers "what is integration doing
+for this project, and what is it waiting for?" It returns a single
+snapshot-consistent projection: the rollout mode and generation, the schedule,
+the active batch and its members, per-parent readiness, branch ownership, the
+lease, live repair stages, CI evidence, promotion intents and their
+reconciliation state, pending cleanup, the release record, and a sorted list of
+typed **blockers** with a digest over them.
+
+It is the only command in this family that changes nothing, and it is the
+starting point for every diagnostic path in
+[integration troubleshooting](../../guides/integration-troubleshooting.md#start-here).
+
+The `blocker_digest` is not decoration: it is the value
+[`integration_waive_history`](integration_waive_history.md) requires as proof
+that the operator waiving a blocker looked at the same blocker set the daemon
+sees.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+A policy playbook rarely needs it — the train is event-driven, and every
+decision command re-derives its own state under lock. It is used for
+operator-facing reporting and by rules that want to present rollout state
+before a human gate. Its primary surface is the CLI
+(`aq integration status <project>`) and the dashboard.
+
+Note that `ready` / `rollout_ready` mean *rollout and preflight eligibility*,
+not ordinary task schedulability. A project can be perfectly busy and still
+report `ready: false` because a rollout prerequisite is missing.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler and scope** — `_cmd_integration_status`
+   (`src/commands/integration_commands.py:295`) requires a `project_id` and
+   applies a slightly wider rule than its siblings: a `SESSION` principal is
+   allowed when it belongs to the project (this is a read), a `PLAYBOOK`
+   principal must be resolved, in-project and hold the capability, and
+   `LOCAL`/`SERVICE` are allowed. Everything else is `unauthorized`.
+2. **Delegation** — `IntegrationControlService.status`
+   (`src/integration/controls.py:149`) delegates the projection to
+   `IntegrationStatusService.status` (`src/integration/status.py:86`); an
+   unknown project is `not_found`.
+3. **One snapshot** — `_consistent_snapshot`
+   (`src/integration/status.py:71`) opens a `REPEATABLE READ` transaction and
+   rolls it back at the end. Every table in the projection is read inside it,
+   so the schedule, batch, members, repair stages and promotion intents cannot
+   disagree with each other — a projection assembled from separate reads would
+   routinely show a batch that had already moved on.
+4. **Development mode** — a project in `development` mode returns early with a
+   development-specific projection (deliveries, parked rows, pending
+   publications) and its own blocker digest. The strict-mode preflight is
+   skipped deliberately: development publishes with ordinary Git, so GitHub
+   App, attestation and train-route wiring are prerequisites of the *rollout*
+   path, not of that publisher.
+5. **Relevant tasks** — rather than listing every task, the service selects
+   only tasks that appear in an integration relationship — a checkpoint, a
+   branch origin, a batch membership, a parent or verifier operation, a repair
+   stage, or review evidence — and runs `_task_blockers_on`
+   (`src/integration/status.py:400`) over each, keeping those with blockers as
+   `parent_readiness`.
+6. **Functional preflight** — `IntegrationControlService._functional_preflight_on`
+   (`src/integration/controls.py:186`) runs inside the same snapshot and
+   contributes the wiring blockers plus an explicit `certification` object.
+   Certification is reported as `not_performed` with its deferred items named,
+   rather than being fabricated as a success or represented as a permanent
+   operational blocker.
+7. **Blocker assembly** — project-level blockers (`_project_blockers`,
+   `src/integration/status.py:669`) and repair blockers (`_repair_blockers`,
+   `src/integration/status.py:707`) are combined with the functional ones, an
+   `active_owner` blocker when any branch retains an owner, and the per-task
+   blockers (except `preflight_evidence_unavailable`, which is noise at project
+   level). The list is sorted for stability and hashed into `blocker_digest`.
+8. **External preflight merge** — back in
+   `IntegrationControlService.status`, non-development projects also run
+   `preflight` (`src/integration/controls.py:123`), which may call an injected
+   external probe. Blockers already reported by the database half are
+   de-duplicated by `(code, ref, detail)` before the remainder is merged, and
+   the digest is recomputed over the union.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. The command declares a `read` side effect on the integration operation
+subject, opens a read-only repeatable-read transaction, and rolls it back. It
+writes no rows, enqueues no events, and performs no Git or forge I/O — the
+external preflight hook, when configured, is the only outbound call and it is
+itself a probe.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `status` | The projection is returned. |
+| `not_found` | No such project, or `project_id` was omitted. |
+| `unauthorized` | A session outside the project, an unresolved or out-of-scope playbook principal, or an unrecognised principal kind. |
+
+Reading the result, three fields answer most questions:
+`pending_publications` (a push whose outcome is unconfirmed), `parked`
+(something assembled but undelivered), and `blockers` (what the daemon is
+waiting for). The fleet-wide complements are `aq doctor --check
+integration.operational`, `integration.stranded_fences` and
+`integration.branch_discards`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+The operator form:
+
+```bash
+aq integration status agent-queue
+```
+
+A playbook rule that wants to show rollout state before a human gate:
+
+```markdown
+## Rule: report-rollout-state
+
+On `integration.rollout_review_requested`, call `integration_status` with the
+event `project_id` and bind `state`. `status` completes and carries
+`blockers` and `blocker_digest` for the gate question; `not_found` fails.
+```
+
+## Related
+
+* [`integration_waive_history`](integration_waive_history.md) — consumes this command's `blocker_digest`.
+* [`integration_resume`](integration_resume.md) / [`integration_retry_cleanup`](integration_retry_cleanup.md) — the usual actions after reading a blocker.
+* Guide: [integration troubleshooting](../../guides/integration-troubleshooting.md).

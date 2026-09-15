@@ -55,24 +55,127 @@ Projected into the run receipt: `project_id`, `batch_id`, `request_id`, `catchup
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A train ends when its batch has shipped: the candidate is on `main`, every
+member has a delivery receipt, the repair operation is finished, and no ref
+mutation is still unresolved. `integration_release` is the command that
+declares that end. It deletes the project's integration lease, clears (or
+rolls over) the outstanding sweep request, and writes one durable
+`integration_release_results` row so the release is a fact rather than an
+inference.
+
+The design point worth internalising is that **release is independent of
+cleanup**. Deleting merged source branches, closing audit PRs and tidying refs
+happen on their own bounded schedule through
+[`integration_cleanup`](integration_cleanup.md); making the next train wait for
+them would let a slow forge stall delivery. Release consumes only terminal,
+exact main-delivery evidence.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.batch_promoted`. The reviewed `root-integration-train` policy's
+`release-promoted` rule calls it with `batch_id` and nothing else. The same
+policy notes explicitly that release "is independent of cleanup progress and
+consumes only terminal exact main-delivery evidence".
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_release`
+   (`src/commands/integration_commands.py:862`) validates
+   `IntegrationReleaseArgs`, resolves the batch (absent → `stale`), authorizes
+   against the batch's project, and passes server time in. `released`,
+   `already_released` and `empty` are `success: true`.
+2. **Project resolution, then lock** — `IntegrationReleaseService.release`
+   (`src/integration/release.py:56`) reads the batch's project on a plain
+   connection and hands off to `_release_locked`
+   (`src/integration/release.py:72`), which takes `lock_hierarchy_project` and
+   locks the project and batch rows `FOR UPDATE`.
+3. **Durable replay first** — an existing `integration_release_results` row
+   (`src/database/tables.py:3603`) is returned verbatim through
+   `_persisted_result` (`src/integration/release.py:473`). A release is
+   recorded once and replayed forever; it is never recomputed.
+4. **Empty batches** — a batch whose lifecycle is `empty` returns `empty`
+   without touching the schedule, because [`integration_seal`](integration_seal.md)
+   already consumed that request.
+5. **Full snapshot under lock** — the service locks, in one transaction, the
+   current candidate revision, its publication, the project lease, the repair
+   operation and its active stage, the root promotion intent, this revision's
+   ref mutations, the batch members, the member results, the intent's reserved
+   members, and the delivery receipts. Everything the completeness check needs
+   is read `FOR UPDATE` so no half-finished state can slip past.
+6. **Missing lease** — no lease means a previous release already ran. If the
+   schedule still points at this request that is an `invariant_error`;
+   otherwise the answer is `already_released`, carrying any catch-up request id
+   `_replay_catchup` (`src/integration/release.py:452`) can reconstruct.
+7. **Wait conditions** — `_has_unresolved_on`
+   (`src/integration/release.py:371`) reports any ref mutation, attestation
+   publication or resolution still in flight, and a branch owner still in
+   `handoff_pending` is equally disqualifying. Either gives `wait`.
+8. **Completeness** — `_complete_shipping`
+   (`src/integration/release.py:395`) is the invariant: the batch, candidate,
+   publication, lease, operation, stage, intent, mutations, members, results,
+   reserved members and receipts must together describe a fully shipped train.
+   Anything short of that is `invariant_error` rather than a silent release.
+9. **Schedule handover** — the schedule's `outstanding_request_id` must still
+   be this batch's request, or the outcome is `stale`. If a catch-up trigger
+   was recorded by [`integration_schedule_due`](integration_schedule_due.md)
+   while this train ran — and the project is neither draining nor leaving
+   `train` mode — the sequence is incremented, a new
+   `integration-sweep:<project>:<sequence>` becomes outstanding, and one
+   `integration.sweep_due` event is enqueued for it. Otherwise the outstanding
+   request is cleared.
+10. **Compare-and-swap** — the schedule update and the lease delete are both
+    conditional on the values just observed. If either affects a row count
+    other than 1, `_CASLost` is raised and `release` falls back to
+    `_canonical_replay` (`src/integration/release.py:315`), which re-reads the
+    durable result rather than guessing.
+11. **Record** — one `integration_release_results` row is inserted with the
+    batch, project, request, operation and catch-up ids and `released_at`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts exactly one `integration_release_results` row — the permanent,
+  replayable answer.
+* Deletes the project's `project_integration_leases` row, which is what allows
+  the next `integration_seal` to proceed.
+* Updates `project_integration_schedules`: clears the outstanding request, or
+  rolls a recorded catch-up into the next request and bumps
+  `request_sequence`, and always stamps `last_completed_sweep_at`.
+* Enqueues at most one `integration.sweep_due` event for a catch-up request.
+* Touches **no** cleanup rows, no Git objects and no remote.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `released` | The train is finished; the lease is gone and the schedule is free (or already carrying the catch-up). |
+| `already_released` | A durable release result exists, or the lease was already deleted and the schedule has moved on. |
+| `empty` | An empty batch — nothing to release. |
+| `wait` | An unresolved ref mutation, attestation publication or resolution, or a branch owner stuck in `handoff_pending`. |
+| `stale` | Unknown batch, or the schedule no longer points at this request. |
+| `invariant_error` | Shipping evidence is incomplete, the lease is gone while the schedule still points here, or a recorded catch-up does not match the observed sequence. |
+| `unauthorized` | Caller is outside the batch's project. |
+
+A train stuck on `wait` is the common one: `aq integration status <project>`
+reports `pending_publications` and `ownership`, and
+[publication pending](../../guides/integration-troubleshooting.md#publication-pending)
+walks the reconciliation. Repeated `invariant_error` is a doctor case —
+`aq doctor --check integration.operational`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `root-integration-train` policy:
+
+```markdown
+## Rule: release-promoted
+
+On `integration.batch_promoted`, call `integration_release` with `batch_id`.
+Release is independent of cleanup progress and consumes only terminal exact
+main-delivery evidence.
+```
+
+## Related
+
+* [`integration_promote_main`](integration_promote_main.md) — emits the `integration.batch_promoted` fact.
+* [`integration_cleanup`](integration_cleanup.md) — the separately scheduled tidy-up.
+* [`integration_retry_cleanup`](integration_retry_cleanup.md) — requeues cleanup items that failed.
+* Spec: [Integration lease](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#116-integration-lease).

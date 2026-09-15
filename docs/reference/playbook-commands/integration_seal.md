@@ -53,24 +53,137 @@ Projected into the run receipt: `project_id`, `request_id`, `batch_id`, `operati
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_seal` turns one durable sweep request into one immutable *batch*:
+a frozen, ordered manifest of every reviewed root task that was eligible at the
+instant of sealing, together with the policy and route artifact the rest of the
+train will be judged against.
+
+Sealing is the train's atomicity boundary. After it, the membership of this
+batch cannot change — a task that finishes a second later waits for the next
+sweep — and every later step (build, CI, repair, promotion, cleanup, release)
+reads the snapshot rather than re-deriving eligibility. The command performs
+**no Git I/O at all**; it is pure database work over evidence the daemon has
+already recorded.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.sweep_due`. The reviewed `root-integration-train` policy
+([`tests/fixtures/playbooks/historical-v2/root-integration-train/source.md`](../../../tests/fixtures/playbooks/historical-v2/root-integration-train/source.md))
+calls it with the event's `project_id`, the event's `operation_id` as the
+durable `request_id`, and server time. A sealed train then waits for the
+`integration.sealed` fact this command emits; an empty train is released
+without ever constructing a candidate.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_seal`
+   (`src/commands/integration_commands.py:600`) validates
+   `IntegrationSealArgs`, checks the project exists, authorizes with
+   `_integration_delivery_authorized`, defaults `now` to server time, and
+   reports `sealed` and `empty` as successes.
+2. **Project lock** — `TrainService.seal`
+   (`src/integration/scheduler.py:325`) takes `lock_hierarchy_project` for the
+   whole operation.
+3. **Replay** — `_batch_for_request` (`src/integration/scheduler.py:670`) looks
+   for a batch already bound to this request id. If one exists in any lifecycle
+   other than `sealing`, `_replay_result` (`src/integration/scheduler.py:683`)
+   returns its recorded outcome. A batch left in `sealing` is an interrupted
+   seal and is resumed in place.
+4. **Lease** — `project_integration_leases` (`src/database/tables.py:3589`)
+   holds one live lease per project. An unexpired lease means another sweep
+   owns the repository, and the outcome is `busy`. An *expired* lease must have
+   a resumable `sealing` batch for this same request, or the state is an
+   invariant violation.
+5. **Preconditions** — the project must be in `train` mode, not draining, and
+   must name an `integration_repository_id` that actually belongs to it; the
+   schedule's `outstanding_request_id` must be this request. The frozen
+   `HierarchicalIntegrationPolicy` is parsed from the project row, and the root
+   boundary's route artifact must exist in `playbook_artifacts` with byte-exact
+   identity (`artifact_sha256`, playbook id, scope, scope identifier). A train
+   is never sealed against a route that has drifted.
+6. **Exclusivity** — with no lease and no existing batch, any other batch in an
+   active lifecycle (`sealing` … `cleanup_pending`) makes the outcome `busy`.
+7. **Frontier** — `_eligible_members` (`src/integration/scheduler.py:617`)
+   selects the reviewed root tasks eligible under the project's integration
+   mode. Each member gains a `source_ref` (`_source_ref`,
+   `src/integration/scheduler.py:740`) and a `source_ref_retention` taken from
+   the policy's cleanup settings — except the default branch, which is always
+   retained. Duplicate source refs inside one batch are refused.
+   `_manifest_digest` (`src/integration/scheduler.py:748`) hashes the ordered
+   manifest into `source_manifest_digest`, the value everything later compares
+   against.
+8. **Empty sweep** — with no eligible members an `integration_batches` row is
+   still written, with `lifecycle="empty"`, no integration branch and
+   `cleanup_state="complete"`; `_consume_request`
+   (`src/integration/scheduler.py:704`) clears the outstanding request and the
+   outcome is `empty`. Recording the empty sweep is what keeps the schedule
+   honest.
+9. **Non-empty sweep** — the batch row is created (or re-written, for a resumed
+   `sealing` batch whose members are deleted first) with the manifest digest,
+   the first member's base as `base_sha`, an ephemeral
+   `integration_branch` from `_integration_branch`
+   (`src/integration/scheduler.py:731`), and frozen `policy_snapshot` and
+   `artifact_snapshot` columns. A fresh lease is inserted, or an expired one
+   is taken over with an incremented fence token. One
+   `integration_batch_members` row (`src/database/tables.py:2556`) is written
+   per member, carrying the reviewed head, reviewed tree, source base, source
+   ref, retention and the full review-evidence row.
+10. **Operation and event** — `RepairService.reserve_batch_operation_on`
+    (`src/integration/repair.py:201`) reserves the batch's repair operation up
+    front, so a conflict later in the train already has an operation to attach
+    a stage to. `enqueue_integration_event`
+    (`src/integration/outbox.py:125`) writes one `integration.sealed` event
+    keyed `integration-sealed:<batch_id>`, and the batch moves `sealing →
+    sealed` under a conditional update.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts one `integration_batches` row (`src/database/tables.py:2504`) and one
+  `integration_batch_members` row per member, both immutable for the life of
+  the batch.
+* Inserts or takes over the project's `project_integration_leases` row — the
+  exclusivity token for the whole train.
+* Reserves the batch's `integration_repair_operations` row.
+* Enqueues one deduplicated `integration.sealed` outbox event.
+* On an empty sweep, consumes the outstanding request immediately.
+* Freezes `policy_snapshot` and `artifact_snapshot` onto the batch, so later
+  policy edits cannot retroactively change how this train is judged.
+* No Git commands, no remote access.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `sealed` | A non-empty batch exists, its operation is reserved, and `integration.sealed` is enqueued. |
+| `empty` | Nothing was eligible; the request is consumed and no candidate is built. |
+| `busy` | A live lease, or another batch in an active lifecycle, owns the repository. |
+| `unauthorized` | Caller is outside the project or lacks the capability. |
+| `runtime_error` | Malformed arguments, or the project does not exist. |
+
+`ValueError` inside the service — a request that is not outstanding, a project
+that is not train-configured, a drifted route artifact, duplicate source refs,
+or an expired lease with no resumable batch — surfaces as a command failure
+rather than a typed outcome, because each one means the caller's view of the
+world is wrong in a way retrying will not fix. `aq integration status <project>`
+reports `lease`, `active_batch` and `members`; `aq doctor --check
+integration.operational` catches a stranded lease.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `root-integration-train` policy:
+
+```markdown
+## Rule: seal-due-frontier
+
+On `integration.sweep_due`, call `integration_seal` with the event `project_id`,
+`operation_id` as the durable request identity, and server time. A sealed train
+waits for its emitted `integration.sealed` fact. An empty train is released
+without constructing a candidate.
+```
+
+## Related
+
+* [`integration_schedule_due`](integration_schedule_due.md) — produces the request this command seals.
+* [`integration_build_candidate`](integration_build_candidate.md) — the next step on `integration.sealed`.
+* [`integration_release`](integration_release.md) — frees the lease this command took.
+* Spec: [Eligibility](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#72-eligibility) and [Every non-empty sweep: ephemeral integration branch](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#74-every-non-empty-sweep-ephemeral-integration-branch).

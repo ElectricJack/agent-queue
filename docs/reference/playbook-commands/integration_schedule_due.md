@@ -56,24 +56,121 @@ Projected into the run receipt: `project_id`, `request_id`, `trigger`, `requeste
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A project in `train` mode publishes on an interval: every so often the eligible
+reviewed work is gathered into one batch and driven to `main`. Something has to
+turn "the interval elapsed" or "an operator asked" into exactly one durable
+request — not one per timer tick, not one per daemon, and not a second one
+while the previous train is still running.
+
+`integration_schedule_due` is that funnel. It advances the schedule's window,
+decides whether a sweep is owed, and either creates one durable request
+(`integration-sweep:<project>:<sequence>`) with a matching
+`integration.sweep_due` outbox event, or records the trigger as a *catch-up*
+to be honoured when the current train releases.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+It is the entry point a periodic timer drives, with `trigger: "periodic"` and
+server time in `now`. The same command backs the operator path: `aq integration
+flush <project>` on a train-mode project routes through
+`IntegrationControlService.flush` (`src/integration/controls.py:989`) to
+`mark_due(..., "manual")`.
+
+A policy playbook does not usually call it — it consumes the
+`integration.sweep_due` event that this command enqueues, which is where
+[`integration_seal`](integration_seal.md) takes over.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_schedule_due`
+   (`src/commands/integration_commands.py:576`) validates
+   `IntegrationScheduleDueArgs`, confirms the project exists, and authorizes
+   with `_integration_delivery_authorized`
+   (`src/commands/integration_commands.py:241`). `due`, `not_due` and
+   `coalesced` are reported `success: true`; `disabled` is a failure outcome.
+2. **Mode check at the mutation boundary** — `IntegrationScheduler.mark_due`
+   (`src/integration/scheduler.py:70`) rejects any trigger other than
+   `periodic`/`manual`, takes `lock_hierarchy_project`, and re-reads the
+   project's integration mode inside the transaction. The check lives here, not
+   only in the handler, so that a timer, a durable replay or a direct service
+   caller cannot create the first schedule row while the project is disabled,
+   observing, hierarchy-only or draining.
+3. **Draining is not stranding** — when the project is not eligible the
+   scheduler still calls `_maintain_batch_lease_on`
+   (`src/integration/scheduler.py:207`) for any outstanding request, so
+   disabling new sweeps never strands the batch currently being drained. Then
+   it returns `disabled`.
+4. **Schedule row** — `lock_integration_schedule_on`
+   (`src/database/queries/integration_schedule_queries.py:19`) locks or creates
+   the `project_integration_schedules` row (`src/database/tables.py:3554`) with
+   the default interval. A `periodic` trigger against a disabled schedule row
+   returns `disabled`.
+5. **Window advance** — a periodic trigger at or past `next_due_at` advances
+   the window by whole intervals (`elapsed_boundaries`), so an outage that
+   spans several windows still produces exactly one request rather than a
+   backlog of them, and records `last_observed_window`.
+6. **Coalescing** — if `outstanding_request_id` is set and a batch for it is
+   still in an active lifecycle (`sealing` … `promoted`), the trigger does not
+   create a second request. The first such trigger records
+   `catchup_trigger`, `catchup_requested_at` and `catchup_after_sequence`; the
+   outcome is `coalesced`. [`integration_release`](integration_release.md)
+   later converts that catch-up into the next request.
+7. **Not due** — a periodic trigger before `next_due_at` with nothing
+   outstanding returns `not_due`. A manual trigger is never `not_due`.
+8. **Issue** — otherwise the sequence is incremented, `request_id` becomes
+   `integration-sweep:<project_id>:<sequence>`, the schedule row records the
+   outstanding trigger and timestamp, and `enqueue_integration_event`
+   (`src/integration/outbox.py:125`) writes one `integration.sweep_due` row
+   whose `event_id` and `dedup_key` are both the request id. Outcome `due`.
+
+The request id is the identity everything downstream keys on, which is why it
+is derived from a monotone sequence rather than a UUID: a replayed event
+carries the same id and the outbox dedup key rejects the duplicate.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Creates or updates the project's `project_integration_schedules` row:
+  `request_sequence`, `outstanding_request_id`, `outstanding_trigger`,
+  `outstanding_requested_at`, `next_due_at`, `last_observed_window`, and the
+  three `catchup_*` fields.
+* Enqueues at most one `integration.sweep_due` outbox event, deduplicated by
+  request id.
+* May refresh the batch lease for an outstanding request even when the project
+  has become ineligible.
+* No Git I/O, no task creation.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `due` | A new request exists and its event is enqueued. |
+| `not_due` | The periodic window has not elapsed; nothing changed. |
+| `coalesced` | A train is already running; the trigger is remembered as a catch-up. |
+| `disabled` | The project is not in `train` mode, is draining, or the schedule row is disabled. |
+| `unauthorized` | Caller is outside the project or lacks the capability. |
+| `runtime_error` | Malformed arguments, or the project does not exist. |
+
+Read the result back with `aq integration status <project>`: the `schedule`
+projection carries `request_id`, `request_sequence`, `trigger`, `requested_at`
+and `next_due_at`. A project that reports `coalesced` on every tick has a train
+that is not finishing — start from
+[the publisher is busy](../../guides/integration-troubleshooting.md#the-publisher-is-busy).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+A periodic trigger, expressed the way a timer-driven rule would:
+
+```markdown
+## Rule: request-due-sweep
+
+On the project integration timer, call `integration_schedule_due` with the
+timer `project_id`, server `now`, and literal `trigger` `periodic`. Outcomes
+`due`, `not_due`, and `coalesced` complete; `disabled` ends the run without
+creating work.
+```
+
+## Related
+
+* [`integration_seal`](integration_seal.md) — consumes the `integration.sweep_due` event this command emits.
+* [`integration_release`](integration_release.md) — promotes a recorded catch-up into the next request.
+* Spec: [Scheduling](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#71-scheduling).

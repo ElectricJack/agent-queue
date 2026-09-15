@@ -74,24 +74,142 @@ Redacted in receipts and explanations: `prepared_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_push_conflict_resolution` performs the one remote write a repair
+delegate is allowed to make: it pushes the resolution that
+[`integration_resolve_conflict`](integration_resolve_conflict.md) already froze
+onto the promotion intent, replacing the parent branch's old tip with the
+resolved head under a compare-and-swap.
+
+It takes no Git object IDs. Everything it pushes was committed to the database
+before this call existed, which is what makes the push recoverable: the command
+can crash at any point and a later reader can compare the remote against the
+frozen `resolution_head_sha` and `expected_target` to say exactly what happened.
+
+The recovery boundary is explicit in the code. A `resolution_push_started_at`
+marker is committed *before* Git is reached. No marker proves no push was
+attempted; a marker with no evidence is deliberately ambiguous and is escalated
+rather than retried.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Not from a policy playbook — same reason as
+[`integration_resolve_conflict`](integration_resolve_conflict.md). The caller is
+the authenticated repair delegate holding the branch fence. A policy playbook
+learns the result asynchronously: the push emits
+`integration.resolution_push_observed`, and the reviewed
+`hierarchical-delivery` policy reacts to that by calling
+[`integration_reconcile_promotion`](integration_reconcile_promotion.md) — while
+noting that the observation "is not a receipt or check-success assertion".
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_push_conflict_resolution`
+   (`src/commands/integration_commands.py:1380`) validates
+   `IntegrationPushConflictResolutionArgs` and maps the exception taxonomy:
+   `PromotionAuthorizationError` → `unauthorized`; `StaleFence`/`BranchBusy` →
+   `stale`; `PromotionTargetMoved` → `stale` when the message names a stale
+   authority and `target_moved` otherwise;
+   `PromotionInvariantError`/`PromotionSourceMoved`/`PromotionRuntimeError` →
+   `runtime_error`. A replay is `already_applied`.
+2. **Preconditions** — `PromotionService.push_resolution`
+   (`src/integration/promotion.py:548`) requires a complete session principal,
+   an intent in state `resolution_reserved` or `committed`, and a fence whose
+   target is exactly the intent's repository and branch.
+3. **First transaction — decide and mark** —
+   `_resolution_push_scope_on` (`src/integration/promotion.py:658`) re-runs the
+   same exhaustive writer-scope check as the reservation: active scope, matching
+   operation, parent task, project, repository, `writer_kind`, `trigger_id`,
+   repair subject, session id and instance token, an attached workspace, the
+   exact fence owner and token, and an unexpired stage deadline. A `committed`
+   intent short-circuits as `already_applied`. Inside
+   `mutation_exclusion_on` (state `attached`, role `repair`) the workspace is
+   re-proved with `_assert_exact_resolution`
+   (`src/integration/promotion.py:780`) and the remote branch is read:
+   * remote already at `resolution_head_sha` → the push landed earlier;
+     `_record_resolution_push_on` (`src/integration/promotion.py:688`) records
+     the receipt and the command returns `already_applied`;
+   * remote not at `expected_target` → `target_moved`;
+   * an existing `resolution_push_started_at` with no evidence →
+     `PromotionInvariantError` ("reconcile it first"), because a second push
+     over an ambiguous first one is exactly what must not happen;
+   * otherwise `mark_integration_resolution_push_started_on`
+     (`src/database/queries/integration_delivery_queries.py:442`) commits the
+     marker.
+4. **Second transaction — push** — the marker's transaction has committed, so
+   the authority is deliberately re-established from scratch: the scope check
+   and `mutation_exclusion_on` run again, the workspace proof runs again, and
+   the remote is read again. An authority change in that gap is ambiguity, not
+   a licence to push. If the remote is still the expected old tip,
+   `git.apush_expected_delivery` pushes `resolution_head_sha` onto the target
+   branch with `expected_target` as the CAS old value.
+5. **Receipt** — `record_integration_resolution_push_on`
+   (`src/database/queries/integration_delivery_queries.py:412`) stores
+   `kind: exact_resolution_push_observed` evidence naming the remote sha, the
+   operation, stage ordinal, repair task, session id, instance token,
+   workspace id and fence. That is what
+   [`integration_reconcile_promotion`](integration_reconcile_promotion.md) later
+   finalizes against.
+
+The `_crash("before_resolution_authority_recheck")`,
+`_crash("before_resolution_push")` and `_crash("after_resolution_push")` seams
+exist so tests can kill the process at each boundary and prove the replay is
+correct.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Commits `resolution_push_started_at` on the
+  `integration_promotion_intents` row before any Git call — the recovery
+  boundary.
+* **Writes the parent's integration branch on the remote**, compare-and-swapped
+  against the frozen old tip.
+* Records the durable push receipt on the same intent row.
+* Holds the branch fence in `attached`/`repair` for the whole window; does not
+  change ownership.
+* Reads the repair workspace with Git; makes no other local mutation.
+* `fence` (argument) and `prepared_sha` (result) are sensitive and redacted in
+  receipts.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `pushed` | The remote moved from the expected tip to the resolved head, and the receipt is recorded. |
+| `already_applied` | The intent was already committed, or the remote was already at the resolved head — the replay case. |
+| `stale` | The repair writer's authority moved: scope mismatch, stale or busy fence, expired stage deadline. |
+| `target_moved` | The target branch is absent, or is neither the expected old tip nor the resolved head. |
+| `unauthorized` | Not a session principal, or an incomplete session identity. |
+| `runtime_error` | Malformed request; a push-started marker with no evidence (reconcile first); local Git proof that contradicts the reservation; remote state unknown. |
+
+The ambiguous case — marker present, evidence absent — is the one that needs a
+human. If the remote genuinely never moved,
+[`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md)
+is the LOCAL-only path that supersedes the reservation with a fresh successor;
+if it did move, reconciliation finalizes it. Start from
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+Like its reservation counterpart this is a session-authority call, reached
+through the MCP tool surface rather than a playbook step or an `aq integration`
+subcommand:
+
+```json
+{
+  "tool": "integration_push_conflict_resolution",
+  "arguments": {
+    "intent_id": "promotion-intent-3f2a…",
+    "fence": {
+      "target": {"repository_id": "repo-main", "branch": "aq/parent-42"},
+      "owner_id": "repair-integration-repair-9c41…-0",
+      "token": 7
+    }
+  }
+}
+```
+
+## Related
+
+* [`integration_resolve_conflict`](integration_resolve_conflict.md) — freezes what this command pushes.
+* [`integration_reconcile_promotion`](integration_reconcile_promotion.md) — finalizes the receipt afterwards.
+* [`delivery_promote`](delivery_promote.md) — the non-conflicting path this replaces.
+* Spec: [Promotion intents and event delivery](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#117-promotion-intents-and-event-delivery).

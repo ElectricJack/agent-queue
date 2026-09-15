@@ -71,24 +71,128 @@ Redacted in receipts and explanations: `fence`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Exactly one writer may hold an integration branch at a time, and the proof of
+who that is lives in `integration_branch_owners`
+(`src/database/tables.py:2207`) as an `(owner_id, owner_role, fence_token)`
+triple. Every command that writes a branch — promotion, resolution push,
+candidate publication — revalidates that fence before it touches Git.
+
+`integration_transfer_owner` moves the fence. It is the explicit, policy-driven
+form of the handoff that
+[`integration_repair_dispatch`](integration_repair_dispatch.md) performs
+implicitly: stop and detach the current writer, prove it stopped, then grant a
+fresh, higher-numbered fence to the named successor. Its main production use is
+waking the parent *verifier* on a collected head.
+
+Nothing about it is advisory. A new token is only issued after server-side
+evidence that the previous holder's session is stopped and its workspace
+detached; without that evidence the answer is `busy`.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `task.integration_ready`. The reviewed `hierarchical-delivery` policy's
+`wake-parent-verifier` rule calls it with `target`, `expected_token`,
+`next_owner_id` and `next_role`; `transferred` completes and `busy`,
+`stale_owner` and `human_required` fail. The rule's own comment is the best
+one-line description of the command: "this handoff wakes the exact persisted
+parent verifier on the collected head".
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Argument and repository checks** — `_cmd_integration_transfer_owner`
+   (`src/commands/integration_commands.py:127`) validates
+   `IntegrationTransferOwnerArgs`; a parse failure is `human_required`, as is a
+   `target.repository_id` whose repository or project does not exist.
+2. **Principal** — a `SESSION` principal can never transfer ownership. A
+   `PLAYBOOK` principal must be resolved, hold the
+   `integration_transfer_owner` capability, and be scoped to the repository's
+   project. `LOCAL` and `SERVICE` are allowed; anything else is
+   `human_required`.
+3. **Destination binding** — `_integration_destination_matches_target`
+   (`src/commands/integration_commands.py:104`) refuses a successor that is not
+   genuinely bound to this branch. The rules differ per role: `worker`,
+   `repair` and `verifier` resolve through the task's project, repo and
+   `branch_name`; `repair` additionally requires a live
+   `repair_delegate` operation on the target; `verifier` requires an active
+   verifier operation (or an unclaimed parent operation); `collector` may be a
+   batch or an operation whose target resolves to this branch. This is what
+   stops a caller handing a branch to an unrelated task id.
+4. **Current owner** — `BranchOwnership.get_owner`
+   (`src/integration/ownership.py:61`) reads the row. No row at all is
+   `stale_owner`.
+5. **Replay** — if the stored token is exactly `expected_token + 1` and the row
+   already names the requested successor and role, the transfer already
+   happened and the command returns that stable fence as `transferred`. Any
+   other token mismatch is `stale_owner`.
+6. **Verifier precondition** — for `next_role == "verifier"` the parent's
+   delivery readiness is re-checked through
+   `HierarchyIntegration.readiness` before the fence moves; a parent that is
+   not `ready` gives `busy`. A verifier is never woken onto an incomplete head.
+7. **Transfer** — `BranchOwnership.transfer`
+   (`src/integration/ownership.py:117`) does the real work in three phases:
+   * under lock, it re-requires the caller's fence to be current, refuses while
+     a reserved row exists in `integration_candidate_ref_mutations` (a live
+     external mutation claim), and — for an `attached` or `handoff_pending`
+     owner lacking session/workspace evidence — refuses as `BranchBusy`. An
+     `attached` owner is marked `handoff_pending`.
+   * **outside SQL**, the installed confirmer callback
+     (`aconfirm_integration_owner_handoff`) is awaited. It must return truthy:
+     that is the server-side proof the previous writer stopped and detached.
+   * under lock again, the row must still be the same fence and in the state
+     the confirmation expected (or `released` with a matching confirmed
+     workspace), and `_claim_released` (`src/integration/ownership.py:461`)
+     issues the next token to the successor.
+   `BranchBusy` becomes `busy`; `StaleFence` becomes `stale_owner`.
+8. **Waking the verifier** — after a successful transfer to a verifier,
+   `HierarchyIntegration.wake_verifier` →
+   `ParentCompletion.wake_verifier`
+   (`src/integration/parent_completion.py:935`) wakes the exact persisted
+   verifier task on the collected head under the new fence. A `HierarchyError`
+   there is `human_required`.
+9. **Result** — the new `Fence` is returned. Both `expected_token` and
+   `next_owner_id` are declared sensitive arguments and `fence` a sensitive
+   result, so receipts and explanations redact them.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Updates the `integration_branch_owners` row: `handoff_state` through
+  `handoff_pending`, then a new `owner_id`, `owner_role` and an incremented
+  `fence_token`. Every subsequent write to that branch is judged against the
+  new token.
+* Invokes the orchestrator's handoff confirmer, which can stop a session and
+  detach a workspace — a real, externally visible effect.
+* For a verifier successor, transitions the verifier task so it is woken on the
+  collected head.
+* No Git I/O and no remote access; this command moves authority, not commits.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `transferred` | The successor now holds a fresh fence (or already held it — the replay case). |
+| `busy` | A reserved external mutation claim exists; the previous writer has not confirmed stopped and detached; no confirmer is installed; the handoff state changed during confirmation; or a verifier handoff whose parent is not ready. |
+| `stale_owner` | No ownership row, or `expected_token` does not match and is not the replay successor. |
+| `human_required` | Malformed request, unknown repository/project, a principal without authority, a successor not bound to this branch, or a hierarchy error while waking the verifier. |
+
+A branch whose owner is gone but whose fence is still held is the classic
+stranded case: `aq doctor --check integration.stranded_fences`, and
+[a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: wake-parent-verifier
+
+On `task.integration_ready`, call `integration_transfer_owner` with `target`,
+`expected_token`, `next_owner_id`, and `next_role`. `transferred` completes;
+`busy`, `stale_owner`, and `human_required` fail. This handoff wakes the exact persisted
+parent verifier on the collected head.
+```
+
+## Related
+
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — performs the same handoff for a repair delegate.
+* [`integration_parent_verify`](integration_parent_verify.md) — what the woken verifier's evidence eventually drives.
+* Spec: [Handoff proof for a pool writer](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#handoff-proof-for-a-pool-writer).

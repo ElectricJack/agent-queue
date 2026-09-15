@@ -66,24 +66,144 @@ Redacted in receipts and explanations: `continuation`, `partial_head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A root candidate is built by replaying the batch's members onto the integration
+branch in manifest order. When one member will not apply, the build stops at
+that ordinal and a repair delegate is dispatched to fix *that member only*.
+`integration_resolve_candidate_member` is the command that delegate calls when
+it is done.
+
+It is unusual in this family for a specific reason: it accepts **no
+authority-bearing arguments at all**. The batch, revision, member ordinal,
+operation, partial head and branch fence are every one of them derived from the
+authenticated session's live claim. The request carries only Git object
+evidence — the resolved head, the resolved tree, and the ordered repair commits
+— plus the claim epoch. A caller cannot select a different member, a different
+batch, or a better fence than the one it was given.
+
+In one call it reserves the repair, publishes it to a private repair ref,
+accepts it back onto the candidate branch, and continues the build from the
+next member.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. This is a session-authority command and the CLI form
+(`aq integration resolve-candidate-member`) is the supported surface. The
+reviewed `root-integration-train` policy's role stops at dispatching the repair
+stage; the actual resolution belongs to the delegate.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Session identity** — `_cmd_integration_resolve_candidate_member`
+   (`src/commands/integration_commands.py:1412`) requires a `SESSION` principal
+   with a session id and instance token, loads the session, and requires it to
+   be `starting`/`running`/`draining` with a matching instance token and a
+   current `task_id`. The optional `task_id`, `session_id` and `project_id`
+   arguments may only *agree* with what the session already says; they are
+   cross-checks, not selectors.
+2. **Claim proof** — `_assert_session_owns` validates the claim epoch
+   (`stale_claim` → `stale`), and the task's `claim_epoch` must match the
+   session's `last_claim_epoch`. A pool session with no active claim is
+   refused. This is why the CLI has a `--claim-epoch` option: the delegate
+   proves it still holds the task it is repairing.
+3. **Exact-reservation replay** — the handler looks for an
+   `integration_candidate_resolutions` row (`src/database/tables.py:2713`)
+   matching *all* of the repair task, session, instance token, resolved head,
+   resolved tree and the exact repair-commit tuple — and, for a pool session,
+   created at or after the current claim phase. More than one match is
+   `invariant_error`. A match already in state `pushed` or `accepted` skips
+   straight to acceptance, so a retry after a lost response is idempotent.
+4. **Writer scope** — otherwise `get_repair_filing_scope`
+   (`src/database/queries/integration_state_queries.py:203`) must report an
+   active `repair_delegate` scope whose `target_kind` is `batch` with a fence
+   token; the operation's batch must belong to the session's project.
+5. **Subject derivation** — the current `integration_candidate_revisions` row
+   for the batch's `current_revision` supplies the member ordinal
+   (`next_member_ordinal`), and the corresponding
+   `integration_candidate_member_results` row must actually be in `conflict`
+   with conflict evidence naming this operation, revision and ordinal.
+   Anything else is `stale` — "the assigned candidate member is no longer
+   conflicted".
+6. **Reserve → push → accept** — with a `Fence` rebuilt from the scope's token
+   and a `CandidateResolutionInput` assembled entirely from server state, and
+   under `principal_context` pinned to the exact task:
+   * `CandidateService.reserve_repair`
+     (`src/integration/candidates.py:632`) validates every OID and derives a
+     deterministic `reservation_id` from
+     `(batch, revision, ordinal, operation, task, session, instance token,
+     fence token)`. Binding the reservation to the session *instance* is what
+     lets a later fenced writer reserve a fresh repair after an earlier push
+     was rejected, instead of the member being permanently occupied.
+   * `push_repair` (`src/integration/candidates.py:1333`) publishes the
+     resolved head to the private ref
+     `refs/heads/aq/integration-repairs/<reservation_id>` through
+     `_mutate_ref` (`src/integration/candidates.py:2358`) with an
+     expected-old-sha of all zeroes, then flips the row to `pushed` under a
+     re-validated fence. A publication still in flight raises
+     `CandidateStaleAuthority` → `stale`.
+   * `accept_repair` (`src/integration/candidates.py:837`) refuses to accept a
+     caller-supplied lineage at all; it reloads the reservation, re-checks that
+     the batch revision and stage are still current, re-reads the repair ref
+     through the forge client, fetches the objects, and runs
+     `_repair_lineage_failure` (`src/integration/candidates.py:3036`) plus a
+     tree check and a reserved-path diff check. It then confirms the branch
+     handoff, reserves it, and pushes the resolved head onto the candidate
+     branch replacing the partial head.
+7. **Continuation** — on `accepted`/`already_accepted` the handler immediately
+   calls `CandidateService.build` (`src/integration/candidates.py:206`) and
+   returns its typed result as `continuation`, so the train resumes from the
+   next member without waiting for another event.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts and advances one `integration_candidate_resolutions` row through
+  `reserved → pushed → accepted`.
+* **Writes two remote refs**: the private
+  `aq/integration-repairs/<reservation_id>` publication, and the candidate
+  integration branch itself (replacing the partial head with the resolved
+  head).
+* Records `integration_candidate_ref_mutations` claims around both writes —
+  the rows that make an interrupted push recoverable and that block a stage
+  timeout while a write may be in flight.
+* Confirms and reserves the branch handoff through `BranchOwnership`, so the
+  fence returns to the collector after acceptance.
+* Continues the candidate build, which may write further member results.
+* Every Git object argument and the `continuation`/`partial_head_sha` results
+  are sensitive and redacted in receipts.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `accepted` / `already_accepted` | The member is repaired, the candidate branch carries the resolved head, and the build continued. |
+| `wait` | The branch handoff or a ref publication is still settling; retry. |
+| `stale` | The claim is no longer current; the writer scope moved; the assigned member is no longer conflicted; the reservation's lineage, tree or reserved-path check failed; or the fence is stale/busy. |
+| `invariant_error` | Malformed request, a non-OID in the evidence, or an ambiguous (duplicated) exact reservation. |
+| `unauthorized` | Not an authenticated session, a stale session identity, a batch outside the session's project, or a writer authority that is not a live `repair_delegate` on a batch. |
+
+If a push succeeded but acceptance did not — the frozen, pushed, unaccepted
+case — the delegate cannot finish it after its stage expires. That is what
+[`integration_recover_candidate_member`](integration_recover_candidate_member.md)
+is for.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+The dispatched delegate resolves the member in its workspace and then hands the
+result to the daemon:
+
+```bash
+aq integration resolve-candidate-member \
+    --resolved-head-sha "$(git rev-parse HEAD)" \
+    --resolved-tree-sha "$(git rev-parse HEAD^{tree})" \
+    --repair-commit-sha "$FIRST_REPAIR_COMMIT" \
+    --repair-commit-sha "$(git rev-parse HEAD)"
+```
+
+The claim epoch is read from the workspace's `.aq/claim.json` automatically;
+pass `--claim-epoch` only to override it.
+
+## Related
+
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — dispatches the delegate that calls this.
+* [`integration_recover_candidate_member`](integration_recover_candidate_member.md) — the LOCAL recovery for a pushed-but-unaccepted repair.
+* [`integration_build_candidate`](integration_build_candidate.md) — the build this command continues.
+* Spec: [Primary integration repair](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#91-primary-integration-repair).

@@ -59,24 +59,129 @@ Redacted in receipts and explanations: `head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+In hierarchical delivery a parent task is not finished when its children are:
+it is finished when the collected parent head has been *verified* — every
+required check has passed, on that exact commit, at that exact generation, and
+the evidence has been bound to the parent's integration episode.
+
+`integration_parent_verify` performs that binding. It re-derives the collected
+head from the workspace, refuses anything that is not the head the caller
+named, revalidates the readiness of the whole parent, checks the supplied
+evidence rows against the frozen required-check policy, and then writes one
+`integration_parent_verifications` row and advances the parent's checkpoint to
+`verifying`.
+
+Verification is deliberately separate from completion. This command says "this
+head is proven"; [`integration_complete_parent`](integration_complete_parent.md)
+is what later closes the parent at that proven head and generation.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.ci_completed` where `conclusion` is `success` and `target_kind`
+is `parent`. The reviewed `hierarchical-delivery` policy's `verify-parent` rule
+calls it with `task_id`, `generation`, `head_sha` and `evidence_ids`, completes
+on `verified`, and fails on `stale_generation`, `stale_head` and
+`invalid_evidence`. The red counterpart of the same event goes to
+[`integration_record_repair`](integration_record_repair.md) instead.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_parent_verify`
+   (`src/commands/integration_commands.py:1197`) validates
+   `IntegrationParentVerifyArgs` (parse failure → `invalid_evidence`), resolves
+   the parent task (missing → `stale_generation`), authorizes against the
+   task's project, and maps both `HierarchyError` and `GitError` to
+   `invalid_evidence`. Only `verified` is `success: true`.
+2. **Head re-derivation** — `HierarchyIntegration.verify_parent`
+   (`src/integration/hierarchy.py:359`) rejects a `head_sha` that is not a Git
+   OID, resolves the task's enabled route, and calls the injected checkpoint
+   verifier. In the daemon that is `verify_workspace_checkpoint`
+   (`src/integration/hierarchy.py:244`), which inspects the real workspace: a
+   dirty tree, an unpushed head or a head that is not the one claimed all
+   produce `stale_head`. The caller's `head_sha` is never trusted on its own.
+3. **Locked context** — `ParentCompletion.verify_parent`
+   (`src/integration/parent_completion.py:799`) opens an immediate transaction
+   and `_locked_context_on` (`src/integration/parent_completion.py:1177`) locks
+   the parent task, project, checkpoint and integration operation together.
+4. **Generation fence** — the checkpoint's `generation` must equal the caller's
+   `generation`, or the outcome is `stale_generation`. This is what makes
+   hierarchy mutation safe: filing a child or reparenting bumps the generation
+   and invalidates every verification attempt pinned to the old one.
+5. **Readiness** — `readiness_on`
+   (`src/integration/parent_completion.py:370`) is re-run inside the lock. A
+   parent that is not `ready` returns that readiness projection directly, and
+   a `ready` projection whose `head_sha` differs from the caller's is
+   `stale_head`.
+6. **Evidence validation** — `evidence_ids` must be non-empty and free of
+   duplicates. Every named row is loaded from `integration_check_evidence`
+   (`src/database/tables.py:3149`) and each one must match on *all* of:
+   operation id, parent task id, parent generation, parent head sha, the
+   policy's `required_checks.producer_id`, the required check `version`,
+   `conclusion == "success"`, and a classification that is not
+   `infrastructure`. The union of successful check names across the rows must
+   then equal the policy's required names exactly — not a superset, not a
+   subset. Any shortfall is `invalid_evidence`.
+7. **Idempotent record** — a verification for this
+   `(operation, generation, head_sha)` that already exists is reused, but only
+   if its linked evidence set is identical; a replay with different evidence is
+   `invalid_evidence`. A fresh verification inserts one
+   `integration_parent_verifications` row (`src/database/tables.py:3387`) plus
+   one `integration_parent_verification_evidence` row per evidence id, written
+   in sorted order.
+8. **Checkpoint advance** — `task_integration_checkpoints`
+   (`src/database/tables.py:2083`) is updated to set `checkpoint_sha` and
+   `verified_sha` to the head, `verified_generation` to the generation,
+   `current_verification_id` to the new row, `state` to `verifying`, and to
+   increment `version`.
+9. **Event** — one `task.integration_verified` event is enqueued
+   (`enqueue_integration_event`, `src/integration/outbox.py:125`) with dedup key
+   `task.integration_verified:<verification_id>`, carrying the project,
+   operation, task, generation, head and verification id. That is the fact the
+   `complete-verified-parent` rule consumes.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts one `integration_parent_verifications` row and its evidence links —
+  the durable proof that this exact head at this exact generation passed the
+  required checks.
+* Updates the parent's `task_integration_checkpoints` row to `verifying` and
+  bumps its optimistic `version`.
+* Enqueues one deduplicated `task.integration_verified` outbox event.
+* Reads the workspace through the checkpoint verifier (a real Git inspection),
+  but performs no Git *writes* and touches no remote.
+* Both `head_sha` and `evidence_ids` are marked sensitive, so receipts and step
+  explanations redact them.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `verified` | The verification row exists and the checkpoint is `verifying`. |
+| `stale_generation` | The parent task is unknown, or its checkpoint generation has moved — usually because a child was filed or the hierarchy was mutated. |
+| `stale_head` | `head_sha` is not an OID, no checkpoint verifier is installed, the workspace does not actually hold that head, or readiness reports a different collected head. |
+| `invalid_evidence` | Empty or duplicated `evidence_ids`; an evidence row that names another operation, generation or head; wrong producer or required-check version; a non-success or infrastructure-classified row; incomplete check coverage; a replay with a different evidence set; or any `HierarchyError`/`GitError` from route resolution. |
+| `unauthorized` | Caller is outside the parent's project. |
+
+A parent that never verifies is usually waiting rather than broken:
+`aq integration status <project>` reports `parent_readiness` with the specific
+blockers, and `aq task explain <parent-id>` names the same ones per task.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: verify-parent
+
+On `integration.ci_completed` where `conclusion` is `success` and `target_kind` is
+`parent`, call `integration_parent_verify` with `task_id`, `generation`, `head_sha`, and
+`evidence_ids`. `verified` completes; `stale_generation`, `stale_head`, and
+`invalid_evidence` fail.
+```
+
+## Related
+
+* [`integration_delivery_readiness`](integration_delivery_readiness.md) — the read-only precondition this command re-checks under lock.
+* [`integration_complete_parent`](integration_complete_parent.md) — closes the parent at the verified head.
+* [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) — the operation that invalidates a verification by bumping the generation.
+* Spec: [Waking and verifying the parent](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#65-waking-and-verifying-the-parent).

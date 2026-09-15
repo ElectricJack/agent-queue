@@ -95,24 +95,98 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+After a batch reaches `main`, cleanup runs on its own bounded schedule: delete
+the merged source refs the policy says to delete, close audit PRs, tidy the
+ephemeral integration branch. Each of those is one row in
+`integration_cleanup_items` (`src/database/tables.py:3247`) with its own
+attempt counter and next-attempt time, so a flaky forge degrades the tidy-up
+rather than the delivery.
+
+Items that exhaust their retries land in `retryable` or `failed` and stop.
+`integration_retry_cleanup` is the operator's way to give them another go once
+whatever was wrong outside the daemon has been fixed. It resets attempts and
+schedules them for immediate retry — and, crucially, it changes no irreversible
+marker: an item whose write may have reached the forge is refused, not
+re-driven.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. It is a LOCAL operator control exposed as
+`aq integration retry-cleanup <batch_id>`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_retry_cleanup`
+   (`src/commands/integration_commands.py:424`) requires
+   `_integration_local_operator` (`src/commands/integration_commands.py:291`)
+   to report `LOCAL` and a non-empty `batch_id`, then calls
+   `IntegrationControlService.retry_cleanup`
+   (`src/integration/controls.py:116`), which delegates to
+   `IntegrationRecoveryControls.retry_cleanup`
+   (`src/integration/recovery_controls.py:607`).
+2. **Lock the batch** — the `integration_batches` row is locked `FOR UPDATE`;
+   an unknown batch is `not_found`.
+3. **Select stuck items** — every `integration_cleanup_items` row for the batch
+   in state `retryable` or `failed` is selected `FOR UPDATE`. Items in
+   `complete` or `conflict` are not candidates: complete work is done, and a
+   conflict is a decision, not a retry.
+4. **Refuse ambiguity** — any selected row with a non-null
+   `irreversible_prewrite_at` **or** a non-null `execution_nonce` is ambiguous:
+   the daemon marked an irreversible write as about to happen and never
+   recorded its result. Those rows are collected, and the whole call returns
+   `ambiguous` with one `cleanup_irreversible` blocker per `domain_key`,
+   sorted. Nothing is changed. Requeueing such an item could delete a ref
+   twice, or close a PR someone reopened.
+5. **Nothing to do** — no selected rows at all is `nothing_to_retry`.
+6. **Requeue** — otherwise every selected row is updated in one statement to
+   `state="retryable"`, `attempts=0`, `next_attempt_at=now`,
+   `terminal_at=None`. The scheduler's next cleanup pass picks them up. The
+   outcome is `requeued` with the item `count`.
+
+Note the scope: the update matches on `domain_key`, the normalized identity of
+the cleanup target, so requeueing is expressed in terms of *what* is being
+cleaned up rather than a row id.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Updates the batch's `integration_cleanup_items` rows in `retryable`/`failed`
+  to be immediately due again, clearing their attempt counters and terminal
+  timestamps.
+* Changes no irreversible marker, no lease, no schedule, no batch lifecycle.
+* Performs no Git or forge I/O of its own — the retry happens later, in
+  [`integration_cleanup`](integration_cleanup.md).
+* Declares an `update` side effect on the integration operation subject and is
+  naturally idempotent: requeueing already-requeued items is harmless.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `requeued` | `count` items are due again now. |
+| `nothing_to_retry` | No `retryable`/`failed` items for this batch — cleanup is complete, or its remaining items are in `conflict`. |
+| `ambiguous` | One or more items carry an irreversible-write marker with no recorded result. Each blocker's `ref` is the item's `domain_key`. |
+| `not_found` | No such batch, or `batch_id` was omitted. |
+| `unauthorized` | Not a LOCAL operator. |
+
+An `ambiguous` item needs a human to look at the forge and decide what actually
+happened — the ref, PR or branch named by the `domain_key` — before any
+further automated attempt. Read the current cleanup picture from
+`aq integration status <project>` (`cleanup_pending`), and use
+`aq doctor --check integration.branch_discards` for the related
+branch-removal queue.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. The operator sequence is:
+
+```bash
+aq integration status agent-queue          # read cleanup_pending, note the batch id
+aq integration retry-cleanup <batch_id>
+```
+
+## Related
+
+* [`integration_cleanup`](integration_cleanup.md) — the bounded pass that consumes the requeued items.
+* [`integration_release`](integration_release.md) — closes the train independently of cleanup progress.
+* [`integration_resume`](integration_resume.md) — the equivalent recovery for a blocked repair operation.
+* Guide: [integration troubleshooting](../../guides/integration-troubleshooting.md).
