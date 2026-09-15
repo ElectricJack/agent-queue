@@ -60,24 +60,135 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Report a task's routing state and the catalog of routes that could execute it.
+`task_route_options` is the read half of assignment routing: it answers "does
+this task already have an executable route, and if not, what is on offer?"
+without writing anything.
+
+The `options` list is one row per (intelligence class, provider, profile) an
+*ordinary worker* could run, each with the configured capacity and the live idle
+and busy counts. The command also performs the one deterministic tie-break a
+playbook cannot express — which profile serves a class the operator already
+fixed — and reports it as `explicit_profile_id`.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/default-assignment-routing.md`](../../../src/prompts/default_playbooks/default-assignment-routing.md),
+rule `route-task` step 1, is the shipped caller and its four outcomes are the
+rule's whole shape:
+
+| Outcome | What the rule does |
+|---|---|
+| `already_routed` | Ends the rule; the task carries a class and a profile that serves it. |
+| `explicit` | Goes to step 3 — [`task_route`](task_route.md) with `routing.explicit_profile_id`. |
+| `undecided` | Goes to step 2 — an LLM step picks a row from `options`. |
+| `no_options` | Fails the rule; nothing configured can execute the task. |
+
+Policy lives in the playbook, mechanism in the command — the module docstring
+([`src/commands/routing_commands.py:1`](../../../src/commands/routing_commands.py))
+states that split explicitly, and the design is
+[`docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md`](../../superpowers/specs/2026-09-06-assignment-routing-as-playbook.md).
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `TaskRouteOptionsArgs` (just `task_id`); the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_task_route_options`.
+2. `_cmd_task_route_options`
+   ([`src/commands/routing_commands.py:154`](../../../src/commands/routing_commands.py)):
+   - Requires `task_id`, then reads the task and its project.
+   - Pulls the live intelligence-class registry off the orchestrator's session
+     spec builder, then `db.list_profiles()` and `db.list_agents()`.
+   - Calls `build_route_options` (`routing_commands.py:58`), which walks every
+     profile and keeps only ordinary workers: `_worker_profile`
+     (`routing_commands.py:42`) excludes the control profiles
+     (`supervisor`, `triage`, `reviewer`, `final-reviewer`,
+     `playbook-compiler`, `spec-ingest`), anything with a non-`task`/`pool`
+     lifecycle, and anything with no harness; `_effective_profiles`
+     (`routing_commands.py:37`) drops rows still carrying a retired
+     `project:` id. A profile with a fixed `default_class` offers that class
+     only; a generic task-lifecycle profile offers every class its provider maps
+     (`_class_mapping`, `routing_commands.py:51`); a pool profile with no fixed
+     class offers nothing, because a pool worker only ever claims its own class.
+     Rows are sorted by (class, provider, profile) so the catalog is stable.
+   - Splits the catalog. A task that already pins a `profile_id` narrows the
+     *automatic* catalog to that profile alone — choosing another profile would
+     silently substitute its provider. Disabled pools stay in `disabled_options`
+     for diagnostics and for preserving an existing pin, but are filtered out of
+     `options`.
+   - Resolves `default_profile_id` through the orchestrator's
+     `_effective_default_profile_id` when available, and derives
+     `default_provider` from it — that provider is the tie-break preference.
+   - If the task has an explicit class, `profile_for_class`
+     (`routing_commands.py:113`) picks the serving profile: the task's own
+     compatible pin wins even when its pool is disabled; otherwise disabled
+     pools are dropped, a pool profile fixed on that class is preferred, then
+     the default's provider, then the lowest profile id. The outcome is
+     `no_options` when nothing serves the class, `already_routed` when the pin
+     already equals the choice, and `explicit` otherwise.
+   - With no explicit class the outcome is `undecided` when `options` is
+     non-empty and `no_options` when it is not.
+3. `_outcome_of` (`builtin.py:476`) passes the handler's own `outcome` through
+   when it is one of the four declared names and falls back to `rejected`
+   otherwise (`_ROUTE_OPTION_OUTCOMES`, `builtin.py:592`).
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read`, no clauses, `retry_safe: yes`. The command writes no
+row, emits no event and resolves no gate; every value it returns is derived from
+`tasks`, `projects`, `agent_profiles`, `agents` and the in-memory intelligence
+class registry at the moment of the call.
+
+Because nothing is persisted, the answer is a snapshot: `idle_count` and
+`busy_count` can be stale by the time the playbook acts on them, which is why
+the shipped policy treats temporary occupancy as a tie-break and never as a
+reason to change the required class.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `no_options` (success) | Nothing configured can execute the task: no worker profile maps the explicit class, or — with no explicit class — no worker profile is enabled at all. `disabled_options` tells you whether the answer would change by enabling a pool. |
+| `rejected` | Missing `task_id`, no task with that id, or the task's project row is missing. |
+| `unauthorized` | The capability gate refused `task_route_options`. |
+| `contract_violation` | The dict did not satisfy `TaskRouteOptionsValue`, or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | `task_id` resolved to something that is not a string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` if `task_id` has no input, and `unmapped_business_outcome`
+for each of `already_routed`, `explicit`, `undecided`, `no_options` and
+`rejected` left without a transition — all five are declared outcomes, so a
+partial mapping fails validation rather than surprising the run.
+
+To diagnose an unexpected `no_options`: `aq agent list-profiles` shows which
+worker profiles exist and whether their pools are enabled,
+`aq system list-intelligence-classes` shows which classes loaded, and
+`aq pool status` shows the fleet-wide bounds. `aq task explain --task-id <id>` names the
+open routing gate the task is waiting on.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "route-task",
+  "title": "read_options",
+  "source": {"path": "default-assignment-routing.md", "start_line": 30, "end_line": 40},
+  "command": "task_route_options",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"}
+  },
+  "save_result_as": "routing",
+  "transitions": {
+    "already_routed": "route-task--done",
+    "explicit": "route-task--apply_explicit",
+    "undecided": "route-task--choose_route",
+    "no_options": "route-task--failed",
+    "rejected": "route-task--failed",
+    "runtime_error": "route-task--failed"
+  }
+}
+```

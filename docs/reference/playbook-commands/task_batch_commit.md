@@ -49,24 +49,152 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Materialise an approved task-batch proposal into the live work graph: create
+every task in the proposal and every dependency edge between them, atomically,
+and only if a human decision approves that exact proposal.
+
+`task_batch_commit` is where a proposal stops being a document and becomes work.
+It is also the **authorization boundary** for that transition: an event filter
+narrows which gate resolutions reach the pipeline's commit rule, but any caller
+can invoke the command directly, so the approving gate is re-read here rather
+than trusted from the event.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
+rule `commit-on-gate-resolve`, is the shipped caller. The playbook's trigger
+already filters `gate.resolved` to `gate_type: human` with a `resolution` of
+`approve` or `approved`, its guard requires a non-empty `await_id`, and the step
+passes `proposal_id` from the resolved gate's `await_id`, `gate_id` from the
+event and `project_id` from the event. The `await_id` pinned earlier by
+[`gate_create`](gate_create.md)'s `proposal-ready-gate` rule is the only thing
+that carries proposal identity across the human decision.
+
+`committed` and `already_committed` both end the rule `completed`: a replayed
+approval must get the original receipt and no second graph. The contract is
+`idempotency: keyed on proposal_id` with `retry_safe: no` — the key is a real
+row id, and the conditional claim (below) is what makes a concurrent second
+caller lose rather than duplicate.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `TaskBatchCommitArgs`. The contract is keyed on
+   `proposal_id`, and `_keyed_argument`
+   ([`src/playbooks/executors/command.py:186`](../../../src/playbooks/executors/command.py))
+   preserves the author's binding: substituting the engine's attempt key here
+   would falsify a real row id.
+2. The adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_task_batch_commit`.
+3. `_cmd_task_batch_commit`
+   ([`src/commands/proposal_commands.py:295`](../../../src/commands/proposal_commands.py)):
+   - Requires `proposal_id`; reads the row with `proposal_queries.get_proposal`;
+     refuses a `discarded` proposal.
+   - **Approval.** `_proposal_approval_error` (`proposal_commands.py:238`) must
+     find a `human` gate in the proposal's *own* project, awaiting this exact
+     proposal id, `resolved`, with a `resolution` in `APPROVAL_RESOLUTIONS`.
+     With no `gate_id` the newest such gate is the decision of record. Anything
+     else — no gate, an open / expired / rejected one, another project's,
+     another proposal's — returns `not_approved` and creates nothing. Because a
+     proposal's payload is frozen once its approval gate exists, the gate
+     approves exactly the revision being committed.
+   - **Replay.** A proposal already in `committed` state returns
+     `already_committed` with the original task ids, recovered by
+     `_proposal_task_ids` (`proposal_commands.py:279`) from the
+     `task_metadata` rows that record the proposal id.
+   - **Re-validation.** The stored payload is the source of truth, but the ids
+     it references may have vanished, so `_validate_shape`,
+     `_validate_existing_refs` and `proposal_queries.detect_cycles` run again
+     against current state. The project default profile, and every explicit
+     `profile_id` / `intelligence_class` in the batch, are validated
+     *before* the claim, so an invalid route is an actionable admission refusal
+     instead of a half-materialised graph.
+   - **Hierarchy projects.** When the project's `hierarchical_integration_mode`
+     is `hierarchy` or `train`, the work is handed to
+     `_commit_hierarchical_proposal` (`proposal_commands.py:496`), which claims
+     and materialises the whole batch in one transaction and requires every
+     `parent-child` edge's parent to be in the same batch.
+   - **The claim.** Otherwise the claim is a single conditional `UPDATE` that
+     flips `task_proposals.status` from `ready` to `committed`
+     (`proposal_commands.py:406-426`). Only one caller can win; the loser sees
+     `rowcount == 0` and aborts **before** creating anything, which is what
+     closes the double-commit race the old check-then-write had.
+   - **Materialisation.** Tasks are created one at a time through
+     `_create_one_task`, each stamped with the proposal id in `task_metadata`,
+     building a `tempId → real id` map; then each edge is created by
+     re-entering `self.execute("add_dependency", …)` with the mapped ids.
+   - **Unwind.** Any exception rolls the created edges back in reverse order,
+     then deletes the created tasks in reverse order, then flips the proposal
+     back to `ready` so the caller can retry after fixing the cause, and returns
+     `commit failed: <exc>`. (A single transaction would be nicer, but
+     `create_task` and `add_dependency` open their own sessions.)
+   - Emits `proposal.status_changed` with `status: committed` and returns the
+     created ids.
+4. `_outcome_of` (`builtin.py:476`) maps `not_approved: True` to `not_approved`,
+   `already_committed: True` to `already_committed`, a clean result to
+   `committed`, and anything else to `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes the `task_proposals` status flip, one `tasks` row per batch entry, one
+`task_metadata` row per task recording the proposal id, and one
+`task_dependencies` row per edge (each one recomputing the blocked projection,
+so no task in the new graph is claimable before its blockers are recorded). Emits
+`proposal.status_changed`, plus every event `create_task` and `add_dependency`
+emit for their own rows.
+
+The proposal's `committed` status is the durable idempotency record: it is what
+makes a re-delivered `gate.resolved` produce `already_committed` instead of a
+second graph, and the `task_metadata` stamp is what lets that replay report the
+*original* ids. Both survive a restart.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `already_committed` (success) | The proposal was already materialised; `task_ids` are the original ones. |
+| `not_approved` (failure) | No human decision approves this exact proposal: no gate, an open / expired / rejected gate, a gate of another type, a gate awaiting a different proposal, or a `project_id` that is not the proposal's owner. Nothing was created. |
+| `rejected` | Missing `proposal_id`; unknown proposal; a `discarded` proposal; a shape or reference re-validation failure; a detected cycle; an undefined or invalid project default profile; an invalid `profile_id` / `intelligence_class` in a batch entry; a hierarchical batch whose parent is outside the batch; the lost claim race (`proposal not in 'ready' state or already claimed`); or `commit failed: …` after a rollback. |
+| `unauthorized` | The capability gate refused `task_batch_commit`. |
+| `contract_violation` | The dict did not satisfy `TaskBatchCommitValue` (`task_ids` is required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `TaskBatchCommitArgs` — typically `proposal_id` resolving to `null` because the guard on `await_id` was omitted. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `proposal_id` has no input, and
+`unmapped_business_outcome` for `committed`, `already_committed`, `not_approved`
+or `rejected` left without a transition. The shipped pipeline routes the two
+successes to a `completed` terminal and `not_approved` / `rejected` /
+`runtime_error` to a distinct `failed` one, because a refused commit must never
+report completion.
+
+`retry_safe: no`, and the rollback releases the claim, so a failed commit is
+retried by a *new* event rather than by the engine. `aq task gate-show --gate-id <gate-id>` is the read that explains a `not_approved`, and
+`aq task batch-update` is what revises a proposal a reviewer rejected.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "commit-on-gate-resolve",
+  "title": "commit_batch",
+  "source": {"path": "default-pipeline.md", "start_line": 60, "end_line": 68},
+  "command": "task_batch_commit",
+  "inputs": {
+    "proposal_id": {"type": "event_ref", "path": "await_id"},
+    "gate_id": {"type": "event_ref", "path": "gate_id"},
+    "project_id": {"type": "event_ref", "path": "project_id"}
+  },
+  "save_result_as": "batch",
+  "transitions": {
+    "committed": "commit-on-gate-resolve--done",
+    "already_committed": "commit-on-gate-resolve--done",
+    "not_approved": "commit-on-gate-resolve--failed",
+    "rejected": "commit-on-gate-resolve--failed",
+    "runtime_error": "commit-on-gate-resolve--failed"
+  }
+}
+```

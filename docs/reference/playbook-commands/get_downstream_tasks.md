@@ -45,24 +45,96 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+List every task that transitively depends on a given task over the *blocking*
+edge kinds. `get_downstream_tasks` answers "what else is waiting on this?" —
+the question a policy asks before stopping, failing or reprioritising a task,
+because the blast radius of that decision is exactly this set.
+
+It follows `blocks`, `waits-for`, `conditional-blocks` and `parent-child`: the
+four edge types that feed the `tasks.is_blocked` projection
+([`src/database/queries/blocked_state.py`](../../../src/database/queries/blocked_state.py)).
+Provenance edges (`discovered-from`, `related`, `duplicates`, `supersedes`) are
+never followed — they record history, not readiness.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it. It does appear in the pipeline-lowering fixtures — for example
+[`tests/fixtures/playbooks/v2/lowering/output-ref-no-loop.pipeline.md`](../../../tests/fixtures/playbooks/v2/lowering/output-ref-no-loop.pipeline.md),
+where a `task.completed` rule reads the dependents and feeds them to a
+[`gate_create`](gate_create.md) step — which is its natural shape: bind the
+result, then hand `tasks` to a `foreach` step that does one thing per dependent
+(notify, reprioritise, or gate).
+
+`side effect: read` with `retry_safe: yes` makes it safe anywhere, including
+inside a retry.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `GetDownstreamTasksArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_get_downstream_tasks`.
+2. `_cmd_get_downstream_tasks`
+   ([`src/commands/task_commands.py:4780`](../../../src/commands/task_commands.py)):
+   - Requires `task_id` and reads the seed task, so an unknown id is an error
+     rather than an empty list — the distinction a caller needs.
+   - Calls `db.get_transitive_dependents`
+     ([`src/database/queries/dependency_queries.py:579`](../../../src/database/queries/dependency_queries.py))
+     with the four blocking edge values from `DepType`
+     ([`src/models.py:208`](../../../src/models.py)).
+   - Resolves each returned id to `{id, title, status}`, silently dropping any
+     id whose row has since disappeared.
+3. `_outcome_of` (`builtin.py:476`) maps the dict to `listed`, or `rejected`
+   when the seed task is missing.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None — `side effect: read`, one `ReadClause` on the `downstream_tasks` subject,
+no writes and no events. The result is a snapshot of `task_dependencies` plus
+the dependents' current statuses at the moment of the call.
+
+`tasks: []` is an ordinary success: the seed task exists and nothing depends on
+it.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Missing `task_id`, or no task with that id (`task '<id>' not found`). |
+| `unauthorized` | The capability gate refused `get_downstream_tasks`. |
+| `contract_violation` | The dict did not satisfy `GetDownstreamTasksValue` (`tasks` is required and each entry must be a flat `dict[str, str]`), or the outcome has no transition and there is no `runtime_error` edge. |
+| `state_limit_exceeded` | The bound result exceeded the per-result byte limit (`command.py:147`). A very wide fan-out is the one way this read can outgrow a run's state budget; scope the seed task more narrowly or drop `save_result_as`. |
+| `input_resolution_failed` | `task_id` resolved to something that is not a string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `task_id` has no input and `unmapped_business_outcome`
+when `listed` or `rejected` has no transition.
+
+`aq task deps --task-id <id>` shows the immediate edges in both directions and is the
+quickest way to check why a task you expected downstream is absent — an edge of
+a provenance type is not followed.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "warn-downstream-on-block",
+  "title": "read_downstream",
+  "source": {"path": "blast-radius.md", "start_line": 12, "end_line": 16},
+  "command": "get_downstream_tasks",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"}
+  },
+  "save_result_as": "downstream",
+  "transitions": {
+    "listed": "warn-downstream-on-block--notify_each",
+    "rejected": "warn-downstream-on-block--failed",
+    "runtime_error": "warn-downstream-on-block--failed"
+  }
+}
+```

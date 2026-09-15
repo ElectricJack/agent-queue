@@ -47,24 +47,132 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Read the delivery receipts recorded for one source task against one
+repository-qualified target branch. A receipt is the durable evidence that a
+child's work *was* delivered into a particular branch of a particular
+repository — written by [`delivery_promote`](delivery_promote.md) and by the
+train's other promotion paths — and this command is how a policy or an operator
+reads it back.
+
+It is repository-qualified on purpose. "Was this task delivered?" has no single
+answer in a multi-repository project; "was this task delivered into
+`<repository_id>`'s `<target_branch>`?" does.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped or fixture playbook calls it — not
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks), and
+not the hierarchical delivery policy at
+[`tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md`](../../../tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md),
+which reads *aggregate* readiness with `integration_delivery_readiness` instead.
+The distinction is deliberate: readiness is a recursive judgement over a
+parent's children and their disposition blockers, and that is what a delivery
+rule needs; `delivery_receipts` is the flat, per-task evidence read behind it.
+
+Its declared role in the feature is exactly that — "query receipts by source and
+repository-qualified target", with named outcomes `found` and `not_found`
+([`docs/superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md`](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md)).
+Both are successes, which makes it comfortable in a graph: "nothing delivered
+yet" is a branch, not a failure. `side effect: read` with `retry_safe: yes`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `DeliveryReceiptsArgs` (`source_task_id`,
+   `repository_id`, `target_branch` — all required); the integration adapter
+   `_invoke_adapter`
+   ([`src/commands/contracts/integration.py:1435`](../../../src/commands/contracts/integration.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)) under the
+   step principal, which dispatches `_cmd_delivery_receipts`.
+2. `_cmd_delivery_receipts`
+   ([`src/commands/integration_commands.py:1690`](../../../src/commands/integration_commands.py)):
+   - Re-validates the payload against `DeliveryReceiptsArgs`; a validation error
+     is reported as `runtime_error`.
+   - Reads the source task and the repository, and requires the identities to
+     agree: both rows exist, the task's project is the repository's project, and
+     `task.repo_id` is that repository. Otherwise `unauthorized` with *"receipt
+     query is outside the source project"* — a cross-project receipt query is
+     treated as an authorization problem, not a not-found.
+   - `_integration_delivery_authorized(project_id, "delivery_receipts",
+     allow_session_read=True)` (`integration_commands.py:241`). The
+     `allow_session_read` flag is the one difference from
+     [`delivery_promote`](delivery_promote.md): a **session** principal is
+     allowed, provided its project matches, so a worker can read the evidence
+     about its own project's deliveries. A playbook principal must still be
+     resolved, in-project and hold the `delivery_receipts` capability.
+   - `db.list_integration_delivery_receipts`
+     ([`src/database/queries/integration_delivery_queries.py:772`](../../../src/database/queries/integration_delivery_queries.py))
+     selects from `task_delivery_receipts` filtered on all three identity
+     columns, ordered by `created_at` then `id` — so the list is stable and
+     oldest-first.
+   - Returns `{"success": True, "outcome": "found" if receipts else
+     "not_found", "receipts": [...]}`.
+3. `_invoke_adapter` reads the handler's own `outcome`, rejects anything outside
+   `{found, not_found, unauthorized, runtime_error}` as `contract_violation`, and
+   constructs `DeliveryReceiptsValue` from the remaining fields.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read` with one `ReadClause` on the `delivery_evidence`
+subject, `receipt_projection: ()` — nothing from this command is projected into
+the run receipt at all.
+
+What it reads *is* the durable record, though, and that is the point:
+`task_delivery_receipts`
+([`docs/specs/database.md`](../../specs/database.md), "Table:
+`task_delivery_receipts`") is written inside the promotion's own transaction, so
+a receipt exists if and only if the delivery was finalized. Root-train receipts
+additionally carry `batch_id`, `member_ordinal` and `candidate_revision`, and
+parent deliveries carry `parent_operation_id` / `parent_episode_id`, so the same
+row shape serves both levels.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `not_found` (success) | No receipt for that `(source_task_id, repository_id, target_branch)` triple. Nothing has been delivered there — or it was delivered to a different branch. |
+| `unauthorized` | The source task or repository row is missing; the task's project is not the repository's project; `task.repo_id` is not the named repository; or the principal is not allowed (a session outside the project, an unresolved or out-of-project playbook principal, or a playbook whose policy lacks the capability). |
+| `runtime_error` | The arguments failed `DeliveryReceiptsArgs` validation (*"invalid receipt query"*). |
+| `contract_violation` | The handler returned an outcome outside the declared set, the fields did not construct `DeliveryReceiptsValue` (`receipts` is required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `state_limit_exceeded` | The bound `receipts` list exceeded the per-result byte limit (`command.py:147`). Receipts carry provenance and evidence blobs, so a long delivery history can reach it. |
+| `input_resolution_failed` | A resolved input failed `DeliveryReceiptsArgs` before the handler saw it. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for any of the three required arguments without an input, and
+`unmapped_business_outcome` when `found` or `not_found` has no transition. Note
+that the contract declares **no** `rejected` outcome, so a step copied from a
+task command's transition table will draw `unknown_transition_outcome` for a
+stray `rejected` edge. An explicit `unauthorized` edge draws the same
+diagnostic: `unauthorized` is not in the validator's reserved set
+([`src/playbooks/definition.py:65`](../../../src/playbooks/definition.py)) even
+though the engine does treat it as reserved at run time
+([`src/playbooks/executors/base.py:87`](../../../src/playbooks/executors/base.py)) —
+so let the `runtime_error` catch-all cover it.
+
+`aq system delivery-receipts` runs the same read from the CLI, and
+`aq integration status <project-id>` puts it in context: which operation owns
+the branch, what stage it is in, and which members have been collected.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "confirm-child-delivery",
+  "title": "read_receipts",
+  "source": {"path": "delivery-audit.md", "start_line": 16, "end_line": 22},
+  "command": "delivery_receipts",
+  "inputs": {
+    "source_task_id": {"type": "event_ref", "path": "task_id"},
+    "repository_id": {"type": "binding_ref", "binding": "readiness", "path": "repository_id"},
+    "target_branch": {"type": "binding_ref", "binding": "readiness", "path": "target_branch"}
+  },
+  "save_result_as": "receipts",
+  "transitions": {
+    "found": "confirm-child-delivery--done",
+    "not_found": "confirm-child-delivery--wait",
+    "runtime_error": "confirm-child-delivery--failed"
+  }
+}
+```

@@ -49,24 +49,121 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Resolve an open gate and report which waiting tasks became unblocked as a
+result. This is the generic resolver — the one an operator's `aq task gate-resolve`
+and a policy playbook both use — for every gate type except `routing`.
+
+`routing` gates are refused on purpose. A routing gate means "this task has no
+executable route", and only [`task_route`](task_route.md) both writes the
+profile/class/workspace fields *and* resolves the gate. Allowing the generic path
+would let a caller half-resolve a routing gate and hand the runner a task with
+nothing to run it.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+`gate_resolve`, and the reason is worth stating: the defaults *create* gates and
+*react* to their resolution. The human resolves the gate from the dashboard or
+the CLI, the orchestrator publishes `gate.resolved`, and
+[`default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md)'s
+`commit-on-gate-resolve` rule is triggered by that event. A playbook that
+resolved its own human gate would be deciding on the human's behalf.
+
+The legitimate playbook use is closing a gate the *system* opened and the system
+can now answer: an external condition a command has just confirmed, or a
+policy's own bookkeeping gate. `idempotency: natural` and `retry_safe: yes` are
+accurate — an already-resolved gate is a no-op that reports no flips.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `GateResolveArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_gate_resolve`.
+2. `_cmd_gate_resolve`
+   ([`src/commands/gate_commands.py:165`](../../../src/commands/gate_commands.py)):
+   - Requires `gate_id` and `resolved_by` — the audit trail has no anonymous
+     resolver.
+   - Reads the gate (`db.get_gate`); an unknown id is an error.
+   - Refuses `gate_type == "routing"` with *"routing gates can only be resolved
+     via task_route"* (`gate_commands.py:190-197`). The adapter turns any error
+     mentioning `routing` into the distinct `refused_routing_gate` outcome
+     (`builtin.py:485`).
+   - Delegates to `Orchestrator._resolve_gate_and_emit`
+     ([`src/orchestrator/core.py:2847`](../../../src/orchestrator/core.py)) —
+     the same helper the timer and task-gate sweeps use, which is why an
+     operator resolution and a swept resolution produce identical events.
+3. `_resolve_gate_and_emit` is idempotent: an absent or already-resolved gate
+   returns an empty flip set. Otherwise it calls `db.resolve_gate`
+   ([`src/database/queries/gate_queries.py:265`](../../../src/database/queries/gate_queries.py)),
+   which marks the gate resolved, recomputes every waiter's blocked projection
+   and returns the ids whose `is_blocked` flipped. It then publishes
+   `gate.resolved` (carrying `gate_type`, `await_id`, `resolution` and
+   `unblocked_task_ids`) and writes the `gate.resolved` audit row; both emissions
+   are best-effort and logged on failure.
+4. The command returns the sorted flip set as `unblocked_task_ids`;
+   `_outcome_of` (`builtin.py:476`) maps it to `resolved`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Updates the `gates` row (status, `resolved_by`, `resolution`, timestamp) and the
+`tasks.is_blocked` projection of every waiter, in one transaction, plus the
+audit rows `db.resolve_gate` writes. Appends a `gate.resolved` event-log row and
+publishes `gate.resolved` and the blocked-flip events on the bus.
+
+The resolution is committed state: the unblocked waiters stay unblocked across a
+restart, and the `resolution` string is what downstream policy reads. The
+default pipeline's trigger filter — `gate_type: human` with a `resolution` of
+`approve` or `approved` — is a filter on exactly that field, which is why the
+resolution wording is part of the contract between a surface and a policy rather
+than free text.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `refused_routing_gate` (failure) | The gate's type is `routing`. Call [`task_route`](task_route.md) instead; nothing was written. |
+| `rejected` | Missing `gate_id` or `resolved_by`, or no gate with that id. |
+| `resolved` with an empty `unblocked_task_ids` | Success, and expected: the gate was already resolved, had no waiters, or every waiter is still blocked by something else. This is not a failure. |
+| `unauthorized` | The capability gate refused `gate_resolve`. |
+| `contract_violation` | The dict did not satisfy `GateResolveValue`, or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `GateResolveArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1508`](../../../src/playbooks/validation.py) emits
+`argument_missing` for a missing `gate_id` or `resolved_by`, and
+`unmapped_business_outcome` for any declared outcome without a transition.
+For a `CommandStep` the "business" set is *every* contract outcome, failures
+included ([`src/playbooks/definition.py:463`](../../../src/playbooks/definition.py)),
+so `resolved`, `refused_routing_gate` and `rejected` each need their own edge —
+the `runtime_error` catch-all only covers the engine's reserved outcomes
+([`src/playbooks/engine.py:2843`](../../../src/playbooks/engine.py)).
+
+`aq task gate-show --gate-id <gate-id>` reads the resolution back, and `aq task explain --task-id <id>`
+confirms whether a waiter is still held by another gate or dependency.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "close-external-wait",
+  "title": "resolve_gate",
+  "source": {"path": "external-wait.md", "start_line": 26, "end_line": 31},
+  "command": "gate_resolve",
+  "inputs": {
+    "gate_id": {"type": "binding_ref", "binding": "gate", "path": "gate_id"},
+    "resolved_by": {"type": "literal", "value": "external-wait-policy"},
+    "resolution": {"type": "literal", "value": "upstream artifact published"}
+  },
+  "save_result_as": "resolution",
+  "transitions": {
+    "resolved": "close-external-wait--done",
+    "refused_routing_gate": "close-external-wait--failed",
+    "rejected": "close-external-wait--failed",
+    "runtime_error": "close-external-wait--failed"
+  }
+}
+```

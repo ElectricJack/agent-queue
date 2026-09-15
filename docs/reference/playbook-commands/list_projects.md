@@ -45,24 +45,96 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+List the configured projects — id, display name, status, credit weight,
+concurrency cap and primary workspace path, plus the repo URL and assignment
+playbook when they are set. It is the read behind `aq project list`, and for a
+playbook it is the way to turn "every active project" into a concrete list to
+loop over.
+
+It takes no parameters at all: the whole configured set comes back, active and
+paused alike, and filtering is the caller's job.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+The historical `memory-consolidation` policy is the canonical caller and shows
+the shape exactly:
+[`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md)
+calls `list_projects` on both its system-wide paths (a manual run with no
+`project_id`, and the `timer.24h` run), keeps the rows whose `status` is
+`ACTIVE`, and then reads
+[`read_project_memory_file`](read_project_memory_file.md) and
+[`count_project_memory_files`](count_project_memory_files.md) per surviving
+project to decide which ones qualify for a consolidation pass.
+
+No playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it: every shipped default is either system-scope but triggered by a
+project-carrying event, or project-scope to begin with, so the project is
+already known. `list_projects` is for the fleet-wide timer rule that has no
+event to read a project off.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `ListProjectsArgs` — an empty model, so there is nothing
+   to resolve — and the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_list_projects`.
+2. `_cmd_list_projects`
+   ([`src/commands/project_commands.py:63`](../../../src/commands/project_commands.py)):
+   - Reads every project with `db.list_projects()`.
+   - For each one, resolves the primary workspace path with
+     `db.get_project_workspace_path(p.id)` — one extra query per project, which
+     is why this is a fleet-sized read and not a hot path.
+   - Emits `{id, name, status, credit_weight, max_concurrent_agents, workspace}`
+     for every project, and adds `repo_url` and `assignment_playbook_id` only
+     when they are set.
+3. `_outcome_of` (`builtin.py:476`) maps the dict to `listed`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read`, no effect clauses, `idempotency: natural`,
+`retry_safe: yes`. Nothing is written, nothing is emitted, and the result is a
+snapshot of `projects` plus the workspace join at the moment of the call.
+
+Note what is *not* in the payload: the project's default profile, its
+integration mode, and its hierarchical integration mode. A policy that needs
+those must read them elsewhere — `aq project get --project-id <id>` on the CLI, or the
+`project_get` command.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Declared by the contract (every `_outcomes(...)` set carries it) but not reachable from the handler, which has no validation and no error return. In practice a database failure surfaces as `runtime_error` instead, because `CommandHandler.execute`'s exception path returns `{"error": …}` — which the adapter then maps to `rejected`. Map both edges. |
+| `unauthorized` | The capability gate refused `list_projects` for this principal. A worker session is narrowed out of it: the CLI answers `out of scope: list_projects`, which is why `aq task create` needs an explicit `--project`. |
+| `contract_violation` | The dict did not satisfy `ListProjectsValue` (`projects` is required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `state_limit_exceeded` | The bound result exceeded the per-result byte limit (`command.py:147`) — only plausible on a very large fleet. |
+
+Statically,
+[`src/playbooks/validation.py:1508`](../../../src/playbooks/validation.py) emits
+`argument_unknown` for *any* input at all, since `ListProjectsArgs` declares no
+fields, and `unmapped_business_outcome` when `listed` or `rejected` has no
+transition.
+
+`aq project list` is the same read from the CLI.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "consolidate-memory",
+  "title": "read_projects",
+  "source": {"path": "memory-consolidation.md", "start_line": 40, "end_line": 46},
+  "command": "list_projects",
+  "inputs": {},
+  "save_result_as": "fleet",
+  "transitions": {
+    "listed": "consolidate-memory--pick_targets",
+    "rejected": "consolidate-memory--failed",
+    "runtime_error": "consolidate-memory--failed"
+  }
+}
+```

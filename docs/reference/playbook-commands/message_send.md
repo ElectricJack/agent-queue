@@ -54,24 +54,150 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Queue one message on the messaging substrate, addressed to a session, a task, a
+profile or a user. `message_send` is how an automated policy tells a human or a
+live worker something: the row is written durably and the orchestrator's
+delivery cascade decides how and when it reaches the recipient — a nudge into an
+idle session, a `prime` surface on a session that has not started yet, or a
+parked message when the session row is stale.
+
+The command only ever reports `queued`. That is the only state it can honestly
+report: writing the row and delivering it are different steps owned by different
+parts of the daemon.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+`message_send`, and the `blocked-task-escalation` playbook's own documentation
+says why: it "writes no message of its own" — it wakes a durable incident with
+[`task_recovery_notify`](task_recovery_notify.md), which owns the one notice and
+its deterministic id, so a replayed event cannot produce a second message.
+Likewise a human *decision* goes through the escalation surface
+(`escalation_create`), which is a durable incident with one thread, not a message.
+
+A custom policy uses `message_send` for a genuine notification that needs no
+decision and no dedup — telling a project's supervisor that an external artifact
+landed, say. The argument model defaults `from_kind` to `system` precisely
+because a playbook is neither a user nor a session, and `from_id` is required so
+the recipient can tell an automated note from a human's.
+
+The contract is `side effect: create`, `idempotency: none`, `retry_safe: no`:
+there is no key, so a retry writes a second message. That is the main reason to
+prefer a keyed command when one exists.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `MessageSendArgs`; `_handler_args`
+   ([`src/commands/contracts/builtin.py:540`](../../../src/commands/contracts/builtin.py))
+   merges `exclude_none` with `exclude_unset`, which is what makes the model's
+   `from_kind: "system"` default reach the handler — the handler's own fallback
+   is `user`, so dropping declared defaults would silently change the sender
+   kind.
+2. The adapter re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_message_send`.
+3. `_cmd_message_send`
+   ([`src/commands/message_commands.py:149`](../../../src/commands/message_commands.py)):
+   - `_messages_disabled_error` (`message_commands.py:78`) refuses first when the
+     messages substrate is paused.
+   - `to_kind` must be in `MESSAGE_TO_KINDS` and `from_kind` in
+     `MESSAGE_FROM_KINDS`; `to_id` and `from_id` must be non-empty.
+   - **Scope.** A global elevated session with no project, an explicit
+     `system_only`, or the `supervisor-global` address makes the message
+     system-scoped (`project_id: None`) after
+     `_system_message_scope_error` approves. Otherwise a `project_id` is
+     required — from the argument or the handler's active project — and the
+     project must exist.
+   - `body` must be non-empty; `priority` must be a real `int` (a `bool` is
+     rejected explicitly); a `reply_to_id` must name an existing message.
+   - `pane_open` (not a contract argument, but part of the same handler) is
+     validated against `SERVER_PANE_REGISTRY` and must be `agent_pushable`.
+   - `db.create_message` writes the row with `from_kind` / `from_id` /
+     `to_kind` / `to_id` / `body` / `subject` / `thread_id` / `priority` and the
+     internal `body_kind`.
+   - `_emit_message_event("message.sent", …)` publishes the identity fields —
+     never the body.
+   - Returns `{"message_id": …, "state": "queued", "message": …}`.
+4. `_outcome_of` (`builtin.py:476`) maps the dict to `queued`, or `rejected` on
+   any error.
+
+Delivery happens later and elsewhere: `MessageDeliveryEngine`
+([`src/messages/delivery.py`](../../../src/messages/delivery.py)) is run as a
+cascade step in the orchestrator cycle behind `messages.enabled`, resolves the
+address through `SessionLens`
+([`src/messages/session_lens.py`](../../../src/messages/session_lens.py)) — the
+supervisor address `supervisor-<project>` maps to the runtime session name
+`n-supervisor--<project>` — applies a per-`to_kind` policy, parks a message whose
+session row is stale, and falls back to the transcript tail.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes one `messages` row and publishes `message.sent` on the bus. Nothing else:
+no task is touched, no gate is created, no session is typed into.
+
+The row is the durable part. It survives a restart and is delivered when the
+recipient next becomes reachable — which is why a message to a supervisor that
+is not running is not lost, and why `aq inbox` can show pending mail. Because
+there is no dedup key, a replayed step leaves two rows; use
+`task_recovery_notify` or `escalation_create` when convergence matters.
+
+Note the surface exclusion: `message_send` is deliberately out of the generated
+HTTP routes ([`src/api/codegen.py:61`](../../../src/api/codegen.py)) because the
+dashboard uses the dedicated `POST /api/sessions/{name}/message` route instead.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | The messages substrate is disabled; an invalid `to_kind` or `from_kind` (the error lists the allowed set); an empty `to_id`, `from_id` or `body`; no `project_id` and no active project; an unknown project; a non-integer `priority`; an unknown `reply_to_id`; a system-scoped send the caller is not allowed to make. |
+| `unauthorized` | The capability gate refused `message_send` for the step principal. |
+| `contract_violation` | The dict did not satisfy `MessageSendValue` (`message_id` and `state` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `MessageSendArgs` — most often `to_id` or `body` resolving to `null`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for any of the four required arguments (`to_kind`, `to_id`,
+`body`, `from_id`) without an input, `argument_unknown` for `pane_open` or
+`reply_to_id` — both honoured by the handler but **not** contract arguments — and
+`unmapped_business_outcome` when `queued` or `rejected` has no transition.
+
+`aq inbox` shows what is pending for a recipient, `aq message inbox` reads a
+session's mail, and a message that was written but never delivered shows up as
+parked in the delivery engine's own diagnostics. Use `aq schema` rather than
+guessing a `to_kind`; the canonical human-operator recipient is
+`user:dashboard`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "announce-external-artifact",
+  "title": "notify_supervisor",
+  "source": {"path": "external-artifact.md", "start_line": 18, "end_line": 24},
+  "command": "message_send",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "to_kind": {"type": "literal", "value": "session"},
+    "to_id": {
+      "type": "template",
+      "parts": [
+        {"type": "literal", "value": "supervisor-"},
+        {"type": "event_ref", "path": "project_id"}
+      ]
+    },
+    "from_kind": {"type": "literal", "value": "system"},
+    "from_id": {"type": "literal", "value": "external-artifact-policy"},
+    "subject": {"type": "literal", "value": "Upstream artifact published"},
+    "body": {"type": "binding_ref", "binding": "artifact", "path": "summary"},
+    "priority": {"type": "literal", "value": 80}
+  },
+  "save_result_as": "notice",
+  "transitions": {
+    "queued": "announce-external-artifact--done",
+    "rejected": "announce-external-artifact--failed",
+    "runtime_error": "announce-external-artifact--failed"
+  }
+}
+```

@@ -66,24 +66,135 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Change fields on a task that already exists. `edit_task` is the general-purpose
+mutator behind `aq task set`: title, description, priority, task type, status,
+retry budget, verification type, profile, intelligence class, integration mode,
+workspace mode, agent affinity, the `skip_verification` flag, and the
+`needs_attention` operational signal.
+
+It is deliberately conservative about the two things that are not really
+"fields". Routing (`profile_id`, `intelligence_class`) is refused while a worker
+holds the task, because retargeting a running agent silently is worse than
+refusing. Pausing is refused outright — `pause_task` exists so the running
+session is stopped as part of the transition.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+`edit_task`, and that is a design position rather than an omission: the default
+pipeline creates work and gates it, and *routing* — the field a pipeline most
+often wants to write — has its own narrower command,
+[`task_route`](task_route.md), which also resolves the routing gate. A custom
+policy reaches for `edit_task` when it needs to re-prioritise, retype or
+re-describe an existing task, or to raise and clear `needs_attention` from an
+automated observer.
+
+The contract is `side effect: update`, `idempotency: natural`, `retry_safe:
+yes`: applying the same field values twice leaves the same row, so a retried
+step is safe.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `EditTaskArgs` and the adapter re-enters
+   `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_edit_task`.
+2. `_cmd_edit_task`
+   ([`src/commands/task_commands.py:3150`](../../../src/commands/task_commands.py))
+   runs three refusals before it looks at any field:
+   - `status: PAUSED` is refused with a pointer to `pause_task`
+     (`task_commands.py:3151`).
+   - A status change on a manually paused task (`PAUSED` with no `resume_after`)
+     is refused with a pointer to `resume_task`.
+   - `profile_id` / `intelligence_class` on an `IN_PROGRESS` or claimed task is
+     refused: *"Task is running or claimed; stop the task before changing its
+     routing."*
+3. Each supplied key is then validated and collected into an `updates` dict
+   (`task_commands.py:3178-3271`). Presence, not truthiness, drives the write, so
+   `null` **clears** a nullable field — `profile_id`, `task_type`,
+   `integration_mode`, `affinity_agent_id`, `affinity_reason`, `workspace_mode`
+   and `workflow_id` all support that. `project_id`, `profile_id` and
+   `affinity_agent_id` are read back from the database; `task_type`,
+   `verification_type`, `integration_mode`, `affinity_reason` and
+   `workspace_mode` are checked against their enum; a routing edit re-validates
+   the class against the resolved profile with `_validate_routing_class`
+   (`task_commands.py:1624`).
+4. The writes happen in a fixed order (`task_commands.py:3272-3288`):
+   - A routing edit goes through `db.update_task_routing`
+     ([`src/database/queries/task_queries.py:1953`](../../../src/database/queries/task_queries.py)),
+     whose `UPDATE` carries the "no worker holds it" predicate in the statement
+     itself — `status != IN_PROGRESS`, `assigned_agent_id IS NULL`, and no
+     `starting`/`running`/`draining` session — so a claim that wins after the
+     command's read cannot be silently retargeted. A rowcount of 0 is the same
+     refusal as step 2.
+   - Remaining fields go through `db.update_task`.
+   - A status change goes through `db.transition_task` with `context:
+     "edit_task"`, so the transition is logged like every other one.
+5. `needs_attention` is task metadata, not a column. An explicit empty string,
+   `clear_needs_attention`, **or** any explicit status change deletes it — an
+   operator status change is a recovery decision and dismisses the stale signal
+   (`task_commands.py:3290-3309`).
+6. With nothing to update the command refuses and lists every accepted field, so
+   a typo is an error rather than a silent no-op.
+7. `_emit_task_graph_change("task.updated", task)` (`task_commands.py:861`)
+   publishes the edit; a project move emits a second event for the destination
+   project so both graphs refresh.
+8. `_outcome_of`
+   ([`src/commands/contracts/builtin.py:476`](../../../src/commands/contracts/builtin.py))
+   maps the dict to `updated`, or `rejected` on any `error`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes the `tasks` row, `task_metadata` for `needs_attention`, and a task
+transition audit row when the status changed. `task.updated` is published on the
+graph channel after the commit. Nothing else is touched: `edit_task` does not
+stop a session, release a workspace, resolve a gate, or recompute the blocked
+projection — the dependency graph is
+[`add_dependency`](add_dependency.md)'s business and gates are
+[`gate_resolve`](gate_resolve.md)'s.
+
+`workspace_mode: directory-isolated` is accepted and stored but not implemented;
+the result carries a `warning` saying the task will fail at execution time.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Unknown task, project, profile or affinity agent; `status: PAUSED`; a status change on a manually paused task; a routing change while the task is running or claimed (either from the pre-check or from `update_task_routing` returning rowcount 0); an invalid `status`, `task_type`, `verification_type`, `integration_mode`, `affinity_reason` or `workspace_mode`; a class with no mapping for the profile's harness provider; or no updatable field at all. |
+| `unauthorized` | The capability gate refused `edit_task` for the step principal. |
+| `contract_violation` | The dict did not satisfy `EditTaskValue` (`updated` and `fields` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `EditTaskArgs` — e.g. `priority` bound to a string. |
+
+Statically, `argument_missing` fires when `task_id` has no input and
+`argument_unknown` for a field name `EditTaskArgs` does not declare —
+`workflow_id`, for instance, is honoured by the handler but is *not* a contract
+argument, so a playbook cannot set it.
+
+`aq task show <id>` reads the result back; `aq task explain --task-id <id>` explains why an
+edited task still is not running; a refused routing edit is resolved by stopping
+the task ([`stop_task`](stop_task.md)) first.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "deprioritise-stale-work",
+  "title": "lower_priority",
+  "source": {"path": "housekeeping.md", "start_line": 18, "end_line": 22},
+  "command": "edit_task",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"},
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "priority": {"type": "literal", "value": 200},
+    "needs_attention": {"type": "literal", "value": "stale: no progress in 7 days"}
+  },
+  "save_result_as": "edited",
+  "transitions": {
+    "updated": "deprioritise-stale-work--done",
+    "rejected": "deprioritise-stale-work--failed",
+    "runtime_error": "deprioritise-stale-work--failed"
+  }
+}
+```

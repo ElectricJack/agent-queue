@@ -46,24 +46,124 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Forcibly stop an in-progress task: signal the running adapter, cancel its
+background asyncio task, release its workspaces, transition the task to
+`BLOCKED`, and return the agent to `IDLE`. `stop_task` is the cancel button —
+it ends the *execution*, not the task, which stays in the queue as `BLOCKED`
+work someone has to decide about.
+
+The declared outcome set makes the important distinction: `stopped` means an
+execution was actually ended, and `not_running` means the task had already
+reached a non-running state. A caller cancelling a child it no longer owns must
+not read that as a failure, so `not_running` is classified as a success; a task
+that does not exist at all still fails.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it. Stopping a worker mid-flight is a supervisory decision, and the shipped
+recovery path deliberately routes it through a human-or-supervisor judgement
+instead: `task.failed` wakes a durable incident via
+[`task_recovery_notify`](task_recovery_notify.md)
+([`blocked-task-escalation.md`](../../../src/prompts/default_playbooks/blocked-task-escalation.md)),
+and the supervisor decides with `aq task recover`.
+
+A custom policy uses `stop_task` when its own evidence says the execution is
+pointless — the task's spec was withdrawn, a superseding change landed, a parent
+operation was cancelled. `idempotency: natural` and `retry_safe: yes` hold
+because the second call sees a task that is no longer `IN_PROGRESS` and reports
+`not_running`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `StopTaskArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_stop_task`.
+2. `_cmd_stop_task`
+   ([`src/commands/task_commands.py:3375`](../../../src/commands/task_commands.py))
+   is a three-line delegation: it calls `Orchestrator.stop_task` and turns a
+   returned error string into `{"error": …}`, or the task id into
+   `{"stopped": …}`.
+3. `Orchestrator.stop_task`
+   ([`src/orchestrator/core.py:1164`](../../../src/orchestrator/core.py)) does
+   the work, in this order:
+   - Reads the task. Missing → `Task '<id>' not found`. Not `IN_PROGRESS` →
+     `Task is not in progress (status: <status>)`, which the adapter maps to
+     `not_running` (`builtin.py:487`).
+   - Stops the adapter for the assigned agent, logging but not propagating a
+     transport failure.
+   - Cancels the task's background asyncio task and **awaits** it (up to five
+     seconds) so any in-flight database transaction finishes rolling back before
+     the orchestrator issues its own queries (`core.py:1188-1199`).
+   - Removes the workspace sentinel file and releases every workspace held for
+     the task (`_release_workspaces_for_task`).
+   - `db.transition_task(task_id, BLOCKED, context="stop_task",
+     assigned_agent_id=None)`.
+   - Sets the agent to `IDLE` with no current task and drops its adapter.
+   - Emits the task-failure event through `_emit_task_failure` with
+     `error: "Manually stopped by user"` — which is what makes `task.failed`
+     fire, and therefore what starts the `blocked-task-escalation` run.
+   - Emits `notify.task_stopped`, deletes the transport's task-added and
+     task-started messages, and emits `notify.task_thread_close`.
+   - Calls `_notify_stuck_chain(task)` so a dependency chain the stop has
+     orphaned is reported rather than silently stalling.
+4. `_outcome_of` (`builtin.py:476`) maps `{"stopped": …}` to `stopped`, the "not
+   in progress" message to `not_running`, and anything else to `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes the `tasks` row (status `BLOCKED`, `assigned_agent_id` cleared) and its
+transition audit row, the `agents` row (state `IDLE`), and the workspace
+release. Removes the workspace sentinel file from disk. Publishes the task
+failure event plus the `notify.*` events the transports render.
+
+All of it survives a restart, and the consequence matters: the task is now
+`BLOCKED`, not `READY`. It will not be picked up again on its own. Reopening it
+is a separate decision — `aq task recover --task-id <id> --decision retry`, `restart_task`, or
+`reopen_with_feedback`.
+
+The `not_running` path writes **nothing**: it returns before any mutation.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `not_running` (success) | The task exists but is not `IN_PROGRESS` — already terminal, already blocked, or never started. Nothing was written. |
+| `rejected` | No task with that id. |
+| `unauthorized` | The capability gate refused `stop_task`. Note that the *session*-scoped narrowing lives elsewhere: `_cmd_stop_task` itself performs no scope check, unlike `pause_task` / `resume_task` / `task_recover`, which route through `_task_control_scope_error` (`task_commands.py:3347`). |
+| `contract_violation` | The dict did not satisfy `StopTaskValue` (`stopped` is required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | `task_id` resolved to something that is not a string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` if `task_id` has no input, and `unmapped_business_outcome`
+for any of `stopped`, `not_running` or `rejected` left without a transition —
+`not_running` is easy to forget and is the outcome a replay produces.
+
+`aq task show <id>` confirms the `BLOCKED` status and the cleared agent;
+`aq task explain --task-id <id>` names the recovery incident the failure event opened.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "cancel-superseded-work",
+  "title": "stop_execution",
+  "source": {"path": "supersede-policy.md", "start_line": 22, "end_line": 27},
+  "command": "stop_task",
+  "inputs": {
+    "task_id": {"type": "binding_ref", "binding": "superseded", "path": "task_id"}
+  },
+  "save_result_as": "stopped",
+  "transitions": {
+    "stopped": "cancel-superseded-work--done",
+    "not_running": "cancel-superseded-work--done",
+    "rejected": "cancel-superseded-work--failed",
+    "runtime_error": "cancel-superseded-work--failed"
+  }
+}
+```

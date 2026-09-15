@@ -51,24 +51,131 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Save one reusable insight into a project's memory. `memory_save` is the write
+half of the 4-tier knowledge system: the content is embedded and stored in the
+scope's Milvus collection so that a future agent's prompt assembly, or an
+explicit [`memory_search`](memory_search.md), can surface it without anyone
+remembering to link it.
+
+`scope` selects which collection the insight lands in — the system scope, an
+agent-type scope, or the project scope — and the result reports the `action`
+taken and the `chunk_hash` that identifies the stored chunk.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it, and in the shipped design that is the point: memory is written by the
+*self-improvement loop*, not by a pipeline step. Reflection extracts insights
+after a task, consolidation folds them into knowledge files, and the prompt
+builder delivers them —
+[`docs/specs/design/self-improvement.md`](../../specs/design/self-improvement.md)
+describes the loop, and the historical `memory-consolidation` policy
+([`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md))
+deliberately *creates a task* to do the vault writes rather than writing them
+from the playbook, because the consolidating agent needs full tool access.
+
+A playbook step is the right place for `memory_save` when the policy itself has
+produced a durable, reusable fact — a resolved convention, a confirmed
+environment quirk — and there is no agent in the loop to record it. Note
+`idempotency: none` and `retry_safe: no`: there is no key, so a retried step
+saves the content twice.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `MemorySaveArgs` (`project_id`, `content`, optional
+   `scope`); the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)).
+2. **The pause gate runs first.** `_paused_command_error`
+   ([`src/commands/handler.py:666`](../../../src/commands/handler.py)) matches
+   the name through `_is_memory_command` (`handler.py:317`) — which recognises
+   both the bare `memory_save` and the plugin-qualified `aq-memory.memory_save`
+   — and refuses with the canonical memory-paused error whenever
+   `memory.enabled` is false. It is placed before the built-in lookup **and**
+   before the plugin fallback so a paused subsystem short-circuits even if the
+   plugin is somehow loaded
+   ([`docs/specs/design/feature-pauses.md`](../../specs/design/feature-pauses.md)).
+3. The capability gate (`handler.py:962`) runs next, and covers the plugin path
+   with no second call site — the plugin path previously ran with no capability
+   check at all.
+4. **There is no `_cmd_memory_save` in this repository.** `getattr(self,
+   "_cmd_memory_save")` misses, so execution falls through to the plugin
+   registry (`handler.py:1008`) and the command is served by the external
+   `aq-memory` plugin. `CommandHandler.has_command` (`handler.py:678`) documents
+   this explicitly: a tool having a JSON-Schema definition in
+   [`src/tools/definitions.py`](../../../src/tools/definitions.py) does not imply
+   it is executable. With the plugin absent, `execute` returns
+   `{"error": "Unknown command: memory_save"}`.
+5. A plugin exception is recorded against the plugin
+   (`plugin_registry.record_failure`) and returned as
+   `{"error": "Plugin command failed: …"}`; a success is recorded with
+   `record_success`, which is what the plugin circuit breaker reads.
+6. `_outcome_of` (`builtin.py:476`) maps the dict to `saved`, or `rejected` on
+   any `error` / `success: False` — which is what a paused subsystem, a missing
+   plugin and a plugin failure all look like to the step.
+
+The storage layer itself is described in
+[`docs/specs/design/memory-plugin.md`](../../specs/design/memory-plugin.md): one
+Milvus collection per scope (`aq_system`, `aq_agenttype_<id>`,
+`aq_project_<id>`), with a unified schema that holds documents, key-value pairs
+and temporal facts.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes to the memory backend, not to the AQ database: an embedded chunk in the
+scope's Milvus collection, identified by the returned `chunk_hash`. No AQ table
+is touched and no bus event is emitted.
+
+Persistence therefore depends on the plugin's backend rather than on
+PostgreSQL — a Milvus instance that is unavailable, or a plugin that is not
+installed, means the write does not happen and the step is `rejected`. The
+vault's markdown side (`facts.md`, insight and knowledge files under
+`vault/projects/<id>/memory/`) is edited by the consolidating agent, and is what
+[`read_project_memory_file`](read_project_memory_file.md) and
+[`count_project_memory_files`](count_project_memory_files.md) read.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | `memory.enabled` is false (the canonical paused error); the `aq-memory` plugin is not installed (`Unknown command: memory_save`); the plugin raised (`Plugin command failed: …`); or the plugin itself refused — an unknown project or scope, an empty `content`, an unreachable backend. |
+| `unauthorized` | The capability gate refused `memory_save` for the step principal. |
+| `contract_violation` | The dict did not satisfy `MemorySaveValue` (`success` is required), or the outcome has no transition and there is no `runtime_error` edge. Because the implementation is external, this is a real risk: a plugin version whose result shape drifts from the contract fails the step here rather than silently. |
+| `input_resolution_failed` | A resolved input failed `MemorySaveArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` or `content` has no input, and
+`unmapped_business_outcome` when `saved` or `rejected` has no transition. Note
+that the *compiler* validates against the contract, which exists whether or not
+the plugin does — so a playbook can compile cleanly and still fail at run time
+on a box without `aq-memory`.
+
+`aq plugin list` shows whether the plugin is installed and healthy,
+`aq memory search --query <text>` exercises the read path, and
+`aq memory save --content <text>` runs the same write from the CLI.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "record-resolved-convention",
+  "title": "save_insight",
+  "source": {"path": "convention-policy.md", "start_line": 20, "end_line": 25},
+  "command": "memory_save",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "content": {"type": "binding_ref", "binding": "decision", "path": "convention"},
+    "scope": {"type": "literal", "value": "project"}
+  },
+  "save_result_as": "saved",
+  "transitions": {
+    "saved": "record-resolved-convention--done",
+    "rejected": "record-resolved-convention--failed",
+    "runtime_error": "record-resolved-convention--failed"
+  }
+}
+```

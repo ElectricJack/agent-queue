@@ -54,24 +54,113 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Read one task and everything a surface needs to render it: the row's own fields,
+its effective integration policy and where that policy comes from, its
+completion record, its blocking dependencies and dependents, its subtasks and
+children summary, and the `needs_attention` operational signal.
+
+It is the read behind `aq task show`, and it is deliberately generous — the
+branch name, `pr_url` and `is_blocked` are always present, absent or not, so a
+caller never has to guess whether a missing key means "no value" or "not
+included".
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+`get_task`: the defaults get task facts from the triggering event's payload,
+which is cheaper and — more importantly — is the state the rule was dispatched
+*about*, with no window in which the row changed underneath.
+
+A playbook reaches for `get_task` when it needs a field the event does not
+carry: the branch name, the effective integration mode, the completion record's
+summary, or the dependency shape. Because the contract is `side effect: read`
+with `idempotency: natural` and `retry_safe: yes`, the step is free to retry.
+Bind the result with `save_result_as` and read fields off the binding; only the
+fields declared on `GetTaskValue` are bound (`id`, `project_id`, `title`,
+`description`, `status`, `branch_name`, `pr_url`, `completion`), so the richer
+keys the handler returns are for the CLI and API surfaces, not for a playbook
+binding.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `GetTaskArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_get_task`.
+2. `_cmd_get_task`
+   ([`src/commands/task_commands.py:2772`](../../../src/commands/task_commands.py)):
+   - Reads the task; an unknown id is an error.
+   - `_assert_task_in_scope`
+     ([`src/commands/claim_commands.py:102`](../../../src/commands/claim_commands.py))
+     refuses a plain (non-elevated) session scope with no pinned `task_id` —
+     a pool worker's token, whose task changes with every claim — when the task
+     belongs to another project. Local callers, elevated supervisor tokens and
+     scopes that do pin a `task_id` are unaffected.
+   - Builds the base payload straight off the `Task` dataclass
+     (`task_commands.py:2782-2814`). `branch_name` is in there on purpose: a
+     read surface that omitted it once made every task look branchless and sent
+     an investigation after a persistence bug that did not exist.
+   - Resolves the **effective** integration mode with
+     `resolve_integration_mode_with_source` (`src/models.py`), consulting the
+     task's own override, its parent's override when it is a plan subtask, the
+     project's mode and finally `config.integration.default_mode`, and reports
+     both `effective_integration_mode` and `integration_mode_source`.
+   - Reads `needs_attention` from `task_metadata` and the completion record with
+     `db.get_task_completion`.
+   - Adds `depends_on` (blocking edges only, each resolved to id/title/status/
+     type/reason via `db.get_typed_dependencies_detailed`), `blocks` (from
+     `db.get_dependents`), `subtasks` (`db.get_subtasks`) and `children`
+     (`db.get_children_summary`).
+3. `_outcome_of` (`builtin.py:476`) maps the dict to `read`, or `rejected` when
+   the task is missing or out of scope.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. Every field is read: `tasks`, `task_metadata`, `task_completion_records`,
+`task_dependencies`, the children projection and the project row. No event is
+emitted and nothing is written, so a retry costs only the reads.
+
+The one thing worth noting about persistence is what `is_blocked` means: it is
+the *persisted graph* projection (work-graph design §4), not a capacity answer.
+"No agent is free", "the workspace is busy" and "the project is over budget" are
+capacity reasons and belong to `aq task explain`, not to this payload.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | No task with that id; a pool-worker session scope reading a task in another project (`task '<id>' belongs to project '<other>', outside this session's scope`); or the mutually exclusive `--clear-needs-attention` / `--needs-attention` combination the CLI shares this handler with. |
+| `unauthorized` | The capability gate refused `get_task` for the step principal. |
+| `contract_violation` | The dict did not satisfy `GetTaskValue` — `id`, `project_id`, `title`, `description` and `status` are all required — or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | `task_id` resolved to something that is not a string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `task_id` has no input and `unmapped_business_outcome`
+when `read` or `rejected` has no transition.
+
+`aq task show <id>` is the same read from the CLI; `aq task explain --task-id <id>` adds
+the capacity and scheduling reasons this payload deliberately omits.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "collect-branch-evidence",
+  "title": "read_task",
+  "source": {"path": "delivery-evidence.md", "start_line": 14, "end_line": 18},
+  "command": "get_task",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"}
+  },
+  "save_result_as": "task",
+  "transitions": {
+    "read": "collect-branch-evidence--read_receipts",
+    "rejected": "collect-branch-evidence--failed",
+    "runtime_error": "collect-branch-evidence--failed"
+  }
+}
+```

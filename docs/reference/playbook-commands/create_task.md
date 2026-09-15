@@ -83,24 +83,174 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Create one new task, unconditionally. `create_task` is the plain constructor: it
+validates everything a task row can carry — project, profile, intelligence class,
+task type, integration mode, workspace mode, required workspace kinds, labels,
+dependency edges, parent placement, agent affinity — writes the row, and reports
+the id it minted. It never looks for a task that already exists, so a step that
+may run twice wants [`ensure_task`](ensure_task.md) instead.
+
+The command is also the authorization boundary for *delegation*. A caller with a
+narrow capability policy cannot widen it by creating a task for a broader
+profile, and a pool worker's filings are pinned to its own project, forced to
+start `DEFINED`, and confined to the subtree of the task it holds.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in [`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks)
+calls `create_task`: the two paths that create work in the defaults are
+`ensure_task` (keyed, replay-safe) and [`task_batch_commit`](task_batch_commit.md)
+(a whole approved graph at once). The historical `memory-consolidation` playbook
+is the canonical example of the unconditional shape — one `create_task` per
+target project, with the description supplied by
+[`render_prompt`](render_prompt.md) — and its reviewed source is kept at
+[`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md).
+
+Reach for it when the step's own trigger already guarantees at-most-once
+delivery *and* there is no natural key to deduplicate on. When either is untrue,
+prefer `ensure_task`: `create_task` declares `idempotency: none` and
+`retry_safe: no`, so the engine will not retry it and a replayed event produces a
+second task.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `LiveCommandExecutor.execute`
+   ([`src/playbooks/executors/command.py:264`](../../../src/playbooks/executors/command.py))
+   resolves the step's inputs into `CreateTaskArgs` through `_build_args`
+   (`command.py:231`). Because the contract's idempotency mode is `none`, no key
+   argument is injected.
+2. `registration.invoke` runs the adapter from `_adapter`
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py)),
+   which re-enters `CommandHandler.execute` inside `principal_context(ctx)` so the
+   step's narrowed principal — not an ambient request principal — is what the
+   capability gate sees. `_handler_args` (`builtin.py:540`) merges
+   `exclude_none` with `exclude_unset` precisely so an explicit `parent_id: null`
+   survives as a deliberate root placement.
+3. `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)) normalises
+   `project_id`, applies the subsystem pause gate (`handler.py:948`) and the
+   capability gate (`handler.py:962`), then dispatches `_cmd_create_task`.
+4. `_cmd_create_task`
+   ([`src/commands/task_commands.py:1695`](../../../src/commands/task_commands.py))
+   runs in this order:
+   - **Placement intent.** `root` and a non-null `parent_id` are mutually
+     exclusive; an explicit `parent_id: null` is the same deliberate root choice
+     as `--root` (`task_commands.py:1696-1712`).
+   - **Worker filing (swarm §12).** A session-scoped, non-elevated caller must
+     hold a task. Its `project_id` is overwritten with the session's, `status` is
+     dropped so the filing starts `DEFINED`, and `parent_id` /
+     `discovered_from` must name the held task or a member of its subtree
+     (`task_commands.py:1709-1856`).
+   - **Project and policy.** The project must exist; hierarchical integration
+     requires a designated repository; `integration_mode`, `task_type`,
+     `workspace_mode`, `verification`-adjacent fields and `labels` are each
+     checked against their enum.
+   - **Profile and class.** `_task_execution_profile_error`
+     (`task_commands.py:1653`) rejects a control-plane or non-executable profile;
+     `_validate_routing_class` (`task_commands.py:1624`) rejects a class the
+     profile's harness provider has no model mapping for. With no explicit
+     profile the project default is validated before it is accepted.
+   - **References.** `preferred_workspace_id`, each `requires_kinds` entry
+     (resolved through `db.resolve_workspace_kind`), `affinity_agent_id`,
+     `affinity_reason`, every `depends_on` id and `parent_id` are each read back
+     from the database before anything is written.
+   - **Initial status.** A task born with blocking edges or a parent starts
+     `DEFINED`, never `READY`, so the scheduler is never handed a task it must
+     not run.
+   - **Routing policy.** When the caller pinned no profile and the project
+     default is unusable, a `routing_policy` closure is built from
+     `requires_routing_gate` (`src/playbooks/routing.py`) and evaluated *inside*
+     the creation transaction, so the gate decision sees the allocated ids and
+     parent edge (`task_commands.py:2270-2292`).
+   - **The write.** One of four paths runs: the hierarchy service
+     (`file_prepared_child_on` / `file_root_on`) for an enabled project,
+     `_create_worker_filed_task` (`task_commands.py:1314`) for a pool filing,
+     `db.create_task_under`
+     ([`src/database/queries/hierarchy_queries.py:1359`](../../../src/database/queries/hierarchy_queries.py))
+     for a parented task, or plain `db.create_task`
+     ([`src/database/queries/task_queries.py:177`](../../../src/database/queries/task_queries.py)).
+   - **Trailing rows.** `task_workspace_requirements`, dependency edges (each
+     through `db.add_dependency`, which recomputes the blocked projection),
+     labels and any conversation `task_context` are written once the FK target
+     exists.
+   - **Events.** Admitted routing gates are announced by
+     `_emit_admitted_routing_gates`
+     ([`src/commands/gate_commands.py:132`](../../../src/commands/gate_commands.py)),
+     then `task.created` goes on the bus (suppressed by the internal
+     `_suppress_created_event` flag that `ensure_task` sets) and
+     `notify.task_added` to the notification transports.
+5. `_outcome_of` (`builtin.py:476`) maps the dict to `created`, or to `rejected`
+   when it carries `error` / `success: False`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes `tasks` (one row) plus, as applicable, `task_dependencies`,
+`task_labels`, `task_workspace_requirements`, `task_context`, `task_metadata`,
+and — when a routing gate is admitted — `gates` and `task_gates`. Audit rows go
+to the event log (`dependency.added`, `label.added`); the hierarchy paths write
+their own generation/edge rows inside one transaction.
+
+Everything is committed database state and survives a restart, including the
+open routing gate: a task created without an executable route stays `DEFINED`
+and blocked until [`task_route`](task_route.md) resolves the gate. Bus emission
+is best-effort and *after* the commit — a subscriber failure is logged, never
+rolled back (`task_commands.py:2490-2507`), and assignment routing reconciles
+from the database rather than from the event.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Any validation refusal: unknown project / profile / class / workspace / dependency / parent, a control-plane profile, `--root` together with a `parent_id`, an invalid enum value, a class with no model mapping for the profile's harness, `delegation refused: caller has no resolved profile`, or a `hierarchy.*` refusal such as `hierarchy.container_closed` or `hierarchy.depth`. |
+| `rejected` (worker filing) | `idle_session_cannot_file`, `filing_quota_exceeded` (`swarm.max_filings_per_task`), a parent outside the held task's subtree, or a project other than the session's. |
+| `unauthorized` | The capability gate refused `create_task` for this principal (`handler.py:962`); under `capability_enforcement: audit` the same case only logs `capability_denied_shadow`. |
+| `contract_violation` | The result did not match `CreateTaskValue`, or the step's `transitions` has no edge for the returned outcome and no `runtime_error` edge (`command.py:69`). |
+| `input_resolution_failed` | The resolved inputs failed `CreateTaskArgs` validation — a wrong type or an unknown field (`command.py:231`). |
+| `runtime_error` | Any exception escaping the handler; `CommandHandler.execute` already converts most into `{"error": ...}`, i.e. `rejected`. |
+
+Statically, [`src/playbooks/validation.py`](../../../src/playbooks/validation.py)
+emits `argument_missing` when `title` has no input, `argument_unknown` for a name
+that is not a `CreateTaskArgs` field, `type_mismatch` / `type_unknown` for an
+input whose type cannot be reconciled with the contract, and
+`unmapped_business_outcome` when `created` has no transition.
+
+There are no retries: `retry_safe: no` on a `create` side effect with
+`idempotency: none` means a retry would create a second task. Diagnose a
+refusal with `aq task explain --task-id <id>` for a task that was created but will not
+run, `aq task show <id>` for the row itself, and `aq playbook inspect-run <run-id>` for
+the step receipt that records the refusal.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+One entry of the artifact's `steps` map — the shape
+[`src/playbooks/definition.py:215`](../../../src/playbooks/definition.py) declares:
+
+```json
+{
+  "type": "command",
+  "rule": "consolidate-memory",
+  "title": "file_consolidation_task",
+  "source": {"path": "memory-consolidation.md", "start_line": 96, "end_line": 101},
+  "command": "create_task",
+  "inputs": {
+    "project_id": {"type": "loop_ref", "binding": "target", "path": "id"},
+    "title": {
+      "type": "template",
+      "parts": [
+        {"type": "literal", "value": "Consolidate memory: "},
+        {"type": "loop_ref", "binding": "target", "path": "name"}
+      ]
+    },
+    "description": {"type": "binding_ref", "binding": "prompt", "path": "rendered"},
+    "priority": {"type": "literal", "value": 40},
+    "task_type": {"type": "literal", "value": "chore"},
+    "intelligence_class": {"type": "literal", "value": "standard-high"}
+  },
+  "save_result_as": "created",
+  "transitions": {
+    "created": "consolidate-memory--done",
+    "rejected": "consolidate-memory--failed",
+    "runtime_error": "consolidate-memory--failed"
+  }
+}
+```

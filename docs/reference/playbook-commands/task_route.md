@@ -51,24 +51,134 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Route a task: write the `profile_id`, the explicit `intelligence_class` and an
+optional preferred workspace onto the task, then resolve every open `routing`
+gate attached to it. `task_route` is the **only** way a routing gate is
+resolved — [`gate_resolve`](gate_resolve.md) refuses that gate type on purpose —
+so the fields and the gate always move together and the runner is never handed a
+task with nothing to run it.
+
+A profile default is deliberately *not* a route. Assignment eligibility comes
+from explicit operator intent or a fresh routing decision, so the class must be
+given here unless the task already carries one.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/default-assignment-routing.md`](../../../src/prompts/default_playbooks/default-assignment-routing.md)
+is the shipped policy and calls it from two of its four steps:
+
+- step 3, when [`task_route_options`](task_route_options.md) answered `explicit`
+  — the operator already fixed the class, so the profile comes from
+  `routing.explicit_profile_id` and the reason is literally `explicit
+  intelligence class`;
+- step 4, when an LLM step chose the route — `profile_id`,
+  `intelligence_class` and `reason` all come from the `decision` binding.
+
+Every project that wants different routing keeps a project-scope copy of that
+file; no code changes. The contract is `idempotency: natural` and `retry_safe:
+yes` — writing the same route twice leaves the same row and the second gate
+resolution is a no-op.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `TaskRouteArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_task_route`.
+2. `_cmd_task_route`
+   ([`src/commands/task_commands.py:4809`](../../../src/commands/task_commands.py)):
+   - Requires `task_id` and `profile_id`; both the task and the profile are read
+     back from the database.
+   - `_task_execution_profile_error` (`task_commands.py:1653`) rejects a profile
+     that cannot execute a task at all — a control-plane or template profile.
+   - The class is the supplied `intelligence_class` or the task's existing explicit
+     class; with neither, the command refuses with *"intelligence_class is
+     required when the task has no explicit class"*.
+   - `_validate_routing_class` (`task_commands.py:1624`) rejects a class the
+     vault does not define, or one with no model mapping for the provider the
+     profile's harness selects.
+   - An optional `workspace_id` must exist **and** belong to the task's own
+     project — the check that keeps routing from reaching across projects into
+     another project's locks.
+   - **The write.** `db.update_task_routing`
+     ([`src/database/queries/task_queries.py:1953`](../../../src/database/queries/task_queries.py))
+     carries the "no worker holds it" predicate inside the `UPDATE` itself:
+     `status != IN_PROGRESS`, `assigned_agent_id IS NULL`, and no session in
+     `starting` / `running` / `draining`. A claim that wins after the command's
+     read therefore cannot be silently retargeted; rowcount 0 becomes *"Task is
+     running or claimed; stop the task before changing its routing."*
+   - An optional `reason` is stored as the `route_reason` task metadata key,
+     truncated to 400 characters.
+   - **The gates.** Every gate from `db.get_gates_for_task`
+     ([`src/database/queries/gate_queries.py:369`](../../../src/database/queries/gate_queries.py))
+     whose type is `routing` and whose status is `open` is resolved through
+     `Orchestrator._resolve_gate_and_emit`
+     ([`src/orchestrator/core.py:2847`](../../../src/orchestrator/core.py)) with
+     `resolved_by: "task_route"` and `resolution: "routed to <profile>"`, so
+     `gate.resolved` and the blocked-flip events fire exactly as they do on the
+     sweep path. Their ids come back as `resolved_gate_ids`.
+3. `_outcome_of` (`builtin.py:476`) maps the dict to `routed`, or `rejected` on
+   any error.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes `tasks.profile_id`, `tasks.intelligence_class` and (when given)
+`tasks.preferred_workspace_id`; a `task_metadata` row for `route_reason`; the
+`gates` rows it resolved and the recomputed `tasks.is_blocked` of their waiters.
+Publishes `gate.resolved` plus `task.unblocked` / `task.blocked` flips on the
+bus and appends the matching audit rows.
+
+The route is durable: a restarted daemon reads the class and profile off the task
+row, and the resolved gate stays resolved. Because the write is predicated on
+"no worker holds it", the command is safe to replay — it either writes the same
+values again or refuses because the task is now running.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Missing `task_id` or `profile_id`; unknown task, profile or workspace; a profile that cannot execute tasks; no class given and none on the task; an unknown class or one with no model mapping for the profile's harness provider; a workspace in another project; or the task being `IN_PROGRESS` / claimed / attached to a live session. |
+| `unauthorized` | The capability gate refused `task_route` for the step principal. |
+| `contract_violation` | The dict did not satisfy `TaskRouteValue` (`task_id` and `resolved_gate_ids` are required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `TaskRouteArgs`. |
+
+A `routed` result whose `resolved_gate_ids` is empty is success, not a partial
+failure: the task simply had no open routing gate (it was created with an
+executable project default, for instance).
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for a missing `task_id` or `profile_id`, and
+`unmapped_business_outcome` for `routed` or `rejected` without a transition.
+
+`aq task show <id>` prints the resulting route, `aq task explain --task-id <id>` names a
+routing gate that is still open, and `aq system list-intelligence-classes`
+confirms whether the class loaded at all (a malformed vault file is reported by
+`aq doctor --check intelligence_classes.parse`). The orchestrator re-emits
+`task.route_needed` for a still-unrouted task at most every two minutes, so a
+transient refusal is retried by the next event rather than by the step.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "route-task",
+  "title": "apply_decision",
+  "source": {"path": "default-assignment-routing.md", "start_line": 51, "end_line": 57},
+  "command": "task_route",
+  "inputs": {
+    "task_id": {"type": "event_ref", "path": "task_id"},
+    "profile_id": {"type": "binding_ref", "binding": "decision", "path": "profile_id"},
+    "intelligence_class": {"type": "binding_ref", "binding": "decision", "path": "intelligence_class"},
+    "reason": {"type": "binding_ref", "binding": "decision", "path": "reason"}
+  },
+  "save_result_as": "routed",
+  "transitions": {
+    "routed": "route-task--done",
+    "rejected": "route-task--failed",
+    "runtime_error": "route-task--failed"
+  }
+}
+```

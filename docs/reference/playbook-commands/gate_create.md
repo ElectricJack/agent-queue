@@ -59,24 +59,146 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Create a gate — a durable "this work waits for something" record — and
+optionally attach it to the tasks that wait on it. A gate is how the work graph
+represents a pause that is not a dependency on another task: a human decision, a
+routing decision, a timer, or the completion of something outside the graph.
+
+Every attached waiter is blocked while the gate is open, and the whole
+attach-plus-recompute happens in one transaction, so a reader can never see the
+gate without the blocked flags it implies. `await_id` is the gate's natural key:
+it is what lets the resolution be matched back to the thing that was decided —
+a proposal id, a task id, a failure signature.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+[`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
+rule `proposal-ready-gate`, is the shipped example: on `proposal.ready` it
+creates a `human` gate titled *Approve task batch?* with `await_id` pinned to
+`event.proposal_id`. That pin is the only thing that carries the proposal
+identity across the human decision — the later `commit-on-gate-resolve` rule
+reads the resolved gate's `await_id` back and hands it to
+[`task_batch_commit`](task_batch_commit.md).
+
+The other shape is the failed-child gate in the (disabled) hierarchical delivery
+policy at
+[`tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md`](../../../tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md):
+a stable `await_id` derived from the failed parent, `gate_type: human`, and the
+parent in `waiter_task_ids`.
+
+Note the contract: `idempotency: keyed on await_id` but `retry_safe: no`. The
+dedup is real — an open gate with the same `(project_id, gate_type, await_id)`
+*and* an identical waiter set is reused — but it is a *conditional* reuse, so the
+engine will not retry the step for you.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `GateCreateArgs`. Because the contract is keyed on
+   `await_id`, `_keyed_argument`
+   ([`src/playbooks/executors/command.py:186`](../../../src/playbooks/executors/command.py))
+   fills it from the step's `idempotency_key` override, else the step's own
+   `await_id` input, else — only if the author bound neither — the engine's
+   attempt key. Binding `await_id` yourself is what makes the gate's identity
+   semantic rather than per-attempt.
+2. The adapter re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_gate_create`.
+3. `_cmd_gate_create`
+   ([`src/commands/gate_commands.py:20`](../../../src/commands/gate_commands.py)):
+   - Requires `project_id`, `gate_type` and `title`; a bare string
+     `waiter_task_ids` is normalised to a one-item list.
+   - **Routing-gate narrowing** (`gate_commands.py:48-71`). A `routing` gate
+     means "this task still needs a profile". Every waiter that already has a
+     profile is dropped; if that leaves nothing, the command returns
+     `skipped: True` with `reason: "all waiter tasks are already routed"` and
+     writes nothing. Without that check the default pipeline would ensure a
+     triage task, an agent would start, find nothing unrouted, and close — once
+     per created task — while the gate itself sat open until it expired as "all
+     waiters terminal", which reads like a task that ran unrouted.
+   - Calls `db.create_gate`
+     ([`src/database/queries/gate_queries.py:54`](../../../src/database/queries/gate_queries.py)),
+     passing `unrouted_only: True` for a narrowed routing gate. That helper
+     inserts the `gates` row, inserts the `task_gates` rows and recomputes the
+     waiters' blocked projection in one transaction, and returns
+     `(gate_id, was_created)`; an open gate with the same key and the same
+     waiter set is reused with `was_created: False`. For `unrouted_only` it
+     re-reads the waiters' `profile_id` under `FOR UPDATE`, serialising against
+     [`task_route`](task_route.md)'s guarded write so a late pipeline callback
+     cannot gate an already-routed task.
+   - Emits `gate.created` on the bus and an audit row **only** when a new gate
+     was inserted (`_emit_gate_created`, `gate_commands.py:119`): a reused gate's
+     subscribers already saw the original event.
+4. `_outcome_of`
+   ([`src/commands/contracts/builtin.py:476`](../../../src/commands/contracts/builtin.py))
+   maps `skipped` to `skipped`, `was_created: True` to `created`, and a reuse to
+   `reused`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes one `gates` row plus one `task_gates` row per waiter, and the recomputed
+`tasks.is_blocked` for each waiter — all in one transaction. Appends a
+`gate.created` audit row and publishes `gate.created` on the bus, both only for
+a genuinely new gate.
+
+The gate is durable: it survives a restart, and the waiters stay blocked until
+something resolves it — [`gate_resolve`](gate_resolve.md) for every type except
+`routing`, [`task_route`](task_route.md) for `routing`, or the orchestrator's
+sweeps (`_sweep_gates`,
+[`src/orchestrator/core.py:2847`](../../../src/orchestrator/core.py)) for a
+`timeout_at` that passes or a `task` gate whose awaited task completes.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `reused` (success) | An open gate with the same `(project_id, gate_type, await_id)` and the same waiter set already exists. `gate_id` names it; nothing was written. |
+| `skipped` (success) | A `routing` gate whose every named waiter already has a profile. `gate_id` is `null` and `created` is `false`. |
+| `rejected` | Missing `project_id`, `gate_type` or `title`, or any exception from `db.create_gate` (an unknown project, a waiter id with no row) — the handler catches it and returns the message. |
+| `unauthorized` | The capability gate refused `gate_create`. |
+| `contract_violation` | The dict did not satisfy `GateCreateValue`, or the returned outcome has no transition and there is no `runtime_error` edge. |
+| `input_resolution_failed` | A resolved input failed `GateCreateArgs` — most often `waiter_task_ids` bound to something that is not a list of strings. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for a missing `project_id` / `gate_type` / `title`, and
+`unmapped_business_outcome` for any of `created`, `reused` or `skipped` left
+without a transition — all three are ordinary success paths, so a step that maps
+only `created` fails the second time it runs.
+
+`aq task gate-list --project-id <id>` and `aq task gate-show --gate-id <gate-id>` read the
+gate and its waiters back; `aq task explain --task-id <id>` names the open gate that is blocking a
+task.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "proposal-ready-gate",
+  "title": "request_approval",
+  "source": {"path": "default-pipeline.md", "start_line": 44, "end_line": 50},
+  "command": "gate_create",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "gate_type": {"type": "literal", "value": "human"},
+    "title": {"type": "literal", "value": "Approve task batch?"},
+    "question": {
+      "type": "template",
+      "parts": [
+        {"type": "literal", "value": "Approve proposal "},
+        {"type": "event_ref", "path": "proposal_id"},
+        {"type": "literal", "value": "?"}
+      ]
+    },
+    "await_id": {"type": "event_ref", "path": "proposal_id"}
+  },
+  "save_result_as": "gate",
+  "transitions": {
+    "created": "proposal-ready-gate--done",
+    "reused": "proposal-ready-gate--done",
+    "skipped": "proposal-ready-gate--done",
+    "rejected": "proposal-ready-gate--failed",
+    "runtime_error": "proposal-ready-gate--failed"
+  }
+}
+```

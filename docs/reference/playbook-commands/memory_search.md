@@ -51,24 +51,117 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Search a project's memory for related reusable insights. `memory_search` is the
+read half of the 4-tier knowledge system: a semantic query against the scope's
+Milvus collection, returning the matching chunks with their metadata so a policy
+or an agent can act on prior knowledge instead of rediscovering it.
+
+`scope` narrows the search to one collection; omitted, the plugin applies its
+own multi-scope weighting. The result reports `count` and the `results` list.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it. In the shipped design memory reaches an agent through *prompt assembly*
+rather than through a graph node: the prompt builder's five-layer pipeline pulls
+L1 facts, L1 guidance and L2 context into the session's context before the agent
+starts, so a worker does not have to search for what it already needs
+([`docs/specs/design/self-improvement.md`](../../specs/design/self-improvement.md)).
+`memory_search` is also exposed as a *tool* to agents that want to ask
+explicitly, which is the common case
+([`src/tools/definitions.py`](../../../src/tools/definitions.py)).
+
+A playbook step is the right place for it when the *policy* needs the answer —
+deciding whether a finding is already known before filing it, for instance —
+rather than the agent. `side effect: read` with `retry_safe: yes` makes the step
+safe to retry.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `MemorySearchArgs` (`project_id`, `query`, optional
+   `scope`); the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)).
+2. **The pause gate runs first.** `_paused_command_error`
+   ([`src/commands/handler.py:666`](../../../src/commands/handler.py)) matches
+   through `_is_memory_command` (`handler.py:317`), which recognises the bare
+   `memory_search`, the dotted `memory.*` forms and the plugin-qualified
+   `aq-memory.memory_search`, and refuses with the canonical memory-paused error
+   when `memory.enabled` is false. Read-only memory commands are gated too — one
+   crisp contract
+   ([`docs/specs/design/feature-pauses.md`](../../specs/design/feature-pauses.md)).
+3. The capability gate (`handler.py:962`) runs before the plugin fallback, so the
+   plugin path is covered by the same check.
+4. **There is no `_cmd_memory_search` in this repository.** The built-in lookup
+   misses and `execute` falls through to the plugin registry
+   (`handler.py:1008`); the command is served by the external `aq-memory`
+   plugin. Without it installed the answer is
+   `{"error": "Unknown command: memory_search"}` — see
+   `CommandHandler.has_command` (`handler.py:678`), which is exactly why
+   `load_tools` does not advertise a tool whose backing plugin is absent.
+5. A plugin exception is recorded with `plugin_registry.record_failure` and
+   returned as `{"error": "Plugin command failed: …"}`.
+6. `_outcome_of` (`builtin.py:476`) maps the dict to `searched`, or `rejected` on
+   any `error` / `success: False`.
+
+The backend is described in
+[`docs/specs/design/memory-plugin.md`](../../specs/design/memory-plugin.md):
+collections named by scope (`aq_system`, `aq_agenttype_<id>`,
+`aq_project_<id>`), a hybrid vector-plus-scalar schema, and multi-collection
+search with weighted result merging — which is what makes an unscoped query
+meaningful rather than arbitrary.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None in the AQ database — `side effect: read`, no clauses, `retry_safe: yes`.
+The plugin may update its own retrieval-count metadata on the chunks it returns,
+which is the backend's bookkeeping rather than AQ state.
+
+Because nothing is persisted here, the result is a snapshot of whatever the
+memory backend held at the moment of the call, and it can be empty (`count: 0`
+with `results: []`) — an ordinary success, not a failure.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | `memory.enabled` is false; the `aq-memory` plugin is not installed (`Unknown command: memory_search`); the plugin raised; or the plugin refused — an unknown project or scope, an empty `query`, an unreachable Milvus. |
+| `unauthorized` | The capability gate refused `memory_search` for the step principal. |
+| `contract_violation` | The dict did not satisfy `MemorySearchValue` (`success` and `count` are required), or the outcome has no transition and there is no `runtime_error` edge. As with every plugin-backed contract, a plugin whose result shape drifts fails here. |
+| `state_limit_exceeded` | The bound `results` list exceeded the per-result byte limit (`command.py:147`). Narrow the `scope` or drop `save_result_as`. |
+| `input_resolution_failed` | A resolved input failed `MemorySearchArgs`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` when `project_id` or `query` has no input, and
+`unmapped_business_outcome` when `searched` or `rejected` has no transition. The
+compiler validates against the contract, not against the installed plugin set,
+so a playbook can compile on a box that cannot run this step.
+
+`aq plugin list` reports whether `aq-memory` is installed and healthy, and
+`aq memory search --query <text>` runs the same read from the CLI.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "dedupe-finding",
+  "title": "search_memory",
+  "source": {"path": "finding-policy.md", "start_line": 12, "end_line": 17},
+  "command": "memory_search",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "query": {"type": "binding_ref", "binding": "finding", "path": "title"},
+    "scope": {"type": "literal", "value": "project"}
+  },
+  "save_result_as": "prior",
+  "transitions": {
+    "searched": "dedupe-finding--decide",
+    "rejected": "dedupe-finding--failed",
+    "runtime_error": "dedupe-finding--failed"
+  }
+}
+```

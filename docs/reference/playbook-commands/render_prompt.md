@@ -53,24 +53,129 @@ This command declares no effect clause, so the playbook graph falls back to its 
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Render a prompt template with explicit variables and return the text. Two
+addressing modes: `(project_id, name)` renders a template from the project's own
+prompt directory, and `path=<absolute path>` renders a bundled template — but
+only from inside the `aq://` authority roots, so an MCP-exposed caller cannot
+turn arbitrary files into prompt templates.
+
+The point is to keep long instruction text out of playbooks and task
+descriptions. A policy renders the shipped prompt, substitutes the few values
+that differ, and hands the result to whatever needs it — most often as the
+`description` of a task it is about to create.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+The historical `memory-consolidation` policy is the canonical caller:
+[`tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md`](../../../tests/fixtures/playbooks/historical-v2/memory-consolidation/source.md)
+renders `aq://prompts/consolidation_task.md` with the target project's id, name,
+insight and knowledge directories, `last_consolidated` and churn count, then
+uses the `rendered` field as the description of the
+[`create_task`](create_task.md) it files. The bundled template is
+[`src/prompts/consolidation_task.md`](../../../src/prompts/consolidation_task.md).
+
+No playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it: the shipped defaults keep their task descriptions inline (the CI sentinel's
+repair description is built inside
+[`ci_baseline_status`](ci_baseline_status.md), for instance) because a command
+that already knows the failure can write a better description than a template
+can. `side effect: read` and `retry_safe: yes` make the step safe to retry.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `RenderPromptArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_render_prompt`.
+2. `_cmd_render_prompt`
+   ([`src/commands/system_commands.py:1181`](../../../src/commands/system_commands.py))
+   branches on `path` first:
+   - **Path mode.** `_load_prompt_from_path` (`system_commands.py:1123`) is the
+     security boundary: the path must be absolute, is `resolve()`d, and must
+     equal or sit under one of `allowed_roots(self.config)`
+     ([`src/aq_uri.py`](../../../src/aq_uri.py)) — the bundled prompts, the
+     vault, logs, tasks and attachments. Anything else is
+     *"path is outside allowed roots"*. A missing file is *"Prompt not found"*
+     and an unparseable one *"Could not parse prompt template"*. The template is
+     then rendered by `render_template`
+     ([`src/prompt_manager.py`](../../../src/prompt_manager.py)) and the result
+     carries `path`, the template's own `name`, `rendered` and
+     `variables_used`.
+   - **Project mode.** The project must exist and must have a workspace — a
+     project with none is refused with a pointer to `/add-workspace`, because the
+     prompt directory is resolved relative to the workspace. `_get_prompt_manager
+     (workspace).render(name, variables)` returns `None` for an unknown template,
+     which becomes *"Prompt template '<name>' not found"*. Success carries
+     `name`, `rendered` and `variables_used` (and **no** `path`).
+3. `_outcome_of` (`builtin.py:476`) maps the dict to `rendered`, or `rejected` on
+   any error.
+
+Note what the contract's `variables` argument is: a plain object handed to the
+template renderer. It is not the playbook expression language — a playbook builds
+the object with an `ObjectValue`
+([`src/playbooks/expressions.py:150`](../../../src/playbooks/expressions.py)) whose
+fields are themselves `Value`s, and the renderer sees the resolved result.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read`, no clauses, no writes, no events. One or two
+filesystem reads plus a string substitution.
+
+Nothing about the rendered text is stored. If a policy wants it to persist, it has
+to put it somewhere — the usual destination being a task's `description`, as the
+consolidation policy does. That also means a template edited in the vault takes
+effect on the *next* render; tasks already created keep the text they were given.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `rejected` | Path mode: a relative `path`, a path outside the `aq://` roots, a missing file, or an unparseable template. Project mode: an unknown project, a project with no workspaces, or an unknown template `name`. Also a `KeyError` if neither `path` nor `project_id` was supplied, since the project branch indexes `args["project_id"]` directly — `CommandHandler.execute`'s exception path turns that into `{"error": …}`. |
+| `unauthorized` | The capability gate refused `render_prompt`. |
+| `contract_violation` | The dict did not satisfy `RenderPromptValue` (`rendered` is required), or the outcome has no transition and there is no `runtime_error` edge. |
+| `state_limit_exceeded` | The bound `rendered` text exceeded the per-result byte limit (`command.py:147`). Long prompts are exactly the case that hits this; pass the rendering straight into the next step's input rather than binding it, if the binding is not needed elsewhere. |
+| `input_resolution_failed` | A resolved input failed `RenderPromptArgs` — for instance `variables` bound to a string. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`type_mismatch` / `type_unknown` on `variables` when the resolved type cannot be
+reconciled with `object`, and `unmapped_business_outcome` when `rendered` or
+`rejected` has no transition. There is **no** `argument_missing` to catch a step
+that supplies neither `path` nor `name`: every `RenderPromptArgs` field is
+optional, so that mistake is a run-time `rejected`, not a compile-time
+diagnostic.
+
+`aq system render-prompt` runs the same render from the CLI, and
+`aq system list-prompts` / `aq system read-prompt` show what is available.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "consolidate-memory",
+  "title": "render_task_prompt",
+  "source": {"path": "memory-consolidation.md", "start_line": 104, "end_line": 118},
+  "command": "render_prompt",
+  "inputs": {
+    "path": {"type": "literal", "value": "aq://prompts/consolidation_task.md"},
+    "variables": {
+      "type": "object",
+      "fields": {
+        "project_id": {"type": "loop_ref", "binding": "target", "path": "id"},
+        "project_name": {"type": "loop_ref", "binding": "target", "path": "name"},
+        "last_consolidated": {"type": "binding_ref", "binding": "marker", "path": "last_consolidated"},
+        "churn_count": {"type": "binding_ref", "binding": "churn", "path": "count"}
+      }
+    }
+  },
+  "save_result_as": "prompt",
+  "transitions": {
+    "rendered": "consolidate-memory--file_consolidation_task",
+    "rejected": "consolidate-memory--failed",
+    "runtime_error": "consolidate-memory--failed"
+  }
+}
+```

@@ -52,24 +52,114 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+List a project's tasks. `list_tasks` is the queue read behind `aq task list`,
+with three display modes: `flat` (one dict per task, the default), `tree` (roots
+with their expanded hierarchy and a pre-formatted text rendering) and `compact`
+(roots only, with a subtask count and a progress bar).
+
+It is the *listing* read, not the *frontier* read: it never hides a `hold:*`
+labelled task, and it hides terminal tasks by default rather than because they
+are unschedulable.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+No shipped playbook in
+[`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
+it as a step, and there is a concrete reason beyond taste: **the contract's
+result model and the handler's payload do not currently agree**, so a
+`CommandStep` calling `list_tasks` fails with `contract_violation`. See the
+failure table below.
+
+The situation it *describes* — "show me the queue before deciding" — is served
+in the defaults by an agent-task step instead: the `spec-ingest` task the
+default pipeline creates is instructed to list the project's existing tasks
+itself, with the command available as a tool rather than as a graph node
+([`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md)).
+That is also the right shape for a *worker*: `list_tasks` is off the agent
+session surface, so a pool worker cannot read the project queue at all and
+deduplicates through the routing gate instead.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `ListTasksArgs`; the adapter
+   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_list_tasks`.
+2. `_cmd_list_tasks`
+   ([`src/commands/task_commands.py:446`](../../../src/commands/task_commands.py)):
+   - Normalises `show_all` into `include_completed`.
+   - Builds the query kwargs: `project_id`, an explicit `status` (which takes
+     precedence over the convenience booleans), and the label filters `labels`
+     (all-of) and `any_label` (any-of).
+   - Dispatches to `_list_tasks_flat` (`task_commands.py:537`) for `flat` — and
+     also as the fallback whenever `tree`/`compact` was asked for without a
+     `project_id`, since a hierarchy read needs one — or to
+     `_list_tasks_hierarchical` (`task_commands.py:726`) otherwise.
+3. `_list_tasks_flat` reads `db.list_tasks(**kwargs)`, then, only when no
+   explicit `status` was given, applies `completed_only` or hides the terminal
+   statuses. It then caps the response: every *active* task is always included
+   and only finished ones are trimmed, to a total of 200
+   (`task_commands.py:566-572`), so a long tail of completed work can never push
+   live work out of the list. Each task is rendered by `_task_to_dict`, and
+   `show_dependencies` enriches every entry with `depends_on` / `blocks` plus a
+   pre-formatted `dependency_display`. The returned keys are `display_mode`,
+   `tasks`, `total`, `hidden_completed` and `filtered`.
+4. `_list_tasks_hierarchical` groups by parent, formats each root's tree
+   (`_format_task_tree`) with per-root completion counts and, in compact mode, a
+   progress bar. Its keys are `display_mode`, `trees`, `total_root_tasks`,
+   `total_tasks` and — when a label filter was used — `label_filter_scope:
+   "root"`, because the filter matched roots rather than every node.
+5. `_outcome_of` (`builtin.py:476`) maps the dict to `listed`; the contract
+   declares `listed` as its only business outcome, with no `rejected`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. `side effect: read` with one `ReadClause` on the `task_list` subject,
+`idempotency: natural`, `retry_safe: yes`. Nothing is written and no event is
+emitted. The response is a snapshot, and a capped one: `total` is the count
+*before* the 200-row cap, so `len(tasks) < total` means rows were trimmed and
+`hidden_completed` says how many terminal tasks the default filter removed.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `contract_violation` | **The current behaviour of every playbook call.** `ListTasksValue` requires `tasks`, `by_project`, `total`, `project_count` and `hidden_completed` ([`src/commands/contracts/builtin.py:187`](../../../src/commands/contracts/builtin.py)), but neither `_list_tasks_flat` nor `_list_tasks_hierarchical` returns `by_project` or `project_count` — those keys belong to the separate `list_active_tasks_all_projects` handler (`task_commands.py:655`). The adapter copies only the fields the model declares and then constructs it, so the missing required fields raise `ValidationError` and `_adapter` (`builtin.py:581`) reports `contract_violation` with *"list_tasks result did not match its contract"*. Also the ordinary cause: no transition for the returned outcome and no `runtime_error` edge. |
+| `unauthorized` | The capability gate refused `list_tasks` for this principal. Worker sessions are narrowed out of it by design — the CLI answers `out of scope: list_tasks`. |
+| `state_limit_exceeded` | The bound result exceeded the per-result byte limit (`command.py:147`). A 200-task flat listing with `show_dependencies` is large; narrow it with `status`, or drop `save_result_as`. |
+| `input_resolution_failed` | A resolved input failed `ListTasksArgs`, or `status` was a string the `TaskStatus` enum does not define — the handler constructs `TaskStatus(args["status"])` eagerly, so an unknown value raises and `CommandHandler.execute` returns `{"error": …}`. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_unknown` for any input outside `ListTasksArgs` (`include_completed`,
+`completed_only`, `labels`, `any_label` and `show_all` are all honoured by the
+handler but are **not** contract arguments, so a playbook cannot pass them) and
+`unmapped_business_outcome` when `listed` has no transition. `limit` *is* a
+contract argument but the handler never reads it — the response is bounded by
+the 200-row cap described above, not by `limit`.
+
+`aq task list` is the same read from the CLI; use `aq schema` rather than
+guessing a `status` value.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "audit-queue",
+  "title": "list_ready_tasks",
+  "source": {"path": "queue-audit.md", "start_line": 10, "end_line": 15},
+  "command": "list_tasks",
+  "inputs": {
+    "project_id": {"type": "event_ref", "path": "project_id"},
+    "status": {"type": "literal", "value": "READY"},
+    "display_mode": {"type": "literal", "value": "flat"}
+  },
+  "save_result_as": "queue",
+  "transitions": {
+    "listed": "audit-queue--done",
+    "runtime_error": "audit-queue--failed"
+  }
+}
+```

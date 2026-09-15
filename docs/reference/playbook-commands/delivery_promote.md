@@ -79,24 +79,179 @@ Redacted in receipts and explanations: `prepared_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Promote one reviewed child delivery into its immediate parent branch: prepare a
+single squash commit from the child's pinned range, then lease-push it onto the
+expected parent tip and write a delivery receipt.
+
+`delivery_promote` is the narrow waist of hierarchical integration. Everything
+about the operation is *pinned* by the caller — the exact source head, the exact
+source base, the exact expected target tip, and a `fence` naming the branch, its
+current owner and the owner's fence token — so the command can only apply the
+change the caller observed, to the state the caller observed, while holding the
+lease it claims to hold. Any drift is a named failure, never a merge.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+The hierarchical delivery policy is its caller. In the (disabled) shipped shape
+at
+[`tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md`](../../../tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md),
+rule `promote-delivery` fires on `delivery.ready` and calls `delivery_promote`
+with `operation_key`, `source_task_id`, `source_head`, `source_base`,
+`expected_target` and `fence`. `promoted` and `already_promoted` complete the
+rule; `source_moved` and `target_moved` fail it; and a `conflict` hands over to
+`integration_repair_start` followed by `integration_repair_dispatch` for stage
+zero — the conflict is not an error to retry, it is the entry point to bounded
+repair.
+
+The command-contract allowlist and these exact outcome names are part of the
+feature: see
+[`docs/superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md`](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md).
+`idempotency: keyed on operation_key` with `retry_safe: yes` is accurate because
+the durable promotion *intent* — not the push — is what the key identifies.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The executor builds `DeliveryPromoteArgs`; `_keyed_argument`
+   ([`src/playbooks/executors/command.py:186`](../../../src/playbooks/executors/command.py))
+   preserves the author's `operation_key` rather than substituting an attempt
+   key, because that key is the operation's real identity. The adapter
+   re-enters `CommandHandler.execute`
+   ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
+   dispatches `_cmd_delivery_promote`.
+2. `_cmd_delivery_promote`
+   ([`src/commands/integration_commands.py:1250`](../../../src/commands/integration_commands.py)):
+   - Re-validates the payload against `DeliveryPromoteArgs`; a validation error
+     is reported as `source_moved` with the message.
+   - Reads the source task and the fence's repository and requires all four
+     identities to agree: both rows exist, the task's project is the
+     repository's project, and `task.repo_id` is that repository.
+   - `_integration_delivery_authorized(project_id, "delivery_promote")`
+     (`integration_commands.py:241`) is the authorization boundary: a **session**
+     principal is refused outright (read-only delivery queries may opt in, a
+     promotion never); a **playbook** principal must be resolved, scoped to that
+     project, and hold the `delivery_promote` capability; a local or service
+     principal is trusted.
+   - `PromotionService.prepare(request)`
+     ([`src/integration/promotion.py:129`](../../../src/integration/promotion.py))
+     derives a deterministic `intent_id` and `receipt_id` from the domain key,
+     returns early for an intent that is already committed or prepared, raises
+     `PromotionConflict` for one already in conflict, asserts the fence is
+     current, then — inside a repository transaction on the retained clone —
+     fetches all heads, asserts the remote source head *is* `source_head`,
+     asserts the commit inputs, checks the reviewed tree against the trusted
+     review evidence, asserts the remote target *is* `expected_target`, collects
+     the authors, builds the squash commit metadata and provenance, and reserves
+     the durable intent.
+   - Back in the command, an intent already in state `committed` short-circuits
+     to `already_promoted`.
+   - **The live-owner check.** `BranchOwnership.get_owner(fence.target)` must
+     return the same `owner_id`, the same integer `fence_token`, `owner_role ==
+     "collector"` and `handoff_state == "reserved"`, and the owner must match the
+     target for that project. Anything else is `target_moved` with *"actual
+     promotion requires the current persisted collector owner"* — a prepared
+     intent is not a licence to push.
+   - `PromotionService.push(intent_id, fence)`
+     (`src/integration/promotion.py:285`) re-asserts the remote source, reads the
+     target ref, and then: an absent target is `target_moved`; a moved target is
+     `target_moved` **unless** the prepared commit is already reachable from the
+     new tip, in which case it finalizes (a crash after a successful push is
+     reconciled, not repeated). Only the remote mutation itself is wrapped in
+     `ownership.mutation_exclusion(fence, expected_role="collector")`, so an
+     ownership transfer cannot slip between validation and the lease-protected
+     push. The push is `apush_expected_delivery`, i.e. a compare-and-swap on
+     `expected_target`.
+   - `_finalize` (`src/integration/promotion.py:1265`) writes the receipt through
+     `db.finalize_integration_promotion` and returns the committed value.
+   - `_promotion_result` (`integration_commands.py:1724`) flattens the value into
+     `{success, outcome, intent_id, receipt_id, prepared_sha}`.
+3. The integration family has its own adapter: `_invoke_adapter`
+   ([`src/commands/contracts/integration.py:1435`](../../../src/commands/contracts/integration.py))
+   reads the handler's **own** `outcome` key rather than inferring one, and
+   reports `contract_violation` when it is not in the declared set (plus
+   `unauthorized` / `runtime_error`) or when the remaining fields do not
+   construct `PromotionCommandValue`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Writes the durable `integration_promotion_intents` row (reserved on `prepare`,
+then pushed and finalized), a `task_delivery_receipts` row, and the branch
+ownership bookkeeping the lease requires. Mutates the **remote**: one squash
+commit pushed onto the parent branch under a compare-and-swap.
+
+This is the most consequential command on these pages, and its durability model
+is the point. The intent is written *before* the push, so a crash between the two
+leaves a prepared intent the reconciler can finish — that is what
+`integration_reconcile_promotion` is for, and why a moved target whose tip
+already contains the prepared commit finalizes instead of failing. `prepared_sha`
+is marked sensitive and is redacted in receipts and explanations, along with
+`source_head`, `source_base`, `expected_target` and `fence`; only `intent_id`,
+`receipt_id` and `prepared_sha` are projected into the run receipt at all.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `already_promoted` (success) | The intent for this `operation_key` is already `committed`. The original `receipt_id` and `prepared_sha` come back. |
+| `conflict` (failure) | The squash does not apply. The value and the conflict diagnostics are returned, and this is the designed hand-off to `integration_repair_start` / `integration_repair_dispatch` — not something to retry as-is. |
+| `source_moved` (failure) | The request failed argument validation; the task and repository identities do not match; the remote source head is no longer `source_head`; or the reviewed tree does not match the trusted review evidence. |
+| `target_moved` (failure) | The target branch is absent; its tip is no longer `expected_target` and does not contain the prepared commit; the persisted owner, role, handoff state or fence token is not the one claimed (`StaleFence`, `BranchBusy`); or the push fence targets another branch. |
+| `unauthorized` | `_integration_delivery_authorized` refused — a session principal, an unresolved or out-of-project playbook principal, or a playbook whose policy lacks the capability. |
+| `runtime_error` | `PromotionInvariantError` (repository identity changed, retained clone unavailable, project mismatch), `PromotionRuntimeError`, or a `GitError` from the push. |
+| `contract_violation` | The dict did not satisfy `PromotionCommandValue`, or the outcome has no transition and there is no `runtime_error` edge. |
+
+Statically,
+[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+`argument_missing` for any of the six required arguments without an input — all
+six are required, and `fence` is a nested object, so a step that builds it with
+an `ObjectValue` will also draw `type_mismatch` if a field resolves to the wrong
+kind. `unmapped_business_outcome` fires for any of the five declared outcomes
+left unmapped; `conflict` is the one that must **not** be routed to the same
+terminal as the other failures.
+
+`aq integration status <project-id>` shows the operation, its stage and the
+branch ownership row; `aq system delivery-receipts` (see
+[`delivery_receipts`](delivery_receipts.md)) reads back what was actually
+delivered; `aq doctor --check integration.branch_discards` covers the adjacent
+branch-cleanup state.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```json
+{
+  "type": "command",
+  "rule": "promote-delivery",
+  "title": "promote",
+  "source": {"path": "hierarchical-delivery.md", "start_line": 53, "end_line": 63},
+  "command": "delivery_promote",
+  "inputs": {
+    "operation_key": {"type": "event_ref", "path": "operation_key"},
+    "source_task_id": {"type": "event_ref", "path": "source_task_id"},
+    "source_head": {"type": "event_ref", "path": "source_head"},
+    "source_base": {"type": "event_ref", "path": "source_base"},
+    "expected_target": {"type": "event_ref", "path": "expected_target"},
+    "fence": {
+      "type": "object",
+      "fields": {
+        "target": {
+          "type": "object",
+          "fields": {
+            "repository_id": {"type": "event_ref", "path": "repository_id"},
+            "branch": {"type": "event_ref", "path": "target_branch"}
+          }
+        },
+        "owner_id": {"type": "event_ref", "path": "owner_id"},
+        "token": {"type": "event_ref", "path": "fence_token"}
+      }
+    }
+  },
+  "save_result_as": "promotion",
+  "transitions": {
+    "promoted": "promote-delivery--done",
+    "already_promoted": "promote-delivery--done",
+    "conflict": "promote-delivery--start_repair",
+    "source_moved": "promote-delivery--failed",
+    "target_moved": "promote-delivery--failed",
+    "runtime_error": "promote-delivery--failed"
+  }
+}
+```
