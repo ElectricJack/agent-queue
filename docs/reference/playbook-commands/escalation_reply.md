@@ -55,24 +55,121 @@ Redacted in receipts and explanations: `text`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_reply` records what a human actually said, as immutable evidence, and
+wakes the supervisor that owns the incident. It is the *only* inbound path from a
+person into the escalation machinery, and it is deliberately narrow: it stores a
+reply and queues one notice. It does not resolve gates, answer questions, recover
+tasks, mutate any task, or type into a session. Deciding what the reply *means* is
+a separate, explicitly bound step — [`escalation_apply_reply`](escalation_apply_reply.md).
+
+The separation is the security property. Identity arrives from the transport
+(the Discord gateway, or a dashboard request principal) and is turned into a
+verified actor by the server; no field in the payload is trusted to say who is
+speaking. Storing evidence and acting on evidence are different privileges held
+by different principals.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Almost never directly. In practice the caller is an adapter:
+[`src/discord/escalation_intake.py`](../../../src/discord/escalation_intake.py)
+for a message in a known escalation thread, or the dashboard for an operator
+typing into the escalation inbox. Both arrive already authenticated and call this
+one command.
+
+A playbook would only use it to record an out-of-band human decision that reached
+the system through some other trusted channel — and even then the identity comes
+from the principal, not from the step. Because the command is keyed on
+`external_message_id`, a replayed delivery of the same transport message returns
+the original reply with outcome `replayed` instead of appending a duplicate.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   forwards to the handler; `text` is declared a sensitive argument, so it is
+   redacted from receipts and explanations even though it is stored in full.
+2. `_cmd_escalation_reply`
+   ([`src/commands/escalation_commands.py:308`](../../../src/commands/escalation_commands.py))
+   rejects server-derived authority fields, then loads and authorizes the
+   incident through `_escalation_for_caller` (line 92).
+3. `_verified_reply_identity` (line 297) derives who is speaking. A trusted local
+   principal becomes `("dashboard", "human:local-operator")`. A service principal
+   named `"<transport>:<actor>"` becomes `(transport, "human:<transport>:<actor>")`
+   — that is how a Discord user id becomes `human:discord:<id>`. Anything else
+   returns `None` and the call is refused `human_evidence_required`: a session or
+   playbook principal cannot manufacture human evidence.
+4. `text` must be 1–16000 characters after stripping, and `external_message_id`
+   must be a non-empty string; it is the transport's own message identity and
+   the command's idempotency key.
+5. `accept_escalation_reply`
+   ([`src/database/queries/escalation_queries.py:300`](../../../src/database/queries/escalation_queries.py))
+   does the durable work in one transaction, with the incident row locked
+   `FOR UPDATE`:
+   - A row already existing for `(transport, external_message_id)` is a replay.
+     Its stored identity — escalation, direction, transport, actor and text — must
+     match what is being replayed, or `EscalationConflict` is raised. The original
+     reply is returned with `created: false`.
+   - For a new reply to an **open** incident it inserts one row into `messages`
+     addressed to the incident's `supervisor_owner`, with `thread_id` set to the
+     escalation id, `body_kind` `escalation_reply`, priority 10 and
+     `archive_after_inject`, then inserts the immutable `escalation_messages` row
+     that points at that notice, then CAS-advances the incident to
+     `reply_received` at `revision + 1`.
+   - For a new reply to a **terminal** incident the reply is still stored, but no
+     notice is queued and the state is left alone: a late answer is retained as
+     history and never reopens closed work.
+6. A genuine creation emits `escalation.reply_received.v1` via `_emit_escalation`
+   (line 107), carrying the new state, revision, `terminal` and
+   `supervisor_enqueued` flags.
+
+The ordering matters: because the incident row is locked and the state is set to
+`reply_received` in the same transaction, a reply that races a supervisor's
+`resolving` turn wins — the supervisor's older compare-and-set then fails instead
+of overwriting the newer conversation.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+One immutable row in `escalation_messages`
+([`src/database/tables.py:1165`](../../../src/database/tables.py)) with
+`direction: inbound`, the verified actor, the text, the transport message id and
+— for an open incident — the id of the supervisor notice it queued. For an open
+incident, one row in `messages` ([`src/database/tables.py:1055`](../../../src/database/tables.py))
+addressed to `supervisor-<project_id>`, which the message delivery cascade wakes
+or holds durably. The incident row advances to `reply_received` with a bumped
+`revision` and `updated_at`. Plus one bus event on creation.
+
+That `supervisor_message_id` link is load-bearing rather than decorative:
+`escalation_apply_reply` will only act on a reply that carries one, which is the
+database-level proof that the text crossed a trusted human boundary while the
+incident was open.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Handler code | Cause |
+|---|---|
+| `invalid_request` | Missing `escalation_id`, empty or over-long `text`, or a missing `external_message_id`. |
+| `not_found` | No incident with that id. |
+| `out_of_scope` | The caller may not touch that incident's project. |
+| `human_evidence_required` | The principal is neither a dashboard human nor a trusted `<transport>:<actor>` adapter. |
+| `identity_conflict` | The same transport message id was replayed with different content, actor, direction or incident. |
+
+All of them surface as the single `rejected` outcome.
+
+Two diagnostics are worth knowing. `replayed` is a *success*: it means the reply
+was already recorded, which is exactly what should happen when a gateway
+redelivers. And a successful reply with `supervisor_enqueued: false` plus
+`terminal: true` means the human answered a question that was already closed —
+the text is on the record, nothing was queued, and the right response is to tell
+them so rather than to retry. Inspect any of this with
+`aq escalation get --escalation-id <id>`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+1. Call `escalation_reply` with `escalation_id` bound to the event's
+   `escalation_id`, `text` bound to the event's `text`, and
+   `external_message_id` bound to the transport's own message id. Bind the
+   result as `reply`. A `received` outcome (new evidence) or a `replayed`
+   outcome (the gateway redelivered) ends the rule; a `rejected` or
+   `runtime_error` outcome fails it.
+```

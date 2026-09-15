@@ -98,24 +98,100 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_abort` ends an integration operation that has stopped and asked for a
+human — and only such an operation. It is one half of a deliberately narrow pair
+with `integration_resume`: resume says "this is safe to continue", abort says
+"this will not continue; stop pretending it might". Both refuse whenever the
+operation has evidence of an external mutation nobody can account for, because
+neither answer is honest while a push may or may not have landed.
+
+The command cancels the operation, cancels its active stage, and — for a batch
+operation — marks the batch `aborted` with the operator's reason recorded on the
+row. It does not delete branches, revert commits, or touch the tasks the batch
+carried. See the [integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+It is an operator command. `_cmd_integration_abort`
+([`src/commands/integration_commands.py:412`](../../../src/commands/integration_commands.py))
+requires a LOCAL principal, so a project playbook is refused `unauthorized`; the
+real entry point is `aq integration abort OPERATION_ID --reason …`
+([`src/cli/integration.py:186`](../../../src/cli/integration.py)).
+
+A playbook's legitimate role is to *find* the operation and ask a human about it —
+typically by reading `integration_status` and raising an
+[`escalation_create`](escalation_create.md) — rather than to abort on its own. The
+`human_required` state exists precisely because the system decided it could not
+choose; a playbook choosing for it would defeat that.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The contract comes from `_operational_contract`
+   ([`src/commands/contracts/integration.py:639`](../../../src/commands/contracts/integration.py))
+   with outcomes `aborted`, `ambiguous`, `invalid_state` and `not_found`, and
+   `reason` redacted from receipts.
+2. `_cmd_integration_abort` (line 412) requires a LOCAL principal, a non-empty
+   `operation_id` and a non-blank `reason`; a missing one of those is
+   `invalid_state`.
+3. `IntegrationControlService.abort`
+   ([`src/integration/controls.py:113`](../../../src/integration/controls.py))
+   delegates to `IntegrationRecoveryControls.abort`
+   ([`src/integration/recovery_controls.py:559`](../../../src/integration/recovery_controls.py)),
+   which does everything in one immediate transaction:
+   - Lock the operation row. Missing → `not_found`.
+   - The operation's state must be exactly `human_required`; anything else →
+     `invalid_state` with the observed state in the result.
+   - `_ambiguous_writes_on` (line 930) looks for unresolved external mutation
+     evidence — most importantly a pushed candidate repair that is frozen pending
+     validation of its exact repair lineage. Any finding → `ambiguous`, with one
+     blocker per reference carrying code `ambiguous_external_write`.
+   - Otherwise the operation is moved to `cancelled` (guarded by
+     `state = 'human_required'`), its active stage is moved to `cancelled` unless
+     it already passed or was cancelled, and a batch-targeted operation flips its
+     batch from `human_blocked` to `aborted`, storing `human_abort_reason`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+`integration_repair_operations.state` becomes `cancelled`
+([`src/database/tables.py:2985`](../../../src/database/tables.py)); the active row
+in `integration_repair_stages` (line 3106) becomes `cancelled` with a
+`completed_at`; for a batch operation, `integration_batches` (line 2504) becomes
+`lifecycle: aborted` with `human_abort_reason` set. All under one transaction, so
+a crash leaves either the whole abort or none of it.
+
+What it does **not** do is as important. No branch is deleted, no ref is rewound,
+no task is failed or reopened, and no workspace is released. Cleanup of the work
+the operation produced is a separate concern —
+[`integration_cleanup`](integration_cleanup.md) for a promoted batch,
+`integration_retry_cleanup` for stalled cleanup items — and an aborted batch
+simply stops advancing.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `aborted` | The operation and its active stage are cancelled; a batch operation is marked `aborted`. |
+| `ambiguous` | Unresolved external-write evidence exists. `blockers` names each reference; a `resolution:` reference means a pushed candidate repair is frozen and must be accepted or rejected first. |
+| `invalid_state` | The operation is not `human_required` — it is still active, already terminal, or never escalated. Also returned when `operation_id` or `reason` is missing. |
+| `not_found` | No operation with that id. |
+| `unauthorized` | The caller is not a LOCAL operator. |
+
+`ambiguous` is the interesting one and it is not a bug: something was pushed to a
+remote and the daemon cannot prove what state it left behind. Resolve the named
+reference first — `aq integration recover-candidate-member <reservation-id>`
+accepts or rejects a frozen pushed repair — and then abort. See
+[integration troubleshooting](../../guides/integration-troubleshooting.md).
+
+`aq integration status PROJECT_ID` lists operations with their states, which is
+where an `operation_id` comes from and where `invalid_state` is explained.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+3. Call `integration_abort` with `operation_id` bound to
+   `reply.action_result.operation_id` and `reason` bound to the operator's
+   recorded decision. An `aborted` outcome ends the rule. An `ambiguous` outcome
+   continues to the escalation step so a human resolves the pushed candidate
+   first; `invalid_state`, `not_found`, `unauthorized`, `rejected` or
+   `runtime_error` fails it.
+```

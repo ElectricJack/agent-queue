@@ -55,24 +55,104 @@ Projected into the run receipt: `batch_id`, `revision`, `evidence_ids`, `aggrega
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_ci_evidence` asks the trusted CI adapter what it observed for one
+exact candidate revision, and — when the answer is green — publishes the
+attestation that later steps require. Promotion to the default branch will not
+accept a candidate without it.
+
+The command is bound to `(batch_id, revision)` rather than to a branch or a batch
+alone, and the revision must be the batch's *current* one and already built. That
+is what stops stale evidence from being reused: rebuilding a candidate allocates a
+new revision, and evidence gathered for the old one no longer matches the subject
+being promoted. See the
+[integration operation model](README.md#the-integration-operation-model) and
+[integration CI boundaries](../../guides/integration-ci-boundaries.md).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Immediately after [`integration_build_candidate`](integration_build_candidate.md)
+reports `built` or `already_built`, passing that result's `batch_id` and
+`revision`. The natural shape is a poll: `pending` ends the tick, the next tick
+asks again; `green` continues to promotion; `red` routes to repair.
+
+Note the outcome classification — only `green` is a success. `pending` is
+classified as a failure precisely so that a rule cannot accidentally treat "CI has
+not answered yet" as "CI passed". Authority is project-level via
+`_integration_delivery_authorized`
+([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+so a suitably-scoped playbook principal may call it.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_ci_evidence`
+   ([`src/commands/integration_commands.py:791`](../../../src/commands/integration_commands.py))
+   validates the request and loads the batch, then authorizes against its project.
+2. It resolves the subject with a single join across
+   `integration_candidate_revisions`, `integration_repair_operations` and
+   `integration_batches`, requiring that the requested revision is the batch's
+   `current_revision` *and* that it has a `head_sha`. Anything else — an older
+   revision, an unbuilt one, a batch that has moved on — is `stale_subject`.
+3. If the orchestrator has no `integration_attestation_service`, the answer is
+   `configuration_blocked`: there is no trusted CI adapter to ask.
+4. `IntegrationAttestationService.handle_candidate_ci`
+   ([`src/integration/attestation.py:217`](../../../src/integration/attestation.py))
+   re-validates the subject, loads the repository's trust configuration and an
+   authenticated observer, and — unless exact green evidence is already recorded —
+   observes the candidate's checks. A red observation enqueues a durable
+   candidate-result event carrying the evidence ids. It then re-runs the guarded
+   collector continuation, which is a no-op unless the candidate is exactly green
+   and stage one's delegate is still an unattached reservation.
+5. The handler normalises the vocabulary for callers: the service's `not_green`
+   becomes `pending`, and both `published` and `already_published` become `green`.
+   The result carries the per-check `evidence_ids` and the
+   `aggregate_evidence_id` that promotion consumes.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+On a green observation: rows in `integration_check_evidence`
+([`src/database/tables.py:3149`](../../../src/database/tables.py)) for the
+observed checks and a row in `integration_attestation_publications` (line 3189)
+for the published aggregate; the candidate revision's state advances to `green`
+in `integration_candidate_revisions` (line 2598). On a red observation: a durable
+event carrying the evidence ids, which is what starts repair.
+
+Reading CI does not itself mutate the remote, and re-asking an
+already-green candidate republishes nothing — the service recognises exact
+existing evidence and skips straight to the guarded continuation.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `green` | Exact evidence exists (or was just published) for this revision; `aggregate_evidence_id` names it. The only success. |
+| `pending` | CI has not finished, or has not reported a conclusive result yet. Poll again. |
+| `red` | CI failed for this exact candidate. The evidence ids are recorded and repair takes over. |
+| `full_suite_required` | The observed checks do not satisfy the repository's required-check policy; a partial run cannot attest a candidate. |
+| `stale_subject` | The revision is not the batch's current built revision. Rebuild or re-read the batch. |
+| `configuration_blocked` | No trusted CI adapter is wired up. |
+| `unauthorized` | The caller cannot observe this candidate. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+The distinction that matters in practice is `pending` versus `stale_subject`.
+`pending` means "ask again". `stale_subject` means "you are asking about the wrong
+thing" — almost always because the candidate was rebuilt onto a new base between
+the build step and this one, so the rule must go back and re-read the batch's
+current revision rather than keep polling a dead one.
+
+`full_suite_required` and `configuration_blocked` are both configuration
+problems; `aq integration status PROJECT_ID` reports the blockers, and
+[integration CI boundaries](../../guides/integration-ci-boundaries.md) explains
+what the trust configuration has to say.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+3. Call `integration_ci_evidence` with `batch_id` bound to `candidate.batch_id`
+   and `revision` bound to `candidate.revision`. Bind the result as `ci`. A
+   `green` outcome continues to the promotion step with `ci.aggregate_evidence_id`;
+   a `pending` outcome ends the rule so the next tick polls again; a `red` outcome
+   ends the rule because the recorded evidence already starts repair; a
+   `stale_subject` outcome ends the rule so the next tick re-reads the batch;
+   `full_suite_required`, `configuration_blocked`, `unauthorized`, `rejected` or
+   `runtime_error` fails it.
+```

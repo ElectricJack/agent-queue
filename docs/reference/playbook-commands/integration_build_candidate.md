@@ -61,24 +61,113 @@ Projected into the run receipt: `batch_id`, `revision`, `operation_id`, `head_sh
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_build_candidate` turns one sealed root batch into a single, exact
+candidate commit and publishes it. A batch is a frozen list of members, each
+with a reviewed head; this command assembles them on top of the default branch,
+proves the result still contains every member's reviewed ancestry, and pushes it
+as the batch's candidate revision with an audit pull request.
+
+Exactness is the whole contract. The candidate is identified by `(batch_id,
+revision)`, and every later step — CI evidence, promotion, cleanup — is bound to
+that pair. When the base moves under the build, the answer is not "merge harder"
+but a *rebuild* onto the new base, which allocates the new state and invalidates
+any CI evidence collected against the old one. See the
+[integration operation model](README.md#the-integration-operation-model) and
+[hierarchical integration trains](../../guides/hierarchical-integration-trains.md).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+In a train-mode delivery pipeline, after a sweep has sealed a batch. A step calls
+it with the `batch_id`, then branches: `built` and `already_built` go on to
+[`integration_ci_evidence`](integration_ci_evidence.md); `empty` ends the run
+because there is nothing to deliver; `wait` ends the tick so the next one tries
+again; `conflict` and `human_required` route to a repair or an escalation.
+
+Authority is project-level rather than operator-level: the handler resolves the
+batch's project and calls `_integration_delivery_authorized`
+([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+which admits a playbook principal whose policy allows the
+`integration_build_candidate` capability. Its idempotency is natural — repeated
+calls converge on the same revision — so a rule may retry it without a dedup key.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_build_candidate`
+   ([`src/commands/integration_commands.py:721`](../../../src/commands/integration_commands.py))
+   validates the request, loads the batch, and authorizes against the batch's
+   project.
+2. Before building it checks whether main moved out from under a
+   `building` batch, by looking for a `superseded` root promotion intent for the
+   batch's current revision. If it did and the batch policy's `on_main_moved` is
+   not `rebuild`, the command answers `base_moved` without touching Git. If the
+   policy *is* `rebuild`, it reads the default branch's exact head and calls
+   `rebuild` instead of `build`.
+3. `CandidateService.build`
+   ([`src/integration/candidates.py:206`](../../../src/integration/candidates.py))
+   locks the batch state and then, in order: answers `empty` for an empty batch;
+   answers `wait` when the authority fence is not currently held or an unresolved
+   external mutation blocks building; answers `configuration_blocked` when the
+   GitHub App client or forge provider is unavailable; ensures the revision row
+   exists; activates the repair budget for stage zero; prepares the repository
+   store, fetches and retains the member sources; constructs the candidate;
+   verifies that every member's reviewed head is still an ancestor of the result
+   — rebuilding onto a fresh base if not — and publishes.
+4. `_publish` pushes the candidate ref and opens or updates the audit pull
+   request. A publication that cannot complete answers `wait` rather than
+   claiming a half-published candidate.
+5. If `build` itself answers `base_moved` and the policy says `rebuild`, the
+   handler makes one more attempt against the newly-read default-branch head
+   (line 775), so the common case resolves within a single call.
+6. The typed adapter (`_build_candidate_adapter`,
+   [`src/commands/contracts/integration.py:1595`](../../../src/commands/contracts/integration.py))
+   projects the result into `IntegrationBuildCandidateValue` and refuses any
+   outcome the contract does not declare with `contract_violation`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+A row in `integration_candidate_revisions`
+([`src/database/tables.py:2598`](../../../src/database/tables.py)) carrying the
+revision's construction base and head; a row in
+`integration_candidate_publications` (line 2672) moving toward `pr_published`
+with the branch and PR url; the batch's `current_revision`, `lifecycle` and
+`pr_url` on `integration_batches` (line 2504); repair-budget activation on
+`integration_repair_operations` (line 2985) and its stage rows; and per-member
+outcome rows in `integration_candidate_member_results` (line 2625).
+
+On the remote: the candidate branch and its audit pull request. Member source
+refs are *retained* first, so a candidate can always be reconstructed even if a
+source branch is later deleted.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `built` / `already_built` | The candidate exists at the returned `revision` and `head_sha`, with `branch` and `pr_url`. |
+| `empty` | The batch has no members; there is nothing to build. Success. |
+| `conflict` | Members could not be assembled. A repair operation owns it from here. |
+| `source_moved` | A member's source branch moved after it was sealed. |
+| `base_moved` | The default branch moved and policy forbids rebuilding, or no new base could be read. |
+| `stale_revision` | The rebuild's `expected_revision` no longer matches the batch. |
+| `wait` | A transient hold — fence not held, unresolved external mutation, or an incomplete publication. Retry on the next tick. |
+| `human_required` | The build reached a state only a person can decide. |
+| `configuration_blocked` | No GitHub App client or forge provider is wired up. |
+| `unauthorized` | The caller cannot build this batch. |
+| `contract_violation` | The handler returned an outcome the contract does not declare — a bug, not a state. |
+
+`wait` is by far the most common non-success and is not an error: it means
+something is legitimately in flight. `configuration_blocked` is the opposite — it
+will never clear on its own; check the App wiring reported by `aq integration
+status PROJECT_ID` and
+[integration CI boundaries](../../guides/integration-ci-boundaries.md).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `integration_build_candidate` with `batch_id` bound to `seal.batch_id`.
+   Bind the result as `candidate`. A `built` or `already_built` outcome continues
+   to step 3; an `empty` outcome ends the rule; a `wait`, `base_moved` or
+   `source_moved` outcome ends the rule so the next sweep tries again; a
+   `conflict` or `human_required` outcome continues to the escalation step;
+   `stale_revision`, `configuration_blocked`, `unauthorized`, `rejected` or
+   `runtime_error` fails it.
+```

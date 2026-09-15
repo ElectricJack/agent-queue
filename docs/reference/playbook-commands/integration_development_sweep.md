@@ -101,24 +101,117 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_development_sweep` runs one development delivery cycle immediately:
+assemble every completed, unblocked task branch into a batch on top of the current
+default branch, run the project's own validation commands against the assembled
+result, preserve the candidate remotely whatever the verdict, and publish it with
+a lease only if validation passed.
+
+The ordering is the point. Conflicts are parked per source rather than failing the
+batch, validation failure parks the whole candidate instead of discarding it, and
+the candidate snapshot is pushed *before* the verdict is known so nothing is ever
+lost. A sweep is therefore safe to run repeatedly: it either moves the default
+branch forward or leaves a durable, inspectable reason why it did not. See
+[development integration](../../guides/development-integration.md).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Rarely, because the sweep already runs on its own interval and because this
+command requires a LOCAL principal
+([`src/commands/integration_commands.py:1765`](../../../src/commands/integration_commands.py)).
+A playbook that wants to couple delivery to an event should call
+[`integration_flush`](integration_flush.md), which in development mode performs
+exactly this sweep with project authority instead of operator authority
+([`src/commands/integration_commands.py:322`](../../../src/commands/integration_commands.py)).
+
+The one thing this command offers that `integration_flush` does not is `retry`.
+Without it, sources parked by an earlier sweep are skipped; with it, they are
+reconsidered. That is an operator decision — "I have fixed the thing that made
+those conflict" — which is why it lives behind `aq integration sweep PROJECT_ID
+--retry` ([`src/cli/integration.py:243`](../../../src/cli/integration.py)).
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_development_sweep` (line 1765) requires a LOCAL principal and
+   maps service errors to `blocked`.
+2. `DevelopmentIntegration.sweep`
+   ([`src/integration/development.py:413`](../../../src/integration/development.py))
+   requires the project to be in `development` mode, validates its stored policy,
+   and refreshes task dependencies.
+3. Under the repository exclusion lock it reconciles the journal against the
+   remote, reads the current default-branch head as the base, and detaches a
+   working checkout there.
+4. It computes what is already done from the journal — every `(task_id,
+   source_sha)` in a `delivered` or `adopted` row for this target — and, unless
+   `retry` was passed, also excludes pairs sitting in `parked` rows.
+5. Candidates are completed tasks in this repository with a branch and no blocking
+   dependency, ordered so a task never precedes something it depends on. Its own
+   earlier development publication does not count as a blocker, so completion
+   chains can be assembled within one batch.
+6. Each source is merged in turn. A merge that fails is aborted, the checkout is
+   reset to the last good head, and that single source is written to the journal
+   as `parked` with `evidence.kind: merge_conflict` and the merge output — the
+   rest of the batch continues. Dependents of a parked source, and siblings of a
+   blocked parent, are skipped rather than merged out of order. Assembly stops at
+   `max_batch_size`.
+7. With nothing assembled, the sweep reconciles parked rows against the unchanged
+   base and answers `idle`.
+8. Otherwise it runs the policy's validation commands. Validation that modifies
+   the working tree is refused outright. The assembled head is then pushed to a
+   content-addressed snapshot ref (`refs/heads/aq/development/<project
+   digest>/<head>`) so the candidate survives regardless of the verdict.
+9. If validation failed, the whole candidate is journaled `parked` with its
+   evidence and the sweep answers `parked`. If it passed, `publish` (line 220)
+   writes a `prepared` journal row, re-reads the remote, and refuses with
+   `base_moved` if the target moved under it; otherwise it pushes with
+   `--force-with-lease` bound to the exact expected SHA, confirms the remote now
+   reads the new head, and marks the row `delivered`.
+10. Either way `reconcile_parked` (line 691) then dispatches repair work for
+    sources still unresolved after the whole batch was assembled — deliberately
+    after, so a later merge that already fixed an earlier conflict does not spend
+    a worker on it.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Rows in `development_deliveries`
+([`src/database/tables.py:3839`](../../../src/database/tables.py)): one per parked
+source, one for a parked candidate, one for the preserved snapshot, and one that
+moves `prepared → publishing → delivered` for a successful publication. On the
+remote: the snapshot ref always, and the default branch on success. Plus whatever
+`reconcile_parked` files as repair work for unresolved conflicts.
+
+A crash is recoverable because every step is journaled before it is attempted: the
+`prepared` row exists before the push, and an unconfirmed push raises
+`DevelopmentBusy` with the journal retained rather than declaring success.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `delivered` | The default branch advanced to the assembled head. |
+| `idle` | Nothing was eligible to assemble; `parked` lists sources that conflicted. |
+| `parked` | A candidate was assembled and preserved but validation failed; `evidence` carries the output. |
+| `base_moved` | The default branch moved between assembly and publication. Re-run; the next sweep rebases on the new base. |
+| `blocked` | The service refused before doing any work. |
+| `unauthorized` | The caller is not a LOCAL operator. |
+
+Messages behind `blocked` include `project is not in development mode`, an invalid
+stored policy, `default branch does not exist`, `validation modified the candidate;
+refusing publication`, `candidate snapshot identity conflicts`, and `development
+publication must preserve target history`.
+
+`parked` is the outcome that needs a human: the candidate ref is on the remote,
+so check it out and reproduce the validation locally. `idle` with a non-empty
+`parked` list means every eligible source conflicts — fix the conflicts, then
+sweep again with `--retry`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `integration_development_sweep` with `project_id` `agent-queue`. A
+   `delivered` outcome (the default branch advanced) or an `idle` outcome
+   (nothing was eligible) ends the rule. A `parked` outcome continues to the
+   escalation step with `evidence`; a `base_moved` outcome ends the rule so the
+   next tick reassembles on the new base; `blocked`, `unauthorized`, `rejected`
+   or `runtime_error` fails it.
+```

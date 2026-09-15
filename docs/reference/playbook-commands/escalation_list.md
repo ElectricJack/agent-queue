@@ -49,24 +49,93 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_list` answers "what is currently waiting on a human?" It returns the
+incident rows a caller is allowed to see, newest activity first, each annotated
+with the delivery facts a reader actually needs: which delivery statuses that
+incident has, and whether any of them is still in flight. It changes nothing.
+
+The delivery annotation is the reason this is not just a table read. An incident
+in `needs_human` with no pending delivery has reached its human; the same
+incident with `pending_delivery: true` has not been posted yet, or is being
+retried. Those two situations look identical on the `escalations` row alone and
+call for completely different operator responses. See the
+[escalation incident lifecycle](README.md#the-escalation-incident-lifecycle) for
+what the states mean.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+A playbook uses it as a guard rather than as an action: "is there already an open
+human decision about this project before I start another bounded remedy?" Bind
+the result and branch on `count`, or filter with `states` to ask a narrower
+question — `["needs_human"]` for questions nobody has answered yet,
+`["reply_received", "resolving"]` for decisions a supervisor is in the middle of
+applying.
+
+It is also the read behind the operator surfaces: `aq escalation list` and the
+dashboard's escalation inbox
+([`dashboard/src/pages/settings/EscalationInbox.tsx`](../../../dashboard/src/pages/settings/EscalationInbox.tsx)).
+
+Because it is a read with natural idempotency, a rule may call it as often as it
+likes; there is no dedup key to get right and no state to disturb.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   forwards to the handler under the caller's principal.
+2. `_cmd_escalation_list`
+   ([`src/commands/escalation_commands.py:236`](../../../src/commands/escalation_commands.py))
+   rejects server-derived authority fields, then narrows the request to what the
+   caller may see. A session or playbook principal that carries a project is
+   *pinned* to it: an explicit `project_id` for another project is refused
+   `out_of_scope`, and an omitted one is filled in from the principal. A
+   project-less, non-elevated session principal is refused outright. Trusted
+   local and service callers are unrestricted.
+3. When a project is in play, `_authorize_escalation_project` (line 43) checks it
+   the same way every other command in the family does.
+4. `limit` must be between 1 and 500, and every entry of `states` must be one of
+   the six real states (`needs_human`, `reply_received`, `resolving`, `resolved`,
+   `cancelled`, `stale`) — an unknown state is a rejection, not an empty result.
+5. `list_escalations`
+   ([`src/database/queries/escalation_queries.py:189`](../../../src/database/queries/escalation_queries.py))
+   applies the project, state and task filters and orders by `updated_at`
+   descending, then `id`, so the ordering is total and stable across pages.
+6. For each row the handler reads `list_escalation_deliveries` (line 1215) and
+   appends `delivery_statuses` plus `pending_delivery` — true when any delivery is
+   `pending`, `sending`, `retry` or `unknown`. This is a per-row query, which is
+   why the limit exists.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. The command's side-effect class is `read`, its effect clause is a
+`ReadClause` over the escalation subject, and it writes no row, no event and no
+audit record. Nothing it returns is cached: every call re-reads `escalations` and
+`escalation_deliveries`.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Handler code | Cause |
+|---|---|
+| `spoofed_identity` | The payload carried a server-derived authority field. |
+| `out_of_scope` | A scoped principal asked for another project, or a session principal has no project and is not elevated. |
+| `invalid_request` | `limit` outside 1–500, or `states` contains a value that is not an escalation state. |
+
+All of them surface as the single `rejected` outcome with the handler's message
+in the summary. An *empty* list is a success, not a failure: `listed` with
+`count: 0` means the caller is in scope and nothing matches, so a rule that
+treats "no result" as an error will misread a healthy queue.
+
+If the list looks shorter than expected, check the principal before the data —
+a project-scoped caller only ever sees its own project, whatever `project_id` it
+passes.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+1. Call `escalation_list` with `project_id` `agent-queue` and `states`
+   `["needs_human"]`. Bind the result as `open`. A `listed` outcome continues to
+   step 2; a `rejected` or `runtime_error` outcome fails the rule.
+2. When `open.count` is zero, continue with the bounded automatic remedy.
+   Otherwise end the rule: a human already owns a decision for this project and
+   a second remedy would race it.
+```

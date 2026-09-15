@@ -58,24 +58,111 @@ Redacted in receipts and explanations: `head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_complete_parent` closes a parent task at the exact generation and
+head it was verified at. It is the last step of a parent's collection episode:
+readiness proved every child delivered, `integration_parent_verify` recorded a
+verification against a specific head, and this command turns that verification
+into a completed task and a completed operation.
+
+Everything about it is exact. The generation must match the checkpoint, the head
+must match the verification, the verification must belong to this operation and
+episode, and the branch must still be held by the expected verifier with an
+intact fence. If any of those has moved, the parent is not completed — because a
+parent completed at the wrong head would silently publish work nobody verified.
+See the [integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+As the final step of a parent pipeline, quoting the `generation` and `head_sha`
+that [`integration_delivery_readiness`](integration_delivery_readiness.md)
+reported `ready` for and that `integration_parent_verify` then recorded. A
+`waiting` outcome means the picture changed between those steps and the rule
+should go back to the readiness poll.
+
+Authority is project-level (`_integration_delivery_authorized`,
+[`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)).
+Idempotency is natural rather than keyed: the service recognises an
+already-completed parent for this exact operation, episode, generation, head and
+verification, which is what lets a verifier that crashed after the completion
+committed — but before its own session close persisted — finish cleanly on retry.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_complete_parent`
+   ([`src/commands/integration_commands.py:1225`](../../../src/commands/integration_commands.py))
+   validates the request, loads the parent (`invariant_error` when missing) and
+   authorizes against its project.
+2. `ParentCompletion.complete_parent`
+   ([`src/integration/parent_completion.py:1005`](../../../src/integration/parent_completion.py))
+   opens one immediate transaction and locks the parent's context — task, project,
+   checkpoint and operation.
+3. The crash-retry replay is checked first: an operation already `completed`, a
+   task already `COMPLETED`, and a checkpoint whose generation, verified
+   generation, verified head and last-completed operation/verification all match,
+   with the matching verification and completion rows present.
+4. A live operator hold (`manual_pause` task metadata) stops completion: that is
+   an `invariant_error` with `reason: manual_pause`, so an integration path can
+   never complete a task a human deliberately paused.
+5. The checkpoint's generation must equal the requested one, and `readiness_on`
+   must still answer `ready`; anything else is returned as-is.
+6. The checkpoint must carry `verified_generation == generation`, `verified_sha ==
+   head_sha` and a `current_verification_id`, and readiness' own `head_sha` must
+   equal the requested head; otherwise `stale_verification`. The verification row
+   itself must exist for this operation, generation and head.
+7. Branch ownership is checked: the expected owner is the operation's verifier
+   task (or the parent itself), the operation must be `active` or `escalated`, the
+   owner's role must be `verifier`, its handoff state `reserved` or `attached`, and
+   the checkpoint's `branch_owner_id` must agree. Any mismatch is
+   `invariant_error`.
+8. Only then does it apply the `COMPLETED` transition under the integration
+   completion token, insert the operation-completion row, record
+   `last_completed_operation_id` / `last_completed_verification_id` on the
+   checkpoint, mark the operation `completed`, and pass the active stage. Blocked
+   flips and settled/ready notifications are flushed after the transaction.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+The parent task's status becomes `COMPLETED`, with its dependents unblocked by the
+ordinary transition machinery. One row in
+`integration_parent_operation_completions`
+([`src/database/tables.py:3433`](../../../src/database/tables.py)); the parent's
+`task_integration_checkpoints` row (line 2083) records the completed operation and
+verification; `integration_repair_operations` (line 2985) becomes `completed` and
+its active row in `integration_repair_stages` (line 3106) becomes `passed`.
+
+No Git write and no remote call. Completion is a bookkeeping act over a head that
+was already verified.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `completed` | The parent is complete at this generation and head. |
+| `waiting` | Readiness is no longer `ready` — a child moved after verification. Go back to the readiness poll. |
+| `stale_verification` | The checkpoint's generation, verified generation, verified head or verification id does not match what was quoted. |
+| `invariant_error` | The parent is missing, an operator hold is in place, or branch ownership/operation state is not what completion requires. |
+| `unauthorized` | The caller cannot complete this parent. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+Two behaviours are worth knowing before they surprise anyone. A `failed`
+readiness verdict is returned *through* this command unchanged, and the service's
+crash-retry path answers `already_completed`; neither name is declared by the
+contract, so the typed adapter reports them as `contract_violation`
+([`src/commands/contracts/integration.py:1637`](../../../src/commands/contracts/integration.py)).
+A `contract_violation` here therefore usually means "a child failed" or "this
+parent was already completed", not a corrupt system — confirm with
+[`integration_delivery_readiness`](integration_delivery_readiness.md) and
+`aq task show <parent-id>` before treating it as an incident.
+
+`invariant_error` with `reason: manual_pause` is a human hold, not a fault: resume
+the task and call again.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+6. Call `integration_complete_parent` with `task_id` bound to `plan.parent_id`,
+   `generation` bound to `readiness.generation`, and `head_sha` bound to
+   `readiness.head_sha`. A `completed` outcome ends the rule. A `waiting` or
+   `stale_verification` outcome ends the rule so the next tick re-reads readiness;
+   `invariant_error`, `unauthorized`, `rejected` or `runtime_error` fails it.
+```
