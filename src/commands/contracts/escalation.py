@@ -116,6 +116,16 @@ class EscalationApplyReplyValue(CommandValue):
     action_result: dict[str, Any] | None = None
 
 
+#: Operator-facing copy for every subject the escalation clauses declare.
+#: ``render_effect`` reads it by subject, so a key that names no declared
+#: subject is dead copy — see ``test_presentation_labels_name_real_fields``.
+_SUBJECT_COPY: dict[str, str] = {
+    "escalation": "the escalation",
+    "escalation_reply": "the reply",
+    "escalation_action": "the escalation action",
+}
+
+
 def _contract(
     name: str,
     args_model: type[CommandArgs],
@@ -150,7 +160,13 @@ def _contract(
                 "escalation_apply_reply": "Apply verified evidence through its bound guarded service.",
             }[name],
             outcome_labels={outcome.name: outcome.name.replace("_", " ").title() for outcome in outcomes},
-            subject_labels={"escalation": "the escalation"},
+            # Keyed by the subject each command's own clauses declare, not by a
+            # fixed ``escalation``: ``escalation_reply`` acts on the
+            # ``escalation_reply`` subject, so a hard-coded key labelled nothing
+            # and the renderer fell back to the raw subject name.
+            subject_labels={
+                clause.subject.value: _SUBJECT_COPY[clause.subject.value] for clause in effects
+            },
         ),
     )
 

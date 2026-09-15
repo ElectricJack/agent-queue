@@ -12,7 +12,7 @@
     "commands": {
       "ensure_task": "sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb",
       "gate_create": "sha256:cef412074d2e82ff21c66ce7aac359b3fd4211e7a2a7ec5f451db6ddf023500d",
-      "list_tasks": "sha256:7037abfad41135976dc8a97fd05114d0760e42560da22331f372c1258745477f"
+      "list_tasks": "sha256:b3acb362f394bf55d871ce44f6f7b93f4d9a9152612319ffe8432ad66dac9888"
     },
     "profiles": {
       "reviewer": "sha256:e6a5745b78333c080c2b1e3acb1f0fdc5224a455642192a5c9b5ad6c3f556d90"

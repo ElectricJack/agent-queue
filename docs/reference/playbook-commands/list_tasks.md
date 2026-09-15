@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:7037abfad41135976dc8a97fd05114d0760e42560da22331f372c1258745477f` |
+| Contract fingerprint | `sha256:b3acb362f394bf55d871ce44f6f7b93f4d9a9152612319ffe8432ad66dac9888` |
 
 ## Parameters
 
@@ -24,17 +24,20 @@
 | `status` | `string \| null` | no | `null` | Status |
 | `display_mode` | `string \| null` | no | `null` | Display mode |
 | `show_dependencies` | `boolean \| null` | no | `null` | Show dependencies |
-| `limit` | `integer \| null` | no | `null` | Limit |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
+| `display_mode` | `string` | Display mode |
 | `tasks` | `object[]` | Tasks |
-| `by_project` | `object` | Tasks by project |
 | `total` | `integer` | Total |
-| `project_count` | `integer` | — |
-| `hidden_completed` | `integer` | — |
+| `hidden_completed` | `integer` | Hidden completed tasks |
+| `filtered` | `boolean` | Completed tasks hidden |
+| `dependency_display` | `string \| null` | Dependency view |
+| `trees` | `object[]` | Task trees |
+| `total_root_tasks` | `integer` | Root tasks |
+| `total_tasks` | `integer` | Total tasks |
 
 ## Outcomes
 
