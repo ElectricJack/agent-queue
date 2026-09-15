@@ -34,6 +34,7 @@ each one.
 | [`aq-client-boilerplate.sha256`](../../scripts/aq-client-boilerplate.sha256) | Not a script — recorded digests of the generator-only boilerplate, so a box without the pinned generator can still verify it. | — | — |
 | [`generate-playbook-schema.py`](../../scripts/generate-playbook-schema.py) | Project the Playbook V2 Pydantic model to `src/playbook_v2_schema.json`. | `--check` for a drift diff. | Writes that one file. Imports only `src.playbooks.definition` — no daemon, database or config. |
 | [`generate-cli-command-inventory.py`](../../scripts/generate-cli-command-inventory.py) | Regenerate or verify `docs/reference/cli-command-inventory.json`. | `--check`, `--output PATH`. | Writes that one file. |
+| [`gen-command-docs.py`](../../scripts/gen-command-docs.py) | Regenerate or verify the generated half of every page under `docs/reference/playbook-commands/`. | `--check`, `--output DIR`. | Rewrites only the text between the `aq:generated` markers of each page and the index; hand-written sections are preserved. Imports the command registry — no daemon, database or config. |
 | [`rebuild-reviewed-playbook-artifacts.py`](../../scripts/rebuild-reviewed-playbook-artifacts.py) | Recording aid for the **human** review of shipped playbook artefacts. Nothing in CI, the daemon or a release runs it. | The shipped playbook markdown. | Rewrites fixtures under `src/prompts/reviewed_playbooks/` — only ever checked in alongside a hand-written `review.md`. |
 
 ## Supported: end-to-end kit
@@ -97,7 +98,6 @@ instructions — and expect the ones marked *broken* to fail immediately.
 
 | Script | Status | Why |
 |---|---|---|
-| [`register-merge-conflict-hook.py`](../../scripts/register-merge-conflict-hook.py) | **Broken.** | Imports `models.Hook` to register a periodic *hook*. Hooks were replaced by playbooks (`docs/concepts/playbooks.md` — **planned**); there is no `Hook` model in `src/models.py`, so the import fails. The conflict *detector* it drove, `check-merge-conflicts.sh`, still works on its own. |
 | [`migrate_task_records.py`](../../scripts/migrate_task_records.py) | **Historical.** | A completed vault migration: moves task-record markdown from `{data_dir}/memory/{project}/tasks/` to `{data_dir}/tasks/{project}/`. Dry-run by default, `--execute` to act; byte-for-byte and idempotent. Nothing new needs it. |
 | [`run_tests.sh`](../../run_tests.sh) | **Historical.** | `python -m pytest tests/ -v` — the entire suite, serially, with no gating. Predates `aq test`; running it stalls every agent on the box. See [testing](testing.md). |
 | [`test_suite.bat`](../../test_suite.bat) | **Historical.** | The same, for Windows, with a hard-coded personal path. |
@@ -134,7 +134,6 @@ script refuses to run without a marker file proving that.
 | `something is answering on <url> that <pid file> does not name` | `e2e-env.sh --reset` would drop the database and delete the home of a daemon this home does not own. | Stop that daemon, or override `AQ_E2E_HOME` / `AQ_E2E_PORT` / `E2E_DB_NAME`. The guard is working. |
 | `node_modules missing — run: npm install` | `e2e-dashboard.sh` without a Node install. | `npm install` at the repository root. |
 | `TS client not generated` | The gitignored client has never been generated here. | `./scripts/regenerate-ts-client.sh --from-file` |
-| `ModuleNotFoundError: No module named 'models'` from `register-merge-conflict-hook.py` | The script is broken; hooks no longer exist. | Do not use it; playbooks replaced hooks. |
 
 ## Related pages
 

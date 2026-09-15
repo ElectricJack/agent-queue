@@ -29,7 +29,7 @@ run at the end of a task, never during.
 | One Python module under `src/` | `ruff check <file>` and `aq test tests/test_<area>.py` |
 | `src/database/tables.py` | A new Alembic revision (**locally, never against the operator's database**) plus `aq test tests/test_database.py tests/test_docs_sync.py` |
 | `src/api/models/*` or a codegen router | `./scripts/regenerate-api-client.sh --offline`, `./scripts/regenerate-ts-client.sh --from-file`, `aq test tests/test_api_client_contract.py` |
-| A `@click` command or command contract | `python scripts/generate-cli-command-inventory.py`, `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
+| A `@click` command or command contract | `python scripts/generate-cli-command-inventory.py`, `python scripts/gen-command-docs.py`, `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py tests/test_command_docs.py` |
 | `src/playbooks/definition.py` | `python scripts/generate-playbook-schema.py --check`, `aq test tests/test_playbook_v2_definition.py` |
 | Anything under `dashboard/src/` | `npm -w dashboard run lint`, `npm -w dashboard run typecheck`, `npm -w dashboard run test` |
 | Claims, pools, formulas or the task hierarchy | `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` |
