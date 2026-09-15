@@ -193,6 +193,8 @@ def _command_explanation(
     info = _contract_info(contracts, step.command)
     registration = _registration(contracts, step.command)
     contract = registration.contract if registration is not None else None
+    presentation = contract.presentation if contract is not None else None
+    docs_url = presentation.help_url if presentation is not None else None
     labels = {name: item.title for name, item in definition.steps.items()}
     rendered = None
     if contract is not None:
@@ -212,12 +214,13 @@ def _command_explanation(
         )
     if isinstance(rendered, Mapping):
         try:
-            return StepExplanationDTO.model_validate(rendered).model_dump(mode="json"), info
+            return StepExplanationDTO.model_validate(
+                {**rendered, "docs_url": docs_url}
+            ).model_dump(mode="json"), info
         except Exception:  # noqa: BLE001, S110 - old renderer payload is adapted below
             pass
 
     execution = contract.execution if contract is not None else None
-    presentation = contract.presentation if contract is not None else None
     arguments = getattr(info, "arguments", {}) if info is not None else {}
     inputs = []
     sensitive = set(getattr(execution, "sensitive_args", ()))
@@ -306,6 +309,7 @@ def _command_explanation(
             getattr(info, "execution_fingerprint", None)
             or (contract.fingerprint() if contract is not None else None)
         ),
+        "docs_url": docs_url,
         "renderer": "contract" if contract is not None else "canonical",
     }, info
 
@@ -757,6 +761,7 @@ def _canonical_explanation(step_id: str, step: Any, definition: PlaybookDefiniti
         "result": result,
         "outcomes": _outcome_explanations(step_id, step, definition),
         "contract_fingerprint": None,
+        "docs_url": None,
         "renderer": "canonical",
     }
 

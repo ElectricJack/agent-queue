@@ -362,6 +362,7 @@ nothing.
 | `aq playbook artifact-diff` | `playbook_artifact_diff` | gen | Semantically diff two Playbook V2 artifacts before activation. |
 | `aq playbook artifacts` | `playbook_artifacts` | gen | List the stored Playbook V2 artifacts of one playbook, newest version first, with the currently active one flagged. |
 | `aq playbook cancel-run` | `cancel_playbook_run` | gen | Cancel a playbook run that is running or paused. |
+| `aq playbook commands` | `playbook_commands` | gen | List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema. |
 | `aq playbook delete` | `playbook_delete` | gen | Delete an exact disabled playbook catalog entry. |
 | `aq playbook dry-run` | `dry_run_playbook` | gen | Simulate playbook execution with a mock event, producing no side effects. |
 | `aq playbook get-source` | `get_playbook_source` | gen | Return the raw markdown of a playbook plus its content hash. |

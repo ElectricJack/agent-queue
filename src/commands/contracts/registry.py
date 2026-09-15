@@ -5,11 +5,12 @@ import hashlib
 import json
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from src.commands.contracts.models import CommandArgs, CommandContract, CommandResult
 from src.commands.principal import ExecutionPrincipal
+from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
 CommandContext = ExecutionPrincipal
 InvokeAdapter = Callable[[CommandArgs, CommandContext], Awaitable[CommandResult[Any]]]
@@ -45,11 +46,14 @@ class ContractRegistry:
     ``ContractRegistry()``, which loads nothing.
     """
 
-    def __init__(self, *, autoload: bool = False) -> None:
+    def __init__(
+        self, *, autoload: bool = False, docs_base_url: str = DEFAULT_DOCS_BASE_URL
+    ) -> None:
         self._registrations: dict[str, CommandRegistration] = {}
         self._autoload = autoload
         self._loading = False
         self._lock = threading.RLock()
+        self._docs_base_url = docs_base_url
 
     def _ensure_loaded(self) -> None:
         """Register the built-ins once, on first read."""
@@ -82,7 +86,49 @@ class ContractRegistry:
         for clause in registration.contract.execution.effects:
             if not can_render(clause):
                 raise ContractRegistrationError(f"effect clause {clause.kind!r} has no renderer")
-        self._registrations[registration.name] = registration
+        self._registrations[registration.name] = self._with_docs_url(registration)
+
+    def _with_docs_url(self, registration: CommandRegistration) -> CommandRegistration:
+        """Attach the convention-derived help URL without changing execution.
+
+        Presentation metadata deliberately sits outside the execution
+        fingerprint, so changing the configured documentation host never makes
+        an already validated playbook artifact stale.
+        """
+        contract = registration.contract
+        presentation = contract.presentation.model_copy(
+            update={"help_url": command_docs_url(self._docs_base_url, registration.name)}
+        )
+        return replace(
+            registration,
+            contract=contract.model_copy(update={"presentation": presentation}),
+        )
+
+    def configure_docs_base_url(self, base_url: str) -> None:
+        """Apply an installation's ``docs.base_url`` to all registrations."""
+        if not isinstance(base_url, str) or not base_url.strip():
+            base_url = DEFAULT_DOCS_BASE_URL
+        with self._lock:
+            self._ensure_loaded()
+            self._docs_base_url = base_url
+            self._registrations = {
+                name: self._with_docs_url(registration)
+                for name, registration in self._registrations.items()
+            }
+
+    def catalog(self) -> tuple[dict[str, Any], ...]:
+        """Return the read-only metadata catalog for all playbook commands."""
+        self._ensure_loaded()
+        return tuple(
+            {
+                "name": name,
+                "title": registration.contract.presentation.title,
+                "summary": registration.contract.presentation.summary,
+                "docs_url": registration.contract.presentation.help_url,
+                "parameters_schema": registration.contract.execution.args_model.model_json_schema(),
+            }
+            for name, registration in sorted(self._registrations.items())
+        )
 
     def get(self, name: str) -> CommandRegistration | None:
         self._ensure_loaded()

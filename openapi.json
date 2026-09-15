@@ -6637,6 +6637,53 @@
         }
       }
     },
+    "/api/playbook/commands": {
+      "post": {
+        "tags": [
+          "playbook"
+        ],
+        "summary": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
+        "description": "List every registered Playbook V2 command with its title, summary, documentation URL, and typed parameter JSON Schema.",
+        "operationId": "playbook_commands",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybookCommandsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlaybookCommandCatalogResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/playbook/delete": {
       "post": {
         "tags": [
@@ -17760,7 +17807,7 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Execution intelligence class id, e.g. deep-high or standard-medium. Use list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work atomically."
+            "description": "Execution intelligence class id, e.g. deep-high or standard-high. Use list_intelligence_classes for current IDs. Set profile_id and this field together at creation to route work atomically."
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -31958,6 +32005,72 @@
         ],
         "title": "PlaybookArtifactsRequest"
       },
+      "PlaybookCommandCatalogEntryDTO": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "docs_url": {
+            "type": "string",
+            "title": "Docs Url"
+          },
+          "parameters_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Parameters Schema",
+            "default": {}
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "title",
+          "summary",
+          "docs_url"
+        ],
+        "title": "PlaybookCommandCatalogEntryDTO",
+        "description": "One contract's dashboard- and CLI-facing discovery metadata."
+      },
+      "PlaybookCommandCatalogResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/PlaybookCommandCatalogEntryDTO"
+            },
+            "type": "array",
+            "title": "Commands",
+            "default": []
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybookCommandCatalogResponse"
+      },
+      "PlaybookCommandsRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "PlaybookCommandsRequest"
+      },
       "PlaybookDeleteRequest": {
         "properties": {
           "playbook_id": {
@@ -40852,6 +40965,17 @@
             ],
             "title": "Contract Fingerprint"
           },
+          "docs_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Docs Url"
+          },
           "renderer": {
             "type": "string",
             "enum": [
@@ -43570,7 +43694,7 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Intelligence class id (e.g. 'fast-low', 'standard-medium', 'deep-high') from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing class or profile default."
+            "description": "Intelligence class id (e.g. 'fast-low', 'standard-high', 'astra-high') from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing class or profile default."
           },
           "workspace_id": {
             "anyOf": [
