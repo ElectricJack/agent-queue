@@ -19,6 +19,16 @@ semantic bodies, without an LLM:
   class is not explicit, write the route.  Spec:
   ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
 
+This writes the fixture bundle only.  Two trees hold byte-identical copies of
+a reviewed recording and are not touched here — copy them across by hand after
+a rebuild, and update each ``manifest.md``'s digests:
+
+* ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into a fresh
+  vault and activates (``src/playbooks/required.py``).  Guarded by
+  ``test_daemon_shipped_bundle_is_the_reviewed_fixture``.
+* ``docs/playbooks/integration-only/default-pipeline/`` — the operator-importable
+  copy.  Guarded by ``test_integration_only_bundle_is_the_reviewed_fixture``.
+
 Usage::
 
     python scripts/rebuild-reviewed-playbook-artifacts.py            # rewrite fixtures

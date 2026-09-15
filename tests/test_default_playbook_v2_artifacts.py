@@ -36,6 +36,7 @@ from src.playbooks.definition import (
     source_digest,
 )
 from src.playbooks.profiles import shipped_profile_fingerprints, shipped_profile_lookup
+from src.playbooks.required import REQUIRED_SYSTEM_PLAYBOOK_IDS
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
@@ -87,6 +88,12 @@ RETIRED_REVIEW_PIPELINE = FIXTURE_ROOT / "default-pipeline-retired-reviews.artif
 
 #: The operator-importable copy of the reviewed bundle.
 INTEGRATION_ONLY_BUNDLE = REPO_ROOT / "docs" / "playbooks" / "integration-only" / "default-pipeline"
+
+#: The reviewed bundles the daemon itself ships and seeds into a fresh vault
+#: (`src/playbooks/required.py`).  Nothing in that tree is compiled at runtime,
+#: so a shipped bundle only stays honest by being the recording this suite
+#: validates.
+DAEMON_REVIEWED_BUNDLES = REPO_ROOT / "src" / "prompts" / "reviewed_playbooks"
 
 #: `src/playbooks/routing.py` suppresses these retired rules; they must never
 #: reappear in a reviewed artifact.
@@ -413,6 +420,32 @@ def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
         assert (INTEGRATION_ONLY_BUNDLE / name).read_bytes() == (
             _fixture("default-pipeline") / name
         ).read_bytes(), f"docs/playbooks/integration-only/default-pipeline/{name} drifted"
+
+
+@pytest.mark.parametrize("playbook_id", REQUIRED_SYSTEM_PLAYBOOK_IDS)
+def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None:
+    """A required bundle is seeded verbatim, so it may not drift from the recording.
+
+    `ensure_reviewed_playbook_bundles` copies these bytes into a new vault and
+    the reconciler activates them; nothing recompiles them from the shipped
+    Markdown.  Without this assertion a policy edit to
+    `src/prompts/default_playbooks/` reaches the fixture — which
+    `test_source_matches_live_shipped_file` guards — and stops there, leaving
+    every fresh install activating the superseded prose.  That is how the
+    routing bundle came to ship two policy revisions behind its own source.
+    """
+    shipped = DAEMON_REVIEWED_BUNDLES / playbook_id
+    for name in (
+        "artifact.json",
+        "artifact.sha256",
+        "source.md",
+        "manifest.md",
+        "diagnostics.json",
+    ):
+        assert (shipped / name).read_bytes() == (_fixture(playbook_id) / name).read_bytes(), (
+            f"src/prompts/reviewed_playbooks/{playbook_id}/{name} drifted from the "
+            "reviewed fixture; re-copy the bundle after rebuilding it"
+        )
 
 
 def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None:
