@@ -48,7 +48,7 @@ from tests.playbook_v2_helpers import GOLDEN, GOLDEN_V6, source, twin
 
 #: §4.7 — pinned so a Pydantic upgrade that reorders dumps fails loudly rather
 #: than silently invalidating every stored artifact hash.
-GOLDEN_DIGEST = "sha256:64de78d8713f428897f41baf8881dd8cdd7a24deec9e76bb280e01ff3aadb64e"
+GOLDEN_DIGEST = "sha256:42c3c5edef6c04d75aa6f37eaa4afbc7c7f9900aad95b79e343a04aabd394207"
 
 
 @pytest.fixture

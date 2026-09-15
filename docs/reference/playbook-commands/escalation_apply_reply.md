@@ -51,7 +51,7 @@
 | Effect | Subject | Condition |
 |---|---|---|
 | Resolve the escalation | `escalation` | always |
-| Create or reuse escalation action keyed by "idempotency_key" | `escalation_action` | always |
+| Create or reuse the escalation action keyed by "idempotency_key" | `escalation_action` | always |
 
 <!-- aq:generated:end -->
 

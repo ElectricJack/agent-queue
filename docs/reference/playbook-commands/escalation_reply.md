@@ -49,7 +49,7 @@ Redacted in receipts and explanations: `text`.
 
 | Effect | Subject | Condition |
 |---|---|---|
-| Create or reuse escalation reply keyed by "external_message_id" | `escalation_reply` | always |
+| Create or reuse the reply keyed by "external_message_id" | `escalation_reply` | always |
 
 <!-- aq:generated:end -->
 

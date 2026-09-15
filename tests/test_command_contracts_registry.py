@@ -234,3 +234,158 @@ async def test_the_builtin_adapter_sends_declared_defaults_and_explicit_nulls() 
         }
     finally:
         set_handler_provider(None)
+
+
+def test_presentation_labels_name_real_fields() -> None:
+    """Every label key must name something the execution contract actually has.
+
+    ``PRESENTATIONS`` is hand-authored beside models it cannot see, so a
+    renamed field leaves copy behind that labels nothing and a reviewer
+    reading the labels believes a field exists.  ``list_tasks`` is why this
+    test is here: its ``result_labels`` advertised ``by_project``, a key no
+    ``list_tasks`` path has ever returned, alongside a result model that
+    *required* it — and the label was the only visible trace of the mismatch.
+    """
+    from src.commands.contracts import CONTRACTS
+
+    dead: list[str] = []
+    for name in sorted(CONTRACTS.names()):
+        contract = CONTRACTS.require(name).contract
+        execution, presentation = contract.execution, contract.presentation
+        for key in presentation.arg_labels:
+            if key not in execution.args_model.model_fields:
+                dead.append(f"{name}: arg_labels[{key!r}] is not an argument")
+        for key in presentation.result_labels:
+            if key not in execution.result_model.model_fields:
+                dead.append(f"{name}: result_labels[{key!r}] is not a result field")
+        outcomes = {outcome.name for outcome in execution.outcomes}
+        for key in presentation.outcome_labels:
+            if key not in outcomes:
+                dead.append(f"{name}: outcome_labels[{key!r}] is not a declared outcome")
+        subjects = {clause.subject.value for clause in execution.effects}
+        for key in presentation.subject_labels:
+            if key not in subjects:
+                dead.append(f"{name}: subject_labels[{key!r}] is not an effect subject")
+    assert dead == []
+
+
+# --------------------------------------------------------------------------
+# list_tasks — the adapter against the real handler, in every display mode
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def list_tasks_handler(tmp_path):
+    """A real ``CommandHandler`` on a real database, seeded with a task tree.
+
+    The defect this guards is a disagreement between two files, so nothing
+    here may stub either of them: the contract adapter has to call the real
+    ``_cmd_list_tasks`` and validate the payload it really returns.
+    """
+    from unittest.mock import MagicMock
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.database import Database
+    from src.models import Project, Task, TaskStatus
+    from src.orchestrator import Orchestrator
+    from tests.db_fixtures import lease_dsn
+
+    dsn = lease_dsn("test.db")
+    database = Database(dsn)
+    await database.initialize()
+    await database.create_project(Project(id="proj", name="Test Project"))
+    await database.create_task(
+        Task(id="root", project_id="proj", title="root", description="root",
+             status=TaskStatus.READY)
+    )
+    await database.create_task(
+        Task(id="child", project_id="proj", title="child", description="child",
+             status=TaskStatus.READY, parent_task_id="root")
+    )
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path / "workspaces"),
+        database=DatabaseConfig(url=dsn),
+        data_dir=str(tmp_path / "data"),
+    )
+    orchestrator = Orchestrator(config)
+    orchestrator.db = database
+    orchestrator.git = MagicMock()
+    try:
+        yield CommandHandler(orchestrator, config)
+    finally:
+        await database.close()
+
+
+@pytest.mark.parametrize("display_mode", ["flat", "tree", "compact"])
+async def test_the_list_tasks_adapter_accepts_every_display_mode(
+    list_tasks_handler, display_mode
+) -> None:
+    """A playbook step calling ``list_tasks`` must not get ``contract_violation``.
+
+    ``ListTasksValue`` used to require ``by_project`` and ``project_count`` —
+    keys that belong to ``list_active_tasks_all_projects`` and that neither
+    ``_list_tasks_flat`` nor ``_list_tasks_hierarchical`` returns.  ``_adapter``
+    copies only the fields the value model declares and then constructs it, so
+    the two missing required fields raised ``ValidationError`` and *every*
+    call, in *every* display mode, came back ``contract_violation``.  The
+    compiler validated against the same lying model, so an author got a clean
+    compile and a run-time failure.
+    """
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import ListTasksArgs, set_handler_provider
+
+    set_handler_provider(lambda: list_tasks_handler)
+    try:
+        result = await CONTRACTS.require("list_tasks").invoke(
+            ListTasksArgs(project_id="proj", display_mode=display_mode), None
+        )
+    finally:
+        set_handler_provider(None)
+
+    assert result.outcome == "listed", result.summary
+    value = result.value
+    assert value.display_mode == display_mode
+    if display_mode == "flat":
+        assert sorted(task["id"] for task in value.tasks) == ["child", "root"]
+        assert value.total == 2
+        assert value.trees == []
+    else:
+        assert [entry["root"]["id"] for entry in value.trees] == ["root"]
+        assert value.total_root_tasks == 1
+        assert value.total_tasks == 2
+        assert value.tasks == []
+
+
+async def test_list_tasks_models_every_key_its_own_arguments_can_produce(
+    list_tasks_handler,
+) -> None:
+    """The value model is checked against the handler, not against itself.
+
+    A default on a missing field keeps the step green, so the model can drift
+    back into fiction without any call failing.  This walks the payload the
+    real handler returns for each mode the contract can ask for and fails on
+    a key the model does not declare, which is what would have to change for
+    the contract to start lying again.
+    """
+    from src.commands.contracts.builtin import ListTasksValue
+
+    # Not part of the result: ``success`` is the envelope every handler adds,
+    # and ``label_filter_scope`` needs a ``labels`` filter ``ListTasksArgs``
+    # deliberately does not expose.
+    envelope = {"success", "label_filter_scope"}
+    declared = set(ListTasksValue.model_fields)
+
+    for args in (
+        {"project_id": "proj"},
+        {"project_id": "proj", "show_dependencies": True},
+        {"project_id": "proj", "display_mode": "tree"},
+        {"project_id": "proj", "display_mode": "tree", "show_dependencies": True},
+        {"project_id": "proj", "display_mode": "compact"},
+    ):
+        raw = await list_tasks_handler.execute("list_tasks", args)
+        unmodelled = set(raw) - declared - envelope
+        assert unmodelled == set(), f"{args} returned unmodelled keys {sorted(unmodelled)}"
+        # And the model accepts the payload exactly as ``_adapter`` builds it.
+        ListTasksValue(**{field: raw[field] for field in declared if field in raw})

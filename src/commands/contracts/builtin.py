@@ -177,19 +177,60 @@ class GateResolveValue(CommandValue):
 
 
 class ListTasksArgs(CommandArgs):
+    """The arguments ``_cmd_list_tasks`` actually reads.
+
+    ``limit`` is deliberately absent.  No path in
+    ``src/commands/task_commands.py`` reads it, so a step that set it got the
+    handler's own 200-row cap and no warning; leaving it undeclared makes
+    ``extra="forbid"`` reject it at compile time instead, which is a
+    diagnostic an author can act on.
+    """
+
     project_id: str | None = None
     status: str | None = None
     display_mode: str | None = None
     show_dependencies: bool | None = None
-    limit: int | None = None
 
 
 class ListTasksValue(CommandValue):
-    tasks: list[dict[str, Any]]
-    by_project: dict[str, list[dict[str, Any]]]
-    total: int
-    project_count: int
-    hidden_completed: int
+    """What ``list_tasks`` returns — in both of the shapes it has.
+
+    ``_cmd_list_tasks`` (``src/commands/task_commands.py``) answers with one
+    of two payloads, chosen by ``display_mode``: flat mode fills ``tasks``,
+    ``total``, ``hidden_completed`` and ``filtered``; tree and compact mode
+    fill ``trees``, ``total_root_tasks`` and ``total_tasks``.  Neither fills
+    the other half, and ``_adapter`` copies only the keys the handler sent,
+    so every field carries a default — a required one on either side makes
+    the *other* display mode raise ``ValidationError`` and return
+    ``contract_violation``.  Read ``display_mode`` to know which half is
+    populated; ``total`` is the flat count and ``total_tasks`` the
+    hierarchical one, and they are never both meaningful.
+
+    ``by_project`` and ``project_count`` are not here and never were
+    returned: they belong to ``list_active_tasks_all_projects``.  This model
+    used to *require* them, so every playbook step calling ``list_tasks``
+    failed its contract, in either display mode, while the compiler validated
+    against the same fiction and reported nothing.
+
+    Only keys this contract's own arguments can produce are modelled.
+    ``label_filter_scope`` is left out deliberately: it appears only for a
+    ``labels`` / ``any_label`` filter, which ``ListTasksArgs`` does not
+    expose, so no playbook step can reach it.
+    """
+
+    display_mode: str = "flat"
+
+    # Flat mode only.
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    hidden_completed: int = 0
+    filtered: bool = False
+    dependency_display: str | None = None
+
+    # Tree and compact mode only.
+    trees: list[dict[str, Any]] = Field(default_factory=list)
+    total_root_tasks: int = 0
+    total_tasks: int = 0
 
 
 class ListProjectsArgs(CommandArgs):
@@ -827,10 +868,19 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "status": "Status",
             "display_mode": "Display mode",
             "show_dependencies": "Show dependencies",
-            "limit": "Limit",
         },
         outcome_labels={"listed": "Listed"},
-        result_labels={"tasks": "Tasks", "total": "Total", "by_project": "Tasks by project"},
+        result_labels={
+            "display_mode": "Display mode",
+            "tasks": "Tasks",
+            "total": "Total",
+            "hidden_completed": "Hidden completed tasks",
+            "filtered": "Completed tasks hidden",
+            "dependency_display": "Dependency view",
+            "trees": "Task trees",
+            "total_root_tasks": "Root tasks",
+            "total_tasks": "Total tasks",
+        },
         subject_labels={"task_list": "the task list"},
     ),
     "get_downstream_tasks": CommandPresentation(
