@@ -766,7 +766,13 @@ def _repair_contract(
             receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
-            title=name.replace("_", " ").title(), summary=""
+            title=name.replace("_", " ").title(),
+            summary={
+                "integration_repair_start": "Start or reuse a repair operation for a blocked delivery.",
+                "integration_repair_dispatch": "Dispatch a repair operation under its current writer fence.",
+                "integration_record_repair": "Record repair evidence and select its next recovery action.",
+                "integration_repair_timeout": "Expire a repair operation whose delivery deadline has passed.",
+            }[name],
         ),
     )
 
@@ -1331,7 +1337,14 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect):
             ),
             receipt_projection=tuple(result_model.model_fields),
         ),
-        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=""),
+        presentation=CommandPresentation(
+            title=name.replace("_", " ").title(),
+            summary={
+                "integration_delivery_readiness": "Read whether a parent delivery can advance safely.",
+                "integration_parent_verify": "Verify the selected child deliveries against the parent generation.",
+                "integration_complete_parent": "Complete a verified parent integration delivery.",
+            }[name],
+        ),
     )
 
 
