@@ -122,7 +122,6 @@ in the daemon. They are covered here because they decide what the schema *is*.
 | [`migrations/script.py.mako`](../../../migrations/script.py.mako) | The template new revisions are generated from. | [reference/database/migrations.md](../database/migrations.md) |
 | [`migrations/integration_guards.py`](../../../migrations/integration_guards.py) | 29 PL/pgSQL functions and 50 triggers over 31 integration tables, snapshotted at the pre-squash head. Immutable — behaviour changes go in new revisions. | [reference/database/tables.md](../database/tables.md) |
 | [`migrations/versions/__init__.py`](../../../migrations/versions/__init__.py) | Package marker for the revision directory. | [reference/database/migrations.md](../database/migrations.md) |
-| [`src/schema.sql`](../../../src/schema.sql) | Zero bytes and referenced by nothing. A leftover of the pre-Alembic schema, recorded in the [known-inaccuracies ledger](../../plans/documentation-overhaul/known-inaccuracies.md) as something a code change should delete. | [reference/database/migrations.md](../database/migrations.md) |
 
 ### Revisions
 

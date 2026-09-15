@@ -65,9 +65,10 @@ page does not duplicate their reference material.
   deciding policies, and responding to escalations. The dashboard, CLI and
   API are user-facing surfaces, not independent sources of truth.
 
-The glossary has the shared definitions for [task](../reference/glossary.md#task),
-[claim](../reference/glossary.md#claim), [profile](../reference/glossary.md#profile)
-and [playbook](../reference/glossary.md#playbook).
+The glossary has the shared definitions for [task](../reference/glossary.md#work),
+[claim](../reference/glossary.md#sessions),
+[profile](../reference/glossary.md#agents-and-how-they-are-chosen) and
+[playbook](../reference/glossary.md#automation).
 
 ## One task, end to end
 

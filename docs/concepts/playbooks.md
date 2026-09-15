@@ -66,6 +66,16 @@ The V2 step vocabulary is deliberately closed:
 
 Live, dry-run, and shadow modes use the same graph and validator. Dry-run and shadow executors report command/AI/delegation/wait behavior without performing live side effects. The executor registry is [explicit](../../src/playbooks/executors/__init__.py), so a newly introduced step cannot silently run in an unsafe mode.
 
+## Playbook commands
+
+A `command` step is the only way a playbook changes durable state, and the set of commands it may call is closed. [`CONTRACTS`](../../src/commands/contracts/registry.py) registers each one with a typed argument model, a typed result, named outcomes, the capability a caller's policy must grant, and machine-readable effect clauses. Three surfaces read that single registry, so none of them can drift from it or from each other.
+
+**The reference section.** [Playbook commands](../reference/playbook-commands/README.md) is one page per registered command. The block between the `aq:generated` markers — title, summary, parameters, result fields, outcomes and the execution contract — is written from the registry by [`scripts/gen-command-docs.py`](../../scripts/gen-command-docs.py); everything outside the markers is hand-written prose explaining what the command is for, how it works internally, what it persists, and how it fails. Two families share one state machine and are described once on the index rather than restated per page: [the escalation incident lifecycle](../reference/playbook-commands/README.md#the-escalation-incident-lifecycle) and [the integration operation model](../reference/playbook-commands/README.md#the-integration-operation-model). `aq test tests/test_command_docs.py` is the drift guard — it fails when a registered command has no page, a page names a command that is no longer registered, or a generated block is stale.
+
+**The catalog command.** `aq playbook commands` returns the same registry as data: name, title, summary, documentation URL and the parameter JSON Schema for every command. It reads no vault and touches no run, and it is what the dashboard calls to build its links.
+
+**The documentation link.** A command's page URL is derived once, from the `docs.base_url` setting, as `<docs.base_url>reference/playbook-commands/<command_name>.md` ([`src/docs_urls.py`](../../src/docs_urls.py)). It is never copied into a contract, and presentation metadata is excluded from the contract fingerprint, so pointing `docs.base_url` at a fork or a mirror does not invalidate artifacts compiled against those commands. The dashboard carries it to two places: selecting a command node in a playbook graph shows a **Documentation** link in the side pane, and in a playbook's rendered source preview a backticked command name becomes a link to that command's page. [Command contracts](../reference/cli/contracts.md) documents the contract layer underneath both.
+
 ## State ownership
 
 | State | Owner and location | What changes it |
@@ -128,6 +138,8 @@ The default pipeline source illustrates a different use of a human gate: `propos
 
 * [Glossary](../reference/glossary.md) defines the task and gate vocabulary used here.
 * [Agents and routing](agents-and-routing.md) explains profiles and intelligence classes selected by assignment policy.
+* [Playbook commands](../reference/playbook-commands/README.md) documents every command a `command` step may call, one page each.
+* [Command contracts](../reference/cli/contracts.md) explains the contract layer those pages are generated from, and how a changed contract makes an activation stale.
 * [CLI reference](../reference/cli/commands.md#aq-playbook) lists the command surface used to operate V2.
 * [API event stream](../reference/api/events.md) explains externally visible fleet events; the internal event contract is narrower and lives here.
 * [Module catalog](../reference/modules/playbooks.md) maps every implementation file in this subsystem to this page.

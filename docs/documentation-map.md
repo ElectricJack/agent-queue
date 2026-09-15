@@ -69,6 +69,9 @@ docs/
     glossary.md
     configuration.md
     cli/                              command groups, contracts, agent tools
+    playbook-commands/                one page per contracted playbook command
+      README.md                       the generated index over every command
+      <command_name>.md               generated contract facts + hand-written prose
     api/                              REST, WebSocket, generated clients
     database/                         tables, query modules, migrations
     modules/                          the module catalog, one shard per ticket
@@ -124,6 +127,7 @@ machine-readable form of this table is
 | `operations` | `docs/guides/operations.md` | `docs/reference/modules/operations.md` |
 | `contributing` | `docs/contributing/**` except `documentation-style.md` | `docs/reference/modules/contributing.md` |
 | `reference` | `docs/reference/README.md`, generated reference indexes, the documentation checks | — |
+| `playbook-commands` | [`docs/reference/playbook-commands/**`](reference/playbook-commands/README.md) — one page per contracted command, half generated from the command registry | — |
 | `legacy` | `docs/history/README.md`, dispositions and link repairs across existing `docs/` | — |
 | `acceptance` | final assembly of every shared index listed below, plus the final coverage report | — |
 
