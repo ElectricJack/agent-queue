@@ -40,7 +40,15 @@ from src.integration.models import (
     RepairPolicy,
     RequiredCheckSet,
 )
-from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus, Workspace
+from src.models import (
+    AgentProfile,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    Task,
+    TaskStatus,
+    Workspace,
+)
 from tests.db_fixtures import lease_dsn
 
 BASE = "a" * 40
@@ -1722,4 +1730,12 @@ async def test_cli_task_create_graph_files_the_audit_epic_through_the_real_api(
     assert (await db.get_task(parent_id)).title == document["parent"]["title"]
     assert {row["task_id"] for row in await _origins(db)} == {parent_id, *real["data"]["task_ids"]}
 
+
+#: The 2026-09-08 CLI audit epic, copied from
+#: ``docs/reports/cli-audit-2026-09-08/epic-graph.json`` with its
+#: ``intelligence_class`` pins repointed through
+#: :data:`~src.profiles.class_retirement.RETIRED_CLASS_REPLACEMENTS`.  The
+#: report is a dated record and keeps the class it was filed with; this copy
+#: is fed to live graph validation, so it has to name a class that still
+#: ships or every test below fails ``invalid_intelligence_class``.
 EPIC_GRAPH = Path(__file__).parent / "fixtures" / "task_graphs" / "cli_audit_2026_09_08_epic.json"
