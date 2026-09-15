@@ -81,11 +81,14 @@ can be explained" true by construction rather than by convention.
 arguments, outcomes, results and subjects — the strings a dashboard shows next
 to a playbook step. Its `help_url` is derived for every registered command as
 `<docs.base_url>reference/playbook-commands/<command>.md`, rather than copied
-into each contract. `aq playbook commands` exposes the name, title, summary,
-documentation URL, and parameter JSON Schema as the read-only catalog used by
-the dashboard. Presentation metadata is deliberately excluded from the
-fingerprint: renaming a label or moving the documentation host must not
-invalidate every artifact compiled against the command.
+into each contract. That is the page under
+[playbook commands](../playbook-commands/README.md), the per-command reference
+whose contract facts are generated from this registry. `aq playbook commands`
+exposes the name, title, summary, documentation URL, and parameter JSON Schema
+as the read-only catalog used by the dashboard. Presentation metadata is
+deliberately excluded from the fingerprint: renaming a label or moving the
+documentation host must not invalidate every artifact compiled against the
+command.
 
 ## Fingerprints and staleness
 
@@ -195,6 +198,8 @@ belonging to a different mode is an error, not an ignored extra.
 
 * [The CLI contract](README.md) — the surface a human calls the same commands
   through, and the authority model contracts compose with.
+* [Playbook commands](../playbook-commands/README.md) — one page per
+  contracted command: its parameters, outcomes, internals and failure modes.
 * [Agent-facing tools](agent-tools.md) — the looser tool-definition layer.
 * [Command groups](commands.md) — where each contracted command appears on the
   CLI.
