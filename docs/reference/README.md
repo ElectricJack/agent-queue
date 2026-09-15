@@ -13,6 +13,7 @@ which question you need answered.
 | Command-line behaviour | [CLI reference](cli/README.md) | Command groups, flags, contracts, worker tools, and `aq prime`. |
 | Generated command list | [CLI command inventory](cli-command-inventory.md) | The current Click surface and its generated JSON source. |
 | HTTP, WebSocket, or client use | [API reference](api/README.md) | REST routes, events, conventions, and generated Python/TypeScript clients. |
+| What a playbook step does | [Playbook commands](playbook-commands/README.md) | Every command a playbook may call, with its parameters, outcomes and effects. |
 | Configuration and vault state | [Configuration reference](configuration.md) | Settings, defaults, and when AQ reads them. |
 | PostgreSQL state | [Database reference](database/README.md) | Tables, query modules, migrations, and retention. |
 | A source path | [Module catalog](modules/README.md) | Every production module’s purpose, component page, and focused tests. |
