@@ -53,6 +53,29 @@ def test_every_retired_class_maps_to_a_class_that_still_ships(tmp_path):
     assert set(RETIRED_CLASS_REPLACEMENTS.values()) <= shipped
 
 
+def test_no_task_graph_fixture_pins_a_retired_intelligence_class():
+    """Committed graph fixtures are fed to live validation, so they rot silently.
+
+    ``repoint_vault_profile_classes`` and alembic ``a0000000000f`` sweep an
+    operator's vault and database, but nothing sweeps the fixtures in this
+    repository.  When ``standard-medium`` was retired, the CLI-audit epic kept
+    pinning it and three tests in ``tests/test_integration_hierarchy.py`` began
+    failing ``invalid_intelligence_class`` on a clean checkout.  Fail here
+    instead, naming the file and the class that still ships in its place.
+    """
+    fixtures = Path(__file__).parent / "fixtures" / "task_graphs"
+
+    stale: list[str] = []
+    for path in sorted(fixtures.glob("*.json")):
+        document = json.loads(path.read_text(encoding="utf-8"))
+        pinned = {document.get("defaults", {}).get("intelligence_class")}
+        pinned |= {node.get("intelligence_class") for node in document.get("nodes", [])}
+        for class_id in sorted(pinned & set(RETIRED_CLASS_REPLACEMENTS)):
+            replacement = RETIRED_CLASS_REPLACEMENTS[class_id]
+            stale.append(f"{path.name} pins {class_id!r}; repoint it to {replacement!r}")
+    assert not stale, stale
+
+
 def test_profile_on_a_retired_class_is_repointed_and_still_parses(tmp_path):
     path = _write_profile(tmp_path, "worker-old", "standard-medium")
     changed = repoint_vault_profile_classes(tmp_path / "vault")
