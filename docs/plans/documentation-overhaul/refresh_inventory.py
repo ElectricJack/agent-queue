@@ -476,6 +476,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/commands/contracts/**", "cli", "docs/reference/cli/contracts.md",
      PRODUCTION, "Command contract: the declared surface of one command."),
+    ("src/docs_urls.py", "cli", "docs/reference/cli/contracts.md", PRODUCTION,
+     "Builds the reference-page URL a contracted command advertises."),
     ("src/commands/**", "cli", "docs/reference/cli/README.md", PRODUCTION,
      "Command handler module — the single entry point for every state change."),
     ("src/cli/**", "cli", "docs/reference/cli/README.md", PRODUCTION,
@@ -500,6 +502,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/editor/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
      "Backend half of the dashboard file editor."),
+    ("src/dashboard_state/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
+     "Registry of the durable, server-backed dashboard state namespaces."),
 
     ("src/database/queries/**", "database", "docs/reference/database/queries.md",
      PRODUCTION, "Query module: the durable reads and writes for one area."),
@@ -514,6 +518,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Configuration schema and loader."),
     ("src/config_editor.py", "vault", "docs/reference/configuration.md",
      PRODUCTION, "Round-trip configuration writer."),
+    ("src/config_secrets.py", "vault", "docs/reference/configuration.md",
+     PRODUCTION,
+     "Redacts credentials out of configuration reads and splices them back on write."),
     ("src/config_tuning.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
      "Resource-aware default tuning a fresh install is given."),
     ("src/portable_config.py", "vault", "docs/guides/default-tuning.md", PRODUCTION,
@@ -572,6 +579,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Transport-neutral messaging port."),
     ("src/notifications/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Notification event construction."),
+    ("src/remote_links.py", "communications", "docs/concepts/messaging.md",
+     PRODUCTION,
+     "Resolves a dashboard link that is usable off the daemon host."),
     ("src/discord/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Discord gateway: digest delivery, escalation threads and intake."),
     ("src/digest/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
@@ -664,6 +674,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "MCP servers offered to agents working in this repository."),
     (".gitignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Ignore rules."),
+    (".ignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
+     "Ripgrep ignore rules; re-admits gitignored trees to search."),
     (".gitattributes", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Attribute rules."),
 ]
