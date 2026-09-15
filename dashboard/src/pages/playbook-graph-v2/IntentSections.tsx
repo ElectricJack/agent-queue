@@ -182,6 +182,21 @@ export interface IntentSectionsProps {
   explanation: StepExplanationDTO;
 }
 
+/** A contract help page. This is deliberately separate from node cards: links
+ *  belong in inspection surfaces where an operator can act on the detail. */
+export function DocumentationLink({ docsUrl }: { docsUrl: string }) {
+  return (
+    <a
+      href={docsUrl}
+      target="_blank"
+      rel="noopener"
+      className="text-xs text-indigo-300 underline underline-offset-2 hover:text-indigo-200"
+    >
+      Documentation
+    </a>
+  );
+}
+
 /** The contract-derived intent of one step. The compact card and the inspector
  *  consume the same payload through this module, so the two surfaces can never
  *  disagree about what a step does. */
@@ -192,7 +207,10 @@ export default function IntentSections({ explanation }: IntentSectionsProps) {
 
   return (
     <div className="min-w-0 space-y-3">
-      <p className="min-w-0 break-words text-xs text-gray-300">{explanation.effect_summary}</p>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <p className="min-w-0 break-words text-xs text-gray-300">{explanation.effect_summary}</p>
+        {explanation.docs_url && <DocumentationLink docsUrl={explanation.docs_url} />}
+      </div>
 
       {explanation.renderer === "canonical" && (
         <p

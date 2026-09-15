@@ -12,9 +12,10 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { DocumentationLink } from "../../pages/playbook-graph-v2/IntentSections";
 
 const NODE_WIDTH = 176;
-const NODE_HEIGHT = 72;
+const NODE_HEIGHT = 88;
 type JsonMap = Record<string, unknown>;
 
 export interface CompiledRunGraph extends JsonMap {
@@ -26,6 +27,7 @@ interface TraceEntry { node_id: string; status?: string }
 interface RunNodeData extends Record<string, unknown> {
   label: string;
   detail: string;
+  docsUrl?: string;
   entry: boolean;
   terminal: boolean;
   current: boolean;
@@ -59,6 +61,13 @@ function nodeDetail(node: JsonMap): string {
     return first.length > 48 ? `${first.slice(0, 45)}…` : first;
   }
   return node.terminal ? "terminal" : "action";
+}
+
+function commandDocsUrl(node: JsonMap): string | undefined {
+  const flat = flatNode(node);
+  return typeof flat.command === "string" && typeof flat.docs_url === "string" && flat.docs_url
+    ? flat.docs_url
+    : undefined;
 }
 
 // Exported for deterministic graph-structure tests.
@@ -110,6 +119,7 @@ export function buildRunGraph(
       data: {
         label: nodeId,
         detail: nodeDetail(rawNode),
+        docsUrl: commandDocsUrl(rawNode),
         entry: rawNode.entry === true,
         terminal: rawNode.terminal === true,
         current: nodeId === currentNode,
@@ -138,6 +148,7 @@ function PlaybookNode({ data }: NodeProps<RunNode>) {
       </div>
       <div className="truncate font-mono font-semibold">{data.label}</div>
       <div className="truncate text-[10px] text-gray-400">{data.detail}</div>
+      {data.docsUrl && <DocumentationLink docsUrl={data.docsUrl} />}
       <Handle type="source" position={Position.Bottom} />
     </div>
   );

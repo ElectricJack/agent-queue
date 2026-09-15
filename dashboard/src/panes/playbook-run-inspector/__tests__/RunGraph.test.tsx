@@ -10,7 +10,12 @@ const graph = {
   nodes: {
     "route-start": {
       entry: true,
-      action: { command: "ensure_task", on_success: "route-finish", on_failure: "route-failed" },
+      action: {
+        command: "ensure_task",
+        docs_url: "https://docs.example.test/playbook-commands/ensure_task.md",
+        on_success: "route-finish",
+        on_failure: "route-failed",
+      },
     },
     "route-finish": { terminal: true },
     "route-failed": { terminal: true },
@@ -40,5 +45,10 @@ describe("RunGraph", () => {
     expect(document.getElementById("playbook-node-route-start")).toHaveAttribute("data-current", "true");
     expect(screen.getByText("on_success")).toBeInTheDocument();
     expect(screen.getByText("on_failure")).toBeInTheDocument();
+    const node = document.getElementById("playbook-node-route-start")!;
+    expect(within(node).getByText("Documentation")).toHaveAttribute(
+      "href",
+      "https://docs.example.test/playbook-commands/ensure_task.md",
+    );
   });
 });

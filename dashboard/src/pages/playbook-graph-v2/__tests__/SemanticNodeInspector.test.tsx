@@ -43,6 +43,17 @@ describe("SemanticNodeInspector", () => {
     }
   });
 
+  it("links documented commands and omits the link when no documentation URL is provided", () => {
+    const { rerender } = render(<SemanticNodeInspector node={ensureReviewTask} />);
+    const link = screen.getByRole("link", { name: "Documentation" });
+    expect(link).toHaveAttribute("href", ensureReviewTask.explanation.docs_url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
+
+    rerender(<SemanticNodeInspector node={listDownstream} />);
+    expect(screen.queryByRole("link", { name: "Documentation" })).not.toBeInTheDocument();
+  });
+
   it("says when a step has no presentation metadata rather than inventing an effect", () => {
     // The stub registry deliberately does not know ``list_tasks``, so the
     // projector renders that step canonically and declares no effect clauses.
