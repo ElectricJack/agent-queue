@@ -84,6 +84,7 @@ import {
   playbookActivationHealth,
   playbookArtifactDiff,
   playbookArtifacts,
+  playbookCommands,
   playbookPendingEventAction,
   playbookPendingEvents,
   playbookRunOverlay,
@@ -168,6 +169,7 @@ import type {
   PlaybookDeleteResponse,
   PlaybookArtifactDiffResponse,
   ListPlaybookArtifactsResponse,
+  PlaybookCommandCatalogResponse,
   PlaybookRunOverlayResponse,
   ListPlaybookPendingEventsResponse,
 } from "./client";
@@ -857,6 +859,18 @@ export function usePlaybookSource(playbookId: string) {
       (await getPlaybookSource({ body: { playbook_id: playbookId }, throwOnError: true }))
         .data as GetPlaybookSourceResponse,
     enabled: !!playbookId,
+  });
+}
+
+/** The command catalog is static for a daemon config generation, so one cached
+ * query serves every playbook source view without polling. */
+export function usePlaybookCommands() {
+  return useQuery({
+    queryKey: ["playbook-commands"],
+    queryFn: async () =>
+      (await playbookCommands({ body: {}, throwOnError: true }))
+        .data as PlaybookCommandCatalogResponse,
+    staleTime: Infinity,
   });
 }
 

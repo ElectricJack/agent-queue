@@ -9,6 +9,7 @@ import {
 import {
   usePlaybooks,
   usePlaybookSource,
+  usePlaybookCommands,
   usePlaybookRuns,
   useUpdatePlaybookSource,
   type PlaybookUpdateResult,
@@ -159,6 +160,7 @@ export default function PlaybookDetail() {
 
 function SourceTab({ playbookId }: { playbookId: string }) {
   const { data: source, isLoading, refetch } = usePlaybookSource(playbookId);
+  const { data: commandCatalog } = usePlaybookCommands();
   const update = useUpdatePlaybookSource();
 
   const [draft, setDraft] = useState("");
@@ -177,6 +179,10 @@ function SourceTab({ playbookId }: { playbookId: string }) {
   }, [source]);
 
   const dirty = source ? draft !== source.markdown : false;
+  const inlineCodeLinks = useMemo(() => {
+    if (!commandCatalog) return undefined;
+    return new Map(commandCatalog.commands?.map(({ name, docs_url }) => [name, docs_url]));
+  }, [commandCatalog]);
 
   const onSave = async () => {
     setSaveError(null);
@@ -220,7 +226,7 @@ function SourceTab({ playbookId }: { playbookId: string }) {
             aria-label="Playbook source preview"
             className="min-h-[60vh] w-full overflow-y-auto rounded-lg border border-gray-800 bg-gray-900 p-4"
           >
-            <MarkdownPreview source={draft} />
+            <MarkdownPreview source={draft} inlineCodeLinks={inlineCodeLinks} />
           </div>
 
           <div className="flex items-center gap-3">
