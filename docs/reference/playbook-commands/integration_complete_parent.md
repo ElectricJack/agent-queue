@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:863ccf44289e660ad2924b609414c1541d801f075168cea10999c538f306742c` |
+| Contract fingerprint | `sha256:57b3c1405509957e30828c994079958459f39b6ed7559b1af9934ab8788d093b` |
 
 ## Parameters
 
@@ -43,7 +43,9 @@ Redacted in receipts and explanations: `head_sha`.
 
 | Outcome | Classification | Meaning |
 |---|---|---|
+| `already_completed` | success | — |
 | `completed` | success | — |
+| `failed` | failure | — |
 | `invariant_error` | failure | — |
 | `stale_verification` | failure | — |
 | `waiting` | failure | — |

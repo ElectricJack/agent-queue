@@ -1313,7 +1313,7 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, s
                     name=outcome,
                     classification=(
                         OutcomeClass.SUCCESS
-                        if outcome in {"ready", "verified", "completed"}
+                        if outcome in {"ready", "verified", "completed", "already_completed"}
                         else OutcomeClass.FAILURE
                     ),
                 )
@@ -1363,7 +1363,18 @@ INTEGRATION_COMPLETE_PARENT = _parent_contract(
     "integration_complete_parent",
     IntegrationCompleteParentArgs,
     IntegrationCompleteParentValue,
-    ("completed", "waiting", "stale_verification", "invariant_error"),
+    # ``ParentCompletion.complete_parent`` answers ``already_completed`` on the
+    # crash-retry replay path, and returns the readiness projection verbatim when
+    # the parent is not ready, which is ``waiting`` or ``failed``.  Each is a
+    # state a playbook must be able to route, not a wiring bug.
+    (
+        "completed",
+        "already_completed",
+        "waiting",
+        "failed",
+        "stale_verification",
+        "invariant_error",
+    ),
     side_effect=SideEffectClass.UPDATE,
     summary="Complete a verified parent task at its exact verified generation and head.",
 )
@@ -1735,7 +1746,14 @@ async def _complete_parent_adapter(
         args,
         ctx,
         IntegrationCompleteParentValue,
-        {"completed", "waiting", "stale_verification", "invariant_error"},
+        {
+            "completed",
+            "already_completed",
+            "waiting",
+            "failed",
+            "stale_verification",
+            "invariant_error",
+        },
     )
 
 
