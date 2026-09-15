@@ -104,24 +104,118 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_enable` is the rollout switch for one project's delivery model. It
+moves a project between `disabled`, `observe`, `hierarchy` and `train`, and it is
+the only command that may do so. Every change is a compare-and-set on the
+project's integration **generation**, and every change is written to an audit
+trail alongside the legacy-policy snapshot it implies, so "who turned this on,
+when, why, and what was broken at the time" is always answerable.
+
+Turning delivery *on* is gated: a project with functional blockers cannot enter
+`hierarchy` or `train`. Turning it *off* is drained rather than cut: if managed
+work is still in flight, the project keeps its effective mode, records
+`disabled` as the *desired* mode and starts draining, and the command answers
+`draining` instead of `disabled`. See the
+[integration operation model](README.md#the-integration-operation-model) for what
+the modes mean and how generations fence concurrent changes.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+This is an operator command, not routine playbook work: the handler requires a
+**LOCAL** principal
+([`src/commands/integration_commands.py:342`](../../../src/commands/integration_commands.py)),
+so a playbook step running as a project principal is refused `unauthorized`. A
+playbook may legitimately call it only where the daemon itself is the caller —
+for instance an installation or migration routine executed locally.
+
+Everything else reaches it through `aq integration enable PROJECT_ID --mode …
+--expected-generation … --reason …`
+([`src/cli/integration.py:102`](../../../src/cli/integration.py)). The expected
+generation comes from `integration_status`, which is the read that makes the CAS
+usable: read the generation, decide, then write against it.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The contract is one of the `_operational_contract` family
+   ([`src/commands/contracts/integration.py:603`](../../../src/commands/contracts/integration.py)),
+   so its result is the wide `IntegrationOperationalValue` projection and
+   `reason` is redacted from receipts.
+2. `_cmd_integration_enable` (line 342) demands a LOCAL principal via
+   `_integration_local_operator` (line 290) and uses that principal's description
+   as the recorded `operator_id`.
+3. `IntegrationControlService.enable`
+   ([`src/integration/controls.py:409`](../../../src/integration/controls.py))
+   validates the mode, requires a non-empty reason and operator, and accepts
+   `interval_seconds` only with `train`.
+4. It runs `preflight` (line 123) *outside* the lock to observe functional
+   readiness: database blockers plus whatever the daemon's external preflight
+   reports (GitHub App wiring, attestation, train routes). Entering `hierarchy` or
+   `train` with any blocker is refused `blocked` — unless every blocker is
+   `legacy_pr_merge_gate` and a matching `waiver_id` is supplied.
+5. Under `lock_hierarchy_project`, the preflight is recomputed on the locked
+   connection. If the generation, the configuration fingerprint or the database
+   blocker digest moved between the two reads, the answer is `stale`: the
+   operator decided against a picture that is no longer true.
+6. Two more refusals happen under the lock: changing the cadence while the
+   project is draining, and moving a `hierarchy`/`train` project to `observe`
+   while managed work is still active. Both return `blocked` with an extra
+   blocker (`integration_drain_active`, `active_integration_work`) explaining
+   which.
+7. A supplied waiver must exist for this project, match the observed blocker
+   digest, and be unconsumed.
+8. `cas_project_integration_control_on` applies the mode at
+   `expected_generation`; losing that race returns `stale`. On success the
+   generation becomes `expected_generation + 1`, a row is appended to
+   `integration_rollout_transitions` with both legacy-policy snapshots and any
+   waiver, the waiver is consumed and its gate applicability recorded, the legacy
+   suppression policy is set for the new generation, and the train schedule is
+   created or disabled to match.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+The project row's `hierarchical_integration_mode`,
+`hierarchical_integration_desired_mode`, `hierarchical_integration_draining` and
+`hierarchical_integration_generation` ([`src/database/tables.py:37`](../../../src/database/tables.py));
+one append-only row in `integration_rollout_transitions` (line 3647); a row in
+`integration_legacy_suppression` (line 3774) for the new generation; optional
+consumption rows in `integration_history_waiver_consumptions` (line 3697) and
+`integration_legacy_gate_applicability` (line 3733); and the project's row in
+`project_integration_schedules` (line 3554) enabled or disabled to match. All of
+it commits in one transaction under the project lock.
+
+Nothing in flight is cancelled. Turning a project off while work is active is
+precisely the `draining` outcome: existing batches finish under the old effective
+mode and the desired mode takes effect once they do.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `enabled` / `disabled` / `draining` | Success. `draining` means the switch to `disabled` is pending live work. |
+| `blocked` | Functional blockers prevent `hierarchy`/`train`, the project is draining and the cadence cannot change, or active work prevents `observe`. The `blockers` list names each. |
+| `stale` | The generation, configuration fingerprint or blocker digest moved between read and write, or the CAS lost. Re-read status and decide again. |
+| `not_found` | No such project. |
+| `unauthorized` | The caller is not a LOCAL operator. |
+
+A `ValueError` from the service — an invalid mode, a missing reason, a stale or
+already-consumed waiver, an interval outside `train` — propagates as
+`runtime_error` rather than a typed outcome.
+
+Start diagnosis with `aq integration status PROJECT_ID`: it reports the current
+mode, the generation to pass as `expected_generation`, and the full blocker list
+with its digest (which is also what `aq integration waive-history` consumes).
+[Upgrade integration mode](../../guides/upgrade-integration-mode.md) and
+[integration troubleshooting](../../guides/integration-troubleshooting.md) walk
+through the common blockers.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `integration_enable` with `project_id` `agent-queue`, `mode` `train`,
+   `expected_generation` bound to `status.generation`, and `reason` `enable the
+   delivery train after preflight came back clean`. An `enabled` outcome ends the
+   rule. A `blocked` outcome continues to the escalation step with
+   `status.blockers`; a `stale` outcome ends the rule so the next tick re-reads
+   the generation; `not_found`, `unauthorized`, `rejected` or `runtime_error`
+   fails it.
+```

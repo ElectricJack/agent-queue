@@ -56,24 +56,131 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_create` opens the one durable record of a decision that only a human
+can make. Everything else in the system is allowed to retry, re-queue, re-route
+and give up on its own; an escalation is what happens when there is nothing left
+to try and a person has to choose. The record is durable, project-scoped and
+identified by the caller's own `incident_key`, so the same situation observed
+twice — by a replayed event, a restarted daemon, or a timer that fires again —
+produces one incident rather than a second copy of the same question.
+
+The command only *files* the incident. Nothing here posts to Discord, pings a
+human, or blocks anything. Delivery is a separate, reconciling concern owned by
+`EscalationDeliveryService` ([`src/escalations/dispatch.py`](../../../src/escalations/dispatch.py)),
+which turns open incidents into outbox rows and sends each exactly once. See the
+[escalation incident lifecycle](README.md#the-escalation-incident-lifecycle) for
+the state machine every command in this family shares.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+A playbook reaches for `escalation_create` at the end of a rule, after its
+bounded automatic remedy has been spent. The shipped example is the CI main
+sentinel: it observes the default branch, files one repair task for a red
+baseline, and only when the *same* failure signature has already spent its
+repair attempts does it escalate
+([`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md:49`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md)).
+
+The shape to copy is that one: derive the key from the *situation*, not from the
+run. A key like `ci-baseline-escalation:<signature>` means every tick that
+observes the same failure reuses one incident; a key containing a run id or a
+timestamp would file a fresh incident on every tick and bury the human in
+duplicates. Both `created` and `reused` are success outcomes precisely so a rule
+can treat "the question is on the record" as the end state, whichever tick got
+there first.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The registered adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   dumps the validated arguments with `exclude_none=True` and calls
+   `CommandHandler.execute("escalation_create", …)` inside `principal_context`,
+   so the handler sees the step's own principal rather than an ambient one.
+2. `_cmd_escalation_create`
+   ([`src/commands/escalation_commands.py:142`](../../../src/commands/escalation_commands.py))
+   first rejects spoofed authority. `_reject_authority_args` (line 34) refuses
+   any payload carrying `actor`, `actor_id`, `human`, `verified_actor`,
+   `supervisor_owner` or `thread_id`: those values are derived by the server and
+   are never accepted from a caller.
+3. `_authorize_escalation_project` (line 43) resolves the caller. A trusted
+   local caller, a trusted service adapter, a resolved playbook principal whose
+   project matches, or an elevated session that is a *live* `supervisor` session
+   row may file. Anything else is refused `out_of_scope`.
+4. Field validation follows: the eight required strings must be non-empty,
+   `severity` must be one of the four levels, and `choices` — when present — must
+   be at most 20 non-empty strings of at most 500 characters each.
+5. The source binding is checked against the real record, so an incident cannot
+   claim to be about something it is not. `source_kind: question` must name an
+   agent question in the same project and inherits that question's `task_id`;
+   `gate` must name a gate in the same project; `task_recovery` requires a
+   `task_id` *and* must match the id in the task's live
+   `supervisor_recovery_incident` metadata, so a stale recovery incident cannot
+   be escalated. Any other `source_kind` (the sentinel uses `core`) is accepted
+   without a binding lookup. A named `task_id` must belong to the project.
+6. The incident's task title and status are snapshotted onto the row so the
+   human sees what was true when the question was asked, and `supervisor_owner`
+   is derived as `supervisor-<project_id>`.
+7. `create_escalation`
+   ([`src/database/queries/escalation_queries.py:98`](../../../src/database/queries/escalation_queries.py))
+   inserts with `ON CONFLICT DO NOTHING` at state `needs_human`, revision `0`,
+   and an id of `escalation-<uuid4>`. When the insert finds an existing row it
+   re-reads by `incident_key` *or* by `(source_kind, source_identity)` within the
+   project; exactly one row must match and its identity tuple must agree, or the
+   call raises `EscalationConflict` rather than silently hiding a different
+   incident behind a reused key.
+8. Only a genuine creation emits. `_emit_escalation` (line 107) publishes
+   `escalation.created.v1` on the bus and writes an audit row; a reuse is silent,
+   so a replaying trigger does not re-announce a question already asked.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+One row in `escalations` ([`src/database/tables.py:1094`](../../../src/database/tables.py)),
+carrying the project, optional task, source binding, incident key, supervisor
+owner, the bounded prose snapshot (`summary` ≤ 4000, `investigation` ≤ 8000,
+`decision_requested` ≤ 4000 characters), `choices`, `severity`, `state` and
+`revision`. The row is the whole durable effect: it survives restart, and the
+delivery outbox, the Discord thread and the dashboard inbox are all derived from
+it afterwards. A creation also publishes `escalation.created.v1` and one audit
+event; neither is authoritative state, and a failure to publish is logged rather
+than rolled back.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+The contract exposes exactly one failure outcome, `rejected`: the adapter
+collapses every handler refusal into it and puts the handler's message in the
+result summary
+([`src/commands/contracts/escalation.py:147`](../../../src/commands/contracts/escalation.py)).
+The messages behind it are worth knowing:
+
+| Handler code | Cause |
+|---|---|
+| `spoofed_identity` | The payload carried a server-derived authority field. |
+| `invalid_request` | A required string was empty, `severity` was not one of the four levels, or `choices` broke the 20 × 500 bound. |
+| `out_of_scope` | The caller is not local, a trusted service, a matching playbook principal or a live supervisor session — or the named task belongs to another project. |
+| `not_found` | The project does not exist. |
+| `invalid_binding` | The question, gate or recovery incident named by `source_identity` is missing, belongs elsewhere, or is stale. |
+| `identity_conflict` | The incident key is already held by a different source, or key and source resolve to different rows. |
+
+Diagnose with `aq escalation list --project-id <id>` for what is open and
+`aq escalation get --escalation-id <id>` for one incident with its messages,
+deliveries and actions. If the incident exists but no human ever saw it, the
+problem is delivery, not this command: check `deliveries` in that same result and
+the guidance in [escalations](../../guides/escalations.md).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the CI main sentinel's `keep-main-green` rule, reached only after a failure
+signature has spent its repair attempts:
+
+```markdown
+3. Call `escalation_create` with `project_id` `agent-queue`, source and
+   incident keys `baseline.escalation_key`, `summary`
+   `baseline.escalation_title`, and `investigation`
+   `baseline.escalation_question`. Its `source_kind` is `core`; both
+   `source_identity` and `incident_key` use `baseline.escalation_key`.
+   Its `decision_requested` is to select a bounded next step, with `choices`
+   to fix by hand, retarget, or accept the baseline, and `severity` `high`. The
+   key is `ci-baseline-escalation:<signature>`, so one durable, incident-bound
+   human escalation is created or reused for each failure. A `created` or
+   `reused` outcome ends the rule; a `rejected` or `runtime_error` outcome fails
+   it.
+```

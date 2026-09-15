@@ -127,3 +127,132 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
 
 <!-- aq:generated:end -->
+
+## Command families
+
+Some families share one state machine, one authority rule and one outcome
+vocabulary across every command in them. Those facts are written once here and
+linked from each page, so a page can describe what its own command does without
+restating the family it lives in.
+
+### The escalation incident lifecycle
+
+An **escalation** is the durable record of a decision only a human can make. It
+belongs to one project, is identified within that project by the caller's own
+`incident_key`, and is bound to the thing it is about through
+`(source_kind, source_identity)` — an agent question, a human gate, a task
+recovery incident, or `core` for something the daemon itself observed.
+
+Every incident moves through this machine
+([`src/database/queries/escalation_queries.py:30`](../../../src/database/queries/escalation_queries.py)):
+
+| From | To | Written by |
+|---|---|---|
+| `needs_human` | `reply_received` | `escalation_reply`, on verified human evidence |
+| `needs_human` | `cancelled` / `stale` | `escalation_update` |
+| `reply_received` | `resolving` | `escalation_apply_reply`, reserving its action |
+| `reply_received` | `cancelled` / `stale` | `escalation_update` |
+| `resolving` | `resolved` | `escalation_apply_reply`, when the bound service succeeded |
+| `resolving` | `reply_received` | `escalation_apply_reply`, when the bound service failed |
+| `resolving` | `cancelled` / `stale` | `escalation_update` |
+
+The rules behind it are worth stating once:
+
+- **`reply_received` is not a generic transition target.** Only
+  `accept_escalation_reply` may claim it, because the state asserts that
+  immutable human evidence exists. `escalation_update` cannot move an
+  incident into it.
+- **Terminal is immutable.** `resolved`, `cancelled` and `stale` are final; a
+  write against a terminal incident is refused, and a *late* human reply is still
+  recorded as history but queues no supervisor work and reopens nothing.
+- **Every mutation is a compare-and-set on `revision`.** A caller reads the
+  incident, decides, and writes against the revision it read. Losing that race is
+  the normal, healthy failure — usually because a human replied in between.
+- **Only an action resolves.** `resolved` is written by
+  `escalation_apply_reply` when its bound service succeeded, with terminal
+  evidence naming the action, reply, kind and target. A failed action returns
+  the incident to `reply_received` so the conversation may continue.
+
+Authority differs per command and is checked against the incident's *own*
+project, never against one the caller names
+([`src/commands/escalation_commands.py:43`](../../../src/commands/escalation_commands.py)):
+
+| Caller | create / list / get / reply | update / apply-reply |
+|---|---|---|
+| Trusted local (dashboard, CLI) | yes | no — it is not the owning supervisor |
+| Trusted service adapter (e.g. Discord) | yes | no |
+| Resolved playbook principal, same project | yes | no |
+| Live elevated `supervisor` session, same project | yes | yes |
+
+Identity is always server-derived. Every command in the family refuses a payload
+carrying `actor`, `actor_id`, `human`, `verified_actor`, `supervisor_owner` or
+`thread_id`, and `escalation_reply` derives the speaking human from the principal
+alone. Four tables hold the whole record: `escalations`, `escalation_messages`
+(the conversation), `escalation_actions` (what a supervisor applied) and
+`escalation_deliveries` (what the transport did). Delivery is a separate,
+reconciling concern — see [escalations](../../guides/escalations.md).
+
+### The integration operation model
+
+The integration family drives delivery: getting completed work from task branches
+onto the default branch. Every command in it is scoped by a project's
+**integration mode**, and most are fenced by a **generation** or an operation
+state.
+
+A project is in exactly one mode
+([`src/integration/controls.py:409`](../../../src/integration/controls.py)):
+
+| Mode | What it means |
+|---|---|
+| `disabled` | Integration does nothing. |
+| `observe` | Preflight and eligibility are computed; nothing is driven. |
+| `hierarchy` | Parent/child branch origins and parent completion are managed. |
+| `train` | Batches are sealed, candidates built and attested, and promotion runs. |
+| `development` | The lightweight local publisher: assemble, validate locally, push with a lease. No App, no attestation, no CI receipts. |
+
+Three fences recur across the family:
+
+- **Generation.** A project's rollout generation fences `integration_enable`;
+  a parent task's checkpoint generation fences `integration_file_children`,
+  `integration_checkpoint_parent`, `integration_complete_parent` and
+  `integration_mutate_hierarchy`. Amending a parent advances its generation
+  and clears its verification, so stale plans lose rather than interleave.
+- **Exact identity.** Root-train work is keyed by `(batch_id, revision)` and
+  parent work by `(episode, operation, generation, head_sha)`. Rebuilding a
+  candidate allocates a new revision and invalidates evidence gathered for the old
+  one; that is why `integration_ci_evidence` answers `stale_subject` rather
+  than reusing it.
+- **Ownership and operation state.** Branch writes go through a fenced owner, and
+  recovery commands act only on an operation in `human_required` —
+  `integration_abort` and `integration_resume` both refuse with `ambiguous`
+  while unresolved external-write evidence exists.
+
+The outcome vocabulary is shared, so the same word means the same thing on every
+page:
+
+| Outcome | Meaning |
+|---|---|
+| `wait` | Something legitimate is in flight. Retry on the next tick; this is not an error. |
+| `stale` / `stale_revision` / `stale_parent` / `stale_subject` | The fence moved between read and write. Re-read and decide again. |
+| `blocked` | A precondition is unmet and named in `blockers`. |
+| `invariant_error` | The durable state is not what the step requires. Needs a look, not a retry. |
+| `unauthorized` | The caller lacks authority for this project or operation. |
+| `contract_violation` | The handler returned an outcome the contract does not declare — a wiring bug, produced by the typed adapter ([`src/commands/contracts/integration.py:1637`](../../../src/commands/contracts/integration.py)). |
+
+Authority splits in two. Rollout and recovery controls —
+`integration_enable`, `integration_abort`, `integration_develop`,
+`integration_adopt`, `integration_development_sweep` and
+`integration_cancel_preserving` — require a **LOCAL** operator principal and
+are reached through `aq integration …`. The
+pipeline commands — flush, file children, checkpoint, readiness, complete, build,
+CI evidence, cleanup, mutate — accept a resolved playbook principal for the
+project whose policy allows that capability
+([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+which is what lets a project playbook drive delivery.
+
+Further reading:
+[integration concepts](../../concepts/integration.md),
+[hierarchical integration trains](../../guides/hierarchical-integration-trains.md),
+[development integration](../../guides/development-integration.md),
+[integration CI boundaries](../../guides/integration-ci-boundaries.md) and
+[integration troubleshooting](../../guides/integration-troubleshooting.md).

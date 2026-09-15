@@ -59,24 +59,107 @@ Redacted in receipts and explanations: `head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_checkpoint_parent` pins a parent task's exact head before it starts
+waiting for its children. It is the moment a parent stops being a thing someone is
+editing and becomes a fixed base that children branch from and deliver back to.
+
+Two guarantees come out of it. The head is *verified against the workspace*, so a
+checkpoint can never name a commit that does not match what is actually there —
+a dirty or diverged workspace is refused rather than recorded. And the checkpoint
+opens an **episode**: a reserved integration operation that owns the parent's
+collection round, so every later step — readiness, verification, completion —
+refers to one identifiable attempt rather than to "the parent" in the abstract.
+See the [integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+After the parent's own work is at the commit the children should build on, and
+before waiting on them. In practice the sequence is: file the children with
+[`integration_file_children`](integration_file_children.md), get the parent to the
+head it wants, checkpoint it at that head and the generation filing produced, then
+poll [`integration_delivery_readiness`](integration_delivery_readiness.md).
+
+The `generation` argument is a compare-and-set, not a label: it must be the
+checkpoint's current generation, and a mismatch is `stale`. Authority is
+project-level (`_integration_delivery_authorized`,
+[`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)).
+A repeat call for a parent that is already waiting answers `already_waiting`,
+which the contract classifies as a success so a retry is harmless.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_checkpoint_parent`
+   ([`src/commands/integration_commands.py:1115`](../../../src/commands/integration_commands.py))
+   validates the request — a malformed one is `dirty` — loads the task (`stale`
+   when missing) and authorizes against its project.
+2. `HierarchyIntegration.checkpoint_parent`
+   ([`src/integration/hierarchy.py:695`](../../../src/integration/hierarchy.py))
+   requires `head_sha` to be a lowercase 40-character OID and a workspace
+   checkpoint verifier to be configured; either failure is `dirty`.
+3. On a read connection it resolves the parent's route and looks for a previous
+   completed operation whose verification can be carried forward — the case where
+   a parent already completed one episode and is opening another.
+4. The configured verifier is called with the task, repository and claimed head.
+   It must return exactly that head; anything else is `dirty`. This is the step
+   that makes a checkpoint mean something.
+5. When a carry-forward candidate exists, the ancestry verifier must prove the
+   *new* head contains the previously verified aggregate; if not, the call is
+   `stale_head` — a parent cannot silently drop work it already verified.
+6. Then, in one immediate transaction under `lock_hierarchy_project`: the origin
+   chain is ensured, the checkpoint row is locked, its repository and branch must
+   still match the task's own branch (`delivery_target_fixed` otherwise), and its
+   generation must equal the requested one (`stale` otherwise).
+7. `ParentCompletion.reserve_episode_on`
+   ([`src/integration/parent_completion.py:49`](../../../src/integration/parent_completion.py))
+   reserves the episode and its operation, pinning `pre_collection_checkpoint_sha`
+   to the verified head.
+8. The checkpoint row is updated to the new head with state `awaiting_children`,
+   its verification cleared and the new `episode_id` attached, and the row version
+   bumped. Internal callers may additionally suspend the parent to `PAUSED`; the
+   command surface does not.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+The parent's row in `task_integration_checkpoints`
+([`src/database/tables.py:2083`](../../../src/database/tables.py)) — new
+`checkpoint_sha`, `state: awaiting_children`, cleared `verified_sha` and
+`verified_generation`, the new `episode_id`, a bumped `version`; one reserved
+episode in `integration_parent_episodes` (line 3052) and its operation in
+`integration_repair_operations` (line 2985); and the parent's origin chain
+ensured in `task_branch_origins` (line 2151) if it was not already.
+
+The workspace and the remote are read, never written. Nothing is pushed by this
+command.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `checkpointed` | The head is pinned, the episode is open, the parent is awaiting children. |
+| `already_waiting` | The parent is already at this checkpoint — a safe retry. |
+| `dirty` | `head_sha` is not an exact OID, no workspace verifier is configured, or the verifier disagreed with the claimed head. |
+| `stale` | The task does not exist, or the checkpoint's generation is not the one supplied. |
+| `unauthorized` | The caller cannot checkpoint this parent. |
+| `runtime_error` | A Git error while ensuring the origin chain. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+`dirty` almost always means the workspace: uncommitted changes, or a head that is
+not the one being claimed. Fix the workspace, re-read the real head, and call
+again with that value.
+
+Two `HierarchyError` codes the service can raise are folded into `stale` by the
+handler (line 1137): `stale_head`, when a carry-forward aggregate would be lost,
+and `delivery_target_fixed`, when the parent's checkpoint branch identity changed.
+Both deserve a look at the message rather than a blind retry — the first means the
+parent moved backwards, the second means its branch was re-pointed.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+3. Call `integration_checkpoint_parent` with `task_id` bound to `plan.parent_id`,
+   `head_sha` bound to `parent.head_sha`, and `generation` bound to
+   `filed.generation`. A `checkpointed` or `already_waiting` outcome ends the rule
+   — the parent is pinned and the readiness poll takes over. A `stale` outcome
+   ends the rule so the next tick re-reads the generation; `dirty`,
+   `unauthorized`, `rejected` or `runtime_error` fails it.
+```

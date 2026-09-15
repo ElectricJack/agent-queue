@@ -54,24 +54,109 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_update` is how the owning supervisor edits or closes an incident it
+owns. It carries an `expected_revision`, so every change is a compare-and-set
+against the version the supervisor read: if a human replied in the meantime, the
+update loses and the supervisor must re-read before deciding again.
+
+It exists for the two things a supervisor legitimately does to an incident short
+of applying a reply: sharpen it — a better summary, a fuller investigation, a
+narrower question, a corrected severity — and end it in a state that no action
+produced, namely `cancelled` (the question stopped mattering) or `stale` (it went
+unanswered long enough that answering it is no longer meaningful). Resolving an
+incident by *acting on a human answer* is not this command; that is
+[`escalation_apply_reply`](escalation_apply_reply.md), which writes the terminal
+state itself.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Only from a supervisor-authorized path. Unlike the rest of the family, this
+command sets `supervisor_required`, which excludes trusted service adapters and
+non-supervisor principals entirely
+([`src/commands/escalation_commands.py:43`](../../../src/commands/escalation_commands.py)).
+
+A supervisor playbook uses it to cancel incidents whose underlying condition has
+gone away — the red baseline went green on its own, the blocked task was
+recovered another way — and to mark long-unanswered incidents `stale` so the
+inbox reflects reality. In both cases the step must first read the incident
+(usually with [`escalation_get`](escalation_get.md)) to obtain the revision, and
+must be written to tolerate a `rejected` outcome caused by a concurrent reply.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   forwards to the handler under the caller's principal.
+2. `_cmd_escalation_update`
+   ([`src/commands/escalation_commands.py:356`](../../../src/commands/escalation_commands.py))
+   rejects server-derived authority fields and calls `_escalation_for_caller`
+   with `supervisor_required=True`. That path admits only a trusted local
+   principal — refused here, because local callers cannot be the owning
+   supervisor — or an elevated session whose row is a live `supervisor` session in
+   the incident's project. A playbook or service principal is refused
+   `out_of_scope`.
+3. `expected_revision` must be a non-negative integer. Every other field is
+   optional; omitting `state` means "keep the current state and just edit the
+   prose".
+4. `transition_escalation`
+   ([`src/database/queries/escalation_queries.py:221`](../../../src/database/queries/escalation_queries.py))
+   enforces the state machine before writing:
+   - An unknown state raises `EscalationStateError`.
+   - A row that is missing, or whose revision no longer matches, returns `None` —
+     the ordinary stale-revision race, kept distinct from a malformed request.
+   - A terminal incident is immutable; any update to one raises.
+   - A state change must be legal for the current state. `needs_human` may go only
+     to `cancelled` or `stale`; `reply_received` to `resolving`, `cancelled` or
+     `stale`; `resolving` to `resolved`, `cancelled` or `stale`. `reply_received`
+     is not reachable from here at all: only `accept_escalation_reply` may claim
+     it, because that state asserts that immutable human evidence exists.
+   - A terminal state requires a `terminal_outcome`; an open state may not carry
+     terminal evidence.
+5. The write is an `UPDATE … WHERE id = … AND revision = … AND state = …` that
+   returns the new row, bumps `revision`, sets `updated_at`, and — for a terminal
+   state — sets `terminal_at`, `terminal_outcome` and `terminal_evidence`.
+6. `_emit_escalation` (line 107) publishes `escalation.updated.v1` with the new
+   state, revision and terminal outcome.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+One updated row in `escalations` ([`src/database/tables.py:1094`](../../../src/database/tables.py)):
+the new state, an incremented `revision`, a fresh `updated_at`, whichever prose
+fields were supplied, and the terminal triple when the incident ends. Plus one
+`escalation.updated.v1` bus event and an audit row.
+
+Nothing else moves. Cancelling an incident does not cancel the work it was about,
+does not resolve the gate or question it was bound to, and does not notify the
+human — the transport's own reconciliation decides what an already-delivered
+thread should show once the incident is closed. A terminal incident stays in the
+table forever as history; it is never deleted by this path.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Handler code | Cause |
+|---|---|
+| `spoofed_identity` | The payload carried a server-derived authority field. |
+| `out_of_scope` | The caller is not the owning supervisor — including a trusted local caller, which is deliberately not one. |
+| `not_found` | No incident with that id. |
+| `invalid_request` | `expected_revision` was missing or negative, or a field value was malformed. |
+| `invalid_state` | Unknown state, illegal transition, a write against a terminal incident, a terminal state with no outcome, or terminal evidence on an open state. |
+| `stale_revision` | The incident advanced since it was read — reload and decide again. |
+
+All of them surface as the single `rejected` outcome, so the distinction lives in
+the summary text.
+
+`stale_revision` is the expected, healthy failure: the usual cause is a human
+replying between the supervisor's read and its write, which is exactly the race
+the compare-and-set exists to lose. Re-read with
+[`escalation_get`](escalation_get.md) — if the state is now `reply_received`, the
+right next move is to apply the reply, not to re-issue the cancellation.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `escalation_update` with `escalation_id` bound to `incident.escalation.id`,
+   `expected_revision` bound to `incident.escalation.revision`, `state`
+   `cancelled`, and `terminal_outcome` `condition_cleared`. An `updated` outcome
+   ends the rule. A `rejected` outcome fails it: the incident either moved on
+   (re-read it next tick) or was never this supervisor's to close.
+```

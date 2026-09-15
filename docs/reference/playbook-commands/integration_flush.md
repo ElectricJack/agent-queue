@@ -98,24 +98,114 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_flush` asks a project's delivery machinery to do its next thing
+*now* instead of at its next scheduled tick. What "its next thing" means depends
+on the mode the project is in, and the command deliberately answers differently
+in each:
+
+- In `train` mode it marks a sweep due, which is the request that eventually
+  seals a batch and builds a candidate.
+- In `development` mode it runs a development sweep synchronously — build the
+  batch, validate it, publish it — and returns that sweep's own outcome.
+- In `observe` or `hierarchy` mode there is no sweep to request, so it returns
+  `eligibility`: a live preflight projection of what *would* block a rollout.
+- When the project is disabled or draining it says so and does nothing.
+
+It is the operator's "don't wait for the interval" button and a playbook's way of
+coupling delivery to an event rather than a clock. See the
+[integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+A project playbook uses it where an external fact should advance delivery
+immediately — a batch of tasks just completed, a repair landed, an operator
+asked. Unlike most of this family it does *not* require a LOCAL operator: a
+resolved playbook principal for the project passes
+`_integration_delivery_authorized` when its policy allows the `integration_flush`
+capability
+([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+and a project-scoped session may call it too.
+
+Repeated calls are cheap and safe by design. A second request while one is
+already outstanding is *coalesced* rather than queued: the schedule remembers a
+catch-up trigger and answers `coalesced`, so a playbook that fires on every
+completion cannot turn into a sweep storm.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_flush`
+   ([`src/commands/integration_commands.py:314`](../../../src/commands/integration_commands.py))
+   requires a `project_id` and checks authority for the `integration_flush`
+   capability.
+2. If the project's mode is `development`, it delegates straight to
+   `DevelopmentIntegration.sweep`
+   ([`src/integration/development.py:413`](../../../src/integration/development.py))
+   and returns that sweep's outcome — `delivered`, `idle`, `parked` or
+   `base_moved`. This is the same work
+   [`integration_development_sweep`](integration_development_sweep.md) does, minus
+   the LOCAL-operator requirement and the `retry` flag.
+3. Otherwise it first runs `_reconcile_integration_completion` (line 326), which
+   reconciles closed integration owners and recovers completed PR links, logging
+   `integration.pr_links_recovered` when it repaired any.
+4. `IntegrationControlService.flush`
+   ([`src/integration/controls.py:989`](../../../src/integration/controls.py))
+   then branches on mode: `not_found` for a missing project, `draining` while the
+   project drains, `disabled` when delivery is off, and `eligibility` — the full
+   preflight projection — for `observe` and `hierarchy`.
+5. For `train` it calls `IntegrationScheduler.mark_due`
+   ([`src/integration/scheduler.py:70`](../../../src/integration/scheduler.py))
+   with trigger `manual`. Under the project lock that re-checks the mode (so a
+   timer or a direct caller cannot create a request for a disabled or draining
+   project), maintains the batch lease, and then either coalesces into the
+   outstanding request, or allocates `integration-sweep:<project>:<sequence>`,
+   records it as outstanding and enqueues one `integration.sweep_due` event keyed
+   by that same id.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+In `train` mode: the project's row in `project_integration_schedules`
+([`src/database/tables.py:3554`](../../../src/database/tables.py)) gains a new
+`request_sequence` and `outstanding_request_id` (or a `catchup_trigger` when
+coalescing), and one durable row lands in the integration outbox as
+`integration.sweep_due`. The batch lease may be refreshed as a side effect of the
+same locked pass.
+
+In `development` mode: whatever the sweep wrote — a `development_deliveries` row
+(line 3839) in state `delivered` or `parked`, a pushed candidate snapshot ref,
+and possibly a repair task.
+
+In `observe`/`hierarchy` mode: nothing at all. The eligibility projection is
+computed, not stored.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `due` | A fresh sweep request was recorded and its event enqueued. |
+| `not_due` | A periodic trigger arrived before the interval elapsed (manual triggers never see this). |
+| `coalesced` | A request is already outstanding; this one became a catch-up marker. |
+| `eligibility` | `observe`/`hierarchy`: no sweep exists, so the result is the preflight projection with `blockers` and `ready`. |
+| `disabled` / `draining` | Delivery is off, or the project is finishing its in-flight work. Both are failure-classified: nothing was requested. |
+| `not_found` | No `project_id`, or no such project. |
+| `unauthorized` | The caller is outside the project's authority. |
+
+Development-mode calls return the *development* vocabulary instead
+(`delivered`, `idle`, `parked`, `base_moved`), all of which the shared
+`_DEVELOPMENT_OUTCOMES` list declares.
+
+If a flush returns `due` and nothing appears to happen, the request is real but
+its consumer is not running: check `aq integration status PROJECT_ID` for the
+outstanding request and lease, and see
+[integration troubleshooting](../../guides/integration-troubleshooting.md). If it
+returns `eligibility` when a train was expected, the project is in `observe` or
+`hierarchy`, not `train`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+1. Call `integration_flush` with `project_id` `agent-queue`. Bind the result as
+   `flush`. A `due` outcome (a sweep was requested), a `coalesced` outcome (one
+   was already in flight) or a `not_due` outcome ends the rule; an `eligibility`
+   outcome continues to step 2 with `flush.blockers`; `disabled`, `draining`,
+   `not_found`, `unauthorized`, `rejected` or `runtime_error` fails it.
+```

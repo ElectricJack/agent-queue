@@ -57,24 +57,132 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_apply_reply` is the one place where a human answer turns into an
+effect. It takes a stored reply, proves that the reply really is verified human
+evidence for *this* incident, reserves a durable action under an idempotency key,
+calls exactly one guarded domain service, and records the outcome — resolving the
+incident when the service succeeded and returning it to `reply_received` when it
+did not.
+
+Three properties are worth stating plainly, because they are what the design buys:
+
+- **Nothing is inferred from the text.** The reply's prose is passed to the
+  service as a reason or an answer, but the *decision* comes from typed
+  arguments: `action_kind`, `target_id` and, for task recovery, `decision`.
+- **The binding is checked, not assumed.** An incident raised about a gate can
+  only resolve that gate; an incident about a question can only answer that
+  question; an incident about a task recovery can only recover that task.
+- **The reservation outlives the action.** The action row is written before the
+  service is called and completed afterwards, so a crash mid-flight leaves a
+  visible `processing` action rather than an invisible half-effect.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Only from the owning supervisor, and only after [`escalation_get`](escalation_get.md)
+(or the queued notice) has shown a reply to apply. The supervisor's own system
+prompt names this command as the path through which question and claim fences,
+gate provenance and recovery decisions are honoured
+([`src/prompts/supervisor_system.md:43`](../../../src/prompts/supervisor_system.md)).
+
+The step must supply an `idempotency_key` it can regenerate — deriving it from the
+reply id is the usual choice — because that key, not the attempt, is the action's
+identity. A retry with the same key returns the durable prior reservation with
+outcome `replayed`; a retry with a *different* key against the same incident will
+be refused, since the incident has already left `reply_received`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   forwards to the handler under the caller's principal.
+2. `_cmd_escalation_apply_reply`
+   ([`src/commands/escalation_commands.py:451`](../../../src/commands/escalation_commands.py))
+   rejects server-derived authority fields and loads the incident with
+   `supervisor_required=True`, so only a live supervisor session for that project
+   may proceed.
+3. The reply is fetched by id (`get_escalation_message`,
+   [`src/database/queries/escalation_queries.py:572`](../../../src/database/queries/escalation_queries.py))
+   and `_validate_apply_binding` (line 400) checks the binding:
+   - The reply must belong to this incident, be `inbound`, and carry a
+     `supervisor_message_id` — the proof that it queued a supervisor notice while
+     the incident was open.
+   - `question_answer` requires `source_kind: question`, `source_identity ==
+     target_id`, a real question in the same project with `requires_human`, and no
+     `decision`.
+   - `gate_resolve` requires `source_kind: gate`, a matching `source_identity`, a
+     real gate in the same project of `gate_type: human`, and no `decision`.
+   - `task_recover` requires `source_kind: task_recovery`, `task_id == target_id`,
+     and a `decision` of `retry` or `hold`, which becomes the action's parameters.
+4. `begin_escalation_action` (line 599) reserves the action with the incident row
+   locked. An existing row for `(escalation_id, idempotency_key)` is a replay: its
+   reply, kind and target must match and its parameters must be identical, or
+   `EscalationConflict` is raised. Otherwise the revision must match, the state
+   must be exactly `reply_received`, the reply must re-pass its evidence check,
+   and the incident is CAS-advanced to `resolving` at `revision + 1` while an
+   `escalation_actions` row is inserted as `processing`, stamped with the
+   supervisor's `describe()` string and the `started_revision`.
+5. Only for a genuine reservation does the handler call one service:
+   `orchestrator.agent_questions.answer(...)` with `human=True` and the incident
+   id, `orchestrator._resolve_gate_and_emit(...)`, or the handler's own
+   `_cmd_task_recover(...)` with the bound decision and the reply text as the
+   reason. Any exception is caught and turned into `{"error": ...}` — the durable
+   reservation must still be completed.
+6. `finish_escalation_action` (line 746) records the result. The action becomes
+   `succeeded` or `failed` with a typed outcome (`question_answered`,
+   `gate_resolved`, `task_recovery_applied`, or `action_failed`). Then, *only if*
+   the incident is still `resolving` at the action's `started_revision`, it
+   advances: to `resolved` with terminal evidence naming the action, reply, kind
+   and target on success, or back to `reply_received` on failure so the
+   conversation may continue. A newer human reply moves the revision on and the
+   compare-and-set deliberately leaves that newer conversation alone.
+7. A failure also appends an outbound `core` message to the incident explaining
+   that the action failed and the escalation remains open, keyed
+   `action-failed:<action id>`.
+8. `escalation.updated.v1` is emitted either way, carrying the action id and
+   outcome.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+One row in `escalation_actions` ([`src/database/tables.py:1211`](../../../src/database/tables.py)),
+unique per `(escalation_id, idempotency_key)`, holding the kind, target,
+parameters, executor, `started_revision`, status, outcome, result payload and
+error. The incident row moves `reply_received → resolving` and then either
+`→ resolved` (with `terminal_at`, `terminal_outcome` and `terminal_evidence`) or
+back to `reply_received`. On failure, one outbound row in `escalation_messages`.
+Plus the real domain effect: a question answered, a gate resolved and its
+dependents unblocked, or a task recovery applied — each written by its own
+service with its own invariants.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Handler code | Cause |
+|---|---|
+| `out_of_scope` | The caller is not a live supervisor session for the incident's project. |
+| `not_found` | No incident, or no reply with that id. |
+| `human_evidence_required` | The reply is not inbound evidence for this incident, or never queued a supervisor notice. |
+| `invalid_request` | Unsupported `action_kind`, missing `target_id`, a missing or negative `expected_revision`, a bad `idempotency_key`, or a task-recovery `decision` that is not `retry`/`hold`. |
+| `invalid_binding` | The target is not the incident's bound source, is in another project, is not human-required, or `decision` was supplied for a non-recovery action. |
+| `invalid_state` | The incident is not in `reply_received` — typically already `resolving` or terminal. |
+| `stale_revision` | The incident advanced since it was read. |
+| `identity_conflict` | The idempotency key was reused with different parameters. |
+| `action_failed` | The reservation succeeded but the bound service refused; the result still carries the completed `action` and the current `escalation`. |
+
+`action_failed` is the one that matters operationally: the incident is back in
+`reply_received`, the failure is recorded on the action *and* appended to the
+conversation, and the human can answer again. Read the whole picture with
+`aq escalation get --escalation-id <id>` — `actions` shows every attempt with its
+error, and an action still in `processing` means the daemon stopped between the
+reservation and the completion.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+3. Call `escalation_apply_reply` with `escalation_id` bound to
+   `incident.escalation.id`, `reply_id` bound to the newest inbound message,
+   `expected_revision` bound to `incident.escalation.revision`,
+   `idempotency_key` bound to `apply:<reply id>`, `action_kind` `gate_resolve`,
+   and `target_id` bound to `incident.escalation.source_identity`. An `applied`
+   outcome (the gate was resolved and the incident is resolved) or a `replayed`
+   outcome (this key already ran) ends the rule; a `rejected` or
+   `runtime_error` outcome fails it.
+```

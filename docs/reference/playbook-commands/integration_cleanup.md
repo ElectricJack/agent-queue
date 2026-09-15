@@ -58,24 +58,114 @@ Projected into the run receipt: `batch_id`, `item_count`, `completed_count`, `co
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_cleanup` tidies up after a root batch that has already reached the
+default branch. Once a train is promoted there is a tail of external state to
+retire: the source pull requests it delivered, the audit pull request it opened,
+the remote candidate refs, the local refs and the worktrees. This command turns
+that tail into an immutable, itemised work list and then advances it one bounded
+step at a time.
+
+The two halves are deliberate. *Materialization* happens once and freezes exactly
+what must be cleaned, so the list cannot drift as the world changes. *Advancing*
+claims individual items with a nonce and a lease, performs one external action
+each, and records the result — so a crash mid-cleanup loses nothing and a second
+caller cannot double-act. Cleanup is restartable by construction, which is why the
+command is safe to call on a timer. See
+[hierarchical integration trains](../../guides/hierarchical-integration-trains.md).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+From a train pipeline, after promotion, as a poll: call it each tick until it
+reports `complete`. `advanced` means progress was made and there is more to do;
+`wait` means the remaining items are leased or backing off; `retryable` means an
+item failed in a way that will be tried again. Only `conflict` and `failed` need
+human attention.
+
+Authority is project-level (`_integration_delivery_authorized`,
+[`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+so a project playbook principal whose policy allows `integration_cleanup` may
+drive it. Idempotency is natural: re-calling converges, and an already-finished
+batch answers `already_complete`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_cleanup`
+   ([`src/commands/integration_commands.py:654`](../../../src/commands/integration_commands.py))
+   validates the request, loads the batch (`stale` when it does not exist) and
+   authorizes against its project.
+2. `IntegrationCleanupService.materialize`
+   ([`src/integration/cleanup.py:649`](../../../src/integration/cleanup.py)) runs
+   first. Under the project lock it requires the batch to be genuinely finished —
+   `lifecycle: promoted`, a recorded `final_main_sha`, and a candidate publication
+   for the current revision in state `pr_published` — and answers
+   `invariant_error` otherwise. From the members, the root intent reservations and
+   the delivery receipts it writes one immutable `integration_cleanup_items` row
+   per thing to retire. A second call finds the work already materialized. Any
+   outcome other than `materialized`/`already_materialized` short-circuits the
+   command.
+3. `advance` (line 76) then selects up to 100 items that are `pending` or
+   `retryable`, due by the clock, and either unclaimed or whose claim has expired,
+   ordered by due time and domain key.
+4. `execute` (line 114) handles one item: it locks the row, returns
+   `already_complete` for a settled one and `wait` for one that is not due or is
+   still leased, then claims it by bumping `attempts` and writing a fresh
+   `execution_nonce` with a 300-second `claim_expires_at` — a compare-and-set on
+   the attempt count, so a lost race simply answers `wait`.
+5. `_perform` (line 182) dispatches by kind: `source_pr` and `audit_pr` close the
+   pull request (posting the delivery marker comment first, behind an irreversible
+   pre-write reservation, so the same comment is never published twice);
+   `remote_ref`, `local_ref` and `worktree` retire their own resources. An
+   identity mismatch — the PR's repository or delivered head is not what was
+   frozen — is a `conflict`, not a retry. Any unexpected exception becomes
+   `retryable` rather than losing the item.
+6. Back in the handler, the per-state counts are read directly from
+   `integration_cleanup_items` and folded into one outcome (line 700): totals that
+   disagree with the materialized item count are `invariant_error`; any conflicted
+   or failed item is `conflict`; all-complete is `complete` or `already_complete`
+   depending on whether this call advanced anything; a remaining retryable item is
+   `retryable`; progress is `advanced`; otherwise `wait`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+Rows in `integration_cleanup_items`
+([`src/database/tables.py:3247`](../../../src/database/tables.py)) — created once
+by materialization, then claimed, attempted and settled by advancing. Externally:
+pull requests commented and closed, remote refs deleted, local refs and worktrees
+removed. Each external action is guarded by the frozen expectation recorded on its
+item, so an item never acts on something that has changed identity underneath it.
+
+The batch itself is not modified by this command beyond the aggregate
+reconciliation that `advance` performs at the end of each pass.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `materialized` | The work list was created. (Declared for completeness; the handler normally reports the post-advance state.) |
+| `advanced` | At least one item progressed; call again. |
+| `complete` / `already_complete` | Every item is settled. |
+| `wait` | Items remain but none is due or unleased right now. |
+| `retryable` | An item failed transiently and is scheduled to be retried. |
+| `conflict` | An item's external subject no longer matches what was frozen — a PR was retargeted, a ref was rewritten. Needs a human. |
+| `failed` | An item cannot be performed at all (unknown kind, missing repository). |
+| `stale` | The batch does not exist. |
+| `invariant_error` | The batch is not promoted/published, or the item counts disagree with the materialized total. |
+| `unauthorized` | The caller cannot clean up this batch. |
+
+`invariant_error` on a batch that *looks* finished usually means promotion did not
+actually complete — check `lifecycle` and `final_main_sha` with `aq integration
+status PROJECT_ID`. For items stuck in `retryable` or `conflict`, `aq integration
+retry-cleanup BATCH_ID` requeues the safe identities without touching any
+irreversible marker; see
+[integration troubleshooting](../../guides/integration-troubleshooting.md).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+5. Call `integration_cleanup` with `batch_id` bound to `candidate.batch_id`. A
+   `complete` or `already_complete` outcome ends the rule; an `advanced`, `wait`
+   or `retryable` outcome ends the rule so the next tick advances the remaining
+   items; a `conflict` outcome continues to the escalation step; `failed`,
+   `stale`, `invariant_error`, `unauthorized`, `rejected` or `runtime_error`
+   fails it.
+```

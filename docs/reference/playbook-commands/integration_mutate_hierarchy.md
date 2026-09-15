@@ -57,24 +57,109 @@ Projected into the run receipt: `task_id`, `old_parent_id`, `new_parent_id`, `ol
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_mutate_hierarchy` is the guarded way to change the shape of a task
+tree once integration owns it. Outside hierarchy and train modes, re-parenting a
+task is ordinary graph bookkeeping. Inside them it is a delivery decision: a
+child's branch starts from its parent's checkpoint, so moving the child changes
+where its work comes from and invalidates both parents' notion of being verified.
+
+Today the only supported mutation is `reparent`, and the command exists to make
+that one mutation safe. It refuses when the child has already committed to its
+delivery target — a materialized origin, work started, a delivered receipt — and
+when the child is part of an active sealed batch. When it does proceed, it retires
+the old origin reservation, reserves a new one from the new parent's checkpoint,
+and advances *both* parents' generations so no stale verification survives the
+move. See the [integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+From a planning or triage playbook that re-homes work after the tree was already
+filed — a child that belongs under a different parent, or a mis-filed finding. The
+step must supply `expected_old_generation` and `expected_new_generation` inside
+`arguments`, because both parents are amended and both compare-and-set.
+
+Authority is project-level (`_integration_delivery_authorized`,
+[`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)).
+The refusals are the useful part of the contract: a playbook should treat
+`delivery_target_fixed` and `sealed` as "this is no longer a planning decision"
+and route to a human rather than retrying. Note that the ordinary worker path for
+moving a *filed finding* is `aq task reparent`, not this command; this one is the
+integration-authorized path used when the tree is under delivery control.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_mutate_hierarchy`
+   ([`src/commands/integration_commands.py:1143`](../../../src/commands/integration_commands.py))
+   validates the request, loads the task (`invalid` when missing) and authorizes
+   against its project.
+2. `HierarchyIntegration.mutate_hierarchy`
+   ([`src/integration/hierarchy.py:941`](../../../src/integration/hierarchy.py))
+   rejects any mutation that is not `reparent`, and requires `arguments.parent_id`.
+3. In one immediate transaction it resolves the child's project and repository
+   route, takes `lock_hierarchy_project`, and re-reads the child under the lock.
+   The child must already have a parent, and the new parent must be different and
+   in the same project.
+4. `_assert_reparentable` (line 1476) is the safety gate. It refuses with
+   `delivery_target_fixed` when the child's branch origin is already materialized,
+   when the child's status is past `DEFINED`/`READY`, or when the child holds a
+   workspace, has a live session, or has produced a delivery receipt. It refuses
+   with `sealed` when the child belongs to a batch in an active lifecycle.
+5. Both parents' checkpoints are locked and their generations must equal
+   `expected_old_generation` and `expected_new_generation`; a mismatch raises
+   `stale_parent`.
+6. The child's current origin is retired — guarded by `materialized IS FALSE`, so
+   a race that materialized it in the meantime cannot be papered over — both
+   parents advance a generation with their verifications cleared, `set_parent`
+   re-links the child under integration authority, a fresh origin is reserved from
+   the new parent's branch and checkpoint SHA at the new generation, and the
+   child's own checkpoint is re-based onto that SHA with its verification cleared.
+7. The result returns both parent ids and both new generations, which is what a
+   caller needs to continue amending either side.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+The child's `parent_task_id` in `tasks`; its old row in `task_branch_origins`
+([`src/database/tables.py:2151`](../../../src/database/tables.py)) stamped
+`retired_at` and a new reserved row inserted; both parents' rows and the child's
+row in `task_integration_checkpoints` (line 2083) updated — new generations,
+cleared `verified_sha`/`verified_generation`, bumped `version`, and a new
+`checkpoint_sha` for the child. All in one transaction under the project
+hierarchy lock.
+
+No Git write. The old origin was a reservation, not a branch; retiring it is a
+database act.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `updated` | The child moved; both parents advanced a generation. |
+| `sealed` | The child belongs to an active sealed batch and cannot be moved. |
+| `delivery_target_fixed` | The child's origin is materialized, or it has started or delivered work. |
+| `reopen_required` | Declared for a mutation that would need the target reopened first. |
+| `invalid` | Unsupported mutation, missing `parent_id`, missing task or new parent, a new parent in another project, the same parent, a child with no parent, or a generation mismatch. |
+| `unauthorized` | The caller cannot mutate this hierarchy. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+The mapping at line 1165 is worth knowing: the handler passes through only
+`sealed`, `delivery_target_fixed`, `reopen_required` and `invalid`, so the
+service's `stale_parent` — a generation compare-and-set that lost — arrives as
+`invalid`. Read the message before concluding the request was malformed: "old
+parent generation changed" means re-read both parents and retry, while "unsupported
+hierarchy mutation" really is a bad request.
+
+`delivery_target_fixed` and `sealed` are terminal for this path. Once a child has
+started or been sealed into a batch, the answer is to finish or abort that work,
+not to move it.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+3. Call `integration_mutate_hierarchy` with `task_id` bound to `finding.task_id`,
+   `mutation` `reparent`, and `arguments` `{"parent_id": "<new parent>",
+   "expected_old_generation": <old>, "expected_new_generation": <new>}`. An
+   `updated` outcome ends the rule. An `invalid` outcome ends the rule so the next
+   tick re-reads both generations; a `sealed` or `delivery_target_fixed` outcome
+   continues to the escalation step; `reopen_required`, `unauthorized`, `rejected`
+   or `runtime_error` fails it.
+```

@@ -53,24 +53,109 @@ Projected into the run receipt: `generation`, `children`, `origins`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_file_children` creates a parent task's children and reserves each
+child's branch origin in one atomic step. In hierarchy and train modes a task is
+not just a row in a graph: it owns a branch that starts from an exact commit, and
+a child's work is expected to come back to its parent through that branch. Filing
+children therefore has to do two things together — create the tasks, and pin where
+each one's branch begins — or the graph and the repository disagree.
+
+The step that ties them is the parent's **generation**. Filing children
+invalidates any verification the parent had, because the parent's definition of
+"done" just changed, so the command requires the caller to name the generation it
+believes it is amending and advances it by one. A concurrent filing therefore
+loses cleanly with `stale_parent` instead of silently interleaving children from
+two different plans. See the
+[integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+A planning playbook uses it where a parent decomposes into work: it reads the
+parent's current generation (from
+[`integration_delivery_readiness`](integration_delivery_readiness.md) or the
+result of a previous filing), builds the `children` list, and files them in one
+call. Filing several children in one request is the point — each gets an origin
+reserved from the *same* frozen parent checkpoint, so siblings genuinely branch
+from one base.
+
+Authority is project-level via `_integration_delivery_authorized`
+([`src/commands/integration_commands.py:241`](../../../src/commands/integration_commands.py)),
+so a resolved playbook principal whose policy allows `integration_file_children`
+may call it. Retrying is safe but not free: a retry with the *old* generation gets
+`stale_parent`, which is the signal that the first attempt actually landed.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_file_children`
+   ([`src/commands/integration_commands.py:1087`](../../../src/commands/integration_commands.py))
+   validates the request, loads the parent (`invalid` when missing) and authorizes
+   against the parent's project.
+2. `HierarchyIntegration.file_children`
+   ([`src/integration/hierarchy.py:283`](../../../src/integration/hierarchy.py))
+   requires at least one child, then runs the whole filing inside one immediate
+   transaction:
+   - Resolve the parent's project and repository route, and take
+     `lock_hierarchy_project` so no other hierarchy mutation interleaves.
+   - `_ensure_origin_chain` makes sure the parent itself has an origin and
+     checkpoint before children can branch from it.
+   - Lock the parent's checkpoint row. Its `generation` must equal
+     `expected_generation`, or the call raises `stale_parent` naming both values.
+   - The checkpoint's `checkpoint_sha` must be an exact commit OID; a parent
+     without one cannot be a base, and that is `invalid`.
+   - Advance the checkpoint to `generation + 1`, clearing `verified_sha` and
+     `verified_generation` — the parent is no longer verified, because its
+     children changed.
+   - For each child: allocate a hierarchical id (refusing beyond the naming cap),
+     create the task, link it with `set_parent` under integration authority,
+     reserve a branch origin from the parent's branch at the frozen base SHA and
+     the new generation, and insert the child's own checkpoint at that same base.
+3. The typed adapter (`_file_children_adapter`,
+   [`src/commands/contracts/integration.py:1671`](../../../src/commands/contracts/integration.py))
+   projects `generation`, `children` and `origins` into the result and refuses an
+   undeclared outcome with `contract_violation`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+One row per child in `tasks`, with `parent_task_id` set; one reserved row per
+child in `task_branch_origins`
+([`src/database/tables.py:2151`](../../../src/database/tables.py)) naming the
+parent ref, the base SHA and the generation; one row per child in
+`task_integration_checkpoints` (line 2083) at that base; and the parent's own
+checkpoint row advanced to the new generation with its verification cleared. All
+in a single transaction under the project hierarchy lock.
+
+No Git write happens here. Origins are *reserved*, not materialized: the branch
+itself is created later, when the child's work actually needs it. That is why the
+result returns `origins` — a caller that wants to know the branch names has them
+without touching the repository.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `filed` | Every child was created and its origin reserved at the new generation. |
+| `stale_parent` | The parent's generation is not `expected_generation` — someone else amended the parent first. Re-read and decide again. |
+| `invalid` | No children supplied, the parent does not exist, the parent's checkpoint names no exact commit, a child id exceeded the naming cap, or the parent's route is not integration-enabled. |
+| `unauthorized` | The caller cannot file children in this project. |
+| `runtime_error` | A Git error while ensuring the parent's origin chain. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+`stale_parent` after what looked like a failure is the normal "did my first call
+land?" answer: it did. Re-read the parent's readiness to see the children rather
+than filing them again.
+
+`invalid` is a catch-all — the handler maps every `HierarchyError` that is not
+`stale_parent` onto it (line 1109), so read the message. The most common cause on
+a healthy project is a parent that has never been checkpointed: file children only
+after the parent has an exact head.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `integration_file_children` with `parent_id` bound to `plan.parent_id`,
+   `expected_generation` bound to `readiness.generation`, and `children` bound to
+   `plan.children`. Bind the result as `filed`. A `filed` outcome continues to
+   step 3 with `filed.generation`; a `stale_parent` outcome ends the rule so the
+   next tick re-reads the parent; `invalid`, `unauthorized`, `rejected` or
+   `runtime_error` fails it.
+```

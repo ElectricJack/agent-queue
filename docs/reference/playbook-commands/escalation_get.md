@@ -48,24 +48,91 @@
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`escalation_get` returns one incident together with its authoritative history:
+every message in the conversation, every delivery attempt made on its behalf, and
+every action a supervisor reserved against it. It is the read that answers "what
+actually happened to this question?" without inferring anything from a chat
+transcript.
+
+The four collections are deliberately separate records rather than one merged
+feed, because they answer different questions. `messages` is what was *said*
+(inbound human replies and outbound core notices). `deliveries` is what the
+transport *did* — including the generation counter and the channel, message and
+thread ids that give an incident its external identity. `actions` is what the
+supervisor *applied*, each bound to the exact reply it acted on. See the
+[escalation incident lifecycle](README.md#the-escalation-incident-lifecycle).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Rarely as a first step and often as a second. A rule that has an escalation id —
+from its own `escalation_create`, from an `escalation_list` guard, or from an
+event payload — uses `escalation_get` to decide whether the human has replied
+yet, whether an action already ran, or whether the incident reached a terminal
+outcome, and branches on that rather than acting blindly.
+
+It is also the read behind `aq escalation get` and the dashboard's escalation
+inbox, and the natural first stop when diagnosing "the human says they answered
+and nothing happened": the reply either is in `messages` or it is not, and if it
+is, `actions` says whether a supervisor ever bound it to anything.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. The adapter
+   ([`src/commands/contracts/escalation.py:141`](../../../src/commands/contracts/escalation.py))
+   forwards to the handler under the caller's principal.
+2. `_cmd_escalation_get`
+   ([`src/commands/escalation_commands.py:283`](../../../src/commands/escalation_commands.py))
+   rejects server-derived authority fields and then defers to
+   `_escalation_for_caller` (line 92), which is the family's shared "load and
+   authorize" step: a non-empty `escalation_id` is required, the row must exist,
+   and the caller must pass `_authorize_escalation_project` for *that row's*
+   project. Authority is therefore checked against the incident's real project,
+   never against a project the caller named.
+3. This call does not set `supervisor_required`, so a trusted local caller, a
+   trusted service adapter, a matching playbook principal or a live supervisor
+   session may all read.
+4. Four reads follow, each ordered for stable display:
+   `list_escalation_messages`
+   ([`src/database/queries/escalation_queries.py:585`](../../../src/database/queries/escalation_queries.py))
+   by `received_at`, then `received_sequence` with nulls first, then `id`;
+   `list_escalation_deliveries` (line 1215); and `list_escalation_actions`
+   (line 874) by `created_at` then `id`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. The command is a `read` with a `ReadClause` over the escalation subject:
+it writes no row, emits no event, and does not mark the incident as seen.
+Reading an incident never changes its state — a `needs_human` incident stays
+`needs_human` no matter how often it is fetched.
+
+Note that the reply text is *not* redacted on this path. `escalation_reply`
+declares `text` as a sensitive argument so it is kept out of receipts and
+explanations, but the stored conversation is returned in full here, because the
+whole point of the read is to show the supervisor and the operator what the
+human actually said.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Handler code | Cause |
+|---|---|
+| `invalid_request` | `escalation_id` was missing or not a non-empty string. |
+| `not_found` | No incident carries that id. |
+| `out_of_scope` | The caller may not read that incident's project. |
+
+All three surface as the single `rejected` outcome with the handler's message.
+
+The common confusion is `not_found` versus `out_of_scope`: the id is looked up
+*before* authorization, so `not_found` really does mean no such row, while
+`out_of_scope` means the row exists and belongs to someone else. If an id came
+from `escalation_list` and now reads `not_found`, the incident was deleted rather
+than resolved — resolution keeps the row and moves it to a terminal state.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+2. Call `escalation_get` with `escalation_id` bound to `open.escalations[0].id`.
+   Bind the result as `incident`. A `read` outcome continues to step 3; a
+   `rejected` or `runtime_error` outcome fails the rule.
+3. When `incident.escalation.state` is `needs_human`, end the rule: the question
+   is still with the human and there is nothing to apply yet.
+```

@@ -60,24 +60,107 @@ Redacted in receipts and explanations: `checkpoint_sha`, `head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+`integration_delivery_readiness` answers one question about a checkpointed parent:
+has every child delivered, and if not, what is missing? It changes nothing — it is
+the only read in the parent-completion group — and it returns the whole picture
+rather than a verdict: the episode and operation that own the current round, the
+generation, the checkpoint the round started from, the head the accepted receipts
+chain up to, the receipts it selected, the blockers it could not clear, the
+repository's required checks, and the policy for a failed child.
+
+The `head_sha` in the result is the useful part. Readiness does not merely count
+children; it walks the accepted code receipts in order and verifies each one's
+`before_sha` matches the running head, so `head_sha` is the exact commit the
+parent would be verified and completed at. See the
+[integration operation model](README.md#the-integration-operation-model).
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+As the poll between [`integration_checkpoint_parent`](integration_checkpoint_parent.md)
+and `integration_parent_verify` / [`integration_complete_parent`](integration_complete_parent.md).
+A `waiting` outcome ends the tick; a `ready` outcome carries the generation and
+head the verification step must quote; a `failed` outcome means a child failed and
+the parent cannot proceed without a decision.
+
+It is also the one command in this group a *session* may call: the handler passes
+`allow_session_read=True`
+([`src/commands/integration_commands.py:1188`](../../../src/commands/integration_commands.py)),
+so an agent working on the parent can read its own delivery state. Everything else
+here needs playbook, service or local authority.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. `_cmd_integration_delivery_readiness`
+   ([`src/commands/integration_commands.py:1174`](../../../src/commands/integration_commands.py))
+   validates the request, loads the parent (`invariant_error` when missing) and
+   authorizes against its project, allowing a same-project session read.
+2. `ParentCompletion.readiness`
+   ([`src/integration/parent_completion.py:229`](../../../src/integration/parent_completion.py))
+   opens an immediate transaction, locks the parent's context — task, project,
+   checkpoint and operation — and delegates to `readiness_on` (line 370).
+3. `readiness_on` loads the episode named by the checkpoint (a missing or
+   mismatched one is an `invariant_error`), then every child with its status and
+   its own checkpoint head, the children's unretired branch origins, every
+   delivery receipt targeting this parent's repository and branch, the recorded
+   child dispositions, and the set of receipts carried forward from a previous
+   verification.
+4. For each child it decides whether that child has delivered:
+   - The child's origin must still point at *this* parent, repository and branch,
+     or the child is blocked `origin_mismatch`.
+   - A single `code` receipt whose `reviewed_head_sha` matches the child's current
+     head, with the child `COMPLETED`, is accepted.
+   - Otherwise a single `noop`, `ineligible` or `skipped` receipt is accepted when
+     it matches the child's recorded disposition and revision exactly, carries
+     resolution evidence (and verification evidence for a `noop`), and the child is
+     terminal.
+   - Anything else is a blocker: `failed_child` when the child is `FAILED`,
+     `receipt_missing` otherwise.
+5. The accepted code receipts are then chained from the episode's
+   `pre_collection_checkpoint_sha`. Each must start at the running head and pass
+   `_trusted_code_receipt` (line 578) — a clean squash edge, or the exact
+   conflict-resolution proof shape with its fence, remote proof and repair commits
+   — or a `receipt_chain` blocker is recorded and the walk stops.
+6. The outcome is `ready` with no blockers, `failed` when any blocker is a failed
+   child, and `waiting` otherwise.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+None. The command's side-effect class is `read` and its effect clause is a
+`ReadClause` over delivery evidence. It takes a row lock while it computes, but it
+writes nothing — no receipt is consumed, no disposition recorded, no state
+advanced. `head_sha` and `checkpoint_sha` are declared sensitive result fields and
+are redacted from receipts and explanations.
+
+The related write path — projecting readiness into checkpoint state and, where the
+policy calls for it, creating the verifier task — is `mark_ready_on`
+([`src/integration/parent_completion.py:242`](../../../src/integration/parent_completion.py)),
+which the daemon drives. This command deliberately does not.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Meaning |
+|---|---|
+| `ready` | Every child has an accepted receipt and the chain is intact; `head_sha` is the exact head to verify. |
+| `waiting` | Children remain undelivered or their receipts do not match. `blockers` names each. |
+| `failed` | At least one child is `FAILED`. `on_failed_child` says whether the policy blocks or asks. |
+| `invariant_error` | The parent does not exist, has no valid episode, or a hierarchy invariant failed. |
+| `unauthorized` | The caller cannot read this parent's delivery state. |
+| `contract_violation` | The handler returned an outcome the contract does not declare. |
+
+Read the `blockers` rather than the outcome. `receipt_missing` means the child has
+not delivered yet — ordinary waiting. `origin_mismatch` means the child was
+re-parented or its origin retired, so it is no longer delivering here.
+`receipt_chain` is the sharp one: the receipts exist but do not form a trusted
+chain from the checkpoint, which needs a human look at the repair evidence. See
+[integration troubleshooting](../../guides/integration-troubleshooting.md).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+```markdown
+4. Call `integration_delivery_readiness` with `task_id` bound to `plan.parent_id`.
+   Bind the result as `readiness`. A `ready` outcome continues to the verification
+   step with `readiness.generation` and `readiness.head_sha`; a `waiting` outcome
+   ends the rule so the next tick polls again; a `failed` outcome continues to the
+   escalation step with `readiness.blockers`; `invariant_error`, `unauthorized`,
+   `rejected` or `runtime_error` fails it.
+```
