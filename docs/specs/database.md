@@ -308,6 +308,25 @@ Authorized project moves transfer known active-task comment ownership in the sam
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
 
+### Table: `dashboard_state_documents`
+
+Durable, server-backed dashboard state: one JSON document per (`scope`, `owner_id`, `namespace`, `subject`). The namespace registry lives in `src/dashboard_state/namespaces.py` and decides each namespace's scope, whether it is subject-addressed and whether writes are compare-and-swap or last-write-wins; this table stays generic and stores whatever the registry validates. Added by Alembic `a0000000000e`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `scope` | TEXT | PRIMARY KEY | One of: workspace, user (`ck_dashboard_state_scope`) |
+| `owner_id` | TEXT | PRIMARY KEY | The user for `user` scope; the empty string for `workspace` scope, which is installation-wide (`ck_dashboard_state_owner`) |
+| `namespace` | TEXT | PRIMARY KEY | Registry name, e.g. `nav_organization` or `command_center_project_view` |
+| `subject` | TEXT | PRIMARY KEY | Project ID for a subject-addressed namespace; the empty string for a global one. SQL NULL cannot participate in the natural primary key, so the API's null subject is stored as `''` |
+| `revision` | INTEGER | NOT NULL DEFAULT 0, `>= 1` once a row exists (`ck_dashboard_state_revision`) | Monotone per-document counter; a CAS write updates only when it matches the caller's `base_revision` |
+| `value` | JSON | nullable | The document, validated against the namespace's pydantic model. `none_as_null` is set, so a reset stores SQL NULL rather than JSON `null` and stays distinguishable in Python |
+| `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
+| `updated_at` | REAL | NOT NULL | Unix timestamp, bumped on every accepted write |
+
+The four key columns are the composite primary key, so the write path is a single upsert: a CAS write is an `UPDATE ... WHERE revision = base_revision` (returning no row means the caller lost the race, and the current row is read back for the conflict response), and a first write is an `ON CONFLICT DO UPDATE` that bumps `revision`. A last-write-wins namespace passes no base revision and always wins.
+
+There is no foreign key from `subject` to `projects(id)` — the column is also the empty string for global namespaces — so deleting a project does not cascade. Project deletion removes that project's documents explicitly (`delete_dashboard_documents_for_project`), and anything left behind is reported and reaped by `aq doctor --check dashboard_state.orphans`.
+
 ### Table: `repos`
 
 | Column | Type | Constraints | Notes |
