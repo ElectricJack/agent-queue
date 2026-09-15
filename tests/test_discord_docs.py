@@ -97,8 +97,22 @@ def test_implementation_spec_is_published_in_the_repository() -> None:
 
 
 def test_migration_runbook_is_reachable_from_the_docs_index() -> None:
-    index = (DOCS / "index.md").read_text(encoding="utf-8")
-    assert "guides/discord-migration" in index
+    """An operator landing on the documentation home can walk to the runbook.
+
+    ``docs/index.md`` used to be the landing page and named the runbook
+    directly.  The documentation overhaul made it a redirect stub and moved the
+    home to ``docs/README.md``, which delegates the per-guide listing to the
+    guides index -- so reachability is now two hops.  Both are asserted: a home
+    that links an index which no longer names the runbook is not reachability,
+    and that is the failure mode the single-page check used to catch.
+    """
+    home = (DOCS / "README.md").read_text(encoding="utf-8")
+    assert "guides/README.md" in home, "the documentation home no longer links the guides index"
+
+    guides = (DOCS / "guides" / "README.md").read_text(encoding="utf-8")
+    assert "discord-migration.md" in guides, (
+        "the guides index no longer names the migration runbook"
+    )
 
 
 #: Names of Discord surfaces the simplification removed.  Each one is a knob or
@@ -223,6 +237,15 @@ def test_documented_project_commands_exist() -> None:
 
     ``get_project_for_channel`` outlived the channels it looked up by living in
     a table nothing checked.
+
+    The tables scanned here are the ones in ``docs/specs/mcp-server.md``.  The
+    guard used to also read ``docs/guides/agent-tools.md``, but the
+    documentation overhaul replaced that guide with a redirect stub: its
+    per-command tables are gone and the current agent-tool reference is
+    ``docs/reference/cli/``, whose invocations ``test_guidance_docs.py``
+    resolves against the live Click tree.  The two anchors lost with the stub
+    are replaced by two more of the spec's tool tables rather than dropped, so
+    the number of documented names held to the live surface does not shrink.
     """
     from src.commands.handler import CommandHandler
 
@@ -237,11 +260,13 @@ def test_documented_project_commands_exist() -> None:
 
     for rel, heading in (
         ("docs/specs/mcp-server.md", "### Project Management"),
-        ("docs/guides/agent-tools.md", "## Project Category"),
-        ("docs/guides/agent-tools.md", "### Navigation & Response"),
+        ("docs/specs/mcp-server.md", "### Agent & Profile Management"),
+        ("docs/specs/mcp-server.md", "### MCP Server Registry"),
     ):
-        section = _section((REPO_ROOT / rel).read_text(encoding="utf-8"), heading)
+        source = (REPO_ROOT / rel).read_text(encoding="utf-8")
+        assert heading in source, f"{rel} no longer has a {heading!r} section"
+        section = _section(source, heading)
         documented = re.findall(r"^\| `([a-z_]+)`", section, re.MULTILINE)
-        assert documented, f"{rel} no longer has a project tool table"
+        assert documented, f"{rel} no longer has a tool table under {heading!r}"
         missing = sorted(n for n in documented if n not in live)
         assert not missing, f"{rel} documents commands that do not exist: {missing}"
