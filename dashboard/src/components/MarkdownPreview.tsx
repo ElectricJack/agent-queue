@@ -9,16 +9,52 @@
  * Uses remark-gfm because our vault markdown (specs, playbooks, profiles)
  * routinely relies on GitHub-flavored tables, task lists, and strikethrough.
  */
-import ReactMarkdown from "react-markdown";
+import { createContext, useContext, type ComponentProps } from "react";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
 
 export interface MarkdownPreviewProps {
   source: string;
   className?: string;
+  /** Documentation URLs keyed by inline command name. */
+  inlineCodeLinks?: ReadonlyMap<string, string>;
 }
 
-export default function MarkdownPreview({ source, className }: MarkdownPreviewProps) {
+// react-markdown's code component receives the same element shape for inline
+// code and fenced blocks. Keep a tiny render-only context so the override can
+// link only inline code while emitting fenced blocks exactly as before.
+const InlineCodeContext = createContext(true);
+
+function commandCodeComponents(inlineCodeLinks: ReadonlyMap<string, string>): Components {
+  function Pre({ children, node: _node, ...props }: ComponentProps<"pre"> & ExtraProps) {
+    return (
+      <InlineCodeContext.Provider value={false}>
+        <pre {...props}>{children}</pre>
+      </InlineCodeContext.Provider>
+    );
+  }
+
+  function Code({ children, node: _node, ...props }: ComponentProps<"code"> & ExtraProps) {
+    const docsUrl = useContext(InlineCodeContext)
+      ? inlineCodeLinks.get(String(children))
+      : undefined;
+    const code = <code {...props}>{children}</code>;
+
+    return docsUrl ? (
+      <a href={docsUrl} target="_blank" rel="noreferrer">
+        {code}
+      </a>
+    ) : code;
+  }
+
+  return {
+    pre: Pre,
+    code: Code,
+  };
+}
+
+export default function MarkdownPreview({ source, className, inlineCodeLinks }: MarkdownPreviewProps) {
   return (
     <div
       className={
@@ -26,7 +62,11 @@ export default function MarkdownPreview({ source, className }: MarkdownPreviewPr
         (className ?? "")
       }
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSlug]}
+        components={inlineCodeLinks ? commandCodeComponents(inlineCodeLinks) : undefined}
+      >
         {source}
       </ReactMarkdown>
     </div>

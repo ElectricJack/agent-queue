@@ -67,6 +67,7 @@ vi.mock("../../api/hooks", () => ({
     isLoading: false,
     refetch: vi.fn(),
   }),
+  usePlaybookCommands: () => ({ data: { commands: [] } }),
   usePlaybookRuns: () => ({ data: [], isLoading: false }),
   useUpdatePlaybookSource: () => ({ mutateAsync: state.updateSource, isPending: false }),
   usePlaybookV2Graph: () => ({ ...state.semanticGraph, refetch: vi.fn() }),
