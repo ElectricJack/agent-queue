@@ -724,6 +724,7 @@ def _repair_contract(
     result_model: type[CommandValue],
     outcomes: tuple[str, ...],
     *,
+    summary: str,
     effects,
     sensitive_args: frozenset[str] = frozenset(),
     sensitive_results: frozenset[str] = frozenset(),
@@ -766,7 +767,7 @@ def _repair_contract(
             receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
-            title=name.replace("_", " ").title(), summary=""
+            title=name.replace("_", " ").title(), summary=summary
         ),
     )
 
@@ -776,6 +777,7 @@ INTEGRATION_REPAIR_START = _repair_contract(
     IntegrationRepairStartArgs,
     IntegrationRepairStartValue,
     ("started", "already_started", "stale", "invariant_error"),
+    summary="Activate or durably continue one operation's bounded repair stage.",
     effects=(
         CreateOrReuseClause(
             subject=EffectSubject.INTEGRATION_OPERATION, key_arg="operation_id"
@@ -799,6 +801,7 @@ INTEGRATION_REPAIR_DISPATCH = _repair_contract(
         "stale",
         "human_required",
     ),
+    summary="Create the repair task and hand the current branch writer fence to it.",
     effects=(
         UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),
         UpdateClause(subject=EffectSubject.BRANCH_OWNERSHIP),
@@ -814,6 +817,7 @@ INTEGRATION_RECORD_REPAIR = _repair_contract(
     IntegrationRecordRepairArgs,
     IntegrationRecordRepairValue,
     ("continue", "escalate", "human_required", "budget_exhausted"),
+    summary="Record one exact repair check attempt against the current stage budget.",
     effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
 )
 
@@ -822,6 +826,7 @@ INTEGRATION_REPAIR_TIMEOUT = _repair_contract(
     IntegrationRepairTimeoutArgs,
     IntegrationRepairTimeoutValue,
     ("expired", "not_due", "already_terminal", "stale"),
+    summary="Expire the current repair stage once its absolute deadline has passed.",
     effects=(UpdateClause(subject=EffectSubject.INTEGRATION_OPERATION),),
 )
 
@@ -1297,7 +1302,7 @@ INTEGRATION_CHECKPOINT_PARENT = CommandContract(
 )
 
 
-def _parent_contract(name, args_model, result_model, outcomes, *, side_effect):
+def _parent_contract(name, args_model, result_model, outcomes, *, side_effect, summary):
     return CommandContract(
         execution=ExecutionContract(
             name=name,
@@ -1331,7 +1336,7 @@ def _parent_contract(name, args_model, result_model, outcomes, *, side_effect):
             ),
             receipt_projection=tuple(result_model.model_fields),
         ),
-        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=""),
+        presentation=CommandPresentation(title=name.replace("_", " ").title(), summary=summary),
     )
 
 
@@ -1341,6 +1346,7 @@ INTEGRATION_DELIVERY_READINESS = _parent_contract(
     IntegrationDeliveryReadinessValue,
     ("ready", "waiting", "failed", "invariant_error"),
     side_effect=SideEffectClass.READ,
+    summary="Read whether every child of one parent has delivered, changing nothing.",
 )
 INTEGRATION_PARENT_VERIFY = _parent_contract(
     "integration_parent_verify",
@@ -1348,6 +1354,7 @@ INTEGRATION_PARENT_VERIFY = _parent_contract(
     IntegrationParentVerifyValue,
     ("verified", "stale_generation", "stale_head", "invalid_evidence"),
     side_effect=SideEffectClass.UPDATE,
+    summary="Record one parent verification against its exact checkpoint head and evidence.",
 )
 INTEGRATION_COMPLETE_PARENT = _parent_contract(
     "integration_complete_parent",
@@ -1355,6 +1362,7 @@ INTEGRATION_COMPLETE_PARENT = _parent_contract(
     IntegrationCompleteParentValue,
     ("completed", "waiting", "stale_verification", "invariant_error"),
     side_effect=SideEffectClass.UPDATE,
+    summary="Complete a verified parent task at its exact verified generation and head.",
 )
 
 
