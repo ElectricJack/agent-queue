@@ -149,6 +149,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "set_playbook_enabled": "playbook",
     "playbook_delete": "playbook",
     # playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
+    "playbook_commands": "playbook",
     "playbook_v2_graph": "playbook",
     "playbook_graph_layout_save": "playbook",
     "playbook_activation_health": "playbook",
@@ -3690,6 +3691,14 @@ _ALL_TOOL_DEFINITIONS = [
     # Playbook V2 semantic graph -- src/commands/playbook_v2_commands.py
     # Child plan: docs/superpowers/plans/2026-09-01-playbook-v2-graph-api-ui.md
     # ------------------------------------------------------------------
+    {
+        "name": "playbook_commands",
+        "description": (
+            "List every registered Playbook V2 command with its title, summary, "
+            "documentation URL, and typed parameter JSON Schema."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
     {
         "name": "playbook_v2_graph",
         "description": (

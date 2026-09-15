@@ -150,6 +150,7 @@ def test_saved_positions_override_compiler_layout_and_resize_the_rule_cluster():
 
 def test_explanation_is_copied_not_rederived(monkeypatch):
     from src.playbooks.validation import RegistryContractLookup
+    from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
 
     sentinel = {
         "title": "sentinel",
@@ -159,6 +160,7 @@ def test_explanation_is_copied_not_rederived(monkeypatch):
         "result": None,
         "outcomes": [],
         "contract_fingerprint": None,
+        "docs_url": command_docs_url(DEFAULT_DOCS_BASE_URL, "ensure_task"),
         "renderer": "canonical",
     }
     monkeypatch.setattr(
@@ -167,6 +169,20 @@ def test_explanation_is_copied_not_rederived(monkeypatch):
     graph = _project(contracts=RegistryContractLookup())
     command = next(node for node in graph["nodes"] if node["id"] == "ensure-review-task")
     assert command["explanation"] == sentinel
+
+
+def test_command_explanations_carry_docs_urls_and_other_step_kinds_do_not():
+    from src.docs_urls import DEFAULT_DOCS_BASE_URL, command_docs_url
+    from src.playbooks.validation import RegistryContractLookup
+
+    graph = _project(contracts=RegistryContractLookup())
+    command = _node(graph, "ensure-review-task")
+    wait = _node(graph, "await-approval")
+
+    assert command["explanation"]["docs_url"] == command_docs_url(
+        DEFAULT_DOCS_BASE_URL, "ensure_task"
+    )
+    assert wait["explanation"]["docs_url"] is None
 
 
 def test_missing_contract_yields_canonical_renderer_and_error_diagnostic():

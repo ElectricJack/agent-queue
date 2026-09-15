@@ -56,6 +56,33 @@ class TestConfigLoading:
         assert config.agents_config.heartbeat_interval_seconds == 30
         assert config.messages.enabled is True
 
+    def test_docs_base_url_defaults_and_loads_override(self, config_dir):
+        from src.docs_urls import DEFAULT_DOCS_BASE_URL
+
+        config_file = config_dir / "config.yaml"
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "x", "guild_id": "1"},
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+                    "docs": {"base_url": "https://docs.example.test/aq"},
+                }
+            )
+        )
+
+        assert load_config(str(config_file)).docs.base_url == "https://docs.example.test/aq"
+
+        default_config = config_dir / "default-config.yaml"
+        default_config.write_text(
+            yaml.dump(
+                {
+                    "discord": {"bot_token": "x", "guild_id": "1"},
+                    "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+                }
+            )
+        )
+        assert load_config(str(default_config)).docs.base_url == DEFAULT_DOCS_BASE_URL
+
     def test_custom_workspace_dir(self, config_dir):
         config_file = config_dir / "config.yaml"
         config_file.write_text(

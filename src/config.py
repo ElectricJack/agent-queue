@@ -27,6 +27,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from src.docs_urls import DEFAULT_DOCS_BASE_URL
+
 logger = logging.getLogger(__name__)
 
 
@@ -2418,6 +2420,22 @@ class GraphLayoutConfig:
 
 
 @dataclass
+class DocsConfig:
+    """Published documentation location used by command help links.
+
+    The default targets this repository's main-branch documentation. Private
+    deployments can point it at their mirrored documentation root instead.
+    """
+
+    base_url: str = DEFAULT_DOCS_BASE_URL
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.base_url, str) or not self.base_url.strip():
+            return [ConfigError("docs", "base_url", "must be a non-empty URL")]
+        return []
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -2452,6 +2470,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
+    docs: DocsConfig = field(default_factory=DocsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
@@ -2671,6 +2690,7 @@ class AppConfig:
         errors.extend(self.pause_retry.validate())
         errors.extend(self.llm.validate())
         errors.extend(self.supervisor.validate())
+        errors.extend(self.docs.validate())
         errors.extend(self.auto_task.validate())
         errors.extend(self.archive.validate())
         errors.extend(self.llm_logging.validate())
@@ -2843,6 +2863,7 @@ HOT_RELOADABLE_SECTIONS = {
     # on each request, the probe resolves its binary on each run -- so an edit
     # takes effect without a restart.
     "providers",
+    "docs",
     "graph_layout",
     "pricing",
     "surface",
@@ -3368,6 +3389,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.data_dir = raw["data_dir"]
     if "workspace_dir" in raw:
         config.workspace_dir = raw["workspace_dir"]
+    if "docs" in raw and isinstance(raw["docs"], dict):
+        config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
     if "project_roots" in raw:
         config.project_roots, config._project_roots_errors = _load_project_roots(
             raw["project_roots"]
