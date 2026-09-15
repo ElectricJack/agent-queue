@@ -60,24 +60,138 @@ Redacted in receipts and explanations: `starting_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A delivery push or a candidate build can fail for a reason that is worth
+fixing rather than abandoning: the source would not merge, or the checks came
+back red. Hierarchical integration answers both with a *bounded repair stage* —
+a fixed attempt budget and an absolute deadline attached to one durable
+integration operation, after which the work escalates once and then stops.
+
+`integration_repair_start` activates that stage. It pins the exact commit the
+repair starts from (`starting_sha`), the exact failure that triggered it
+(`trigger_id`), the frozen policy that bounds it, and the deadline the stage
+will be judged against. It does **not** create a worker: the stage exists so
+that [`integration_repair_dispatch`](integration_repair_dispatch.md) has an
+authoritative subject to hand a branch fence to.
+
+The operation itself is reserved earlier and by someone else — at seal time for
+a root batch (`RepairService.reserve_batch_operation_on`,
+`src/integration/repair.py:201`) and at checkpoint time for a parent — so this
+command never invents an operation, only its first stage.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On a `delivery.ready` promotion that comes back `conflict`. The reviewed
+`hierarchical-delivery` policy
+([`tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md`](../../../tests/fixtures/playbooks/historical-v2/hierarchical-delivery/source.md))
+calls `delivery_promote` first; only on the typed `conflict` outcome does it
+call `integration_repair_start` with the event's `operation_id`, the promotion's
+`expected_target` as `starting_sha`, and the promotion's `operation_key` as
+`trigger_id`, then continue into `integration_repair_dispatch` for stage zero.
+
+A playbook never calls this on its own initiative and never picks the stage
+ordinal: the primary stage is always ordinal `0`, and the escalation to ordinal
+`1` is a server decision recorded by
+[`integration_record_repair`](integration_record_repair.md) or
+[`integration_repair_timeout`](integration_repair_timeout.md).
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler validation and authority** —
+   `_cmd_integration_repair_start` (`src/commands/integration_commands.py:977`)
+   parses `IntegrationRepairStartArgs`; a parse failure is `stale`, never a
+   crash. `_repair_command_authorized`
+   (`src/commands/integration_commands.py:964`) loads the operation, resolves
+   its project through `_integration_operation_project_id`
+   (`src/commands/integration_commands.py:955`) — the parent task's project for
+   a `parent` operation, the batch's project for a `batch` one — and then
+   applies `_integration_delivery_authorized`
+   (`src/commands/integration_commands.py:241`). A session principal is always
+   refused; a playbook principal must be resolved, in the operation's project,
+   and hold the `integration_repair_start` capability.
+2. **Shape check** — `RepairService.start` (`src/integration/repair.py:289`)
+   rejects a `starting_sha` that is not a Git OID and a blank `trigger_id`
+   with `stale` before touching the database.
+3. **Project-then-operation locking** — the service reads the operation
+   unlocked to learn its project, takes `lock_hierarchy_project`, and only then
+   re-reads the operation `FOR UPDATE`. That order matches collection and
+   resume, so the three cannot deadlock against each other.
+4. **Trigger alias resolution** — the shipped parent policy passes the
+   operation id as its `trigger_id` on a merge conflict. When
+   `trigger_id == operation_id` and the target is a parent,
+   `_resolve_parent_conflict_trigger_on` (`src/integration/repair.py:443`)
+   resolves the alias to the exact durable promotion intent. An alias that
+   resolves to nothing is `stale` — the operation id itself is never accepted
+   as failure evidence.
+5. **Replay detection** — if an ordinal-0 stage already exists and the active
+   stage's `starting_sha`, `trigger_id` and `deadline_event_id` all match what
+   the caller asked for, the command returns `already_started` carrying the
+   stage's existing `started_at` and `deadline_at`. Nothing is rewritten, so a
+   duplicated event cannot extend a deadline.
+6. **Parent continuation** — an existing stage with a *different* exact subject
+   is only meaningful for a parent, whose collected head can pick up a newer
+   conflict while the stage is live. `_continue_parent_stage_on`
+   (`src/integration/repair.py:566`) re-points the live stage at the new
+   conflict under the same budget and returns a transition to publish. For a
+   `batch` operation the same situation is `invariant_error`: a root candidate's
+   subject is rebuilt, not re-pointed.
+7. **First activation** — with no stage present the operation must be `active`
+   with `active_stage == 0`, or the call is `stale`. `_start_context_on`
+   (`src/integration/repair.py:3163`) resolves the frozen policy, the boundary
+   and the current subject; `_initial_dossier_on` (`src/integration/repair.py:2837`)
+   builds the evidence dossier the eventual repair delegate reads as its
+   briefing. One row is inserted into `integration_repair_stages`
+   (`src/database/tables.py:3106`) with `ordinal=0`, `attempts=0`,
+   `state="active"`, `deadline_at = now + policy.primary_seconds`, and
+   `deadline_event_id = repair-deadline-<operation_id>-0` — the identity the
+   timer later presents to `integration_repair_timeout`.
+8. **Result** — `_start_value` (`src/integration/repair.py:3346`) returns the
+   stage ordinal, `starting_sha`, `started_at` and `deadline_at`. Any
+   transition produced by a parent continuation is published outside the
+   transaction as blocked-flip, settled and ready notifications.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts (or, on a parent continuation, re-points) exactly one row in
+  `integration_repair_stages`. That row is the durable repair budget: `attempts`
+  is monotone, and both the resume path and a later `start` replay refuse to
+  reset it.
+* Reads and locks `integration_repair_operations`
+  (`src/database/tables.py:2985`) but does not change its state — the operation
+  is already `active` when a stage may be started.
+* Performs **no Git I/O** and creates no task. The `starting_sha` is recorded,
+  never fetched or verified here.
+* Everything survives a restart: after a daemon crash the stage row alone tells
+  the scheduler what is running, from which commit, and until when.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause | Where to look |
+|---|---|---|
+| `stale` | Operation absent; malformed `starting_sha` or empty `trigger_id`; operation not `active` / not on stage 0 with no stage row; a parent trigger alias that resolves to no intent; a parent continuation that no longer matches the live conflict | `aq integration status <project>` → `repair[]`, and the operation row's `state`/`active_stage` |
+| `invariant_error` | The operation's project cannot be resolved; a stage exists but the active-stage row is missing; a **batch** operation was handed a different `(starting_sha, trigger_id)` | `aq doctor --check integration.operational` |
+| `unauthorized` | A session principal called it, or a playbook principal outside the operation's project or without the capability | [Who may run what](../../guides/integration-troubleshooting.md#who-may-run-what) |
+
+`already_started` is a success, not a warning: it is the expected answer to a
+replayed `delivery.ready` conflict or a redelivered event.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy's `promote-delivery` rule:
+
+```markdown
+## Rule: promote-delivery
+
+On `delivery.ready`, call `delivery_promote` with `operation_key`, `source_task_id`,
+`source_head`, `source_base`, `expected_target`, and `fence`. Outcomes `promoted` and
+`already_promoted` complete. `source_moved` and `target_moved` fail. On `conflict`, call
+`integration_repair_start` with the event `operation_id`, `expected_target` as
+`starting_sha`, and `operation_key` as `trigger_id`; on `started` or `already_started`,
+call `integration_repair_dispatch` for literal `stage` zero.
+```
+
+## Related
+
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — gives the started stage a writer.
+* [`integration_record_repair`](integration_record_repair.md) — spends the stage's attempt budget.
+* [`integration_repair_timeout`](integration_repair_timeout.md) — expires the stage at its deadline.
+* Spec: [Roll-forward repair and escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#9-roll-forward-repair-and-escalation).

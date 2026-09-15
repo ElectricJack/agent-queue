@@ -62,24 +62,145 @@ Redacted in receipts and explanations: `head_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+This is the command that actually moves the default branch. Given a batch and a
+candidate revision that CI has already judged green,
+`integration_promote_main` prepares a durable *root promotion intent*,
+reconciles it against what the remote really says, and — if and only if a
+fast-forward from the exact expected old tip to the exact candidate head is
+still correct — pushes `main` through the GitHub App with a compare-and-swap on
+the old OID.
+
+Everything about it is built around one assumption: the push may be
+interrupted, and the daemon may never learn whether it landed. So the command
+never treats "I pushed" as knowledge. It writes a recovery ref and a prewrite
+marker first, and afterwards *observes* the remote to decide what happened.
+A prepared intent that cannot be resolved is left blocked for a human rather
+than retried blindly.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.candidate_green`. The reviewed `root-integration-train`
+policy's `promote-green-candidate` rule calls it for the exact current
+`batch_id` and `revision`. A moved base is not an error there: the policy
+rebuilds under the frozen batch policy and waits for the next durable
+candidate-result event, and only dispatches repair if that rebuild conflicts
+before the deadline.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_promote_main`
+   (`src/commands/integration_commands.py:626`) validates
+   `IntegrationPromoteMainArgs`, resolves the batch, authorizes against the
+   batch's project, and maps `RootPromotionInvariantError` to `runtime_error`.
+   Only `promoted` and `already_promoted` are `success: true`.
+2. **Prepare** — `RootPromotionService.promote`
+   (`src/integration/main_promotion.py:362`) is `prepare` followed by
+   `reconcile`. `prepare` (`src/integration/main_promotion.py:150`) derives a
+   deterministic `intent_id` from `(batch_id, revision)`, returns the existing
+   intent's result if one exists, and otherwise:
+   * snapshots the batch, revision, members, evidence and project under
+     `lock_hierarchy_project` (`_snapshot`,
+     `src/integration/main_promotion.py:1317`);
+   * short-circuits an `empty` batch as `already_promoted`;
+   * runs `_validate_snapshot` (`src/integration/main_promotion.py:1419`),
+     which is where `ci_missing`, `stale` and `reconciliation_blocked` come
+     from;
+   * resolves the attestation for the exact subject (`_resolve_attestation`,
+     `src/integration/main_promotion.py:1527`) — no attestation means
+     `configuration_blocked`;
+   * pins `refs/aq/root-promotions/<intent_id>` to the candidate head so the
+     object survives any later ref churn, then re-validates everything under
+     the lock before inserting the intent.
+3. **Reconcile** — `reconcile`
+   (`src/integration/main_promotion.py:368`) re-reads the intent. A
+   `committed` intent replays its result; a `superseded` one reports
+   `base_moved`. The frozen attestation is re-derived into a
+   `GitHubRepositoryBinding`, the App client is built, and the repository is
+   checked to be canonical (`github.com`, matching origin URL, matching numeric
+   id and full name) — a mismatch is an invariant error, not a soft outcome.
+4. **Observe before writing** — `client.exact_head_ref` reads the real tip of
+   the target branch. If it already equals the prepared head, or the prepared
+   head is an ancestor of it (after `_import_observed_main`,
+   `src/integration/main_promotion.py:1298`, fetches the observed tip so
+   ancestry can be computed locally), the push already happened:
+   `_mark_applied` (`src/integration/main_promotion.py:634`) and
+   `_finalize_root` (`src/integration/main_promotion.py:814`) record the
+   receipt and the outcome is `promoted`/`already_promoted`.
+5. **Mutation claim** — otherwise the intent's `integration_candidate_ref_mutations`
+   claim is consulted. A claim that already carries a `prewrite_at` marker is
+   ambiguous: `_blocked` (`src/integration/main_promotion.py:1262`) reports
+   `reconciliation_blocked` and the operation waits for a human.
+6. **Base movement** — if the batch's `current_revision` has moved on, or the
+   remote is no longer the expected old tip, the command returns `wait` while
+   the claim is still live, and once it expires `_supersede_unattempted`
+   (`src/integration/main_promotion.py:687`) supersedes the intent and reports
+   `base_moved`. Superseding is only ever done for a claim with no prewrite
+   marker — a promotion that might have been attempted is never discarded.
+7. **Execute** — with the remote still at the expected old tip and the
+   attestation unchanged, `_claim_execution`
+   (`src/integration/main_promotion.py:521`) takes an execution nonce
+   (`wait` if it cannot), `_local_fast_forward`
+   (`src/integration/main_promotion.py:1291`) proves the move is a
+   fast-forward (`non_fast_forward` otherwise), an installation token is
+   fetched, and `_mark_prewrite` (`src/integration/main_promotion.py:583`)
+   commits the prewrite marker and an authority deadline.
+8. **Push and prove** — `git.apush_oid_with_app_auth` pushes the candidate head
+   with `expected_old_oid` as the CAS guard and the authority deadline. If the
+   push raises, the remote is read again: if it now equals the prepared head
+   the push in fact landed and is accepted; otherwise the error propagates.
+   `_mark_applied` then records the observed remote, and `_finalize_root`
+   writes the receipts and returns `promoted`.
+
+The `_crash(...)` points threaded through this method are test seams: the
+recovery story is exercised by killing the process at each of them and
+replaying the command.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts and then finalizes one root `integration_promotion_intents` row
+  (`src/database/tables.py:2273`), plus its per-member
+  `integration_root_intent_members` rows.
+* Creates and advances an `integration_candidate_ref_mutations` claim through
+  reserve → prewrite → applied. The prewrite marker is the ambiguity boundary:
+  after it, only observation of the remote may decide the outcome.
+* Pins `refs/aq/root-promotions/<intent_id>` in the retained repository, and
+  may fetch the observed `main` into the local store for an ancestry check.
+* **Mutates the remote default branch** through the GitHub App, with a CAS on
+  the expected old OID.
+* Writes delivery receipts for each promoted member (the command's declared
+  `delivery_evidence` effect).
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause | Next step |
+|---|---|---|
+| `promoted` / `already_promoted` | The candidate is on `main`, now or already. | Expect `integration.batch_promoted` → [`integration_release`](integration_release.md). |
+| `wait` | An execution claim is live, or the base/remote moved while the claim had not expired. | Retry on the next candidate event. |
+| `base_moved` | The revision is no longer current, or the remote left the expected old tip, and the unattempted claim expired. | The policy rebuilds the candidate. |
+| `ci_missing` | The snapshot has no authenticated green evidence for this exact revision. | [`integration_ci_evidence`](integration_ci_evidence.md) must land first. |
+| `non_fast_forward` | The candidate is not a fast-forward of the remote tip. | Rebuild; `main` moved in a way the batch did not incorporate. |
+| `configuration_blocked` | No attestation resolves, no App client, or the attestation changed between prepare and push. | Check the GitHub App / attestation wiring reported by `aq integration status`. |
+| `reconciliation_blocked` | A prewrite marker exists with no proof either way. | Human decision; see [the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication). |
+| `stale` | The batch or revision snapshot no longer validates. | — |
+| `runtime_error` | Malformed request, unknown batch, or a canonical-identity invariant violation. | `aq doctor --check integration.operational` |
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `root-integration-train` policy:
+
+```markdown
+## Rule: promote-green-candidate
+
+On `integration.candidate_green`, call `integration_promote_main` for the exact
+current batch and revision.
+A moved base rebuilds under the frozen batch policy and waits for the next
+durable candidate-result event. If that rebuild conflicts before the repair
+deadline, dispatch the exact operation's existing server-derived primary stage.
+```
+
+## Related
+
+* [`integration_build_candidate`](integration_build_candidate.md) — produces the revision promoted here.
+* [`integration_ci_evidence`](integration_ci_evidence.md) — supplies the green verdict.
+* [`integration_release`](integration_release.md) — closes the train after promotion.
+* Spec: [Concurrent movement of `main`](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#75-concurrent-movement-of-main).

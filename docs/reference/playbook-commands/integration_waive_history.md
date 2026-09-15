@@ -99,24 +99,115 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Before a project may roll integration forward, a functional preflight has to
+come back clean. One of its blockers is historical rather than functional:
+`legacy_pr_merge_gate` — evidence that the repository's past merges came
+through a path the strict integration modes did not own. There is nothing the
+daemon can fix about history, so there has to be a way for a human to say "I
+have looked at this, and it is acceptable".
+
+`integration_waive_history` is that statement, recorded durably. It writes one
+`integration_history_waivers` row naming the operator, the reason, and the
+exact blocker digest being waived, and returns a `waiver_id` that
+[`integration_enable`](integration_enable.md) accepts as the proof for its
+CAS.
+
+It is narrow on purpose. It waives *only* `legacy_pr_merge_gate`, and only
+against a blocker digest the caller has already observed.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. It is a LOCAL operator control exposed as
+`aq integration waive-history <project_id> --reason … --blocker-digest …`, used
+once during rollout.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_waive_history`
+   (`src/commands/integration_commands.py:364`) requires
+   `_integration_local_operator` (`src/commands/integration_commands.py:291`)
+   to report `LOCAL`; a missing `project_id`, `reason` or `blocker_digest` is
+   `not_waivable`. The operator identity passed through is the principal's own
+   `describe()` value, not something the caller supplies.
+2. **Observe** — `IntegrationControlService.waive_history`
+   (`src/integration/controls.py:1001`) first runs `preflight`
+   (`src/integration/controls.py:123`), which reads the functional projection
+   and merges any external probe results. An unknown project is `not_found`.
+3. **Digest agreement** — the caller's `blocker_digest` must equal the digest
+   just observed. If it does not, the outcome is `stale` and the *current*
+   projection is returned, so the operator can see what changed. This is the
+   command's central safety property: a waiver can never be signed against a
+   stale view of the blockers.
+4. **Waivable set** — there must be at least one blocker, and *every* blocker
+   must be `legacy_pr_merge_gate`. A digest that also covers a functional
+   blocker is `not_waivable`; the operator is not allowed to sweep an unrelated
+   wiring problem under the same signature.
+5. **Re-check under lock** — a `waiver_id` is minted, the project is locked
+   with `lock_hierarchy_project`, and `_functional_preflight_on`
+   (`src/integration/controls.py:186`) is re-run *inside* the transaction. If
+   the locked digest differs from the one being waived, the outcome is `stale`
+   and nothing is written — the observation in step 2 was unlocked, so it is
+   confirmed before it is trusted.
+6. **Record** — `append_integration_history_waiver_on`
+   (`src/database/queries/integration_control_queries.py:146`) inserts one
+   `integration_history_waivers` row (`src/database/tables.py:3623`) with the
+   waiver id, project, operator id, reason, blocker digest and timestamp. The
+   result returns `waived` with the `waiver_id` and the digest it covers.
+
+The waiver is evidence, not a mode change: nothing about the project's
+integration mode moves here. The operator then passes `--waiver-id` to
+`aq integration enable`, whose own CAS records it on the rollout transition.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Inserts one `integration_history_waivers` row. Nothing is ever updated or
+  deleted — a waiver is an append-only audit record.
+* Reads the functional preflight twice (once unlocked to observe, once under
+  the project lock to confirm).
+* Changes no project state, no schedule, no batch, and performs no Git or forge
+  I/O.
+* `reason` is a sensitive argument and is redacted in receipts and
+  explanations.
+* Declares a `create` side effect and is naturally idempotent in the sense that
+  matters: a repeat call against a digest that has since changed is refused
+  rather than silently signing a second waiver for a different world.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `waived` | The waiver row exists; `waiver_id` is the value to pass to `integration_enable`. |
+| `stale` | The caller's `blocker_digest` does not match the current — or the locked — projection. The result carries the current projection. |
+| `not_waivable` | Missing arguments; no blockers at all; or at least one blocker that is not `legacy_pr_merge_gate`. |
+| `not_found` | No such project. |
+| `unauthorized` | Not a LOCAL operator. |
+
+Always take the digest straight from the read that precedes it —
+`aq integration status <project>` reports `blockers` and `blocker_digest`
+together — and re-read it if the waiver comes back `stale`. A `not_waivable`
+with functional blockers present means the wiring must be fixed rather than
+waived; the blocker codes are the guide.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. The rollout sequence is:
+
+```bash
+aq integration status agent-queue
+# → blockers: [{"code": "legacy_pr_merge_gate", ...}], blocker_digest: "9f2c…"
+
+aq integration waive-history agent-queue \
+    --reason "pre-rollout history reviewed by the operator on 2026-09-15" \
+    --blocker-digest 9f2c…
+# → waived, waiver_id: integration-waiver-…
+
+aq integration enable agent-queue --mode train \
+    --expected-generation 4 --reason "rollout" --waiver-id integration-waiver-…
+```
+
+## Related
+
+* [`integration_enable`](integration_enable.md) — consumes the `waiver_id`.
+* [`integration_status`](integration_status.md) — produces the `blocker_digest`.
+* [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) — the other one-time rollout step.
+* Guide: [upgrading integration mode](../../guides/upgrade-integration-mode.md).

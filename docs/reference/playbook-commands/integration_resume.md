@@ -95,24 +95,144 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+When a repair operation exhausts its budget or its deadline, it stops in
+`human_required` and stays there. `integration_resume` is the operator's answer:
+it re-arms that exact stage's clock, restores the parent's collection or the
+batch's `repairing` lifecycle, and lets the work continue.
+
+The part worth understanding is what it refuses. A blocked operation may be
+blocked *because something might have been written to a remote and nobody knows
+whether it landed*. Resuming over that would risk a second write. So the
+command first proves there is no ambiguous external mutation — and when it
+cannot, it answers `ambiguous` with the specific blocking references instead of
+resuming.
+
+It also never buys a fresh attempt budget. `attempts` on a repair stage is
+monotone by design; a resume re-arms the clock only, so a stage that fails
+again escalates or re-blocks instead of silently earning a new ladder.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never — this is a LOCAL operator control, exposed as
+`aq integration resume <operation_id>`. It is the deliberate human step after
+[`integration_record_repair`](integration_record_repair.md) or
+[`integration_repair_timeout`](integration_repair_timeout.md) reported
+`block_for_human`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_resume`
+   (`src/commands/integration_commands.py:401`) requires a `LOCAL` principal
+   and a non-empty `operation_id`, then calls
+   `IntegrationControlService.resume` (`src/integration/controls.py:110`),
+   which delegates to `IntegrationRecoveryControls.resume`
+   (`src/integration/recovery_controls.py:55`).
+2. **Stopped-delegate repair** — before anything else,
+   `_recover_stopped_delegate_claim`
+   (`src/integration/recovery_controls.py:335`) clears a pool session's active
+   claim left behind by an older handoff that recorded its detached-workspace
+   proof and then stopped. It recovers only the stage's exact delegate and
+   refuses any live or reused holder.
+3. **Project-then-operation lock** — the operation is read unlocked to resolve
+   its project, `lock_hierarchy_project` is taken, and the operation
+   (`_locked_operation_on`, `src/integration/recovery_controls.py:678`) and its
+   active stage (`_locked_stage_on`,
+   `src/integration/recovery_controls.py:689`) are re-read `FOR UPDATE`. The
+   order matches collection and repair-start so the three cannot deadlock.
+4. **Safe live resolution** — a reserved conflict resolution is normally an
+   ambiguity. The one exception is the exact live, fenced writer with its one
+   frozen intent, identified by `_safe_live_resolution_resume_on`
+   (`src/integration/recovery_controls.py:718`) with a legacy fallback in
+   `_safe_legacy_resolution_resume_on`
+   (`src/integration/recovery_controls.py:898`). Legacy observation stays
+   read-only until every other validation has passed.
+5. **Ambiguity check** — `_ambiguous_writes_on`
+   (`src/integration/recovery_controls.py:930`) collects every unresolved
+   external-mutation reference for the operation, allowing only the exact
+   writer and promotion intent identified in step 4. Any remainder produces
+   `ambiguous` with one blocker per reference, coded
+   `ambiguous_external_write`; a `resolution:` reference gets the more specific
+   detail "a pushed candidate repair is frozen; accept it only after its exact
+   repair lineage validates".
+6. **Already-active operations** — an `active`/`escalated` operation is only
+   resumable as a *retry* of an earlier resume: the stage must be
+   `active`/`awaiting_completion` and carry operator-resume evidence
+   (`_has_operator_resume_evidence`,
+   `src/integration/recovery_controls.py:353`, which reads the persisted
+   deadline identity). Otherwise `invalid_state`. No new deadline is allocated.
+7. **Validate before mutating** — every branch validates first with
+   `validate_only=True` passes: `RepairService.continue_current_parent_conflict_on`
+   (`src/integration/repair.py:490`) checks whether a newer parent conflict
+   must be picked up (`stale` if it no longer matches),
+   `_restore_completed_delegate_on`
+   (`src/integration/recovery_controls.py:460`) checks the delegate can be
+   reopened, and `_restore_parent_collection_on`
+   (`src/integration/recovery_controls.py:360`) checks the parent can be
+   restored. A failure in any of them returns the corresponding state result
+   with nothing changed.
+8. **The human-required path** — for a `human_required` operation whose stage
+   is `failed`/`expired`/`cancelled`, the timeout is taken from the frozen
+   `RepairPolicy` (`primary_seconds` for ordinal 0, `debug_seconds` for
+   ordinal 1) and the resumed state is `active` or `escalated` accordingly. A
+   *prospective* operation/stage pair is built and validated before anything is
+   written. Then, under the same transaction: the parent collection is
+   restored, the stage is CAS-updated to `active` with a fresh `started_at`,
+   `deadline_at` and `repair-deadline-<operation>-resume-<uuid>` identity and a
+   cleared `completed_at` — **`attempts` is untouched** — the operation moves
+   out of `human_required`, the parent conflict continues or the completed
+   delegate is reopened, and a `human_blocked` batch returns to `repairing`
+   with its abort reason cleared.
+9. **Event and notifications** — one `integration.repair_exhausted` event is
+   enqueued (`_event_on`, `src/integration/recovery_controls.py:1116`), which
+   is what makes the policy dispatch a writer again. Collected transitions are
+   published as blocked flips, settled and ready notifications after the
+   transaction commits.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Re-arms the `integration_repair_stages` row (state, `started_at`,
+  `deadline_at`, `deadline_event_id`, `completed_at`) without touching
+  `attempts`.
+* Moves `integration_repair_operations` out of `human_required` to `active` or
+  `escalated`.
+* Restores the parent's collection state, or reopens the completed repair
+  delegate, and may clear a stopped pool session's stale claim.
+* Returns a `human_blocked` batch to `repairing` and clears
+  `human_abort_reason`.
+* Enqueues one `integration.repair_exhausted` event so the policy re-dispatches.
+* Authorises a legacy resolution recovery where one was identified.
+* Performs no Git I/O and no remote writes.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `resumed` | The stage's clock is re-armed and the operation is active again. |
+| `ambiguous` | Unresolved external-mutation evidence. The `blockers[]` name each reference. |
+| `invalid_state` | No active stage, or an operation that is not blocked and carries no operator-resume evidence. |
+| `not_found` | No such operation. |
+| `unauthorized` | Not a LOCAL operator. |
+
+`ambiguous` naming a `resolution:` reference is the common one, and the fix is
+specific rather than general: resolve that frozen push first with
+[`integration_recover_candidate_member`](integration_recover_candidate_member.md)
+(root candidate) or
+[`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md)
+(parent delivery), then resume. `aq integration abort <operation_id> --reason
+…` is the alternative when the work should not continue at all.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. The operator sequence is:
+
+```bash
+aq integration status agent-queue          # find the blocked operation id
+aq integration resume <operation_id>
+```
+
+## Related
+
+* [`integration_abort`](integration_abort.md) — the other terminal answer to a blocked operation.
+* [`integration_retry_cleanup`](integration_retry_cleanup.md) — the equivalent recovery for cleanup items.
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — what the re-emitted event drives.
+* Spec: [Human escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#93-human-escalation).

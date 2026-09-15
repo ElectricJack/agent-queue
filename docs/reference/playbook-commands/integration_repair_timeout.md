@@ -52,24 +52,120 @@ Projected into the run receipt: `operation_id`, `stage`, `action`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Every repair stage carries an absolute deadline, not a relative one: the stage
+row stores `deadline_at` and a `deadline_event_id`, and a timer eventually
+presents that identity back to the daemon. `integration_repair_timeout` is what
+the timer's event calls. It answers one question — *may this exact stage be
+expired now?* — and, when the answer is yes, performs the same escalation the
+attempt budget would have performed: stage 0 opens the debug stage, stage 1
+blocks for a human.
+
+The command is deliberately conservative. A deadline that has passed is not on
+its own sufficient: if a remote write might still be in flight, the stage is
+reported `not_due` and left alone, because expiring a stage whose writer is
+mid-push would make the remote state ambiguous.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.repair_deadline_due`. The reviewed `hierarchical-delivery`
+policy's `expire-repair-stage` rule calls it with the event's `operation_id`
+and `stage` and completes on `expired`, `not_due` and `already_terminal`,
+failing only on `stale`. Escalation is read from the typed `action` field, not
+from a renamed outcome — the playbook never decides that the debug stage should
+open.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_repair_timeout`
+   (`src/commands/integration_commands.py:1018`) validates
+   `IntegrationRepairTimeoutArgs` (parse failure → `stale`) and authorizes via
+   `_repair_command_authorized` (`src/commands/integration_commands.py:964`).
+   Everything except `stale` is reported `success: true`.
+2. **Stage bounds** — `RepairService.expire`
+   (`src/integration/repair.py:1374`) accepts only ordinals `0` and `1`.
+3. **Locking** — the operation and the named stage row are both locked
+   `FOR UPDATE` inside one immediate transaction.
+4. **Terminal replay** — a stage already `failed` or `expired` returns
+   `already_terminal` with the action its terminal transition implies
+   (`dispatch_debug` from stage 0, `block_for_human` from stage 1), so a
+   redelivered timer event re-drives the same next step instead of vanishing.
+   A `passed` or `cancelled` stage returns `already_terminal` with action
+   `none`.
+5. **Currency** — the operation must be `active` or `escalated`, its
+   `active_stage` must equal the requested ordinal, and the stage must be
+   `active` or `awaiting_completion`; otherwise `stale` / `ignore`.
+6. **The clock** — a missing or future `deadline_at` is `not_due` / `wait`.
+7. **In-flight write guards** — three separate checks can turn a genuinely
+   overdue stage back into `not_due` / `wait`:
+   * a reserved row in `integration_candidate_ref_mutations` for this operation
+     and stage — a candidate ref write may have reached the remote;
+   * a reserved row in `integration_attestation_publications` for this
+     operation that either has a prewrite marker or has not yet expired;
+   * for a batch operation whose stage is `awaiting_completion`, a still-current
+     root success (`_root_success_is_current_on`,
+     `src/integration/repair.py:2171`) — reported as `not_due` /
+     `awaiting_promotion`, because promotion, not the clock, owns that stage.
+8. **Expiry** — for stage 0, `_activate_debug_on`
+   (`src/integration/repair.py:2992`) marks the primary stage `expired` and
+   opens ordinal 1 with the debug policy and the inherited dossier; the result
+   is `expired` / `dispatch_debug` naming stage `1`. For stage 1,
+   `_human_block_on` (`src/integration/repair.py:3077`) marks the stage
+   `expired`, drives the operation to `human_required`, blocks the owning work
+   and returns a transition; the result is `expired` / `block_for_human`.
+9. **Publication** — the human-block transition's flips and notifications are
+   published after the transaction commits.
+
+Expiry never resets `attempts`: the debug stage starts with its own budget, and
+a human resume ([`integration_resume`](integration_resume.md)) re-arms only the
+clock.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Updates the named `integration_repair_stages` row to `expired` and stamps
+  `completed_at`.
+* On stage 0, inserts the ordinal-1 stage row and advances
+  `integration_repair_operations.active_stage`; on stage 1, sets the operation
+  to `human_required` and, for a batch target, moves the batch lifecycle to
+  `human_blocked`.
+* Reads `integration_candidate_ref_mutations` and
+  `integration_attestation_publications` to decide whether a write is in
+  flight; writes neither.
+* No Git I/O and no remote calls.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Action | Cause |
+|---|---|---|
+| `expired` | `dispatch_debug` | Stage 0 timed out; ordinal 1 is open. |
+| `expired` | `block_for_human` | Stage 1 timed out; the operation is blocked. |
+| `not_due` | `wait` | Deadline in the future, or a reserved ref mutation / attestation publication may still be writing. |
+| `not_due` | `awaiting_promotion` | A batch stage is holding a current root success; promotion closes it. |
+| `already_terminal` | `dispatch_debug` / `block_for_human` / `none` | Replayed timer for a stage that already reached its terminal state. |
+| `stale` | `ignore` | Unknown operation or stage, an ordinal other than 0/1, or a stage that is no longer the operation's active one. |
+| `unauthorized` | — | Session principal, or a playbook outside the operation's project. |
+
+A stage that stays `not_due` across several timer firings is the signal to look
+for a stuck mutation: `aq integration status <project>` reports
+`pending_publications`, and
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication)
+covers the reconciliation path.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: expire-repair-stage
+
+On `integration.repair_deadline_due`, call `integration_repair_timeout` with
+`operation_id` and `stage`. Outcomes `expired`, `not_due`, and `already_terminal`
+complete; `stale` fails. Escalation remains the command's typed `action`, not a renamed
+timeout outcome.
+```
+
+## Related
+
+* [`integration_record_repair`](integration_record_repair.md) — the other route to the same escalations.
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
+* [`integration_resume`](integration_resume.md) — re-arms an expired stage's clock after a human decision.
+* Spec: [One higher-intelligence debug escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#92-one-higher-intelligence-debug-escalation).

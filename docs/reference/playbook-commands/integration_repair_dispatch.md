@@ -81,24 +81,146 @@ Redacted in receipts and explanations: `fence`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A started repair stage is a budget and a deadline; it has no hands. This
+command gives it hands. `integration_repair_dispatch` creates the *repair
+delegate* — an ordinary paused task pinned to the integration branch and routed
+to the stage's intelligence class — and then moves the branch's writer fence
+from whoever holds it to that delegate, only after the previous writer has
+provably stopped and detached.
+
+It is the most safety-critical command in the family, because it is the moment
+a branch changes hands. Every ordering decision in it exists so that two
+writers can never believe they own the same ref: the durable task and the
+ownership relationship are committed *before* the callback that stops the
+predecessor, and every identity is re-verified afterwards.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Twice in the reviewed policies:
+
+* `hierarchical-delivery` calls it for literal `stage` zero immediately after
+  [`integration_repair_start`](integration_repair_start.md) returns `started`
+  or `already_started` on a `delivery.ready` conflict, and for literal `stage`
+  one on `integration.repair_exhausted`.
+* `root-integration-train` dispatches the operation's *existing*
+  server-derived stage on `integration.candidate_red` and on a candidate
+  conflict during build, passing `batch_id`, `revision` and `head_sha` as
+  routing identity only.
+
+Both treat `dispatched`, `already_dispatched` and `writer_reused` as completing
+the run and `busy`, `configuration_blocked`, `stale` and `human_required` as
+failing it. Neither invents a stage ordinal beyond the literal 0/1 the rule
+names.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler and candidate-subject pin** —
+   `_cmd_integration_repair_dispatch`
+   (`src/commands/integration_commands.py:1037`) authorizes through
+   `_repair_command_authorized` (`src/commands/integration_commands.py:964`).
+   When the optional `batch_id`/`revision`/`head_sha` triple is supplied it is
+   checked against `integration_candidate_revisions` and the batch's
+   `current_revision`: a caller pointing at a superseded candidate gets
+   `stale` rather than a writer on the wrong subject. With `stage` omitted the
+   handler uses the operation's own `active_stage`.
+2. **Effective stage** — `RepairService.dispatch`
+   (`src/integration/repair.py:974`) accepts only ordinals 0 and 1 and passes
+   the request through `_effective_dispatch_stage_on`
+   (`src/integration/repair.py:2182`), which maps a request for a stage the
+   operation has already left onto the live one.
+3. **Context** — `_dispatch_context_on` (`src/integration/repair.py:2229`)
+   resolves the operation, the stage row, the `BranchKey` target and the
+   project; a missing context is `stale`.
+4. **Verifier reuse** — `_reuse_verifier_on`
+   (`src/integration/repair.py:2324`) short-circuits with `writer_reused` when
+   the stage's work belongs to a verifier that is already attached to the
+   branch. No new task is created and no fence moves.
+5. **Delegate identity** — if the stage already names a `repair_task_id`, that
+   task must still exist (or be restorable from the archive via
+   `_restore_archived_delegate_on`, `src/integration/repair.py:2675`), must
+   have `writer_kind == "repair_delegate"`, and must match the operation,
+   target and project — otherwise `human_required`. If the stage names no
+   task, the stage's `intelligence_class`/`profile_id` route is validated
+   (`configuration_blocked` when it is not routable), a task id
+   `repair-<operation_id>-<stage>` is reserved, an id collision is
+   `human_required`, and a `PAUSED` task is created with `created_by_kind =
+   "integration_repair"`, the integration branch as `branch_name`, and a
+   description built by `_delegate_description_on`
+   (`src/integration/repair.py:2732`) from the stage dossier. Linking the task
+   to the stage is a conditional UPDATE; losing that CAS raises rather than
+   producing a second writer.
+6. **Fence transfer (outside the transaction)** — `BranchOwnership.get_owner`
+   (`src/integration/ownership.py:61`) reads the current owner. If it is
+   already this delegate in role `repair`, the existing fence is reused and the
+   call will report `already_dispatched`. Otherwise:
+   * a retained *primary* writer being escalated to stage 1 goes through
+     `_retained_debug_handoff` (`src/integration/repair.py:2460`), which keeps
+     the workspace attached across the escalation;
+   * anything else must match the operation's expected predecessor and is moved
+     by `BranchOwnership.transfer` (`src/integration/ownership.py:117`), which
+     refuses while a reserved external mutation exists, marks the row
+     `handoff_pending`, calls the server-side confirmer to prove the old writer
+     stopped and detached, and only then claims the released row with a new
+     fence token. `BranchBusy`/`StaleFence` become `busy`.
+7. **Post-transfer revalidation** — a second immediate transaction re-reads the
+   context, the `integration_branch_owners` row, the task, and (when attached)
+   the session and workspace. It requires the owner to be this delegate in role
+   `repair` at exactly the fence token just obtained, and the pair
+   (owner state, task status) to be a coherent *reserved* (`PAUSED`/`READY`) or
+   *attached* (`ASSIGNED`/`IN_PROGRESS` with a live session whose `work_dir` is
+   the locked workspace path) shape. Anything else is `human_required`.
+8. **Release** — a reserved delegate still `PAUSED` is transitioned to `READY`
+   under context `integration_repair_dispatch`, and the ready notifications are
+   published after commit. The result carries the delegate id, `writer_kind`
+   and the new `fence`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Creates (or restores, or reuses) one task — the repair delegate — and links
+  it to the stage row's `repair_task_id`/`writer_kind`.
+* Moves `integration_branch_owners` (`src/database/tables.py:2207`) through
+  `handoff_pending` to a new owner and fence token. This is the durable proof
+  of who may write the branch; every promotion and resolution command
+  re-checks it.
+* Transitions the delegate `PAUSED → READY`, which is what makes an ordinary
+  worker or pool session pick it up.
+* Calls the orchestrator's handoff confirmer, which may stop a session and
+  detach a workspace. That is a real, externally visible effect and is why the
+  durable rows are committed first.
+* Performs no Git I/O itself; the delegate does the actual repairing.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause | What to do |
+|---|---|---|
+| `dispatched` | A fresh delegate now owns the branch. | — |
+| `already_dispatched` | The delegate already held the fence; replay. | — |
+| `writer_reused` | An attached verifier is doing the work; no delegate needed. | — |
+| `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#publication-pending). |
+| `configuration_blocked` | The stage's intelligence class / profile does not resolve to a routable worker. | Fix the route, then re-dispatch. |
+| `stale` | Unknown operation or stage, or the pinned candidate subject is no longer current. | Expected during a rebuild; the next candidate event re-drives it. |
+| `human_required` | Delegate identity mismatch, id collision, missing owner row, or an incoherent owner/task/session shape after the transfer. | `aq integration status <project>` → `ownership`, and [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone). |
+
+Worth knowing: `repair-<operation_id>-<stage>` is a predictable task id, so
+`aq task show repair-<operation_id>-0` is usually the fastest way to read the
+dossier the delegate was given.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: dispatch-debug
+
+On `integration.repair_exhausted`, call `integration_repair_dispatch` with
+`operation_id` and literal `stage` one. Outcomes `dispatched`, `already_dispatched`, and
+`writer_reused` complete; `busy`, `configuration_blocked`, `stale`, and
+`human_required` fail.
+```
+
+## Related
+
+* [`integration_transfer_owner`](integration_transfer_owner.md) — the same handoff mechanism, driven explicitly.
+* [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) — what the dispatched delegate calls when the conflict is a candidate member.
+* [`integration_resolve_conflict`](integration_resolve_conflict.md) — what it calls for a parent delivery conflict.
+* Spec: [Primary integration repair](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#91-primary-integration-repair).

@@ -52,24 +52,128 @@ Projected into the run receipt: `action`, `attempts`, `stage`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A repair stage is bounded by an attempt budget, and this command is the only
+thing that spends it. `integration_record_repair` binds one already-persisted
+check-evidence row to the operation's current stage, decides whether that
+evidence *counts* as an attempt, and returns the action the caller should take
+next: keep repairing, retry infrastructure noise for free, escalate to the
+debug stage, or stop and wait for a human.
+
+The separation matters. A CI event is not itself evidence — the daemon records
+an `integration_check_evidence` row (`src/database/tables.py:3149`) with the
+exact operation, subject, conclusion and classification, and this command
+consumes that row by id. A playbook can therefore never assert "the checks
+passed"; it can only point at a row the server already wrote.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.ci_completed` where `conclusion` is `failure`. The reviewed
+`hierarchical-delivery` policy's `record-repair-result` rule calls it with the
+event's `operation_id` and `evidence_id` and treats `continue` and `escalate`
+as completing the run, `human_required` and `budget_exhausted` as failing it.
+
+The success case takes a different route on purpose: a green parent check goes
+to [`integration_parent_verify`](integration_parent_verify.md), not here.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_record_repair`
+   (`src/commands/integration_commands.py:996`) validates
+   `IntegrationRecordRepairArgs` (a parse failure is reported as
+   `budget_exhausted`, the conservative answer) and authorizes through
+   `_repair_command_authorized` (`src/commands/integration_commands.py:964`).
+   Only `continue` and `escalate` are marked `success: true`.
+2. **Locking** — `RepairService.record_result`
+   (`src/integration/repair.py:802`) opens an immediate transaction and locks
+   `integration_repair_operations` `FOR UPDATE`, then the active stage.
+3. **Duplicate evidence** — `integration_repair_stage_evidence`
+   (`src/database/tables.py:3362`) is keyed by `evidence_id`. If the row is
+   already linked, the command replays the stored `result_outcome` with action
+   `duplicate` and the linked stage's current `attempts`; an escalating replay
+   also re-reports the stage it escalated to. The budget is never charged
+   twice for the same evidence.
+4. **Terminal short-circuit** — an operation already `human_required` whose
+   stage is `failed` or `expired` answers `budget_exhausted` /
+   `block_for_human` without touching anything. A stage that is not `active` or
+   `awaiting_completion` answers `continue` / `stale`.
+5. **Evidence matching** — `_evidence_matches`
+   (`src/integration/repair.py:3283`) requires the evidence row to name this
+   exact operation, stage subject and head. Mismatched evidence is
+   `continue` / `stale`; it is never counted and never rejected loudly, because
+   the usual cause is a late event for a subject that has since been rebuilt.
+6. **Counting** — evidence counts against the budget only when its
+   `classification` is not `infrastructure` **and** its `conclusion` is
+   `success` or `failure`. Infrastructure noise returns action
+   `infrastructure_retry`, anything else inconclusive returns `inconclusive`,
+   and in both cases only the dossier is updated.
+7. **The four counted paths** —
+   * *success* → the stage moves to `awaiting_completion`, recording
+     `success_subject` and `success_evidence_id`; action `completion_ready`.
+     The stage is not closed here: promotion or parent completion closes it.
+   * *failure below the limit* → `attempts` is incremented and the dossier
+     grows; action `repair`.
+   * *failure at the limit on stage 0* → `_activate_debug_on`
+     (`src/integration/repair.py:2992`) opens ordinal 1 with the debug policy
+     and the primary stage's dossier; outcome `escalate`, action
+     `dispatch_debug`, result `stage: 1`.
+   * *failure at the limit on stage 1* → `_human_block_on`
+     (`src/integration/repair.py:3077`) drives the operation to
+     `human_required`, blocks the owning work and (for a batch) moves the
+     batch lifecycle to `human_blocked`; outcome `human_required`, action
+     `block_for_human`.
+   The limit itself comes from the frozen `RepairPolicy` on the stage row —
+   `primary_attempts` for ordinal 0, `debug_attempts` for ordinal 1.
+8. **Ledger row** — every call that reaches this point inserts one
+   `integration_repair_stage_evidence` row recording `counted_attempt`,
+   `result_outcome` and `result_action`, which is what makes step 3 possible.
+9. **Publication** — a human block returns a transition whose blocked flips,
+   settled and ready notifications are published after the transaction commits.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Always inserts one row into `integration_repair_stage_evidence` (unless the
+  evidence was already linked, or the call short-circuited as stale/terminal).
+* Updates `integration_repair_stages`: `attempts`, `dossier`, and on success
+  `state`, `success_subject`, `success_evidence_id`.
+* On escalation, inserts the ordinal-1 stage row and advances the operation's
+  `active_stage`. On exhaustion, updates the operation to `human_required` and
+  the batch to `human_blocked`.
+* Reads `integration_check_evidence`; never writes it, and never contacts CI.
+* No Git I/O, no task creation, no branch ownership change.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Action | Cause |
+|---|---|---|
+| `continue` | `repair` | Counted failure still inside the budget — keep repairing. |
+| `continue` | `infrastructure_retry` / `inconclusive` | Evidence did not count; retry is free. |
+| `continue` | `stale` | Unknown operation, evidence for another subject, or a stage that is no longer live. |
+| `continue` | `completion_ready` | Counted success; the stage now awaits completion. |
+| `escalate` | `dispatch_debug` | Primary budget exhausted; ordinal 1 is open and needs a dispatch. |
+| `human_required` | `block_for_human` | Debug budget exhausted; the operation is blocked. |
+| `budget_exhausted` | `block_for_human` | The operation was already blocked when the call arrived. |
+| `budget_exhausted` | — | Malformed arguments (handler-level). |
+
+`aq integration status <project>` shows the live stage with its `attempts`,
+`state` and `deadline_at` under `repair[]`; the resulting repair delegate is
+described in [Repair tasks](../../guides/integration-troubleshooting.md#repair-tasks).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: record-repair-result
+
+On `integration.ci_completed` where `conclusion` is `failure`, call
+`integration_record_repair` with `operation_id` and `evidence_id`. Outcomes `continue`
+and `escalate` complete; `human_required` and `budget_exhausted` fail. The typed result
+`action` carries escalation decisions; the event is not itself success evidence.
+```
+
+## Related
+
+* [`integration_repair_start`](integration_repair_start.md) — opens the stage this command spends.
+* [`integration_repair_dispatch`](integration_repair_dispatch.md) — acts on `dispatch_debug`.
+* [`integration_resume`](integration_resume.md) — the operator answer to `block_for_human`.
+* Spec: [Roll-forward repair and escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#9-roll-forward-repair-and-escalation).

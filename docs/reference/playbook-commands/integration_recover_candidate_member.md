@@ -53,24 +53,138 @@ Projected into the run receipt: `batch_id`, `revision`, `member_ordinal`, `invar
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A candidate-member repair has an awkward middle state: the delegate pushed its
+resolution to the private repair ref, and then its bounded stage expired before
+the resolution was accepted onto the candidate branch. The push is durable
+evidence that exists on the remote; the stage that authorised it is gone. The
+operation is blocked, and nothing in the normal path can move it — resuming it
+would dispatch a fresh writer while an unexamined pushed proof is still
+outstanding.
+
+`integration_recover_candidate_member` resolves that state, and only that
+state, from the LOCAL operator surface. It validates the frozen push's lineage
+and then does one of two things:
+
+* **valid** — re-arms this exact stage and runs the ordinary fenced acceptance
+  path, so the work is not thrown away; or
+* **invalid** — retains the push verbatim and marks it terminally `rejected`,
+  which is what makes a subsequent ordinary
+  [`integration_resume`](integration_resume.md) safe to dispatch a freshly
+  fenced writer.
+
+It never edits the integration branch directly and never removes the private
+pushed ref.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. The handler requires a `LOCAL` principal, and the supported surface is
+`aq integration recover-candidate-member <reservation_id>`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_recover_candidate_member`
+   (`src/commands/integration_commands.py:435`) requires
+   `_integration_local_operator` (`src/commands/integration_commands.py:291`)
+   to report LOCAL, validates
+   `IntegrationRecoverCandidateMemberArgs` (parse failure → `stale`), reads the
+   `integration_candidate_resolutions` row (`src/database/tables.py:2713`)
+   directly, resolves its batch, and builds the candidate service through
+   `_integration_candidate_service`
+   (`src/commands/integration_commands.py:523`). `accepted`,
+   `already_accepted` and `rejected` are all `success: true` — rejection is a
+   successful *resolution of ambiguity*, not a failure.
+2. **State gate** — `CandidateService.recover_repair`
+   (`src/integration/candidates.py:935`) replays an `accepted` reservation as
+   `already_accepted` and a `rejected` one as `rejected` with its stored
+   invariant. Any state other than `pushed` raises
+   `CandidateAuthorizationError` → `stale`: there is nothing ambiguous to
+   recover.
+3. **Fetch the proof** — the resolved head is fetched into
+   `refs/aq/integration-resolutions/<reservation_id>` (`_fetch_oid`,
+   `src/integration/candidates.py:3279`) so the objects are locally available
+   for inspection.
+4. **Lineage validation** — a `CandidateRepairLineage` is rebuilt entirely from
+   the stored reservation — batch, revision, member ordinal, operation, stage,
+   partial head, source base, source head, resolved head and repair commits —
+   and checked by `_repair_lineage_failure`
+   (`src/integration/candidates.py:3036`). Nothing in the check comes from the
+   caller; the only argument is the reservation id.
+5. **Valid → re-arm and accept** — `_arm_terminal_recovery`
+   (`src/integration/candidates.py:979`) locks the project, reservation,
+   operation and stage, and requires the reservation still `pushed`, the
+   operation `human_required`, its `active_stage` equal to the reservation's
+   stage, and the stage `failed`/`expired`/`cancelled`. It then re-arms *this
+   exact stage*: `state="active"`, a fresh `started_at`/`deadline_at` from the
+   frozen policy (`primary_seconds` for ordinal 0, `debug_seconds` for
+   ordinal 1) and a new `repair-deadline-<operation>-recover-<uuid>` identity;
+   the operation returns to `active`/`escalated` and a `human_blocked` batch
+   returns to `repairing`. The attempt budget and member identity are
+   **not** replaced. If any CAS is lost, the outcome is `stale`. On success it
+   calls the ordinary `accept_repair` (`src/integration/candidates.py:837`),
+   with all of its usual re-reads: current revision and stage, an
+   authenticated read of the repair ref, object fetch, lineage, tree and
+   reserved-path checks, handoff confirmation, and the fenced push of the
+   resolved head onto the candidate branch.
+6. **Invalid → reject** — `_reject_pushed_repair`
+   (`src/integration/candidates.py:1033`) refuses to act on historical mutation
+   evidence. It performs a fresh authenticated read of the exact repair ref and
+   only proceeds when the remote still holds the reservation's resolved head
+   and the writer is no longer live. The reservation becomes `rejected` with
+   the failing invariant recorded in `rejection_evidence`, which the result
+   surfaces as `invariant`.
+
+The re-arm deliberately creates a genuinely new bounded stage even when the
+immediately-following handoff returns `wait`; retaining the terminal clock
+would strand an operation that is once again active.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Moves the `integration_candidate_resolutions` row from `pushed` to
+  `accepted` or `rejected`, recording the rejection invariant when it rejects.
+* On the accept path: re-arms the `integration_repair_stages` row, returns the
+  operation to `active`/`escalated`, returns a `human_blocked` batch to
+  `repairing`, confirms and moves branch ownership, and **pushes the resolved
+  head onto the candidate integration branch**.
+* Fetches remote objects and pins
+  `refs/aq/integration-resolutions/<reservation_id>` locally.
+* Never deletes the private repair ref and never rewrites the integration
+  branch outside the ordinary fenced acceptance path.
+* Idempotency is keyed on `reservation_id`.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `accepted` / `already_accepted` | The frozen push was valid and is now on the candidate branch. |
+| `rejected` | The push failed lineage validation and has been retained as terminal evidence. The `invariant` field names the check that failed. |
+| `wait` | Acceptance could not complete yet — the handoff or a ref mutation is still settling. Re-run it. |
+| `stale` | Not LOCAL; unknown or malformed reservation; the reservation is not in `pushed`; its batch is gone; or the operation/stage no longer matches the shape a recovery requires. |
+
+After a `rejected`, the operation is still blocked and the normal next step is
+[`integration_resume`](integration_resume.md), which will now find no ambiguous
+write blocking it and can dispatch a fresh writer. Use `aq integration status
+<project>` to find the reservation id: the `repair[]` projection names the
+operation and stage, and
+[repair tasks](../../guides/integration-troubleshooting.md#repair-tasks)
+explains the delegate side.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. An operator on the daemon host runs:
+
+```bash
+aq integration recover-candidate-member <reservation_id>
+```
+
+and then, if the answer was `rejected`:
+
+```bash
+aq integration resume <operation_id>
+```
+
+## Related
+
+* [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) — creates the reservation this command resolves.
+* [`integration_resume`](integration_resume.md) — the follow-up after a rejection.
+* [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) — the parent-delivery equivalent.
+* Spec: [Human escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#93-human-escalation).

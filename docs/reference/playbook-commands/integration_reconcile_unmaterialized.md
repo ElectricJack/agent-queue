@@ -102,24 +102,126 @@ Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `polic
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Turning on `hierarchy` or `train` mode for a project that already has a queue
+leaves a gap: tasks created before the rollout have no `repo_id`, so they have
+no branch origin, and hierarchical integration has nothing to attach them to.
+Such a task can sit `READY` forever without ever being claimed.
+
+`integration_reconcile_unmaterialized` closes that gap once. It binds every
+task in the project that has no repository to the project's designated
+integration repository, reserves the branch origins they were missing, and
+records the whole thing as a rollout transition — all inside one transaction
+that advances the same project-wide generation fence the rollout controls use.
+
+The fence is the point. Binding work to a route creates immutable identity, so
+a caller that has not observed the current route configuration is not allowed
+to do it.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. It is a LOCAL operator control, exposed as
+`aq integration reconcile-unmaterialized <project_id> --expected-generation N
+--reason …`, run once during rollout — typically straight after
+`aq integration enable`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_reconcile_unmaterialized`
+   (`src/commands/integration_commands.py:378`) requires
+   `_integration_local_operator` (`src/commands/integration_commands.py:291`)
+   to report `LOCAL`; a missing or non-integer `project_id`,
+   `expected_generation` or `reason` is `blocked`. It passes the hierarchy
+   service in, and maps a `HierarchyError` to the namespaced outcomes
+   `hierarchy.invalid` / `hierarchy.busy`.
+2. **Argument sanity** —
+   `IntegrationControlService.reconcile_unmaterialized_tasks`
+   (`src/integration/controls.py:881`) raises on a negative generation or a
+   blank reason/operator before opening a transaction.
+3. **Lock** — `lock_hierarchy_project` plus a `SELECT … FOR UPDATE` on the
+   project row. An unknown project is `not_found`.
+4. **Generation fence** — the project's
+   `hierarchical_integration_generation` must equal `expected_generation`, or
+   the outcome is `stale` with the current generation reported back.
+5. **Mode and repository** — the project must be in `hierarchy` or `train`
+   mode (`blocked` otherwise: "unmaterialized task recovery requires hierarchy
+   or train mode"), and its `integration_repository_id` must name a repository
+   that genuinely belongs to the project (`blocked` otherwise).
+6. **Nothing to do** — a single probing select for any task in the project with
+   `repo_id IS NULL` short-circuits to `nothing_to_reconcile`, leaving the
+   generation untouched.
+7. **Advance the fence first** —
+   `cas_project_integration_control_on`
+   (`src/database/queries/integration_control_queries.py:42`) compare-and-swaps
+   the project's control row at the observed generation, preserving the
+   effective mode, desired mode and draining flag. Losing that CAS is `stale`.
+   The generation is advanced *before* any identity is created, so a
+   concurrent rollout change cannot interleave with the binding.
+8. **Bind the tasks** —
+   `HierarchyIntegration.reconcile_unmaterialized_tasks_on`
+   (`src/integration/hierarchy.py:1130`) runs inside the same transaction. It
+   binds the unmaterialized tasks to the repository and reserves their branch
+   origins at `origin_generation = generation + 1`, returning the affected task
+   ids. It is the same code path that files a child's origin, so the invariants
+   are not duplicated.
+9. **Audit** — `append_integration_rollout_transition_on`
+   (`src/database/queries/integration_control_queries.py:68`) records a
+   transition row with a fresh id, the new generation, unchanged old/new
+   effective and desired modes, the draining flag, the operator, the reason,
+   the current blocker digest (re-derived under the lock by
+   `_functional_preflight_on`, `src/integration/controls.py:186`) and the
+   unchanged legacy policy. The reconciliation appears in the rollout history
+   exactly like a mode change, because it moved the same fence.
+10. **Result** — `reconciled`, with the new `generation`, the `repository_id`
+    everything was bound to, and the list of `task_ids`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Advances the project's `hierarchical_integration_generation` by one. Every
+  parent verification pinned to the old generation becomes stale — that is
+  intended, and is why this is a one-time rollout step rather than routine
+  maintenance.
+* Sets `repo_id` on the previously unmaterialized tasks and reserves one
+  `task_branch_origins` row per task.
+* Appends one `integration_rollout_transitions` row
+  (`src/database/tables.py:3647`) for the audit trail.
+* All of it is one transaction under the project's hierarchy lock — either
+  every task is bound and the fence advanced, or nothing is.
+* No Git I/O: reserving an origin records the intent; materializing the branch
+  happens later on the ordinary path.
+* `reason` is a sensitive argument and is redacted in receipts.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `reconciled` | Tasks are bound and origins reserved; `task_ids` lists them. |
+| `nothing_to_reconcile` | No task in the project lacks a repository. |
+| `stale` | `expected_generation` does not match, or the control CAS was lost to a concurrent rollout change. |
+| `blocked` | Missing/invalid arguments; the project is not in `hierarchy` or `train` mode; or the designated repository does not belong to the project. |
+| `not_found` | No such project. |
+| `hierarchy.invalid` / `hierarchy.busy` | The hierarchy service refused the binding — see the error detail. |
+| `unauthorized` | Not a LOCAL operator. |
+
+The symptom that leads here is a task that stays `READY` and is never claimed;
+[a branch origin was never materialized](../../guides/integration-troubleshooting.md#a-branch-origin-was-never-materialized)
+walks it end to end. Take `expected_generation` from
+`aq integration status <project>` immediately before running the command.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. The rollout sequence is:
+
+```bash
+aq integration status agent-queue           # → generation: 5
+aq integration reconcile-unmaterialized agent-queue \
+    --expected-generation 5 \
+    --reason "bind pre-rollout queue to the designated integration repository"
+# → reconciled, generation: 6, task_ids: [...]
+```
+
+## Related
+
+* [`integration_enable`](integration_enable.md) — the mode CAS that shares this generation fence.
+* [`integration_waive_history`](integration_waive_history.md) — the other one-time rollout step.
+* [`integration_file_children`](integration_file_children.md) — the ordinary path that reserves an origin for new work.
+* Guide: [upgrading integration mode](../../guides/upgrade-integration-mode.md).

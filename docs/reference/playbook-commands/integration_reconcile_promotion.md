@@ -52,24 +52,123 @@ Redacted in receipts and explanations: `prepared_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+Every child delivery goes through a durable *promotion intent*: a row that
+records, before anything is pushed, exactly which commit will replace exactly
+which old tip on exactly which branch. `integration_reconcile_promotion` is the
+reader of that contract. It compares the frozen intent with what the remote
+actually says now and, when the remote proves the write landed, finalizes the
+intent into a committed receipt.
+
+This is the command that makes an interrupted push safe. The daemon never has
+to remember whether it pushed; it can always ask the remote and decide with the
+frozen intent in hand. That also means the command deliberately refuses to
+*guess*: a remote still sitting at the expected old tip is `not_applied`, and a
+remote that moved somewhere unrelated is `invariant_error`, never a silent
+success.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+On `integration.resolution_push_observed`. The reviewed
+`hierarchical-delivery` policy's `reconcile-resolution-push` rule binds the
+event's `promotion_intent_id` to `intent_id`, completes on `applied`, and fails
+on `not_applied` and `invariant_error`. The rule's own note is the important
+caveat: the lifecycle fact "triggers exact remote reconciliation but is not a
+receipt or check-success assertion".
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_reconcile_promotion`
+   (`src/commands/integration_commands.py:1315`) validates
+   `IntegrationReconcilePromotionArgs`, loads the intent (absent, or without a
+   project → `invariant_error`), authorizes against the intent's project, and
+   maps the exception taxonomy: `PromotionNotApplied` → `not_applied`;
+   `PromotionConflict`/`PromotionInvariantError`/`PromotionTargetMoved` →
+   `invariant_error`; `PromotionRuntimeError`/`GitError` → `runtime_error`.
+2. **State dispatch** — `PromotionService.reconcile`
+   (`src/integration/promotion.py:706`) branches on the intent's state before
+   touching Git:
+   * `committed` → return the existing value; reconciliation is idempotent.
+   * `conflict` → raise `PromotionConflict` with the stored diagnostics.
+   * `resolution_reserved` → hand off to `_reconcile_resolution`
+     (`src/integration/promotion.py:732`), the repair-resolution variant.
+   * otherwise the intent must have a `prepared_sha`, or it is an invariant
+     error.
+3. **Frozen repository** — `_assert_frozen_repository`
+   (`src/integration/promotion.py:1283`) re-checks that the intent's project
+   and origin URL still match the resolved repository and that the retained
+   Git directory exists. Promotion never follows a repository whose identity
+   has changed under it.
+4. **Prepared-push reconciliation** — inside a repository transaction the
+   remote ref is read with `als_remote_ref`. An error state is
+   `runtime_error`; an absent branch is an invariant error; a remote still at
+   `expected_target` is `PromotionNotApplied` → `not_applied`. Otherwise
+   `_prepared_reachable` (`src/integration/promotion.py:1239`) must show the
+   prepared commit is reachable from the observed tip — if it is not, the
+   target diverged and the outcome is `invariant_error`. On success
+   `_finalize` (`src/integration/promotion.py:1265`) writes
+   `{"kind": "prepared_reachable", "remote_sha": …}` through
+   `finalize_integration_promotion`
+   (`src/database/queries/integration_delivery_queries.py:576`) and returns the
+   committed value. `_finalize` refuses a root intent outright — root
+   promotions have their own finalizer in
+   [`integration_promote_main`](integration_promote_main.md).
+5. **Resolution reconciliation** — `_reconcile_resolution` is stricter, because
+   a repair resolution is an exact ref replacement rather than a fast-forward:
+   the observed tip must equal `resolution_head_sha` precisely, not merely
+   contain it. It then fetches the target into
+   `refs/aq/integration-intents/<intent_id>`, re-reads that ref to prove the
+   target did not move mid-fetch, and re-runs `_assert_exact_resolution`
+   (`src/integration/promotion.py:780`) — commit types, descent from the
+   expected target, matching tree, exact commit range — against the objects it
+   just fetched. Only then is the intent finalized with
+   `{"kind": "exact_resolution_tip", …}` carrying the resolved tree and repair
+   commit list.
+6. **Receipt** — finalizing the intent is what produces the delivery receipt
+   read back by [`delivery_receipts`](delivery_receipts.md).
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Moves the `integration_promotion_intents` row
+  (`src/database/tables.py:2273`) to `committed` and stores the remote
+  evidence, which is the durable delivery receipt.
+* Fetches from the remote (read-only) and, in the resolution path, pins
+  `refs/aq/integration-intents/<intent_id>` in the retained repository so the
+  observed objects stay reachable.
+* **Never pushes.** No ref on the remote is changed by this command.
+* Changes no branch ownership and creates no task.
+* `prepared_sha` is a sensitive result field and is redacted in receipts.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause | What it means |
+|---|---|---|
+| `applied` | The remote proves the intent landed; the receipt is written. | Done. |
+| `not_applied` | The remote is still at the expected old tip. | The push genuinely did not happen — safe to retry the push path. |
+| `invariant_error` | Unknown intent, no project, no prepared commit, an intent in `conflict`, a branch that disappeared, a target that diverged from the prepared commit, or a resolution tip that is not the exact reserved head. | Human territory. |
+| `runtime_error` | Remote state unknown, fetch failure, or a Git error. | Usually transient; retry. |
+| `unauthorized` | Caller is outside the intent's project. | — |
+
+`not_applied` is the outcome people misread most often: it is a *statement
+about the remote*, not a failure of this command. Pair it with
+`aq integration status <project>`, whose `promotion[]` projection lists each
+intent's state and `reconciliation.pending`.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+From the reviewed `hierarchical-delivery` policy:
+
+```markdown
+## Rule: reconcile-resolution-push
+
+On `integration.resolution_push_observed`, call `integration_reconcile_promotion` with
+`promotion_intent_id` bound to `intent_id`. `applied` completes; `not_applied` and
+`invariant_error` fail. This lifecycle fact triggers exact remote reconciliation but is
+not a receipt or check-success assertion.
+```
+
+## Related
+
+* [`delivery_promote`](delivery_promote.md) — prepares and pushes the intent this command reconciles.
+* [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) — the repair path whose push this finalizes.
+* [`delivery_receipts`](delivery_receipts.md) — reads the receipts produced here.
+* Spec: [Promotion intents and event delivery](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#117-promotion-intents-and-event-delivery).

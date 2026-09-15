@@ -51,24 +51,127 @@ Projected into the run receipt: `intent_id`, `receipt_id`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+A frozen conflict resolution is immutable by design: once
+[`integration_resolve_conflict`](integration_resolve_conflict.md) has reserved
+one, no later caller may edit it, because a reservation is precisely the
+statement a crashed push will be judged against. That is the right property
+almost always — and a dead end in one case: a reservation that is *malformed*
+and was *never pushed*.
+
+`integration_recover_unwritten_resolution` is the operator escape hatch for
+exactly that case. It does not repair the bad row. It proves no remote write
+occurred, marks the old reservation `superseded` (audit evidence and frozen
+identity intact), and creates a fresh successor intent that a future repair
+writer may reserve under a new fence.
+
+The proof obligation is the whole command. Recovery is permitted only when the
+old row has no push-started marker, no push evidence, and the remote is still
+sitting at the exact reserved old tip.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Never. It requires a `LOCAL` principal — the operator on the daemon host — and
+is not reachable from a playbook, a session, or a remote API caller. It exists
+for the ambiguous state that
+[`integration_push_conflict_resolution`](integration_push_conflict_resolution.md)
+deliberately refuses to resolve on its own.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_recover_unwritten_resolution`
+   (`src/commands/integration_commands.py:1658`) validates
+   `IntegrationRecoverUnwrittenResolutionArgs` (parse failure →
+   `not_recoverable`) and requires `_integration_local_operator`
+   (`src/commands/integration_commands.py:291`) to report a `LOCAL` principal.
+   `PromotionAuthorizationError`, `PromotionInvariantError`,
+   `PromotionTargetMoved`, `StaleFence` and `BranchBusy` all collapse to
+   `not_recoverable`; `PromotionRuntimeError` and `GitError` become
+   `runtime_error`. A replay reports `already_recovered`.
+2. **Replay** — `PromotionService.recover_unwritten_resolution`
+   (`src/integration/promotion.py:443`) re-asserts LOCAL authority at the
+   service boundary too. An intent already `superseded` returns its recorded
+   `superseded_by_intent_id` — a recovery is performed once and replayed
+   forever. A superseded row with no successor is an invariant error.
+3. **Eligibility** — the intent must be in state `resolution_reserved`, with
+   `resolution_push_started_at` unset **and** `resolution_push_evidence` unset.
+   Either marker means a push may have happened and recovery is refused as
+   ambiguous. This is the safety property the command exists to preserve.
+4. **Two acceptable owners** — the branch's current owner must be one of:
+   * the **exact quiescent writer** — same fence owner and token, role
+     `repair`, `handoff_state` `attached`, and the same session and workspace
+     the reservation recorded; or
+   * a **coordinated retained owner** — the operation itself, role
+     `collector`, `handoff_state` `reserved`.
+   Anything else is `PromotionTargetMoved`. For the exact-writer case the
+   session row is additionally locked and must be `stopped` with
+   `desired_state == "stopped"` and the same instance token: a live writer is
+   never recovered around.
+5. **Deterministic successor identity** — the successor id is
+   `recovery-<uuid5(namespace, "resolution:" + intent_id)>` and its domain key
+   is `sha256("resolution-recovery:<domain_key>:<intent_id>")`. Both are pure
+   functions of the old intent, so a retried recovery converges on the same
+   successor instead of forking a second one.
+6. **Proof under exclusion** — inside `mutation_exclusion_on`
+   (`src/integration/ownership.py:317`) with the expected role/state, the
+   intent is re-locked (`_locked_intent`), the two ambiguity markers are
+   re-checked, and the remote ref is read: an error state is `runtime_error`,
+   an absent branch is `target_moved`, and a tip that is not
+   `expected_target` is refused — "target branch is not the exact reserved old
+   tip". Only then does
+   `recover_unwritten_conflict_resolution_on`
+   (`src/database/queries/integration_delivery_queries.py:331`) supersede the
+   old row and insert the successor.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Marks the old `integration_promotion_intents` row `superseded` and links it
+  to the successor. The old row's frozen resolution identity and audit
+  evidence are retained verbatim — nothing is deleted or rewritten.
+* Inserts one successor intent with a deterministic id and domain key. The
+  successor carries **no** reservation: a repair writer must reserve it afresh
+  under a new ownership fence.
+* Reads the remote ref (read-only) and holds the branch fence for the proof
+  window; changes no ref and pushes nothing.
+* Declares `branch_ownership` and `integration_operation` update effects and is
+  keyed on `intent_id` for idempotency.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `recovered` | The old reservation is superseded and a fresh successor exists. |
+| `already_recovered` | The intent was already superseded; the same successor is returned. |
+| `not_recoverable` | Not a LOCAL operator; the intent does not exist or is not `resolution_reserved`; a push-started marker or push evidence exists; the branch owner is neither the exact quiescent writer nor a coordinated retained owner; the writer session is not stopped; the remote is not at the reserved old tip; or the fence is stale/busy. |
+| `runtime_error` | Remote state unknown, or a Git error. |
+
+`not_recoverable` because of a push marker is the expected answer when the push
+may have landed — the right next step is
+[`integration_reconcile_promotion`](integration_reconcile_promotion.md), which
+will either finalize the receipt or tell you the remote never moved. See
+[the remote moved under a publication](../../guides/integration-troubleshooting.md#the-remote-moved-under-a-publication).
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+No playbook calls this. An operator on the daemon host runs it against the
+intent named by the blocked operation — for example through the loopback
+command surface:
+
+```json
+{
+  "command": "integration_recover_unwritten_resolution",
+  "args": {"intent_id": "promotion-intent-3f2a…"}
+}
+```
+
+Read the blocked operation and its intent first with
+`aq integration status <project>` (the `promotion[]` and `repair[]`
+projections), and resume the operation afterwards with
+[`integration_resume`](integration_resume.md) so a freshly fenced writer is
+dispatched.
+
+## Related
+
+* [`integration_resolve_conflict`](integration_resolve_conflict.md) — creates the reservation this command supersedes.
+* [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) — the push whose ambiguity this resolves.
+* [`integration_recover_candidate_member`](integration_recover_candidate_member.md) — the equivalent recovery for a root-candidate member repair.
+* Spec: [Human escalation](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#93-human-escalation).

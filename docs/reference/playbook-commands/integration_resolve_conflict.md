@@ -77,24 +77,141 @@ Redacted in receipts and explanations: `prepared_sha`.
 
 ## Purpose
 
-TODO: what this command is for, in the reader's terms.
+When a child's delivery will not merge into its parent, a repair delegate is
+dispatched to fix the merge by hand. `integration_resolve_conflict` is how that
+delegate's work becomes authoritative: it **freezes** the exact resolution —
+resolved head, resolved tree, and the ordered range of repair commits — onto
+the existing promotion intent, before anything is pushed anywhere.
+
+Freezing first is the whole point. The reservation is an immutable statement of
+what is about to be written, so that if the process dies mid-push the daemon can
+later compare the remote against a value it committed *beforehand* rather than
+guessing. [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md)
+does the writing; this command only decides what may be written.
 
 ## When a playbook uses it
 
-TODO: the situations a playbook step reaches for it.
+Not from a policy playbook. This is a *repair-session* command: the authority it
+requires is an authenticated session principal that currently holds the repair
+delegate task and the branch fence. A playbook cannot supply any of that, and
+the reviewed `hierarchical-delivery` policy says as much — it "never supplies
+resolution Git object IDs".
+
+The caller is the repair delegate dispatched by
+[`integration_repair_dispatch`](integration_repair_dispatch.md) after
+`delivery_promote` returned `conflict`.
 
 ## How it works internally
 
-TODO: step by step through the executor and handler, with file references.
+1. **Handler** — `_cmd_integration_resolve_conflict`
+   (`src/commands/integration_commands.py:1348`) validates
+   `IntegrationResolveConflictArgs`, converts it to a
+   `ConflictResolutionInput`, and maps the promotion exception taxonomy onto
+   outcomes: `PromotionAuthorizationError` → `unauthorized`;
+   `PromotionTargetMoved`/`StaleFence`/`BranchBusy` → `stale`;
+   `PromotionInvariantError`/`PromotionSourceMoved`/`ValueError` →
+   `invariant_error`; `PromotionRuntimeError`/`GitError` → `runtime_error`. A
+   replay is reported as `already_reserved`.
+2. **Shape of the evidence** — `PromotionService.reserve_resolution`
+   (`src/integration/promotion.py:346`) checks every OID, refuses duplicate
+   repair commits, and requires `repair_commit_shas[-1] == resolved_head_sha`.
+   The commit range must literally end at the head being reserved.
+3. **Principal** — a session principal with `session_id`, `project_id` and
+   `session_instance_token` is mandatory. Anything else is
+   `PromotionAuthorizationError`.
+4. **Intent binding** — the intent named by `intent_id` must already exist, its
+   `operation_key` must equal the caller's `operation_id`, and the caller's
+   fence must target exactly the intent's repository and branch. The repository
+   identity frozen on the intent is re-asserted
+   (`_assert_resolution_repository`, `src/integration/promotion.py:1293`).
+5. **Writer scope** — `get_repair_filing_scope`
+   (`src/database/queries/integration_state_queries.py:203`) is the single
+   authority read, and the check against it is exhaustive: the scope must be
+   active; its operation, target kind (`parent`), parent task, project,
+   repository, `writer_kind` (`repair_delegate`) and `trigger_id` must all
+   match the intent; the repair subject must match; the session id and instance
+   token must match the principal; a workspace must be attached; the fence
+   token and owner must match the caller's fence; and the stage deadline must
+   not have passed. Any mismatch is `PromotionTargetMoved` → `stale`. For a
+   pool writer with no fixed task the fenced owner id is used as the lookup key
+   and the scope read is what proves the live assignment.
+6. **Exclusive mutation window** — `ownership.mutation_exclusion_on`
+   (`src/integration/ownership.py:317`) holds the branch fence in state
+   `attached`, role `repair`, across both the Git inspection and the
+   reservation, so no handoff can interleave.
+7. **Local proof** — inside a `git.arepository_transaction` over the delegate's
+   workspace, `_assert_exact_resolution`
+   (`src/integration/promotion.py:780`) verifies that the expected target and
+   the resolved head are both commits, that the resolved head descends from the
+   expected target, that the resolved head's tree equals the claimed
+   `resolved_tree_sha`, and that the commit range is exactly the declared
+   repair commits. Malformed evidence is rejected *before* it becomes an
+   immutable identity.
+8. **Reservation** — `reserve_integration_conflict_resolution`
+   (`src/database/queries/integration_delivery_queries.py:268`) writes the
+   frozen values onto the intent: resolved head and tree, the commit list, the
+   operation and stage ordinal, the repair task, session id, session instance
+   token and workspace id, and the fence owner and token. The intent state
+   becomes `resolution_reserved`. A second identical call returns the same row
+   flagged as a replay, which the handler reports as `already_reserved`.
 
 ## Side effects and persistence
 
-TODO: what it writes, which tables or files hold it, and what survives a restart.
+* Moves the `integration_promotion_intents` row
+  (`src/database/tables.py:2273`) to `resolution_reserved` and stamps the full
+  frozen resolution identity onto it.
+* Holds, but does not change, the branch ownership fence.
+* Reads the delegate's workspace with Git; writes nothing to Git and never
+  contacts the remote.
+* `resolved_head_sha`, `resolved_tree_sha` and `repair_commit_shas` are
+  sensitive arguments, and `prepared_sha` a sensitive result field, so receipts
+  redact them.
+* The reservation survives a crash: recovery compares the remote against these
+  frozen values rather than re-deriving them.
 
 ## Failure modes and diagnostics
 
-TODO: each failure outcome, what causes it, and the command that diagnoses it.
+| Outcome | Cause |
+|---|---|
+| `reserved` / `already_reserved` | The resolution is frozen (now, or by an identical earlier call). |
+| `unauthorized` | Not a session principal, or an incomplete session identity. |
+| `stale` | The repair writer's authority moved: wrong scope, wrong fence, expired stage deadline, or a branch handoff in progress. |
+| `invariant_error` | Malformed OIDs, duplicate repair commits, a range that does not end at the head, an intent/operation mismatch, a fence targeting another branch, or local Git proof that contradicts the claim. |
+| `runtime_error` | Git failure, or a promotion runtime error. |
+
+If a reservation was frozen but should not have been — malformed but
+*unwritten* — it cannot be edited. The operator path is
+[`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md),
+which supersedes it with a fresh successor after proving nothing reached the
+remote.
 
 ## Example step
 
-TODO: a realistic playbook step that calls this command.
+There is no playbook step and no `aq integration` subcommand for this: the
+caller is a repair delegate acting under its own session identity. It reaches
+the command through the MCP tool surface (or the equivalent session-scoped HTTP
+command call), having first resolved the merge in its assigned workspace:
+
+```json
+{
+  "tool": "integration_resolve_conflict",
+  "arguments": {
+    "intent_id": "promotion-intent-3f2a…",
+    "operation_id": "integration-repair-9c41…",
+    "resolved_head_sha": "6b1d0c9f…",
+    "resolved_tree_sha": "a07e52c1…",
+    "repair_commit_shas": ["1c9f4ae2…", "6b1d0c9f…"]
+  }
+}
+```
+
+The `fence` argument is supplied by the caller from its dispatched fence; the
+daemon re-derives every other authority-bearing value from the authenticated
+session.
+
+## Related
+
+* [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) — pushes what this command froze.
+* [`integration_reconcile_promotion`](integration_reconcile_promotion.md) — finalizes the receipt once the push is observed.
+* [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) — the operator escape hatch for a bad reservation.
+* Spec: [Primary integration repair](../../superpowers/specs/2026-09-04-hierarchical-integration-trains-design.md#91-primary-integration-repair).
