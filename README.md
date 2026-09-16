@@ -21,22 +21,38 @@ development; expect to read logs and use `aq doctor`.
 **→ [Install and start Agent Queue](docs/tutorials/install.md)**, then
 [run your first isolated task](docs/tutorials/first-task.md).
 
-Installing on Windows? Use the [Windows + WSL2 quickstart](docs/tutorials/install.md#windows--wsl2-quickstart).
-On a Mac, use the [macOS quickstart](docs/tutorials/install.md#macos-quickstart).
-Both paths lead to the same resumable installer and [recovery guidance](docs/tutorials/install.md#recovery-upgrade-and-uninstall).
+**macOS** — in Terminal:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install.sh | bash
+```
+
+**Windows** — in PowerShell (it enables WSL2, then runs the same script inside Ubuntu):
+
+```powershell
+irm https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install-windows.ps1 | iex
+```
+
+Each command downloads one small script that checks the host is supported, puts
+a checkout and an `aq` command in place, and then hands every real decision to
+`aq install` — the resumable onboarding wizard that sets up prerequisites,
+PostgreSQL, agent CLIs, configuration, the daemon and the dashboard. Read either
+script before running it; that is the point of keeping them small.
+
+It stops rather than guessing whenever a human is required — a Homebrew
+administrator password, a `xcode-select --install` dialog, an agent CLI's
+browser login. Do the named thing and run the same command again: it revalidates
+what it already did instead of starting over. `aq status` then reports what the
+daemon thinks of itself.
+
+The [Windows + WSL2](docs/tutorials/install.md#windows--wsl2-quickstart) and
+[macOS](docs/tutorials/install.md#macos-quickstart) quickstarts cover the same
+paths in full, alongside [recovery guidance](docs/tutorials/install.md#recovery-upgrade-and-uninstall).
 The versioned release's platform matrix, artifact checks, and intentionally
 visible acceptance limits are in the [installation release record](docs/validation/installation-release-0.1.0.md).
 
-The short version, once the prerequisites on that page are in place:
-
-```bash
-git clone https://github.com/ElectricJack/agent-queue.git
-cd agent-queue
-./setup.sh          # virtualenv, Python + dashboard packages, `aq` entry point,
-                    # then `aq install` — the onboarding wizard: prerequisites,
-                    # PostgreSQL, agent CLIs, configuration, daemon, dashboard
-aq status           # what the daemon that `aq install` started thinks of itself
-```
+Contributing rather than installing? Clone and run `./setup.sh`, which adds the
+dev and dashboard toolchains on top of the same `aq install`.
 
 You need Linux or macOS (WSL2 counts, if everything stays on the Linux side), Python
 3.12+, Git, tmux, a PostgreSQL database, and at least one authenticated agent CLI —

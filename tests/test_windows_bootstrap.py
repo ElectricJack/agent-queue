@@ -1,8 +1,10 @@
-"""The Windows bootstrap is intentionally a thin, inspectable transport.
+"""The bootstraps are intentionally thin, inspectable transports.
 
-PowerShell is not available in the Linux test environment, so these checks
-protect its public contract: Windows owns WSL enablement; the WSL script owns
-the Linux-side setup and delegates AQ policy to ``aq install``.
+PowerShell is not available in the Linux test environment, and the shell
+bootstrap mutates the machine it runs on, so these checks protect the public
+contract rather than executing it: Windows owns WSL enablement, the shared
+shell script owns host setup on both macOS and WSL2, and every AQ policy
+decision is delegated to ``aq install``.
 """
 
 from __future__ import annotations
@@ -12,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WINDOWS_BOOTSTRAP = ROOT / "scripts" / "install-windows.ps1"
-WSL_BOOTSTRAP = ROOT / "scripts" / "install-wsl.sh"
+SHELL_BOOTSTRAP = ROOT / "scripts" / "install.sh"
+WSL_SHIM = ROOT / "scripts" / "install-wsl.sh"
 
 
 def test_windows_entrypoint_handles_install_conversion_and_resume() -> None:
@@ -43,17 +46,88 @@ def test_windows_entrypoint_starts_wsl_in_linux_home_and_delegates() -> None:
     text = WINDOWS_BOOTSTRAP.read_text()
 
     assert "--distribution $resolvedDistro --cd ~ -- bash -lc" in text
-    assert "install-wsl.sh" in text
+    assert "scripts/install.sh" in text
     assert "Start-Process <url>" in text
     assert "localhost" in text
 
 
-def test_wsl_bootstrap_stays_in_linux_home_and_calls_common_installer() -> None:
-    text = WSL_BOOTSTRAP.read_text()
+def test_shell_bootstrap_serves_both_supported_hosts() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+
+    # One script, two branches -- and nothing else installable.
+    assert "Darwin) host=\"macos\" ;;" in text
+    assert 'host="wsl"' in text
+    assert "Unsupported operating system" in text
+    assert "is not a WSL2 distribution" in text
+
+
+def test_shell_bootstrap_stays_in_linux_home_and_calls_common_installer() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
 
     assert 'checkout_dir="${AQ_CHECKOUT_DIR:-$HOME/.local/share/agent-queue}"' in text
     assert '[[ "$checkout_dir" == /mnt/* ]]' in text
     assert "WSL1 is not supported" in text
     assert '"$aq_command" install --interactive' in text
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in text
     assert "ip route show default" in text
+
+
+def test_shell_bootstrap_refuses_macos_below_the_supported_release() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+
+    assert "sw_vers -productVersion" in text
+    assert "(( macos_major < 14 ))" in text
+
+
+def test_shell_bootstrap_never_types_a_password_for_the_user() -> None:
+    """Homebrew and the Command Line Tools are needs_user checkpoints.
+
+    ``aq install``'s macOS steps refuse to enter an administrator password, and
+    a bootstrap that did so behind their back would defeat that contract.
+    """
+    text = SHELL_BOOTSTRAP.read_text()
+
+    assert "xcode-select --install" in text
+    assert "Homebrew/install/HEAD/install.sh" in text
+    assert "which AQ never types" in text
+
+    # The official Homebrew command is *quoted for the user to run*, never
+    # executed, and the only privilege escalation is the WSL distribution's
+    # own apt.  Check the commands the script runs, not the prose around them.
+    commands = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    escalations = [line for line in commands if line.startswith("sudo ")]
+    assert escalations == ["sudo apt-get update", "sudo apt-get install -y git python3-venv"]
+
+    # Homebrew's installer appears escaped inside a next_action message -- it is
+    # printed for the user and the script exits 10, rather than being run.
+    brew_line = next(line for line in commands if "Homebrew/install/HEAD" in line)
+    assert brew_line.startswith('/bin/bash -c \\"\\$(curl')
+    assert brew_line.endswith('\\""')
+    assert "exit 10" in text[text.index("Homebrew/install/HEAD") :]
+
+
+def test_shell_bootstrap_links_aq_before_putting_local_bin_on_path() -> None:
+    """A PATH entry with nothing linked into it left no ``aq`` in a new shell."""
+    text = SHELL_BOOTSTRAP.read_text()
+
+    link = text.index('ln -sf "$checkout_dir/.venv/bin/$binname"')
+    path_export = text.index("path_line=")
+    assert link < path_export
+    assert 'zsh) profile_file="$HOME/.zprofile" ;;' in text
+
+
+def test_shell_bootstrap_reports_a_needs_user_stop_instead_of_aborting() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+
+    assert "set +e\n\"$aq_command\" install --interactive\nstatus=$?\nset -e" in text
+    assert 'exit "$status"' in text
+
+
+def test_the_old_wsl_url_still_reaches_the_shared_bootstrap() -> None:
+    text = WSL_SHIM.read_text()
+
+    assert "scripts/install.sh" in text
+    assert 'bash -s -- "$@"' in text

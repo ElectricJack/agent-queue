@@ -111,20 +111,29 @@ toolchain on an Apple Silicon Mac.
    xcode-select --install
    ```
 
-2. Clone AQ and use the source-checkout bootstrap:
+2. Run the bootstrap:
 
    ```bash
-   git clone https://github.com/ElectricJack/agent-queue.git
-   cd agent-queue
-   ./setup.sh
+   curl -fsSL https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install.sh | bash
    ```
 
-   `setup.sh` prepares the checkout and hands all machine setup to `aq
-   install`. On a new Mac, it may stop for the Homebrew administrator prompt,
-   a shell-PATH change, or a harness browser login. Complete that human-only
-   checkpoint in the terminal, then rerun `./setup.sh` (or `aq install` after
-   the checkout bootstrap succeeds). The installer records progress and
-   revalidates completed steps rather than repeating them.
+   It is deliberately small enough to read first. It confirms this Mac is
+   macOS 14+, checks out AQ under `~/.local/share/agent-queue` (override with
+   `AQ_CHECKOUT_DIR`), builds a virtualenv, links `aq` into `~/.local/bin`,
+   and then hands all machine setup to `aq install`. It is the same script the
+   Windows path runs inside WSL2.
+
+   On a new Mac it stops rather than guessing whenever a human is required:
+   the `xcode-select --install` dialog, the Homebrew administrator password —
+   which it prints for you to run and never types itself — or a harness
+   browser login. Complete that one checkpoint and run the same command again;
+   it reuses the existing checkout and `aq install` revalidates completed
+   steps rather than repeating them. Its exit codes are the installer's: `0`
+   ready, `10` needs_user, `12` unsupported_host, `20` failed.
+
+   The bootstrap installs the `cli` extra only. Contributors who want the dev
+   and dashboard toolchains should clone the repository and run `./setup.sh`,
+   which reaches the same `aq install`.
 
 On either platform, a healthy closing summary includes `AQ is installed and
 ready.` and a dashboard URL. If it instead says `needs_user`, read its `next:`
@@ -133,9 +142,11 @@ and automation](#structured-outcomes-for-people-and-automation).
 
 ## Install
 
-From a release install, `aq install` is the whole thing. From a source
-checkout, `./setup.sh` creates the virtual environment, installs the `aq`
-command and then runs `aq install` for you:
+From a release install, `aq install` is the whole thing, and the platform
+bootstraps above reach it by preparing a checkout first. From a source checkout
+you already have, `./setup.sh` creates the virtual environment, installs the
+`aq` command plus the dev and dashboard toolchains, and then runs `aq install`
+for you:
 
 ```bash
 git clone <AQ-REPOSITORY-URL> agent-queue

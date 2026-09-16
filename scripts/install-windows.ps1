@@ -159,10 +159,11 @@ if ($CheckOnly) {
 # `--cd ~` prevents a PowerShell working directory from becoming /mnt/c/... .
 # The validation above permits only an HTTPS GitHub clone URL, so wrapping the
 # value in shell single quotes is sufficient and remains valid PowerShell.
-# The command below is intentionally a small transport: the WSL script owns
-# Linux setup and invokes the common `aq install` interface.
+# The command below is intentionally a small transport: the shared shell
+# bootstrap owns Linux setup and invokes the common `aq install` interface.
+# It is the same script a Mac runs; it detects WSL2 and takes that branch.
 $repoArgument = "'$Repository'"
-$command = "curl -fsSL https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install-wsl.sh | bash -s -- $repoArgument"
+$command = "curl -fsSL https://raw.githubusercontent.com/ElectricJack/agent-queue/main/scripts/install.sh | bash -s -- $repoArgument"
 & wsl.exe --distribution $resolvedDistro --cd ~ -- bash -lc $command
 if ($LASTEXITCODE -ne 0) {
     throw "The WSL bootstrap stopped (exit $LASTEXITCODE). Read its next action, fix that condition in $resolvedDistro, then rerun this command."
