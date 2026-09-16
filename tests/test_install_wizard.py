@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.install.logins import AuthProbe
+from src.install.pools import PoolDefaults
 from src.install.onboarding import CAPABILITY_DAEMON, CAPABILITY_DISCORD, STEP_CHECK, STEP_DASHBOARD
 from src.install.postgres_steps import CAPABILITY_MANAGED
 from src.install.results import (
@@ -313,6 +314,10 @@ def dashboard_step_result(*, reachable: bool = True) -> StepResult:
     )
 
 
+#: A fresh install's default pool; tasks can only be claimed from a pool.
+POOLS = PoolDefaults(created=("standard-high-codex",), max_active=4)
+
+
 def first_task_machine_steps() -> tuple[StepResult, ...]:
     """Evidence that is independent from a provider's credential material."""
     return (
@@ -330,6 +335,7 @@ def test_a_ready_run_reports_where_data_lives_and_which_url_to_open():
         result(steps=first_task_machine_steps()),
         probes=(probe("codex", installed=True, authenticated=True),),
         activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
     )
 
     assert summary.ready is True
@@ -353,6 +359,7 @@ def test_readiness_requires_a_measured_database_daemon_dashboard_and_routable_ag
         result(steps=first_task_machine_steps()),
         probes=(probe("codex", installed=True, authenticated=True),),
         activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
     )
 
     assert summary.readiness is not None
@@ -363,11 +370,27 @@ def test_readiness_requires_a_measured_database_daemon_dashboard_and_routable_ag
         "dashboard",
         "agent_authentication",
         "profile_routing",
+        "worker_pools",
         "workspace_prerequisites",
         "project_root",
     ]
     assert all(check.ready for check in summary.readiness.checks)
     assert any("Create your first project" in step for step in summary.next_steps)
+
+
+def test_a_machine_with_no_worker_pool_is_not_ready_for_a_first_task():
+    """Tasks are claimed from pools; an install with none cannot run one."""
+    summary = summarize(
+        result(steps=first_task_machine_steps()),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+        pools=PoolDefaults(problem="swarm.enabled is not true in config.yaml"),
+    )
+
+    pools = next(check for check in summary.readiness.checks if check.id == "worker_pools")
+    assert pools.ready is False
+    assert summary.readiness.ready is False
+    assert "swarm.enabled" in (pools.remediation or "")
 
 
 def test_an_installed_daemon_does_not_claim_first_task_readiness_without_a_routed_profile():
@@ -402,6 +425,7 @@ def test_an_install_with_no_configured_project_root_says_so_instead_of_inviting_
         ),
         probes=(probe("codex", installed=True, authenticated=True),),
         activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
     )
 
     assert summary.ready is True, "an install is complete without a project root"
@@ -449,6 +473,7 @@ def test_a_readable_writable_root_admits_the_first_project():
         result(steps=first_task_machine_steps()),
         probes=(probe("codex", installed=True, authenticated=True),),
         activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
     )
 
     assert summary.readiness is not None

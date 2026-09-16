@@ -615,6 +615,7 @@ def install(
     # a removed or unauthenticated provider.  Dry-runs remain write-free.
     probes = ()
     activations = ()
+    pools = None
     if not dry_run:
         from src.install.logins import probe_all
         from src.profiles.catalog import evaluate_catalog, refresh_catalog_profiles
@@ -632,6 +633,18 @@ def install(
         )
         guidance: dict[str, str] = {}
         activations = evaluate_catalog(probes, facts=support.facts, interactive=interactive)
+
+        # Tasks run only on pools, and every rung is seeded as a task profile,
+        # so a fresh install needs its first pools made here -- after the
+        # activation record, which is what says which rungs can run at all.
+        from src.install.onboarding import _read_config
+        from src.install.pools import ensure_default_pools
+
+        pools = ensure_default_pools(
+            state_path.parent,
+            activations,
+            _read_config(state_path.parent / "config.yaml"),
+        )
         for activation in activations:
             if not activation.active:
                 guidance.setdefault(
@@ -648,7 +661,7 @@ def install(
     # The summary is derived from the result, so a human and a script are told
     # the same things: what is ready, where the data lives, which URL to open
     # and what was deliberately left out.
-    summary = summarize(result, probes=probes, activations=activations)
+    summary = summarize(result, probes=probes, activations=activations, pools=pools)
     if as_json:
         payload = result.to_dict()
         payload["onboarding"] = summary.to_dict()

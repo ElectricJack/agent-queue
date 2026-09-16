@@ -197,6 +197,7 @@ First-task readiness
   OK Dashboard: the dashboard is reachable at http://127.0.0.1:8081/dashboard.
   OK Agent authentication: at least one harness has non-secret authentication evidence.
   OK Profile routing: an authenticated worker profile is active.
+  OK Worker pools: Created standard-high-claude: each scales from 0 to 4 workers as tasks arrive.
   OK Workspace prerequisites: Git, tmux, and the worktree location were verified.
   OK Project root: a project root is configured and writable.
 ```
@@ -412,6 +413,13 @@ Worker profiles are *derived*, one per (intelligence class x harness) — the
 rungs (`standard-high-claude`, `astra-high-codex`, …) carry the class. Only
 the rungs whose harness is installed *and* authenticated are activated — `aq install` refreshes that eligibility on every
 run, so a default route never points at a provider you do not have.
+
+Tasks run on **worker pools**: a pool worker claims the next ready task itself.
+On an install with no pool yet, `aq install` makes the `standard-high` rung of
+each signed-in agent CLI a pool that scales from 0 workers (nothing runs, or
+spends, while there is no work) up to this machine's tuned concurrent-agent
+limit. Once any pool exists it is left alone, so `aq pool scale` and
+`aq pool set-lifecycle` changes are kept.
 
 ## State ownership
 

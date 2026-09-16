@@ -438,12 +438,37 @@ def _project_root_check(result: InstallResult) -> ReadinessCheck:
     )
 
 
+def _worker_pools_check(pools: Any) -> ReadinessCheck:
+    """Tasks run only on worker pools, so a first task needs at least one."""
+    names = tuple(getattr(pools, "pools", ()) or ())
+    if names:
+        created = tuple(getattr(pools, "created", ()) or ())
+        ceiling = getattr(pools, "max_active", None)
+        detail = (
+            f"Created {', '.join(created)}: each scales from 0 to {ceiling} workers as tasks arrive."
+            if created
+            else f"{len(names)} worker pool(s) configured: {', '.join(names)}."
+        )
+        return ReadinessCheck("worker_pools", "Worker pools", True, detail, None)
+    problem = getattr(pools, "problem", None)
+    return ReadinessCheck(
+        "worker_pools",
+        "Worker pools",
+        False,
+        "No worker pool is configured, so no task can be claimed.",
+        problem
+        or "Rerun `aq install` after signing in to an agent CLI, or create one with "
+        "`aq pool set-lifecycle` and `aq pool scale`.",
+    )
+
+
 def _first_task_readiness(
     result: InstallResult,
     *,
     probes: Sequence[AuthProbe],
     activations: Sequence[Any],
     dashboard: DashboardInfo | None,
+    pools: Any = None,
 ) -> FirstTaskReadiness:
     """Turn install evidence into the explicit first-task admission checklist.
 
@@ -491,6 +516,7 @@ def _first_task_readiness(
             if routed else "No active worker profile can be routed to a live harness.",
             None if routed else "Rerun `aq install` after harness authentication, then check `aq agent list-profiles`.",
         ),
+        _worker_pools_check(pools),
         ReadinessCheck(
             "workspace_prerequisites", "Workspace prerequisites", workspace,
             "Git, tmux, and AQ's configured worktree location were verified."
@@ -556,6 +582,7 @@ def summarize(
     *,
     probes: Sequence[AuthProbe] = (),
     activations: Sequence[Any] = (),
+    pools: Any = None,
 ) -> OnboardingSummary:
     """Fold the engine's result into the closing summary.
 
@@ -593,7 +620,7 @@ def summarize(
     else:
         headline = f"Installation stopped: {result.outcome.value}."
     readiness = _first_task_readiness(
-        result, probes=probes, activations=activations, dashboard=dashboard
+        result, probes=probes, activations=activations, dashboard=dashboard, pools=pools
     )
     return OnboardingSummary(
         ready=ready,
