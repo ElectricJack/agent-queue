@@ -50,18 +50,18 @@ def resolve_agent_profile(agent, profiles: Mapping):
 
 def _generic_worker_profile(profile) -> bool:
     # The live worker ladder is operator-owned, so IDs are not a contract.
-    # A class-backed pool profile is the generic worker route.  The original
-    # Claude task-worker templates retain their class-only compatibility path;
-    # a task-lifecycle Codex/Gemini copy remains an explicit execution binding.
+    # A class-backed Claude worker profile (pool or task lifecycle) is the
+    # generic worker route: the original Claude task-worker templates keep
+    # their class-only compatibility path.  A Codex/Gemini profile, pool or
+    # task, remains an explicit execution binding — a pool route is a
+    # (harness, class) pair (``src/profiles/catalog.py`` derives one rung per
+    # pair, and ``pools.task_lifecycle_shadow`` reports duplicates of one), so
+    # a Codex pool must never start an idle Claude worker in its name.
     # Tags are deliberately not used because copied profiles retain them.
     profile_id = _value(profile, "id")
     return (
         _value(profile, "lifecycle") in {"pool", "task"}
         and _value(profile, "harness") == "claude"
-        and bool(_value(profile, "default_class"))
-    ) or (
-        _value(profile, "lifecycle") == "pool"
-        and bool(_value(profile, "harness"))
         and bool(_value(profile, "default_class"))
     ) or (
         profile_id in _CLASS_CAPABILITY_PROFILES

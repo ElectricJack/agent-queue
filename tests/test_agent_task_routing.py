@@ -104,6 +104,25 @@ def test_metadata_defined_pool_worker_is_generic_without_a_worker_prefix():
     assert Scheduler.schedule(routing_state(task, [agent], profiles))
 
 
+def test_metadata_defined_codex_pool_binds_its_harness():
+    """A pool route is a (harness, class) pair: a Codex pool never takes a Claude worker.
+
+    ``src/profiles/catalog.py`` derives one rung per pair and
+    ``pools.task_lifecycle_shadow`` reports duplicates of one, so the Claude
+    class-only compatibility path must not extend to a Codex pool -- otherwise
+    ``_launch_pool_session`` starts an idle Claude worker in the Codex pool's
+    name (tests/test_pool_agent_routing.py).
+    """
+    profiles = routing_profiles()
+    profiles["deep-pool-codex"] = AgentProfile(
+        id="deep-pool-codex", name="Deep pool", harness="codex",
+        default_class="deep-high", lifecycle="pool",
+    )
+    task = requested_task(profile_id="deep-pool-codex", intelligence_class=None)
+    deep_claude = workers()[1]
+    assert Scheduler.schedule(routing_state(task, [deep_claude], profiles)) == []
+
+
 @pytest.mark.parametrize("preferred", [None, "sol"])
 def test_busy_sol_never_falls_back_to_fast_or_wrong_provider_after_affinity_timeout(preferred):
     roster = workers()
