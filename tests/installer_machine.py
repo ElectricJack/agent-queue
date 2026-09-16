@@ -269,7 +269,7 @@ class Machine:
     def http(self, url: str) -> int | None:
         if url.endswith("/health"):
             return 200 if self.daemon_up else None
-        if url.endswith("/dashboard"):
+        if url.endswith(("/dashboard", "/dashboard/")):
             return self.dashboard_status if self.daemon_up else None
         raise AssertionError(f"unexpected probe: {url}")
 

@@ -79,6 +79,32 @@ def test_installed_dashboard_serves_assets_and_browser_routes(tmp_path):
     assert "assets/app.js" in route.text
 
 
+def test_the_bare_dashboard_path_survives_the_daemons_catch_all_mount(tmp_path):
+    """The daemon mounts its MCP app at "/" after the dashboard.
+
+    A mount at /dashboard only matches /dashboard/..., so a bare /dashboard fell
+    through to that catch-all and answered 404: the first macOS install built
+    the dashboard, restarted the daemon, and still reported it unreachable.
+    """
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    destination = _stage(tmp_path)
+    app = FastAPI()
+    mount_dashboard(app, directory=destination)
+    app.router.routes.append(Mount("/", app=Starlette()))  # as src/embedded_mcp.py does
+
+    with TestClient(app) as client:
+        bare = client.get("/dashboard", follow_redirects=False)
+        assert bare.status_code == 307
+        assert bare.headers["location"] == "/dashboard/"
+        assert client.get("/dashboard?tab=metrics", follow_redirects=False).headers[
+            "location"
+        ] == "/dashboard/?tab=metrics"
+        assert "assets/app.js" in client.get("/dashboard").text
+    assert "/dashboard" not in app.openapi()["paths"]
+
+
 def test_release_metadata_declares_runtime_resources_and_embedded_base():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     vite_config = (ROOT / "dashboard" / "vite.config.ts").read_text(encoding="utf-8")

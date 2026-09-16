@@ -96,7 +96,7 @@ class FakeDaemon:
     def probe(self, url: str) -> int | None:
         if url.endswith("/health"):
             return 200 if self.up else None
-        if url.endswith("/dashboard"):
+        if url.endswith(("/dashboard", "/dashboard/")):
             return self.dashboard if self.up else None
         raise AssertionError(f"unexpected probe: {url}")
 
@@ -205,7 +205,7 @@ def test_a_default_run_reaches_a_ready_daemon_and_a_dashboard_url(tmp_path):
     assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
     board = step(result, STEP_DASHBOARD).detail["dashboard"]
     assert board["reachable"] is True
-    assert board["url"].endswith("/dashboard")
+    assert board["url"].endswith("/dashboard/")
 
 
 def test_the_configuration_step_tunes_for_this_machine_and_keeps_what_exists(tmp_path):
@@ -534,7 +534,7 @@ def test_the_daemon_is_not_started_unless_it_was_selected(tmp_path):
 
 def test_a_release_install_reports_the_bundled_dashboard_url():
     info = inspect_dashboard("http://127.0.0.1:8081", lambda url: 200)
-    assert info.url == "http://127.0.0.1:8081/dashboard"
+    assert info.url == "http://127.0.0.1:8081/dashboard/"
     assert info.reachable is True
     assert info.source == "bundled"
 
@@ -548,7 +548,7 @@ def test_an_unbuilt_dashboard_is_told_to_rerun_the_install_not_to_run_vite():
     """
     info = inspect_dashboard("http://127.0.0.1:8081", lambda url: 404)
     assert info.source == "unbuilt"
-    assert info.url == "http://127.0.0.1:8081/dashboard"
+    assert info.url == "http://127.0.0.1:8081/dashboard/"
     assert "Rerun the install command" in info.hint
     assert "npm" not in info.hint and "5173" not in info.url
 

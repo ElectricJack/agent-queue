@@ -79,6 +79,7 @@ class Host:
 
     def __init__(self, root: Path, *, head: str = "abc123"):
         self.root = root
+        #: The committed object id of the dashboard's build inputs.
         self.head = head
         self.calls: list[tuple[tuple[str, ...], dict]] = []
         self.fail: set[str] = set()
@@ -93,8 +94,8 @@ class Host:
         def result(code=0, stdout=""):
             return CommandOutput(argv=command, returncode=code, stdout=stdout)
 
-        if command[:1] == (GIT,) and "rev-parse" in command:
-            return result(stdout=f"{self.head}\n")
+        if command[:1] == (GIT,) and "ls-tree" in command:
+            return result(stdout=f"040000 tree {self.head}\tdashboard\n")
         if command[:1] == (GIT,) and "status" in command:
             return result(stdout="")
         for label in self.fail:
@@ -217,7 +218,7 @@ def test_a_source_checkout_builds_the_release_bundle_from_inside_the_checkout(tm
             assert kwargs["cwd"] == str(root)
             # npm's launcher finds `node` by name: the pinned one comes first.
             assert kwargs["env"]["PATH"].split(":")[0] == str(Path(NPM).parent)
-    assert stamp_path(root).read_text(encoding="utf-8").startswith("abc123+")
+    assert stamp_path(root).read_text(encoding="utf-8").startswith("inputs-")
 
 
 def test_a_rerun_with_nothing_changed_does_no_work(tmp_path):
@@ -236,15 +237,31 @@ def test_an_updated_checkout_is_rebuilt(tmp_path):
     host = Host(root)
     step = _build(tmp_path, host)
     step.run(_context())
+    first = stamp_path(root).read_text(encoding="utf-8")
 
-    host.head = "def456"  # the bootstrap fast-forwarded the checkout
+    host.head = "def456"  # the bootstrap pulled a change to the dashboard
     assert step.verify(_context()) is False
 
     host.calls.clear()
     result = step.run(_context())
     assert result.detail["built"] is True
     assert any(c[:2] == (_npm(tmp_path), "ci") for c in host.commands())
-    assert stamp_path(root).read_text(encoding="utf-8").startswith("def456+")
+    assert stamp_path(root).read_text(encoding="utf-8") != first
+
+
+def test_the_served_check_uses_the_mount_path_with_its_trailing_slash(tmp_path):
+    """A bare /dashboard reaches the daemon's catch-all MCP mount on older code."""
+    root = _checkout(tmp_path)
+    host = Host(root)
+    host.daemon_up = True
+    seen: list[str] = []
+    probe = host.probe
+    host.probe = lambda url: (seen.append(url), probe(url))[1]
+
+    _build(tmp_path, host).run(_context())
+
+    dashboard_probes = [url for url in seen if "dashboard" in url]
+    assert dashboard_probes and all(url.endswith("/dashboard/") for url in dashboard_probes)
 
 
 def test_a_running_daemon_that_is_not_serving_the_bundle_is_restarted(tmp_path):

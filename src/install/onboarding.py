@@ -835,7 +835,10 @@ def inspect_dashboard(base: str, probe: HttpProbe) -> DashboardInfo:
     deliberately ships no built assets, so the same probe answers 404 and the
     honest report is the Vite command, not a URL that would 404 in a browser.
     """
-    url = f"{base}{DASHBOARD_PATH}"
+    # The trailing slash is the mount itself: a bare /dashboard needs a redirect
+    # that a daemon started from older code does not have, and without it the
+    # daemon's catch-all MCP mount answers 404 even when the bundle is served.
+    url = f"{base}{DASHBOARD_PATH}/"
     status = probe(url)
     if status is None:
         return DashboardInfo(

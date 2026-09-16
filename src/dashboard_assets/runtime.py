@@ -11,7 +11,8 @@ from typing import Any
 
 from fastapi import FastAPI
 from starlette.exceptions import HTTPException
-from starlette.responses import Response
+from starlette.requests import Request
+from starlette.responses import RedirectResponse, Response
 from starlette.staticfiles import StaticFiles
 
 
@@ -107,5 +108,17 @@ def mount_dashboard(app: FastAPI, *, directory: Path | None = None) -> Dashboard
     # A release wheel that has an incomplete or altered package-data tree must
     # fail closed rather than serving an unverified browser application.
     bundle = verify_dashboard_bundle(directory)
+
+    # A mount at /dashboard only matches /dashboard/...; the bare path relies
+    # on Starlette's slash redirect, which happens only when *no* route
+    # matches.  The daemon mounts its MCP app at "/" after this, so a bare
+    # /dashboard was swallowed by that catch-all and answered 404 -- the
+    # first macOS install built the dashboard, restarted the daemon, and still
+    # could not reach it.  Registered before the mount and before MCP's.
+    async def _to_dashboard(request: Request) -> Response:
+        query = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(url=f"/dashboard/{query}", status_code=307)
+
+    app.router.add_route("/dashboard", _to_dashboard, methods=["GET", "HEAD"], include_in_schema=False)
     app.mount("/dashboard", _DashboardStaticFiles(directory=str(bundle.directory), html=True), name="dashboard")
     return bundle

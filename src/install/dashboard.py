@@ -96,24 +96,26 @@ def stamp_path(root: Path) -> Path:
 
 
 def source_fingerprint(root: Path, *, git: str | None, execute: CommandRunner) -> str | None:
-    """Identify the checkout state the dashboard would be built from.
+    """Identify the build inputs the dashboard would be built from.
 
-    The commit plus any uncommitted change to a build input, so both a pulled
-    update and a local edit trigger a rebuild.  ``None`` when Git cannot say,
+    The committed object ids of the build inputs plus any uncommitted change to
+    them, so a pulled update that touches the dashboard and a local edit both
+    trigger a rebuild -- and an update that touches nothing the dashboard is
+    built from does not spend another `npm ci`.  ``None`` when Git cannot say,
     and then an existing verified bundle is trusted rather than rebuilt forever.
     """
     if not git:
         return None
-    head = execute([git, "-C", str(root), "rev-parse", "HEAD"])
-    if not head.ok:
+    committed = execute([git, "-C", str(root), "ls-tree", "HEAD", "--", *BUILD_INPUTS])
+    if not committed.ok:
         return None
     changes = execute(
         [git, "-C", str(root), "status", "--porcelain", "--", *BUILD_INPUTS]
     )
     if not changes.ok:
         return None
-    digest = hashlib.sha256(changes.out.encode("utf-8")).hexdigest()[:16]
-    return f"{head.out.strip()}+{digest}"
+    digest = hashlib.sha256((committed.out + "\0" + changes.out).encode("utf-8"))
+    return f"inputs-{digest.hexdigest()[:32]}"
 
 
 def _bundle_verifies(root: Path) -> bool:
@@ -191,7 +193,9 @@ def dashboard_build_step(
         return check(f"{_base()}/health") in (200, 503)
 
     def _served() -> bool:
-        status = check(f"{_base()}{DASHBOARD_PATH}")
+        # The trailing slash is the mount itself; the bare path depends on a
+        # redirect that a daemon started from older code does not have.
+        status = check(f"{_base()}{DASHBOARD_PATH}/")
         return status is not None and status < 400
 
     def _needs_restart() -> bool:
