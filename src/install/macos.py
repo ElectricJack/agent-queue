@@ -71,7 +71,13 @@ HOMEBREW_INSTALL_COMMAND = (
 #: The prerequisites this adapter will install, as ``(formula, executable)``.
 #: Git is listed because a Mac without the Command Line Tools has no Git at
 #: all; when the tools are present, ``git`` resolves and no formula is touched.
-BREW_PREREQUISITES: tuple[tuple[str, str], ...] = (("tmux", "tmux"), ("git", "git"))
+#: Node.js builds the dashboard (``dashboard.build``); an ``npm`` already on
+#: PATH -- nvm, an installer package -- is used as it is.
+BREW_PREREQUISITES: tuple[tuple[str, str], ...] = (
+    ("tmux", "tmux"),
+    ("git", "git"),
+    ("node", "npm"),
+)
 
 #: Login files, by the shell that reads them.  ``zsh`` is the macOS default.
 LOGIN_PROFILES: dict[str, str] = {

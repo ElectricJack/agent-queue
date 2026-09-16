@@ -15,6 +15,7 @@ daemon's own I/O, not about a pre-daemon CLI that shells out to ``brew``.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -77,6 +78,7 @@ def run_command(
     timeout: float = DEFAULT_TIMEOUT,
     env: Mapping[str, str] | None = None,
     input_text: str | None = None,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> CommandOutput:
     """Run *argv* and capture it.  Never raises; never inherits a terminal.
 
@@ -95,6 +97,7 @@ def run_command(
             text=True,
             timeout=timeout,
             env=dict(env) if env is not None else None,
+            cwd=cwd,
             input=input_text if input_text is not None else "",
             check=False,
         )

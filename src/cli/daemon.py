@@ -725,6 +725,10 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
     if _repo_root() is None:
         # Not running from a source checkout; nothing to launch.
         return
+    if (_repo_root() / "src" / "dashboard_assets" / "dist" / "aq-dashboard-manifest.json").is_file():
+        # `aq install` built the dashboard and the daemon serves it at
+        # /dashboard; offering a Vite dev server as well would only confuse.
+        return
     console.print("")
     if click.confirm(
         f"Dashboard isn't running on http://localhost:{DASHBOARD_PORT}. Launch it?",

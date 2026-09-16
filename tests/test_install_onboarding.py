@@ -131,6 +131,8 @@ def registry_for(
             runner=daemon.run,
             which=which,
             probe=daemon.probe,
+            # Release-shaped: nothing to build.  test_install_dashboard.py owns the build.
+            dashboard_root=home,
         )
     )
     return registry
@@ -537,11 +539,18 @@ def test_a_release_install_reports_the_bundled_dashboard_url():
     assert info.source == "bundled"
 
 
-def test_a_source_checkout_is_told_to_run_the_dev_server():
+def test_an_unbuilt_dashboard_is_told_to_rerun_the_install_not_to_run_vite():
+    """A newcomer must never be sent to keep a Vite dev server running by hand.
+
+    `dashboard.build` builds the bundle and restarts the daemon to serve it, so
+    a 404 at /dashboard means that step has not completed, and rerunning the
+    install is the fix.
+    """
     info = inspect_dashboard("http://127.0.0.1:8081", lambda url: 404)
-    assert info.source == "dev-server"
-    assert info.url == "http://localhost:5173"
-    assert "npm -w dashboard run dev" in info.hint
+    assert info.source == "unbuilt"
+    assert info.url == "http://127.0.0.1:8081/dashboard"
+    assert "Rerun the install command" in info.hint
+    assert "npm" not in info.hint and "5173" not in info.url
 
 
 def test_a_daemon_that_is_not_answering_says_so_without_failing_the_run(tmp_path):

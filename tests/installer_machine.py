@@ -423,6 +423,9 @@ class Machine:
             provider_runner=self.run_provider,
             daemon_runner=self.run_daemon,
             http_probe=self.http,
+            # Not a source checkout: this machine installs a release, whose
+            # dashboard ships built.  tests/test_install_dashboard.py owns the build.
+            dashboard_root=self.aq_home,
         )
 
     def install(

@@ -495,7 +495,11 @@ def test_the_shell_step_is_mutating_and_consent_gated(brew_home):
 
 def test_nothing_is_installed_when_the_prerequisites_are_already_present():
     runner = FakeRunner({})
-    step = packages_step(which=which_from({"tmux": "/usr/bin/tmux", "git": "/usr/bin/git"}))
+    step = packages_step(
+        which=which_from(
+            {"tmux": "/usr/bin/tmux", "git": "/usr/bin/git", "npm": "/usr/local/bin/npm"}
+        )
+    )
     result = step.run(context())
     assert result.state is StepState.SUCCEEDED
     assert result.detail["installed"] == []
@@ -506,7 +510,9 @@ def test_nothing_is_installed_when_the_prerequisites_are_already_present():
 def test_a_missing_prerequisite_is_installed_with_brew_and_recorded_as_owned(brew_home):
     binary = brew_home.install_brew(brew_home.arm)
     runner = FakeRunner(dict([ok(str(binary), "install", "tmux", stdout="pouring tmux\n")]))
-    step = packages_step(which=which_from({"git": "/usr/bin/git"}), runner=runner)
+    step = packages_step(
+        which=which_from({"git": "/usr/bin/git", "npm": "/usr/local/bin/npm"}), runner=runner
+    )
     result = step.run(context("arm64", resources=[_homebrew_resource(brew_home.arm)]))
     assert result.state is StepState.SUCCEEDED
     assert result.detail["installed"] == ["tmux"]
@@ -521,11 +527,31 @@ def test_a_failed_brew_install_names_the_formula_and_the_command_to_rerun(brew_h
     runner = FakeRunner(
         dict([fail(str(binary), "install", "tmux", stderr="Error: no bottle available\n")])
     )
-    step = packages_step(which=which_from({"git": "/usr/bin/git"}), runner=runner)
+    step = packages_step(
+        which=which_from({"git": "/usr/bin/git", "npm": "/usr/local/bin/npm"}), runner=runner
+    )
     result = step.run(context("arm64", resources=[_homebrew_resource(brew_home.arm)]))
     assert result.state is StepState.FAILED
     assert "no bottle available" in result.summary
     assert "brew install tmux" in (result.remediation or "")
+
+
+def test_a_mac_without_node_gets_it_from_homebrew(brew_home):
+    """Node.js builds the dashboard, so a Mac without it gets the formula.
+
+    The formula is `node`; the command that proves it is `npm`, which is what
+    the dashboard build runs.
+    """
+    binary = brew_home.install_brew(brew_home.arm)
+    runner = FakeRunner(dict([ok(str(binary), "install", "node", stdout="pouring node\n")]))
+    step = packages_step(
+        which=which_from({"git": "/usr/bin/git", "tmux": "/usr/bin/tmux"}), runner=runner
+    )
+    result = step.run(context("arm64", resources=[_homebrew_resource(brew_home.arm)]))
+    assert result.state is StepState.SUCCEEDED
+    assert result.detail["installed"] == ["node"]
+    assert runner.ran(str(binary), "install", "node")
+    assert (result.resources[0].kind, result.resources[0].id) == ("brew-formula", "node")
 
 
 def test_installing_without_homebrew_fails_at_the_homebrew_step_not_silently():
@@ -533,7 +559,7 @@ def test_installing_without_homebrew_fails_at_the_homebrew_step_not_silently():
     result = step.run(context())
     assert result.state is StepState.FAILED
     assert "Homebrew is required" in result.summary
-    assert sorted(result.detail["missing"]) == ["git", "tmux"]
+    assert sorted(result.detail["missing"]) == ["git", "node", "tmux"]
 
 
 def test_brew_aware_which_finds_what_this_run_just_installed(brew_home):
@@ -799,7 +825,10 @@ def _clean_mac(brew_home, tmp_path, *, tmux: bool):
             ok("launchctl", "print", "gui/501"),
         ]
     )
-    installed = {"git": "/usr/bin/git"}
+    # Node.js is already here -- nvm or an installer package -- as it is on
+    # most developer Macs; test_a_mac_without_node_gets_it_from_homebrew covers
+    # the formula being installed.
+    installed = {"git": "/usr/bin/git", "npm": "/usr/local/bin/npm"}
     if tmux:
         installed["tmux"] = "/usr/bin/tmux"
 

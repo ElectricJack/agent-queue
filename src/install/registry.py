@@ -88,6 +88,7 @@ def build_registry(
     provider_runner: ProviderRunner | None = None,
     daemon_runner: ProcessRunner | None = None,
     http_probe: HttpProbe | None = None,
+    dashboard_root: Path | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
     """Build the full step registry for the host described by *support*.
@@ -96,6 +97,10 @@ def build_registry(
     what lets a suite about one adapter compose the registry without dragging
     in the others: a macOS test has no PostgreSQL and therefore no
     configuration a daemon could load.
+
+    ``dashboard_root`` names the checkout the dashboard is built from (``None``
+    finds this installer's own); a directory that is not a checkout composes a
+    release-shaped install with nothing to build.
 
     ``provider_runner``, ``daemon_runner`` and ``http_probe`` replace something
     smaller: the three seams through which the *default* provider, login and
@@ -202,6 +207,7 @@ def build_registry(
             which=lookup or shutil.which,
             probe=http_probe,
             depends_on=onboarding_after,
+            dashboard_root=dashboard_root,
         )
     )
     return registry

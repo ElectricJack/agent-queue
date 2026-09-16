@@ -308,6 +308,7 @@ def wizard_registry(monkeypatch, tmp_path):
                 ),
                 which=lambda name: f"/usr/bin/{name}",
                 probe=lambda url: None,
+                dashboard_root=home,
             )
         )
         return registry

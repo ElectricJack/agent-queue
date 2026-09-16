@@ -274,9 +274,10 @@ Next
   3. `aq doctor` checks this installation whenever something looks wrong.
 ```
 
-Open that URL in a browser. A **source checkout** ships no built dashboard, so
-the summary gives you the development command instead — run
-`npm -w dashboard run dev` in the checkout and open `http://localhost:5173`.
+The installer opens that URL in your browser the first time it reaches it. It
+builds the dashboard itself when AQ was installed from a source checkout — which
+is what the one-command bootstrap installs — and restarts the daemon to serve
+it, so there is no separate dashboard server to run.
 
 The install outcome and first-task readiness answer different questions. You
 can deliberately finish an installation with every provider skipped, but AQ
@@ -434,7 +435,7 @@ operator database; database upgrades are an operator action described in
 | The daemon did not come up | `~/.agent-queue/daemon.log`, then `aq doctor` | Fix what the log names (an unreachable database is the usual answer) and rerun `aq install`. |
 | The configuration does not parse | The `config.check` step names the keys | `aq system config edit`, then rerun. Leave `messaging_platform: none` unless you selected Discord. |
 | No worker can start | `aq agent list-profiles`, then `aq agent check-profile <id>` | Sign in to that profile's harness and rerun `aq install` to refresh eligibility. |
-| The dashboard does not open | Check the summary's Dashboard line | A source checkout needs `npm -w dashboard run dev`; a release install serves it from the daemon. |
+| The dashboard does not open | Check the summary's Dashboard line | Rerun the install command: `dashboard.build` builds it if it has not (it needs Node.js 18+, which the installer provides) and restarts the daemon to serve it. |
 | You need to stop AQ | `aq stop` | This stops the daemon and its agent sessions. Use `aq restart` for a restart that re-adopts live sessions. |
 
 ## Related pages

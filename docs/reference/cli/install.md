@@ -161,7 +161,9 @@ before the credential that lets it reach its database was written.
 | `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
 | `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
 | `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |
+| `dashboard.build` | yes | — | From a source checkout: installs the dashboard's Node.js packages, builds and stages the same verified bundle a release ships (`scripts/build_release_artifact.py`), and restarts a running daemon that is not yet serving it. Needs Node.js 18+ (`macos.packages` installs `node`; the WSL bootstrap installs `nodejs npm`). Rebuilds only when the checkout changed, so a rerun after an update rebuilds and a rerun with nothing new does nothing. A release install has nothing to build. |
 | `daemon.dashboard` | no | — | Reports the URL to open. Never blocks a run. |
+| `dashboard.open` | no | — | Opens the served dashboard in the browser (`open` on macOS, `wslview` or `explorer.exe` on WSL) the first time an interactive install reaches it. An unattended run never opens a browser, and a rerun never opens another window. |
 
 ### Discord is optional
 
@@ -210,12 +212,13 @@ every run including a rerun, a `--repair` and an `--upgrade`:
 
 ### Opening the dashboard
 
-A release install serves the dashboard from the daemon itself, at
-`/dashboard` on the API base (`http://127.0.0.1:8081/dashboard` by default, or
-whatever `mcp_server.host`/`port` and `AQ_API_URL` resolve to). A source
-checkout ships no built assets, so `daemon.dashboard` says so and gives the
-Vite command (`npm -w dashboard run dev`, `http://localhost:5173`) instead of a
-URL that would 404 in a browser.
+The daemon serves the dashboard itself, at `/dashboard` on the API base
+(`http://127.0.0.1:8081/dashboard` by default, or whatever
+`mcp_server.host`/`port` and `AQ_API_URL` resolve to). A release install ships
+the bundle built; a source checkout gets the same verified bundle from
+`dashboard.build`, which restarts the daemon to serve it. An interactive install
+then opens it (`dashboard.open`). Nobody has to run a Vite dev server: that
+remains a contributor tool for editing the dashboard (`npm -w dashboard run dev`).
 
 ## Exit codes
 
@@ -332,7 +335,8 @@ view and a script are told the same things:
   the flag that would add each one. A skipped capability is a finished install,
   not a partial one.
 * **`onboarding.dashboard.source`** is `bundled` (the daemon serves it),
-  `dev-server` (a source checkout — run Vite) or `unknown` (no daemon answered).
+  `unbuilt` (a source checkout whose `dashboard.build` has not completed — rerun
+  the install) or `unknown` (no daemon answered).
 
 `aq install --list-steps --json` prints `{"schema_version": 1, "steps": [...]}`
 with each step's `id`, `title`, `description`, `depends_on`, `capability`,

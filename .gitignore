@@ -26,6 +26,9 @@ plan.md
 # Frontend
 node_modules/
 dashboard/dist/
+# Staged by `aq install` (dashboard.build) or scripts/build_release_artifact.py.
+src/dashboard_assets/dist/
+src/dashboard_assets/.aq-dashboard-source
 dashboard/.vite/
 *.tsbuildinfo
 packages/aq-ts-client/src/

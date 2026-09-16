@@ -743,13 +743,17 @@ def inspect_dashboard(base: str, probe: HttpProbe) -> DashboardInfo:
             ),
         )
     if status == 404:
+        # A source checkout's dashboard is built by `dashboard.build`, which
+        # then restarts the daemon to serve it here.  Reaching this branch means
+        # that step has not completed, and rerunning the install is the fix --
+        # not a Vite server the newcomer would have to keep running by hand.
         return DashboardInfo(
-            url=SOURCE_DASHBOARD_URL,
+            url=url,
             reachable=False,
-            source="dev-server",
+            source="unbuilt",
             hint=(
-                "This is a source checkout, which ships no built dashboard. Run "
-                "`npm -w dashboard run dev` in the checkout and open the URL above."
+                "The dashboard has not been built yet. Rerun the install command: it builds "
+                "the dashboard and restarts the daemon to serve it at the URL above."
             ),
         )
     return DashboardInfo(url=url, reachable=status < 400, source="bundled")
@@ -806,14 +810,42 @@ def onboarding_steps(
     which: Callable[[str], str | None] | None = None,
     probe: HttpProbe | None = None,
     depends_on: tuple[str, ...] = (STEP_DATA_DIR,),
+    dashboard_root: Path | None = None,
 ) -> tuple[StepSpec, ...]:
-    """The onboarding steps, in the order they run."""
+    """The onboarding steps, in the order they run.
+
+    ``dashboard_root`` is the checkout ``dashboard.build`` builds from; ``None``
+    finds the one this installer runs from.  A directory that is not a checkout
+    means a release install, whose dashboard ships already built -- which is
+    how a test composes the installer without building a real dashboard.
+    """
+    # Imported here, not at module level: the dashboard steps build on this
+    # module's helpers, so a top-level import would be circular.
+    from .dashboard import STEP_DASHBOARD_BUILD, dashboard_build_step, dashboard_open_step
+
     return (
         config_step(environ=environ, home=home, depends_on=depends_on),
         check_step(environ=environ, home=home),
         discord_step(environ=environ, home=home),
         daemon_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
-        dashboard_step(environ=environ, home=home, probe=probe),
+        dashboard_build_step(
+            environ=environ,
+            home=home,
+            runner=runner,
+            which=which,
+            probe=probe,
+            root=dashboard_root,
+        ),
+        # Reported after the build, so the URL it names is the one being served.
+        dashboard_step(
+            environ=environ,
+            home=home,
+            probe=probe,
+            depends_on=(STEP_CHECK, STEP_DASHBOARD_BUILD),
+        ),
+        dashboard_open_step(
+            environ=environ, home=home, runner=runner, which=which, probe=probe
+        ),
     )
 
 
