@@ -26,6 +26,22 @@ def _pg_backend():
     """The installer CLI runs before a database exists."""
 
 
+@pytest.fixture(autouse=True)
+def supported_host(monkeypatch):
+    """Pin the host the CLI sees to a supported one.
+
+    ``aq install`` refuses an unsupported host before it plans anything
+    (exit 12 ``unsupported_host``), and GitHub's runners are plain Ubuntu,
+    not WSL2 -- so a test about a flag, a rerun or the wizard must not
+    depend on the machine running it.  Host detection itself is covered in
+    ``tests/test_install_platform.py``.
+    """
+    from src.cli import install as install_cli
+    from tests.installer_machine import WSL2
+
+    monkeypatch.setattr(install_cli, "describe_host", lambda: WSL2)
+
+
 @pytest.fixture
 def install_home(tmp_path, monkeypatch):
     """Point the installer at a disposable data directory."""
