@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>The Agent Queue blog</title>
+    <link>https://electricjack.github.io/agent-queue/blog/</link>
+    <description>How the queue, the worktrees and the path to main actually work — written from the code that does it.</description>
+    <language>en</language>
+    <lastBuildDate>Thu, 10 Sep 2026 00:00:00 GMT</lastBuildDate>
+    <atom:link href="https://electricjack.github.io/agent-queue/rss.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title>Why isn&apos;t this task running?</title>
+      <link>https://electricjack.github.io/agent-queue/blog/why-isnt-this-task-running/</link>
+      <guid isPermaLink="true">https://electricjack.github.io/agent-queue/blog/why-isnt-this-task-running/</guid>
+      <description>Agent Queue used to answer that in a log line nobody could query. Making it answerable turned readiness from a scan into one indexed column, and every kind of waiting into the same kind of row.</description>
+      <pubDate>Thu, 10 Sep 2026 00:00:00 GMT</pubDate>
+      <dc:creator>Jack Kern</dc:creator>
+      <category>work graph</category>
+      <category>scheduling</category>
+      <category>design</category>
+    </item>
+  </channel>
+</rss>

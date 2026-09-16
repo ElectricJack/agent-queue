@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /agent-queue/
+Disallow: /agent-queue/design-system
+
+Sitemap: https://electricjack.github.io/agent-queue/sitemap-index.xml

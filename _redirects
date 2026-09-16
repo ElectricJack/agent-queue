@@ -1,0 +1,7 @@
+/install /#install 302
+/docs https://github.com/ElectricJack/agent-queue/blob/main/docs/README.md 302
+/docs/* https://github.com/ElectricJack/agent-queue/blob/main/docs/:splat 302
+/github https://github.com/ElectricJack/agent-queue 302
+/feed /rss.xml 301
+/feed.xml /rss.xml 301
+/rss /rss.xml 301

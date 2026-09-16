@@ -1,0 +1,2051 @@
+{
+  "version": 1,
+  "seed": 20260317,
+  "epoch": "2026-03-17T09:42:00.000Z",
+  "recordedAt": "2026-09-16T05:06:50.932Z",
+  "project": {
+    "id": "aurora-ledger",
+    "name": "aurora-ledger"
+  },
+  "sources": null,
+  "surfaces": [
+    "command-center",
+    "fleet-metrics",
+    "session-list",
+    "settings-messaging",
+    "task-detail",
+    "task-graph"
+  ],
+  "themes": ["dark", "light"],
+  "viewports": ["desktop", "mobile"],
+  "images": {
+    "task-graph--desktop--dark": {
+      "surface": "task-graph",
+      "title": "Task graph",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/graph",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-graph--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 52886
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 67476
+        },
+        {
+          "format": "avif",
+          "src": "images/task-graph--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 134371
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 172438
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRkQAAABXRUJQVlA4IDgAAAAQAwCdASoUAA0APu1iqU2ppaOiMAgBMB2JZQAAetDEoAAA/vAiP/CmGsshJZloeJJzR5fjngAAAA=="
+    },
+    "command-center--desktop--dark": {
+      "surface": "command-center",
+      "title": "Command centre",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/tasks",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/command-center--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 49758
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 72552
+        },
+        {
+          "format": "avif",
+          "src": "images/command-center--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 115455
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 179366
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRj4AAABXRUJQVlA4IDIAAADwAgCdASoUAA0APu1iqk2tJaQmMAgBoB2JZwC06DBsAAD+8KIKSsDvgvqCxnZHCAAAAA=="
+    },
+    "fleet-metrics--desktop--dark": {
+      "surface": "fleet-metrics",
+      "title": "Fleet metrics",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/metrics",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 50626
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 76498
+        },
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 112031
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 178304
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADwAgCdASoUAA0APu1iqU2ppaQiMAgBMB2JZwC7AC5JAAD+8FlIg5fouZZoMvgAAAA="
+    },
+    "session-list--desktop--dark": {
+      "surface": "session-list",
+      "title": "Agent sessions",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/sessions",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/session-list--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 35992
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 49334
+        },
+        {
+          "format": "avif",
+          "src": "images/session-list--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 90126
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 126858
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjgAAABXRUJQVlA4ICwAAADwAgCdASoUAA0APu1iqk2tJaQiMAgBoB2JZwC/ODDWAAD+8LbxFezs3aJmAA=="
+    },
+    "task-detail--desktop--dark": {
+      "surface": "task-detail",
+      "title": "Task detail",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/tasks/vivid-delta.3.3",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-detail--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 42150
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 62100
+        },
+        {
+          "format": "avif",
+          "src": "images/task-detail--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 95732
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 147726
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADwAgCdASoUAA0APu1iqU2tJaQiMAgBoB2JZwC7ADDWAAD+8HTVkfqSNVqDobiCXAA="
+    },
+    "settings-messaging--desktop--dark": {
+      "surface": "settings-messaging",
+      "title": "Messaging settings",
+      "viewport": "desktop",
+      "theme": "dark",
+      "route": "/settings/messaging",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--desktop--dark.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 42729
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--desktop--dark.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 64754
+        },
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--desktop--dark@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 95438
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--desktop--dark@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 152104
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjoAAABXRUJQVlA4IC4AAADwAgCdASoUAA0APu1iqU2ppaOiMAgBMB2JZwCo9C0kAAD+8In9l0lFx1HuuuAA"
+    },
+    "task-graph--desktop--light": {
+      "surface": "task-graph",
+      "title": "Task graph",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/graph",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-graph--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 52886
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 67476
+        },
+        {
+          "format": "avif",
+          "src": "images/task-graph--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 134371
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 172438
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRkQAAABXRUJQVlA4IDgAAAAQAwCdASoUAA0APu1iqU2ppaOiMAgBMB2JZQAAetDEoAAA/vAiP/CmGsshJZloeJJzR5fjngAAAA=="
+    },
+    "command-center--desktop--light": {
+      "surface": "command-center",
+      "title": "Command centre",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/tasks",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/command-center--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 49758
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 72552
+        },
+        {
+          "format": "avif",
+          "src": "images/command-center--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 115455
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 179366
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRj4AAABXRUJQVlA4IDIAAADwAgCdASoUAA0APu1iqk2tJaQmMAgBoB2JZwC06DBsAAD+8KIKSsDvgvqCxnZHCAAAAA=="
+    },
+    "fleet-metrics--desktop--light": {
+      "surface": "fleet-metrics",
+      "title": "Fleet metrics",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/metrics",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 50626
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 76498
+        },
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 112031
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 178304
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADwAgCdASoUAA0APu1iqU2ppaQiMAgBMB2JZwC7AC5JAAD+8FlIg5fouZZoMvgAAAA="
+    },
+    "session-list--desktop--light": {
+      "surface": "session-list",
+      "title": "Agent sessions",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/sessions",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/session-list--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 35992
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 49334
+        },
+        {
+          "format": "avif",
+          "src": "images/session-list--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 90126
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 126858
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjgAAABXRUJQVlA4ICwAAADwAgCdASoUAA0APu1iqk2tJaQiMAgBoB2JZwC/ODDWAAD+8LbxFezs3aJmAA=="
+    },
+    "task-detail--desktop--light": {
+      "surface": "task-detail",
+      "title": "Task detail",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/tasks/vivid-delta.3.3",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-detail--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 42150
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 62100
+        },
+        {
+          "format": "avif",
+          "src": "images/task-detail--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 95732
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 147726
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjwAAABXRUJQVlA4IDAAAADwAgCdASoUAA0APu1iqU2tJaQiMAgBoB2JZwC7ADDWAAD+8HTVkfqSNVqDobiCXAA="
+    },
+    "settings-messaging--desktop--light": {
+      "surface": "settings-messaging",
+      "title": "Messaging settings",
+      "viewport": "desktop",
+      "theme": "light",
+      "route": "/settings/messaging",
+      "width": 1600,
+      "height": 1000,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--desktop--light.avif",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 42729
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--desktop--light.webp",
+          "width": 1600,
+          "height": 1000,
+          "bytes": 64754
+        },
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--desktop--light@2x.avif",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 95438
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--desktop--light@2x.webp",
+          "width": 3200,
+          "height": 2000,
+          "bytes": 152104
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRjoAAABXRUJQVlA4IC4AAADwAgCdASoUAA0APu1iqU2ppaOiMAgBMB2JZwCo9C0kAAD+8In9l0lFx1HuuuAA"
+    },
+    "task-graph--mobile--dark": {
+      "surface": "task-graph",
+      "title": "Task graph",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/graph",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-graph--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 28699
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 35190
+        },
+        {
+          "format": "avif",
+          "src": "images/task-graph--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 68068
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 85440
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRmwAAABXRUJQVlA4IGAAAABQBACdASoUACsAPu1yq1MppqOipWsxMB2JZQDO7A5Xb1c2srxuwy2SKWrAAP7v6MGsR1MHFMkNzd77cbGgvLg539plkjSLrDBBL3vfazxlrhRmuOf5Y7Zdt6WClg2gAAA="
+    },
+    "command-center--mobile--dark": {
+      "surface": "command-center",
+      "title": "Command centre",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/tasks",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/command-center--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 28630
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 36054
+        },
+        {
+          "format": "avif",
+          "src": "images/command-center--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 67914
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 87656
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRnAAAABXRUJQVlA4IGQAAADwAwCdASoUACsAPu1urFKppiOipWsxMB2JZ2kQgAVOgF+wldsFTJqAAP7v6MGrBxjVD8Y9EBl3tcF/Rh80PVjjRRfVuuiXEnpLKZK/lNBjH1+KkDwh1Q2Aa3cHoyFd6YnJSAAA"
+    },
+    "fleet-metrics--mobile--dark": {
+      "surface": "fleet-metrics",
+      "title": "Fleet metrics",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/metrics",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 24091
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 30352
+        },
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 55032
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 71688
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRl4AAABXRUJQVlA4IFIAAACwAwCdASoUACsAPu10slQppqSjJWgBMB2JZ2u4W/IGmm/AQRZIAAD+8AfTNCelViDld1FVZ+vPjnsYlpOT6S2qUfTp0CfaG+LtVH6qYX4QLQAA"
+    },
+    "session-list--mobile--dark": {
+      "surface": "session-list",
+      "title": "Agent sessions",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/projects/aurora-ledger/sessions",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/session-list--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 26071
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 31448
+        },
+        {
+          "format": "avif",
+          "src": "images/session-list--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 63606
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 77606
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAwCdASoUACsAPu1wrVKppiQipWsxMB2JZwDOsA5Zo2NAvN8SpwAA/vAHtfWY2B9zswazbEek+zyitExgb/mQE8rHZvP6qNwAAA=="
+    },
+    "task-detail--mobile--dark": {
+      "surface": "task-detail",
+      "title": "Task detail",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/tasks/vivid-delta.3.3",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-detail--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 25054
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 32640
+        },
+        {
+          "format": "avif",
+          "src": "images/task-detail--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 57393
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 76368
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRn4AAABXRUJQVlA4IHIAAABwBACdASoUACsAPuVgo02pJaMiMA1RIByJZQDJECsXjCeM8VrqRZDrEM2AAAD+8D6/bvxc9QxnHu0/tr6/qmz+SLd1aNl0FdtKNzaGM740YY8IcUbsKh/vrKMts4o4LWVg/ZhBv0bkfQIgGhPJY7UAAAA="
+    },
+    "settings-messaging--mobile--dark": {
+      "surface": "settings-messaging",
+      "title": "Messaging settings",
+      "viewport": "mobile",
+      "theme": "dark",
+      "route": "/settings/messaging",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--mobile--dark.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 25837
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--mobile--dark.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 34158
+        },
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--mobile--dark@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 60663
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--mobile--dark@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 79630
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRmAAAABXRUJQVlA4IFQAAACQBACdASoUACsAPu1yrVMppqOipWmZMB2JZ2llW1MGmiMsU/zufM3I+12wBWAA/vAH0zhVC/45MwlPQLGRQC8ItQ6mRyGkiYO805EuZnsX1KP4AAA="
+    },
+    "task-graph--mobile--light": {
+      "surface": "task-graph",
+      "title": "Task graph",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/graph",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-graph--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 28699
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 35190
+        },
+        {
+          "format": "avif",
+          "src": "images/task-graph--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 68068
+        },
+        {
+          "format": "webp",
+          "src": "images/task-graph--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 85440
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRmwAAABXRUJQVlA4IGAAAABQBACdASoUACsAPu1yq1MppqOipWsxMB2JZQDO7A5Xb1c2srxuwy2SKWrAAP7v6MGsR1MHFMkNzd77cbGgvLg539plkjSLrDBBL3vfazxlrhRmuOf5Y7Zdt6WClg2gAAA="
+    },
+    "command-center--mobile--light": {
+      "surface": "command-center",
+      "title": "Command centre",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/tasks",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/command-center--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 28630
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 36054
+        },
+        {
+          "format": "avif",
+          "src": "images/command-center--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 67914
+        },
+        {
+          "format": "webp",
+          "src": "images/command-center--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 87656
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRnAAAABXRUJQVlA4IGQAAADwAwCdASoUACsAPu1urFKppiOipWsxMB2JZ2kQgAVOgF+wldsFTJqAAP7v6MGrBxjVD8Y9EBl3tcF/Rh80PVjjRRfVuuiXEnpLKZK/lNBjH1+KkDwh1Q2Aa3cHoyFd6YnJSAAA"
+    },
+    "fleet-metrics--mobile--light": {
+      "surface": "fleet-metrics",
+      "title": "Fleet metrics",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/metrics",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 24091
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 30352
+        },
+        {
+          "format": "avif",
+          "src": "images/fleet-metrics--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 55032
+        },
+        {
+          "format": "webp",
+          "src": "images/fleet-metrics--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 71688
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRl4AAABXRUJQVlA4IFIAAACwAwCdASoUACsAPu10slQppqSjJWgBMB2JZ2u4W/IGmm/AQRZIAAD+8AfTNCelViDld1FVZ+vPjnsYlpOT6S2qUfTp0CfaG+LtVH6qYX4QLQAA"
+    },
+    "session-list--mobile--light": {
+      "surface": "session-list",
+      "title": "Agent sessions",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/projects/aurora-ledger/sessions",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/session-list--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 26071
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 31448
+        },
+        {
+          "format": "avif",
+          "src": "images/session-list--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 63606
+        },
+        {
+          "format": "webp",
+          "src": "images/session-list--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 77606
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRlYAAABXRUJQVlA4IEoAAADQAwCdASoUACsAPu1wrVKppiQipWsxMB2JZwDOsA5Zo2NAvN8SpwAA/vAHtfWY2B9zswazbEek+zyitExgb/mQE8rHZvP6qNwAAA=="
+    },
+    "task-detail--mobile--light": {
+      "surface": "task-detail",
+      "title": "Task detail",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/tasks/vivid-delta.3.3",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/task-detail--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 25054
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 32640
+        },
+        {
+          "format": "avif",
+          "src": "images/task-detail--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 57393
+        },
+        {
+          "format": "webp",
+          "src": "images/task-detail--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 76368
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRn4AAABXRUJQVlA4IHIAAABwBACdASoUACsAPuVgo02pJaMiMA1RIByJZQDJECsXjCeM8VrqRZDrEM2AAAD+8D6/bvxc9QxnHu0/tr6/qmz+SLd1aNl0FdtKNzaGM740YY8IcUbsKh/vrKMts4o4LWVg/ZhBv0bkfQIgGhPJY7UAAAA="
+    },
+    "settings-messaging--mobile--light": {
+      "surface": "settings-messaging",
+      "title": "Messaging settings",
+      "viewport": "mobile",
+      "theme": "light",
+      "route": "/settings/messaging",
+      "width": 402,
+      "height": 874,
+      "sources": [
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--mobile--light.avif",
+          "width": 402,
+          "height": 874,
+          "bytes": 25837
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--mobile--light.webp",
+          "width": 402,
+          "height": 874,
+          "bytes": 34158
+        },
+        {
+          "format": "avif",
+          "src": "images/settings-messaging--mobile--light@2x.avif",
+          "width": 804,
+          "height": 1748,
+          "bytes": 60663
+        },
+        {
+          "format": "webp",
+          "src": "images/settings-messaging--mobile--light@2x.webp",
+          "width": 804,
+          "height": 1748,
+          "bytes": 79630
+        }
+      ],
+      "placeholder": "data:image/webp;base64,UklGRmAAAABXRUJQVlA4IFQAAACQBACdASoUACsAPu1yrVMppqOipWmZMB2JZ2llW1MGmiMsU/zufM3I+12wBWAA/vAH0zhVC/45MwlPQLGRQC8ItQ6mRyGkiYO805EuZnsX1KP4AAA="
+    }
+  },
+  "reels": {
+    "task-lifecycle": {
+      "id": "task-lifecycle",
+      "fps": 6,
+      "width": 1440,
+      "height": 900,
+      "beats": [
+        {
+          "id": "defined",
+          "label": "Queued"
+        },
+        {
+          "id": "ready",
+          "label": "Dependencies met"
+        },
+        {
+          "id": "claimed",
+          "label": "Agent claims it"
+        },
+        {
+          "id": "review",
+          "label": "Review"
+        },
+        {
+          "id": "merged",
+          "label": "PR merged"
+        }
+      ],
+      "frameCount": 49,
+      "frames": [
+        {
+          "index": 0,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0000.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0000.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0001.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0001.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0002.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0002.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0003.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0003.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0004.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0004.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0005.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0005.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0006.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0006.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "beat": "defined",
+          "label": "Queued",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0007.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47753
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0007.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67928
+            }
+          ]
+        },
+        {
+          "index": 8,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0008.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0008.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 9,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0009.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0009.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 10,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0010.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0010.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 11,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0011.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0011.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 12,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0012.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0012.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 13,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0013.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0013.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 14,
+          "beat": "ready",
+          "label": "Dependencies met",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0014.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47541
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0014.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67844
+            }
+          ]
+        },
+        {
+          "index": 15,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0015.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0015.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 16,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0016.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0016.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 17,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0017.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0017.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 18,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0018.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0018.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 19,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0019.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0019.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 20,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0020.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0020.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 21,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0021.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0021.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 22,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0022.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0022.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 23,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0023.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0023.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 24,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0024.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0024.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 25,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0025.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0025.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 26,
+          "beat": "claimed",
+          "label": "Agent claims it",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0026.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 48023
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0026.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68332
+            }
+          ]
+        },
+        {
+          "index": 27,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0027.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0027.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 28,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0028.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0028.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 29,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0029.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0029.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 30,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0030.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0030.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 31,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0031.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0031.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 32,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0032.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0032.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 33,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0033.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0033.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 34,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0034.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0034.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 35,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0035.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0035.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 36,
+          "beat": "review",
+          "label": "Review",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0036.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47870
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0036.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 68328
+            }
+          ]
+        },
+        {
+          "index": 37,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0037.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0037.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 38,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0038.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0038.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 39,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0039.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0039.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 40,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0040.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0040.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 41,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0041.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0041.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 42,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0042.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0042.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 43,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0043.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0043.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 44,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0044.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0044.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 45,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0045.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0045.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 46,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0046.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0046.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 47,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0047.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0047.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        },
+        {
+          "index": 48,
+          "beat": "merged",
+          "label": "PR merged",
+          "sources": [
+            {
+              "format": "avif",
+              "src": "reels/task-lifecycle/frame-0048.avif",
+              "width": 1440,
+              "height": 900,
+              "bytes": 47342
+            },
+            {
+              "format": "webp",
+              "src": "reels/task-lifecycle/frame-0048.webp",
+              "width": 1440,
+              "height": 900,
+              "bytes": 67260
+            }
+          ]
+        }
+      ],
+      "video": {
+        "format": "webm",
+        "src": "reels/task-lifecycle/task-lifecycle.webm",
+        "bytes": 1788384
+      },
+      "placeholder": "data:image/webp;base64,UklGRj4AAABXRUJQVlA4IDIAAADwAgCdASoUAA0APu1iqU2zpaQpMAgCcB2JZwC06DBsAAD+8I2EMPZ4G5UoLGmmgVAAAA=="
+    }
+  }
+}
