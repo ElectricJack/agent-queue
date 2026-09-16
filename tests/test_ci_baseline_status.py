@@ -155,6 +155,24 @@ def test_contract_outcome_follows_state_and_escalation():
     assert _outcome_of("ci_baseline_status", {"state": "weird"}) == "unknown"
 
 
+def test_an_unreadable_verdict_is_unknown_even_though_it_carries_an_error():
+    # The command explains an ``unknown`` in ``error`` while still succeeding;
+    # that is the next tick's problem, not a broken step.
+    for error in (
+        "could not read check runs for example/widgets@main",
+        f"project {PROJECT} has no GitHub repo_url to read CI from",
+    ):
+        raw = {"success": True, "state": "unknown", "ref": "main", "error": error}
+        assert _outcome_of("ci_baseline_status", raw) == "unknown"
+
+
+def test_a_refusal_or_an_escaped_exception_is_still_rejected():
+    refusal = {"success": False, "error": "unknown project: nope"}
+    assert _outcome_of("ci_baseline_status", refusal) == "rejected"
+    # ``CommandHandler.execute``'s exception path carries no ``success`` key.
+    assert _outcome_of("ci_baseline_status", {"error": "gh exploded"}) == "rejected"
+
+
 # -- the command -------------------------------------------------------------
 
 
@@ -172,6 +190,22 @@ async def test_unreadable_checks_are_unknown_never_green(handler, git):
     result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
     assert result["state"] == "unknown"
     assert "could not read" in result["error"]
+
+
+async def test_the_contract_adapter_reports_unreadable_checks_as_unknown(handler, git):
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import CiBaselineStatusArgs, set_handler_provider
+
+    git.acommit_check_runs.return_value = None
+    set_handler_provider(lambda: handler)
+    try:
+        registration = CONTRACTS.get("ci_baseline_status")
+        result = await registration.invoke(CiBaselineStatusArgs(project_id=PROJECT), None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "unknown"
+    assert (result.value.state, result.value.ref) == ("unknown", "main")
+    assert "could not read check runs" in result.summary
 
 
 async def test_pending_head_is_pending(handler, git):
