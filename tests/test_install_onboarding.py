@@ -890,3 +890,125 @@ def test_a_channel_name_where_an_id_belongs_is_caught_by_the_installer(tmp_path)
     assert discord.detail["malformed"] == ["channel_id"]
     assert "Copy ID" in (discord.remediation or "")
     assert "messaging_platform: none" in (home / "config.yaml").read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# A running daemon that predates the install's changes is restarted
+# ---------------------------------------------------------------------------
+
+
+class _RestartableDaemon:
+    """A healthy daemon that has been up for ``uptime`` seconds at ``now``."""
+
+    def __init__(self, *, uptime: float, restart_ok: bool = True):
+        self.uptime = uptime
+        self.restart_ok = restart_ok
+        self.commands: list[tuple[str, ...]] = []
+
+    def probe(self, url: str) -> int | None:
+        return 200
+
+    def read_uptime(self, url: str) -> float | None:
+        return self.uptime
+
+    def run(self, argv, **kwargs):
+        from src.install.command import CommandOutput
+
+        command = tuple(str(part) for part in argv)
+        self.commands.append(command)
+        if command[1:] == ("restart", "--no-dashboard"):
+            if self.restart_ok:
+                self.uptime = 0.5
+                return CommandOutput(argv=command, returncode=0, stdout="Daemon started")
+            return CommandOutput(argv=command, returncode=1, stderr="port in use")
+        raise AssertionError(f"unexpected command: {command}")
+
+
+def _daemon(tmp_path, daemon, *, config_age: float, now: float = 10_000.0):
+    import os
+
+    from src.install.onboarding import daemon_step
+
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    os.utime(config, (now - config_age, now - config_age))
+    return daemon_step(
+        environ={"HOME": str(home)},
+        home=home,
+        runner=daemon.run,
+        which=lambda name: f"/usr/bin/{name}",
+        probe=daemon.probe,
+        uptime=daemon.read_uptime,
+        watched=lambda: [config],
+        clock=lambda: now,
+    )
+
+
+def test_a_daemon_started_before_the_configuration_changed_is_restarted(tmp_path):
+    """The supervisor kept "does not support interactive terminal input".
+
+    A rerun wrote `sessions.provider: tmux`, but the daemon that was already up
+    had loaded `subprocess` and was reused as it was.
+    """
+    daemon = _RestartableDaemon(uptime=3_600)
+    step = _daemon(tmp_path, daemon, config_age=60)  # config written after start
+
+    assert step.verify(None) is False
+    result = step.run(None)
+
+    assert result.state is StepState.SUCCEEDED, result.summary
+    assert result.detail["restarted"] is True
+    assert ("/usr/bin/aq", "restart", "--no-dashboard") in daemon.commands
+
+
+def test_a_daemon_newer_than_its_configuration_is_reused_untouched(tmp_path):
+    daemon = _RestartableDaemon(uptime=60)
+    step = _daemon(tmp_path, daemon, config_age=3_600)  # config written before start
+
+    assert step.verify(None) is True
+    result = step.run(None)
+
+    assert result.detail["started"] is False
+    assert daemon.commands == []
+
+
+def test_a_restart_that_does_not_come_back_is_reported(tmp_path):
+    daemon = _RestartableDaemon(uptime=3_600, restart_ok=False)
+
+    result = _daemon(tmp_path, daemon, config_age=60).run(None)
+
+    assert result.state is StepState.FAILED
+    assert "port in use" in result.summary
+    assert "aq restart" in (result.remediation or "")
+
+
+def test_an_injected_probe_never_reads_uptime_over_the_network(tmp_path, monkeypatch):
+    from src.install import onboarding
+
+    monkeypatch.setattr(
+        onboarding,
+        "daemon_uptime",
+        lambda url, timeout=2.0: (_ for _ in ()).throw(AssertionError("network read")),
+    )
+    home = configured(tmp_path)
+    step = onboarding.daemon_step(
+        environ={"HOME": str(home)}, home=home, probe=lambda url: 200
+    )
+
+    assert step.verify(None) is True
+
+
+def test_uptime_is_read_from_a_degraded_daemon_too(monkeypatch):
+    import io
+    import urllib.error
+
+    from src.install import onboarding
+
+    body = io.BytesIO(b'{"status": "degraded", "uptime_seconds": 42.5}')
+
+    def degraded(url, timeout):
+        raise urllib.error.HTTPError(url, 503, "degraded", {}, body)
+
+    monkeypatch.setattr(onboarding.urllib.request, "urlopen", degraded)
+
+    assert onboarding.daemon_uptime("http://127.0.0.1:8081/health") == 42.5

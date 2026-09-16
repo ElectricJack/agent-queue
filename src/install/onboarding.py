@@ -25,8 +25,10 @@ Three boundaries are deliberate:
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -200,6 +202,32 @@ def api_base_url(config: Mapping[str, Any] | None, environ: Mapping[str, str] | 
 
 
 HttpProbe = Callable[[str], int | None]
+
+#: ``uptime(url)`` -> seconds the daemon answering ``url`` (its /health) has
+#: been running, or ``None`` when that cannot be read.
+UptimeReader = Callable[[str], float | None]
+
+
+def daemon_uptime(url: str, timeout: float = 2.0) -> float | None:
+    """``uptime_seconds`` from a daemon's /health body, or ``None``.
+
+    A degraded daemon answers 503 with the same body, so that is read too.
+    Only this one number is taken from the response.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.load(error)
+        except ValueError:
+            return None
+        finally:
+            error.close()
+    except (OSError, ValueError):
+        return None
+    value = payload.get("uptime_seconds") if isinstance(payload, dict) else None
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def http_status(url: str, timeout: float = 2.0) -> int | None:
@@ -819,6 +847,9 @@ def daemon_step(
     runner: CommandRunner | None = None,
     which: Callable[[str], str | None] | None = None,
     probe: HttpProbe | None = None,
+    uptime: UptimeReader | None = None,
+    watched: Callable[[], list[Path]] | None = None,
+    clock: Callable[[], float] = time.time,
     depends_on: tuple[str, ...] = (STEP_CHECK,),
 ) -> StepSpec:
     """Start the local daemon and confirm it answers ``/health``.
@@ -826,11 +857,49 @@ def daemon_step(
     "Started" is not readiness: the contract is explicit that a PID is not an
     answer.  The observable condition is the health endpoint, which is also
     what makes the step idempotent — a daemon that is already up is reused.
+
+    Reused, but not blindly: a daemon that started *before* this install last
+    changed its configuration or its code is still running the old ones.  A
+    rerun that switched ``sessions.provider`` to tmux left the dashboard's
+    supervisor on the subprocess provider ("does not support interactive
+    terminal input") because the running daemon was never restarted.  Such a
+    daemon is restarted; `aq restart` re-adopts live agent sessions.
     """
     path = config_path_for(environ, home)
     lookup = which or shutil.which
     execute = runner or run_command
     check = probe or http_status
+    # A test that injects its own probe is talking to a fake daemon; reading
+    # uptime over the network behind that fake's back would reach a real one.
+    read_uptime = uptime or (daemon_uptime if probe is None else (lambda url: None))
+
+    def _watched() -> list[Path]:
+        if watched is not None:
+            return watched()
+        from .dashboard import source_checkout_root
+
+        paths = [path]
+        checkout = source_checkout_root()
+        if checkout is not None:
+            # `git reset` (the bootstrap's update) rewrites the index.
+            paths.append(checkout / ".git" / "index")
+        return paths
+
+    def _stale_reason() -> str | None:
+        up = read_uptime(f"{_base()}/health")
+        if up is None:
+            return None
+        started = clock() - up
+        changed = []
+        for candidate in _watched():
+            try:
+                if candidate.stat().st_mtime > started + 1.0:
+                    changed.append(candidate)
+            except OSError:
+                continue
+        if not changed:
+            return None
+        return "configuration" if changed == [path] else "updated configuration or code"
 
     def _base() -> str:
         return api_base_url(_read_config(path), environ)
@@ -841,10 +910,37 @@ def daemon_step(
     def run(context: StepContext) -> StepResult:
         base = _base()
         if _healthy():
+            stale = _stale_reason()
+            if stale is None:
+                return StepResult.succeeded(
+                    STEP_DAEMON,
+                    f"the daemon is already answering at {base}",
+                    detail={"api_url": base, "started": False},
+                    resources=(
+                        ResourceRecord(kind="daemon", id=base, owned=False, reused=True),
+                    ),
+                )
+            aq = lookup("aq")
+            restarted = (
+                execute([aq, "restart", "--no-dashboard"], timeout=DAEMON_START_TIMEOUT)
+                if aq
+                else None
+            )
+            if restarted is None or not restarted.ok or not _healthy():
+                reason = "`aq` is not on PATH" if restarted is None else restarted.message()
+                return StepResult.failed(
+                    STEP_DAEMON,
+                    redact(f"the daemon could not be restarted to load its {stale}: {reason}"),
+                    (
+                        f"Run `aq restart`, then rerun `aq install`. {path.parent / 'daemon.log'} "
+                        "(or `aq logs`) says why the daemon did not come back if it does not."
+                    ),
+                    detail={"api_url": base, "started": False},
+                )
             return StepResult.succeeded(
                 STEP_DAEMON,
-                f"the daemon is already answering at {base}",
-                detail={"api_url": base, "started": False},
+                f"restarted the daemon at {base} to load its {stale}",
+                detail={"api_url": base, "started": True, "restarted": True},
                 resources=(ResourceRecord(kind="daemon", id=base, owned=False, reused=True),),
             )
         executable = lookup("aq")
@@ -892,14 +988,15 @@ def daemon_step(
         title="Start the AQ daemon",
         description=(
             "Optional. Runs `aq start` and waits for the daemon's /health endpoint. A daemon "
-            "that is already answering is reused, never restarted."
+            "that is already answering is reused, and restarted only when it started before "
+            "the configuration or code last changed."
         ),
         run=run,
         depends_on=depends_on,
         capability=CAPABILITY_DAEMON,
         mutating=True,
         consent_prompt="Start the AQ daemon now?",
-        verify=lambda context: _healthy(),
+        verify=lambda context: _healthy() and _stale_reason() is None,
         owner="onboarding",
     )
 
@@ -1074,6 +1171,7 @@ __all__ = [
     "STEP_DASHBOARD",
     "STEP_DISCORD",
     "STEP_PROJECT_ROOT",
+    "UptimeReader",
     "DashboardInfo",
     "HttpProbe",
     "Location",
@@ -1085,6 +1183,7 @@ __all__ = [
     "dashboard_step",
     "data_locations",
     "describe_project_root",
+    "daemon_uptime",
     "discord_step",
     "project_root_step",
     "http_status",
