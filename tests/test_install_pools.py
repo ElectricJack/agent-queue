@@ -49,44 +49,93 @@ def _config(data_dir: Path, profile_id: str) -> dict:
     return parsed.config
 
 
-def test_each_signed_in_cli_gets_a_standard_high_pool(tmp_path):
+def test_every_active_worker_profile_becomes_a_pool(tmp_path):
+    """Routing may send a task to any active rung; each needs a pool to run on."""
     claude = _rung(tmp_path, "claude", "standard-high")
-    codex = _rung(tmp_path, "codex", "standard-high")
-    deep = _rung(tmp_path, "claude", "deep-high")
+    claude_deep = _rung(tmp_path, "claude", "deep-high")
+    gemini = _rung(tmp_path, "gemini", "fast-low")
 
     result = ensure_default_pools(
-        tmp_path, [_active(claude), _active(codex), _active(deep)], TUNED
+        tmp_path, [_active(claude), _active(claude_deep), _active(gemini)], TUNED
     )
 
-    assert result.created == ("standard-high-claude", "standard-high-codex")
+    assert result.created == ("deep-high-claude", "fast-low-gemini", "standard-high-claude")
     assert result.max_active == 4 and result.problem is None
-    config = _config(tmp_path, "standard-high-claude")
-    assert config["lifecycle"] == "pool"
-    assert (config["min_active"], config["max_active"]) == (0, 4)
-    # The class survives the rewrite, and deeper classes are not pooled.
-    assert config["default_class"] == "standard-high"
-    assert _config(tmp_path, "deep-high-claude")["lifecycle"] == "task"
+    for profile_id in result.created:
+        config = _config(tmp_path, profile_id)
+        assert config["lifecycle"] == "pool"
+        assert (config["min_active"], config["max_active"]) == (0, 4)
+    # The class survives the rewrite.
+    assert _config(tmp_path, "deep-high-claude")["default_class"] == "deep-high"
 
 
 def test_a_cli_that_is_not_signed_in_gets_no_pool(tmp_path):
     claude = _rung(tmp_path, "claude", "standard-high")
-    gemini = _rung(tmp_path, "gemini", "standard-high")
+    codex = _rung(tmp_path, "codex", "standard-high")
 
-    result = ensure_default_pools(tmp_path, [_active(claude), _active(gemini, False)], TUNED)
+    result = ensure_default_pools(tmp_path, [_active(claude), _active(codex, False)], TUNED)
 
     assert result.created == ("standard-high-claude",)
-    assert _config(tmp_path, "standard-high-gemini")["lifecycle"] == "task"
+    assert _config(tmp_path, "standard-high-codex")["lifecycle"] == "task"
 
 
-def test_an_install_that_already_has_a_pool_is_left_as_the_operator_made_it(tmp_path):
+def test_an_install_with_one_pool_gets_the_rest(tmp_path):
+    """The Mac that got only standard-high-claude from the first version."""
+    standard = _rung(tmp_path, "claude", "standard-high")
+    deep = _rung(tmp_path, "claude", "deep-high")
+    ensure_default_pools(tmp_path, [_active(standard)], TUNED)
+
+    result = ensure_default_pools(tmp_path, [_active(standard), _active(deep)], TUNED)
+
+    assert result.created == ("deep-high-claude",)
+    assert result.existing == ("standard-high-claude",)
+    assert set(result.pools) == {"standard-high-claude", "deep-high-claude"}
+
+
+def test_a_pool_the_operator_turned_back_to_task_stays_that_way(tmp_path):
     claude = _rung(tmp_path, "claude", "standard-high")
-    codex = _rung(tmp_path, "codex", "standard-high")
-    ensure_default_pools(tmp_path, [_active(codex)], TUNED)  # e.g. the operator's own pool
+    ensure_default_pools(tmp_path, [_active(claude)], TUNED)
+    path = tmp_path / "vault" / "agent-types" / "standard-high-claude" / "profile.md"
+    from src.profiles.parser import update_config_keys
 
-    result = ensure_default_pools(tmp_path, [_active(claude), _active(codex)], TUNED)
+    path.write_text(
+        update_config_keys(
+            path.read_text(encoding="utf-8"),
+            {"lifecycle": "task", "min_active": None, "max_active": None},
+        ),
+        encoding="utf-8",
+    )
+
+    result = ensure_default_pools(tmp_path, [_active(claude)], TUNED)
 
     assert result.created == ()
-    assert result.existing == ("standard-high-codex",)
+    assert _config(tmp_path, "standard-high-claude")["lifecycle"] == "task"
+
+
+def test_a_pool_that_predates_the_record_is_remembered_too(tmp_path):
+    """Pools made before pool-defaults.json existed must not be re-pooled later."""
+    claude = _rung(tmp_path, "claude", "standard-high")
+    path = tmp_path / "vault" / "agent-types" / "standard-high-claude" / "profile.md"
+    from src.profiles.parser import update_config_keys
+
+    path.write_text(
+        update_config_keys(
+            path.read_text(encoding="utf-8"),
+            {"lifecycle": "pool", "min_active": 0, "max_active": 4},
+        ),
+        encoding="utf-8",
+    )
+    ensure_default_pools(tmp_path, [_active(claude)], TUNED)  # sees it, records it
+    path.write_text(
+        update_config_keys(
+            path.read_text(encoding="utf-8"),
+            {"lifecycle": "task", "min_active": None, "max_active": None},
+        ),
+        encoding="utf-8",
+    )
+
+    ensure_default_pools(tmp_path, [_active(claude)], TUNED)
+
     assert _config(tmp_path, "standard-high-claude")["lifecycle"] == "task"
 
 

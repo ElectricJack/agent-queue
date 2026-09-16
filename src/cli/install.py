@@ -632,7 +632,16 @@ def install(
             interactive=interactive,
         )
         guidance: dict[str, str] = {}
-        activations = evaluate_catalog(probes, facts=support.facts, interactive=interactive)
+        from src.intelligence_classes import load_intelligence_classes
+
+        # The same class set `refresh_catalog_profiles` seeded rungs from: an
+        # operator's own class yields rungs, so it must yield pools too.
+        activations = evaluate_catalog(
+            probes,
+            facts=support.facts,
+            interactive=interactive,
+            classes=load_intelligence_classes(str(state_path.parent)) or None,
+        )
 
         # Tasks run only on pools, and every rung is seeded as a task profile,
         # so a fresh install needs its first pools made here -- after the

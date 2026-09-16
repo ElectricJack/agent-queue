@@ -444,10 +444,12 @@ def _worker_pools_check(pools: Any) -> ReadinessCheck:
     if names:
         created = tuple(getattr(pools, "created", ()) or ())
         ceiling = getattr(pools, "max_active", None)
+        listed = ", ".join(names) if len(names) <= 4 else f"{', '.join(names[:3])} and {len(names) - 3} more"
         detail = (
-            f"Created {', '.join(created)}: each scales from 0 to {ceiling} workers as tasks arrive."
+            f"{len(names)} worker pool(s), {len(created)} new ({listed}); new pools scale from 0 "
+            f"to {ceiling} workers as tasks arrive."
             if created
-            else f"{len(names)} worker pool(s) configured: {', '.join(names)}."
+            else f"{len(names)} worker pool(s) configured: {listed}."
         )
         return ReadinessCheck("worker_pools", "Worker pools", True, detail, None)
     problem = getattr(pools, "problem", None)

@@ -415,11 +415,14 @@ the rungs whose harness is installed *and* authenticated are activated — `aq i
 run, so a default route never points at a provider you do not have.
 
 Tasks run on **worker pools**: a pool worker claims the next ready task itself.
-On an install with no pool yet, `aq install` makes the `standard-high` rung of
-each signed-in agent CLI a pool that scales from 0 workers (nothing runs, or
+`aq install` makes every active worker profile — each intelligence class of each
+signed-in agent CLI — a pool that scales from 0 workers (nothing runs, or
 spends, while there is no work) up to this machine's tuned concurrent-agent
-limit. Once any pool exists it is left alone, so `aq pool scale` and
-`aq pool set-lifecycle` changes are kept.
+limit, so a task routed to any of them has somewhere to run and each appears in
+the dashboard's pool list. It records the pools it made in
+`~/.agent-queue/pool-defaults.json` and never touches one again, so
+`aq pool scale` and `aq pool set-lifecycle` changes are kept; a worker profile
+that becomes active later (a newly signed-in CLI) gets its pool on the next run.
 
 ## State ownership
 
