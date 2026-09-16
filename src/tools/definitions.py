@@ -278,6 +278,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # review policy — dv2 phase 2
     "pr_merge": "git",
     "ci_baseline_status": "git",
+    "ci_repair_adopt": "git",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -5135,6 +5136,53 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "ci_repair_adopt",
+        "description": (
+            "Make a live task the repair for a red branch: key it "
+            "``ci-baseline:<signature>:<n>`` and record the failing tests it owns, "
+            "so ci_baseline_status reuses it instead of filing another repair, "
+            "including after a partial fix shrinks the failing set.  Adopt a repair "
+            "filed by hand with just project_id and task_id: the command reads the "
+            "branch's CI and adopts its whole failure.  A task already recorded is "
+            "returned unchanged."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project the task belongs to.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "The live task that repairs the failure.",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Branch the failure is on. Default: the project's default branch.",
+                },
+                "head_sha": {
+                    "type": "string",
+                    "description": "Commit the failure was read at, when the caller read it.",
+                },
+                "failing_tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Pytest node ids the repair owns. Omit this and failing_checks to "
+                        "read the branch's CI now."
+                    ),
+                },
+                "failing_checks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Failing check names.",
+                },
+            },
+            "required": ["project_id", "task_id"],
         },
     },
     # provider usage — the Claude quota probe (provider-usage design T4)

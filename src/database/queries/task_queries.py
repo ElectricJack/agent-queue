@@ -1703,6 +1703,28 @@ class TaskQueryMixin:
             ).fetchall()
         return {r[0] for r in rows}
 
+    async def get_task_meta_values(self, task_ids: list[str], key: str) -> dict:
+        """Metadata *key* (JSON-decoded) for each of *task_ids* that carries it.
+
+        One query for a candidate set; tasks without the key are absent from
+        the result.  The ci-main-sentinel reads every repair's recorded
+        failure this way on each tick.
+        """
+        if not task_ids:
+            return {}
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        and_(
+                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            task_metadata.c.key == key,
+                        )
+                    )
+                )
+            ).fetchall()
+        return {r[0]: json.loads(r[1]) for r in rows}
+
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 
     async def add_task_label(self, task_id: str, label: str, *, conn=None) -> None:

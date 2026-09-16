@@ -59,6 +59,9 @@ from .checkout_branch_response_422 import CheckoutBranchResponse422
 from .ci_baseline_status_request import CiBaselineStatusRequest
 from .ci_baseline_status_response import CiBaselineStatusResponse
 from .ci_baseline_status_response_422 import CiBaselineStatusResponse422
+from .ci_repair_adopt_request import CiRepairAdoptRequest
+from .ci_repair_adopt_response import CiRepairAdoptResponse
+from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .claim_session_summary import ClaimSessionSummary
 from .claimed_by import ClaimedBy
 from .claude_usage_request import ClaudeUsageRequest
@@ -1247,6 +1250,9 @@ __all__ = (
     "CiBaselineStatusRequest",
     "CiBaselineStatusResponse",
     "CiBaselineStatusResponse422",
+    "CiRepairAdoptRequest",
+    "CiRepairAdoptResponse",
+    "CiRepairAdoptResponse422",
     "ClaimedBy",
     "ClaimSessionSummary",
     "ClaudeUsageRequest",
