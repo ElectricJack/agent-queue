@@ -154,8 +154,46 @@ def test_the_relative_client_path_the_bootstrap_compensates_for_still_exists() -
 def test_shell_bootstrap_reports_a_needs_user_stop_instead_of_aborting() -> None:
     text = SHELL_BOOTSTRAP.read_text()
 
-    assert "set +e\n\"$aq_command\" install --interactive\nstatus=$?\nset -e" in text
+    handoff = text[text.index("set +e\nif [[ -t 0 ]]") :]
+    assert handoff.index("fi\nstatus=$?\nset -e") > 0
     assert 'exit "$status"' in text
+
+
+def test_shell_bootstrap_hands_the_installer_a_terminal_not_the_script() -> None:
+    """Under ``curl ... | bash`` the script itself is stdin.
+
+    Letting the wizard inherit that made it read the remaining script text as
+    answers -- one "Error: invalid input" per leftover line, then Abort at end
+    of file -- and `--interactive` overrode the installer's own isatty()
+    detection, which would otherwise have avoided prompting at all.
+    """
+    text = SHELL_BOOTSTRAP.read_text()
+
+    handoff = text[text.index("Running the common AQ installer") :]
+
+    # A real terminal: prompt on it directly.
+    assert '"$aq_command" install --interactive </dev/tty' in handoff
+    # `[[ -r /dev/tty ]]` reports readable where there is no controlling
+    # terminal to open, which silently skipped the installer; probe by opening.
+    assert "(exec </dev/tty) 2>/dev/null" in handoff
+    code = [line for line in handoff.splitlines() if not line.strip().startswith("#")]
+    assert not [line for line in code if "-r /dev/tty" in line]
+    # No terminal: let the installer detect that itself, and never inherit the
+    # pipe, so the rest of this script cannot be consumed.
+    assert '"$aq_command" install </dev/null' in handoff
+
+
+def test_shell_bootstrap_forces_interactive_only_with_a_terminal() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+    handoff = text[text.index("Running the common AQ installer") :]
+
+    interactive_calls = [
+        line.strip() for line in handoff.splitlines() if "install --interactive" in line
+    ]
+    assert len(interactive_calls) == 2
+    # Both are inside a branch that established a terminal first.
+    assert handoff.index("[[ -t 0 ]]") < handoff.index(interactive_calls[0])
+    assert all("</dev/null" not in call for call in interactive_calls)
 
 
 def test_the_old_wsl_url_still_reaches_the_shared_bootstrap() -> None:

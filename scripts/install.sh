@@ -181,11 +181,40 @@ export PATH="$local_bin:$PATH"
 
 # --- Hand over to the one common installer -----------------------------------
 printf 'Running the common AQ installer (aq install)...\n'
+#
+# Reattach the terminal before handing over.  Under `curl ... | bash` this
+# script *is* stdin, so a wizard that prompted on the inherited stdin read the
+# remaining script text as its answers -- "Error: invalid input" per leftover
+# line, then Abort at end of file.  /dev/tty is the controlling terminal
+# regardless of what stdin was piped from.
+#
+# Only the child's stdin is redirected, never this shell's: bash reads a piped
+# script incrementally, so an `exec < /dev/tty` here could truncate the rest of
+# this file mid-run.
+#
+# `--interactive` is passed only when there is really a terminal.  Forcing it
+# is what overrode `aq install`'s own isatty() detection (src/cli/install.py)
+# and let the garbled read happen at all; with no terminal, the installer
+# chooses non-interactive itself and reports needs_user rather than guessing.
+#
 # `aq install` exits 10 for a human-only checkpoint (a harness login, a
 # Homebrew password).  That is a resumable stopping point, not a crash, so the
 # closing guidance must still print: `set -e` would abort before it.
 set +e
-"$aq_command" install --interactive
+if [[ -t 0 ]]; then
+    "$aq_command" install --interactive
+elif (exec </dev/tty) 2>/dev/null; then
+    # `[[ -r /dev/tty ]]` is not the test to use here: it reports readable even
+    # where there is no controlling terminal to open, and the redirect then
+    # fails and skips the installer silently.  Actually opening it is the only
+    # honest probe.
+    "$aq_command" install --interactive </dev/tty
+else
+    # No terminal at all (CI, a hook, a detached run).  `aq install` detects
+    # that itself and goes non-interactive, but it must not inherit the pipe
+    # either: /dev/null guarantees the rest of this script cannot be eaten.
+    "$aq_command" install </dev/null
+fi
 status=$?
 set -e
 
