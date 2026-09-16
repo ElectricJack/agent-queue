@@ -296,6 +296,18 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
     "config.restart_needed": {
         "changed_sections": ["database"],
     },
+    # Dashboard state (src/commands/dashboard_state_commands.py)
+    "dashboard_state.changed.v1": {
+        "version": 1,
+        "scope": "user",
+        "owner_id": "human:local-operator",
+        "namespace": "preferences",
+        "subject": None,
+        "revision": 1,
+        "change": "write",
+        "updated_at": 1.0,
+        "seq": 1,
+    },
     # Chat
     "chat.message": {
         "channel_id": "ch-1",

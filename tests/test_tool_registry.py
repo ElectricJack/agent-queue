@@ -826,6 +826,8 @@ _PLAYBOOK_COMMANDS = [
     "playbook_v2_propose",
     "playbook_v2_import",
     "playbook_v2_shadow_compile",
+    # Command documentation catalog (src/commands/playbook_v2_commands.py).
+    "playbook_commands",
 ]
 
 

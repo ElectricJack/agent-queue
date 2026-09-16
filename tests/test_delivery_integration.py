@@ -248,8 +248,10 @@ class TestUserToSupervisorNudge:
         assert len(fake.sent_nudges) == 1
         nudged_name, nudged_text = fake.sent_nudges[0]
         assert nudged_name == runtime_name
-        assert message_id in nudged_text
-        assert "what's the status?" in nudged_text
+        # The nudge is a width-bounded pointer at the message, never its body
+        # (src/messages/delivery.py ``_render_nudge``).
+        assert nudged_text == f"Handle `aq message status {message_id} --json`."
+        assert "what's the status?" not in nudged_text
 
         stored = await orch.db.get_message(message_id)
         assert stored.delivered_at is not None

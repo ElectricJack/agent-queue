@@ -67,10 +67,12 @@ RETIRED = {
 }
 
 #: Roles whose instructions must apply the policy rather than restate workflow.
+#: Worker rungs are derived from the ``worker-<harness>`` templates
+#: (``src/profiles/catalog.py``), so the templates are the shipped worker
+#: instructions.
 POLICY_ROLES = (
-    "worker-standard-medium-claude",
-    "worker-deep-high-claude",
-    "worker-fast-medium-claude",
+    "worker-claude",
+    "worker-codex",
     "reviewer",
     "final-reviewer",
     "pr-merger",
@@ -79,18 +81,19 @@ POLICY_ROLES = (
 
 #: The shipped provider/class of every default profile.  Instruction edits must
 #: not change these; a deliberate route change updates this table with it.
+#: The classes are the seven-class set (``fast/standard/deep/astra``, no
+#: ``-medium`` rung) and the worker entries are the per-harness templates.
 SHIPPED_ROUTES = {
-    "final-reviewer": ("claude", "standard-medium"),
+    "final-reviewer": ("claude", "standard-high"),
     "planner": ("claude", None),
     "playbook-compiler": ("claude", "fast-low"),
-    "pr-merger": ("codex", "deep-medium"),
-    "reviewer": ("claude", "standard-low"),
+    "pr-merger": ("codex", "deep-high"),
+    "reviewer": ("claude", "standard-high"),
     "spec-ingest": ("claude", "deep-high"),
     "supervisor": ("claude", "deep-high"),
     "triage": ("claude", "fast-low"),
-    "worker-deep-high-claude": ("claude", "deep-high"),
-    "worker-fast-medium-claude": ("claude", "fast-medium"),
-    "worker-standard-medium-claude": ("claude", "standard-medium"),
+    "worker-claude": ("claude", "standard-high"),
+    "worker-codex": ("codex", "astra-high"),
 }
 
 
