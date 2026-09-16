@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-68 commands are registered.
+69 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -121,6 +121,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | Command | Title | Summary |
 |---|---|---|
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
+| [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |

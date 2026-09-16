@@ -407,6 +407,36 @@ class CiBaselineStatusValue(CommandValue):
     escalation_key: str | None = None
     escalation_title: str | None = None
     escalation_question: str | None = None
+    in_flight: list[str] = Field(default_factory=list)
+    repair_signature: str | None = None
+    repair_tests: list[str] = Field(default_factory=list)
+    repair_checks: list[str] = Field(default_factory=list)
+
+
+class CiRepairAdoptArgs(CommandArgs):
+    """``ci_repair_adopt``: make a live task the repair that owns a red failure.
+
+    With neither ``failing_tests`` nor ``failing_checks`` the command reads the
+    ref's CI itself; the sentinel passes the failure it just observed.
+    """
+
+    project_id: str
+    task_id: str
+    ref: str | None = None
+    head_sha: str | None = None
+    failing_tests: list[str] | None = None
+    failing_checks: list[str] | None = None
+
+
+class CiRepairAdoptValue(CommandValue):
+    task_id: str
+    dedup_key: str
+    ref: str | None = None
+    head_sha: str | None = None
+    signature: str | None = None
+    failing_tests: list[str] = Field(default_factory=list)
+    failing_checks: list[str] = Field(default_factory=list)
+    in_flight: list[str] = Field(default_factory=list)
 
 
 class ProviderUsageProbeArgs(CommandArgs):
@@ -545,6 +575,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if state == "red" and raw.get("escalated"):
             return "red_escalated"
         return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if name == "ci_repair_adopt":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
     if name == "task_route_options":
@@ -943,8 +976,42 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "signature": "Failure signature",
             "dedup_key": "Repair task key",
             "attempt": "Repair attempt",
+            "in_flight": "In-flight repairs",
+            "repair_signature": "Repair failure signature",
+            "repair_tests": "Tests the repair owns",
+            "repair_checks": "Checks the repair owns",
         },
         subject_labels={},
+    ),
+    "ci_repair_adopt": CommandPresentation(
+        title="Adopt a task as the CI repair",
+        summary=(
+            "Key a live task as the repair for a red branch and record the failing "
+            "tests it owns, so the CI sentinel reuses it instead of filing another."
+        ),
+        arg_labels={
+            "project_id": "Project",
+            "task_id": "Task",
+            "ref": "Branch",
+            "head_sha": "Commit the failure was read at",
+            "failing_tests": "Failing tests the repair owns",
+            "failing_checks": "Failing checks",
+        },
+        outcome_labels={
+            "adopted": "Adopted",
+            "recorded": "Recorded",
+            "unchanged": "Already recorded",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Repair task",
+            "dedup_key": "Repair task key",
+            "signature": "Failure signature",
+            "failing_tests": "Owned tests",
+            "failing_checks": "Owned checks",
+            "in_flight": "Other in-flight repairs",
+        },
+        subject_labels={"task": "the repair task"},
     ),
     "provider_usage_probe": CommandPresentation(
         title="Probe a provider's remaining quota",
@@ -1258,6 +1325,21 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ),
             SideEffectClass.READ,
             (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "ci_repair_adopt",
+            CiRepairAdoptArgs,
+            CiRepairAdoptValue,
+            (
+                OutcomeSpec(name="adopted", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="recorded", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="unchanged", classification=OutcomeClass.SUCCESS),
+                OutcomeSpec(name="rejected", classification=OutcomeClass.FAILURE),
+            ),
+            SideEffectClass.UPDATE,
+            (UpdateClause(subject=EffectSubject.TASK),),
             IdempotencySpec(mode="natural"),
             True,
         ),

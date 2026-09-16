@@ -201,8 +201,9 @@ task's branch only**, verified against persisted state
 are not worker capabilities — merging belongs to the reviewing authority. Five
 leaves (`checkout-branch`, `commit-changes`, `create-branch`, `merge-branch`,
 `push-branch`) are alias spellings of a neighbour and say so in their help.
-`ci-baseline-status` is core, not plugin: it reads the CI verdict for a
-project's default branch head.
+`ci-baseline-status` and `ci-repair-adopt` are core, not plugin: the first
+reads the CI verdict for a project's default branch head, the second makes a
+task the repair that owns a red failure.
 
 
 | Command | Daemon command | Kind | What it does |
@@ -212,6 +213,7 @@ project's default branch head.
 | `aq git checkout` | `git_checkout` | gen | Switch to an existing branch. |
 | `aq git checkout-branch` | `checkout_branch` | gen | Check out an existing branch (alias for git_checkout). |
 | `aq git ci-baseline-status` | `ci_baseline_status` | gen | Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and… |
+| `aq git ci-repair-adopt` | `ci_repair_adopt` | gen | Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of… |
 | `aq git commit` | `git_commit` | gen | Stage all changes and create a commit. |
 | `aq git commit-changes` | `commit_changes` | gen | Stage all changes and commit (alias for git_commit). |
 | `aq git create-branch` | `create_branch` | gen | Create and switch to a new branch (alias for git_create_branch). |

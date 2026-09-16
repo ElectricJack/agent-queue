@@ -4101,6 +4101,53 @@
         }
       }
     },
+    "/api/git/ci-repair-adopt": {
+      "post": {
+        "tags": [
+          "git"
+        ],
+        "summary": "Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of filing another repair, including after a partial fix shrinks the failing set.  Adopt a repair filed by hand with just project_id and task_id: the command reads the branch's CI and adopts its whole failure.  A task already recorded is returned unchanged.",
+        "description": "Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of filing another repair, including after a partial fix shrinks the failing set.  Adopt a repair filed by hand with just project_id and task_id: the command reads the branch's CI and adopts its whole failure.  A task already recorded is returned unchanged.",
+        "operationId": "ci_repair_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CiRepairAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CiRepairAdoptResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/git/commit-changes": {
       "post": {
         "tags": [
@@ -16048,6 +16095,41 @@
             ],
             "title": "Escalation Question"
           },
+          "in_flight": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "In Flight",
+            "default": []
+          },
+          "repair_signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Signature"
+          },
+          "repair_tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Repair Tests",
+            "default": []
+          },
+          "repair_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Repair Checks",
+            "default": []
+          },
           "error": {
             "anyOf": [
               {
@@ -16062,6 +16144,170 @@
         },
         "type": "object",
         "title": "CiBaselineStatusResponse"
+      },
+      "CiRepairAdoptRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project the task belongs to."
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "The live task that repairs the failure."
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref",
+            "description": "Branch the failure is on. Default: the project's default branch."
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha",
+            "description": "Commit the failure was read at, when the caller read it."
+          },
+          "failing_tests": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Tests",
+            "description": "Pytest node ids the repair owns. Omit this and failing_checks to read the branch's CI now."
+          },
+          "failing_checks": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Checks",
+            "description": "Failing check names."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "task_id"
+        ],
+        "title": "CiRepairAdoptRequest"
+      },
+      "CiRepairAdoptResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "default": ""
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "default": ""
+          },
+          "dedup_key": {
+            "type": "string",
+            "title": "Dedup Key",
+            "default": ""
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          },
+          "failing_tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Tests",
+            "default": []
+          },
+          "failing_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Checks",
+            "default": []
+          },
+          "in_flight": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "In Flight",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "CiRepairAdoptResponse"
       },
       "ClaimSessionSummary": {
         "properties": {
