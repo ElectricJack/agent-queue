@@ -309,6 +309,44 @@ async def test_pool_status_empty(handler):
     assert res == {"success": True, "pools": []}
 
 
+async def test_a_pool_with_no_active_project_is_still_listed(handler):
+    """A fresh install's default pool exists before its first project.
+
+    The measurement walks active projects, so with none the status said "No
+    worker pools configured." while a pool was configured.
+    """
+    from src.models import ProjectStatus
+
+    await handler.db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+    await handler.db.create_profile(
+        AgentProfile(
+            id="standard-high-claude", name="Standard high", lifecycle="pool",
+            harness="claude", default_class="standard-high", min_active=0, max_active=4,
+        )
+    )
+    await handler.db.create_profile(
+        AgentProfile(id="deep-high-claude", name="Deep", lifecycle="task", harness="claude")
+    )
+
+    pools = (await handler._cmd_pool_status({}))["pools"]
+
+    assert [row["profile_id"] for row in pools] == ["standard-high-claude"]
+    row = pools[0]
+    assert (row["min_active"], row["max_active"], row["running_busy"]) == (0, 4, 0)
+    assert row["projects"] == [] and "no active project" in row["note"]
+
+
+async def test_a_project_filter_does_not_invent_unplaced_pools(handler):
+    from src.models import ProjectStatus
+
+    await handler.db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+    await handler.db.create_profile(
+        AgentProfile(id="standard-high-claude", name="S", lifecycle="pool", harness="claude")
+    )
+
+    assert (await handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"] == []
+
+
 async def test_pool_scale_requires_min_or_max(handler):
     res = await handler._cmd_pool_scale({"profile_id": "worker"})
     assert res == {"success": False, "error": "nothing to change: pass min and/or max"}

@@ -399,6 +399,41 @@ class OpsCommandsMixin:
                     "outside_pools": outside_by_profile.get(key.profile_id, []),
                 }
             )
+
+        # The measurement walks active projects, so a pool with no project to
+        # place a worker in has no row there -- and a fresh install, whose
+        # first pools exist before its first project, was told "No worker
+        # pools configured."  A configured pool is listed regardless, sized
+        # by its bounds, with nothing running and no project placement yet.
+        if view is None:
+            measured = {row["profile_id"] for row in pools}
+            for profile in sorted(all_profiles.values(), key=lambda p: p.id):
+                if (
+                    ":" in profile.id
+                    or getattr(profile, "lifecycle", "task") != "pool"
+                    or profile.id in measured
+                ):
+                    continue
+                pools.append(
+                    {
+                        "profile_id": profile.id,
+                        "enabled": getattr(profile, "enabled", True),
+                        "min_active": getattr(profile, "min_active", None) or 0,
+                        "max_active": getattr(profile, "max_active", None),
+                        "min_per_project": getattr(profile, "min_per_project", None) or 0,
+                        "desired": 0,
+                        "running_idle": 0,
+                        "running_busy": 0,
+                        "starting": 0,
+                        "draining": 0,
+                        "ready": 0,
+                        "projects": [],
+                        "instances": [],
+                        "outside_pools": [],
+                        "note": "no active project yet; workers start when a project has ready tasks",
+                    }
+                )
+            pools.sort(key=lambda row: row["profile_id"])
         return {"success": True, "pools": pools}
 
     def _system_profile_path(self, agent_type: str) -> str:
