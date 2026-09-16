@@ -138,8 +138,20 @@ else
     fi
 
     "$python_bin" -m venv "$checkout_dir/.venv"
-    "$checkout_dir/.venv/bin/pip" install --upgrade pip
-    "$checkout_dir/.venv/bin/pip" install -e "$checkout_dir[cli]"
+
+    # Install from *inside* the checkout.  pyproject's `cli` extra names the
+    # generated API client as a PEP 508 direct reference with a relative path
+    # ("agent-queue-api-client @ file:packages/aq-client"), and pip resolves
+    # that against the current working directory rather than the project being
+    # installed.  A bootstrap is run from wherever the user happens to be, so
+    # resolving it from here looked for packages/aq-client under *that*
+    # directory and failed with an OSError.  The subshell keeps the cd local.
+    (
+        cd "$checkout_dir"
+        ./.venv/bin/pip install --upgrade pip
+        ./.venv/bin/pip install -e "./packages/aq-client"
+        ./.venv/bin/pip install -e ".[cli]"
+    )
     aq_command="$checkout_dir/.venv/bin/aq"
 fi
 

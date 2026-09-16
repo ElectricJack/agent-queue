@@ -119,6 +119,38 @@ def test_shell_bootstrap_links_aq_before_putting_local_bin_on_path() -> None:
     assert 'zsh) profile_file="$HOME/.zprofile" ;;' in text
 
 
+def test_shell_bootstrap_installs_from_inside_the_checkout() -> None:
+    """The `cli` extra names the API client by a *relative* path.
+
+    ``pyproject.toml`` declares ``agent-queue-api-client @ file:packages/aq-client``
+    and pip resolves that against the current working directory, not the
+    project being installed.  A bootstrap runs from wherever the user happens
+    to be, so installing without changing directory first looked for
+    ``packages/aq-client`` under *that* directory and died with
+    ``OSError: [Errno 2] No such file or directory``.
+    """
+    text = SHELL_BOOTSTRAP.read_text()
+
+    # `aq_command=` also appears in the reuse branch above, so anchor the end
+    # of the slice to the assignment that follows the venv build.
+    start = text.index('"$python_bin" -m venv')
+    install = text[start : text.index("aq_command=", start)]
+    assert 'cd "$checkout_dir"' in install
+    assert install.index('cd "$checkout_dir"') < install.index("pip install -e")
+    # Every pip install runs relative to the checkout, never an absolute
+    # project path that would re-open the same cwd-resolution hole.
+    assert '-e "./packages/aq-client"' in install
+    assert '-e ".[cli]"' in install
+    assert '[cli]"' in install and '"$checkout_dir[cli]"' not in install
+
+
+def test_the_relative_client_path_the_bootstrap_compensates_for_still_exists() -> None:
+    """If the dependency stops being relative, the cd above can be revisited."""
+    pyproject = (ROOT / "pyproject.toml").read_text()
+
+    assert "agent-queue-api-client @ file:packages/aq-client" in pyproject
+
+
 def test_shell_bootstrap_reports_a_needs_user_stop_instead_of_aborting() -> None:
     text = SHELL_BOOTSTRAP.read_text()
 
