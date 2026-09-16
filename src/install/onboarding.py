@@ -26,6 +26,7 @@ Three boundaries are deliberate:
 from __future__ import annotations
 
 import os
+import shutil
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -233,11 +234,72 @@ def _read_config(path: Path) -> dict[str, Any]:
 # config.defaults — a configuration file tuned for this machine
 # ---------------------------------------------------------------------------
 
+#: The session provider ``aq install`` selects once it has seen tmux.  It is
+#: deliberately *not* :class:`~src.config.SessionsConfig`'s code default:
+#: that has to be a provider ``default_session_registry`` can build on any
+#: host — including Windows, where the tmux module does not import — so it is
+#: ``subprocess``, where attach, peek, nudge and re-adoption after a daemon
+#: restart are all unavailable.  Closing that gap belongs to the installer,
+#: which has already required tmux (``prereq.tmux``) and can see it on PATH.
+SESSION_PROVIDER = "tmux"
+
+
+def _session_provider_plan(path: Path, which: Callable[[str], str | None]) -> dict[str, Any] | None:
+    """The ``sessions`` body that turns a fresh install into tmux sessions.
+
+    Returns ``None`` when there is nothing to write: no tmux on this host, a
+    host whose registry cannot build the provider, or a ``sessions.provider``
+    the operator has already chosen — this step fills gaps, it never
+    overwrites an opinion.  Any other keys already under ``sessions`` are
+    carried through, because :func:`~src.config_editor.write_section`
+    replaces the whole section.
+
+    The value cannot come from :mod:`src.config_tuning`: a recommendation
+    there must be a function of cores and RAM alone so it stays portable
+    across boxes, and ``sessions`` is not a portable section. Whether *this*
+    host has tmux is exactly the kind of local fact that must not travel in
+    an ``.aqbundle``.
+    """
+    if which("tmux") is None:
+        return None
+    try:
+        from src.sessions import default_session_registry
+
+        if default_session_registry().get(SESSION_PROVIDER) is None:
+            return None
+    except Exception:  # noqa: BLE001 - an unbuildable registry is not a reason to fail
+        return None
+    current = _read_config(path).get("sessions")
+    body = dict(current) if isinstance(current, dict) else {}
+    if "provider" in body:
+        return None
+    body["provider"] = SESSION_PROVIDER
+    return body
+
+
+def _introduces_no_error(path: Path, section: str, body: Any) -> bool:
+    """True when writing ``section`` adds no *new* load error to ``path``.
+
+    Same rule as :func:`src.config_tuning.apply_tuning`: the file this runs
+    against is one the wizard is still assembling, so a pre-existing error
+    elsewhere must not veto an unrelated write.
+    """
+    from src.portable_config import validate_candidate_config
+
+    current = _read_config(path)
+    candidate = dict(current)
+    candidate[section] = body
+    errors = validate_candidate_config(str(path), candidate)
+    if not errors:
+        return True
+    return not set(errors) - set(validate_candidate_config(str(path), current))
+
 
 def config_step(
     *,
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
+    which: Callable[[str], str | None] | None = None,
     depends_on: tuple[str, ...] = (STEP_DATA_DIR,),
 ) -> StepSpec:
     """Create ``config.yaml`` when it is absent and give it resource-aware defaults.
@@ -246,8 +308,15 @@ def config_step(
     the box's cores and RAM — the same values ``aq system config tune --apply``
     writes.  A section the operator has already written is *kept*: this step
     fills gaps, it does not overwrite an opinion.
+
+    One key does not come from that module: ``sessions.provider``.  ``aq
+    install`` requires tmux, so once it is on PATH this step selects it
+    (:func:`_session_provider_plan`) and the install ends with attachable,
+    restart-surviving sessions rather than the portable ``subprocess``
+    default the daemon has to fall back to on an unconfigured host.
     """
     path = config_path_for(environ, home)
+    lookup = which or shutil.which
 
     def _plan_is_complete() -> bool:
         from src.config_tuning import MachineResources, tuning_plan
@@ -257,6 +326,10 @@ def config_step(
         try:
             current = _read_config(path)
             plans = tuning_plan(current, MachineResources.detect())
+            # A rerun on a host that has since grown a tmux binary still owes
+            # the provider selection, so it is part of "satisfied" too.
+            if _session_provider_plan(path, lookup) is not None:
+                return False
         except Exception:  # noqa: BLE001 - an unreadable config is not "satisfied"
             return False
         return not any(plan.action == "add" for plan in plans)
@@ -273,11 +346,16 @@ def config_step(
             path.write_text(CONFIG_HEADER, encoding="utf-8")
 
         machine = MachineResources.detect()
+        sessions_body = _session_provider_plan(path, lookup)
         # The contract asks for a versioned backup *before* AQ's configuration
         # is changed — and only then.  A run that has nothing to add must not
         # leave a numbered copy behind on every rerun.
-        if not created and any(
-            plan.action in ("add", "replace") for plan in tuning_plan(_read_config(path), machine)
+        if not created and (
+            sessions_body is not None
+            or any(
+                plan.action in ("add", "replace")
+                for plan in tuning_plan(_read_config(path), machine)
+            )
         ):
             backup_path_for(path).write_bytes(path.read_bytes())
 
@@ -287,7 +365,12 @@ def config_step(
             return StepResult.succeeded(
                 STEP_CONFIG,
                 f"{path.name} is in place; default tuning could not be written ({error})",
-                detail={"config_path": str(path), "created": created, "tuned": False},
+                detail={
+                    "config_path": str(path),
+                    "created": created,
+                    "tuned": False,
+                    "session_provider": None,
+                },
                 resources=(
                     ResourceRecord(
                         kind=RESOURCE_CONFIG, id=str(path), owned=created, reused=not created
@@ -304,11 +387,26 @@ def config_step(
                 detail={"config_path": str(path), "created": created},
             )
         written = list(outcome.get("written") or [])
+        # tmux is a prerequisite of this installer, so a stock install should
+        # not finish on the provider that cannot attach, peek or nudge.  The
+        # write is skipped rather than fatal when it would not load: an
+        # install that reaches a running daemon on `subprocess` is still a
+        # working install.
+        session_provider = None
+        if sessions_body is not None and _introduces_no_error(path, "sessions", sessions_body):
+            from src.config_editor import write_section
+
+            write_section(str(path), "sessions", sessions_body)
+            written.append("sessions")
+            written.sort()
+            session_provider = SESSION_PROVIDER
         summary = (
             f"{'created' if created else 'using'} {path} — "
             f"{machine.cores} cores, {machine.memory_gb:.0f} GiB ({machine.size_class}): "
             f"{machine.concurrent_agents} concurrent agent(s), {machine.test_slots} test slot(s)"
         )
+        if session_provider:
+            summary += f"; sessions run under {session_provider}"
         return StepResult.succeeded(
             STEP_CONFIG,
             summary,
@@ -318,6 +416,7 @@ def config_step(
                 "tuned": True,
                 "written": written,
                 "kept": list(outcome.get("kept") or []),
+                "session_provider": session_provider,
                 "machine": machine.as_dict(),
                 "rationale": "docs/guides/default-tuning.md",
             },
@@ -333,7 +432,9 @@ def config_step(
         title="Write configuration defaults for this machine",
         description=(
             f"Creates {path} when it is absent and adds resource-aware defaults derived from "
-            "this box's cores and memory. Sections you have already written are kept."
+            "this box's cores and memory, and selects the tmux session provider so agent "
+            "sessions can be attached, peeked and nudged. Sections you have already written "
+            "are kept."
         ),
         run=run,
         depends_on=depends_on,
@@ -621,8 +722,6 @@ def daemon_step(
     answer.  The observable condition is the health endpoint, which is also
     what makes the step idempotent — a daemon that is already up is reused.
     """
-    import shutil
-
     path = config_path_for(environ, home)
     lookup = which or shutil.which
     execute = runner or run_command
@@ -809,7 +908,7 @@ def onboarding_steps(
 ) -> tuple[StepSpec, ...]:
     """The onboarding steps, in the order they run."""
     return (
-        config_step(environ=environ, home=home, depends_on=depends_on),
+        config_step(environ=environ, home=home, which=which, depends_on=depends_on),
         check_step(environ=environ, home=home),
         discord_step(environ=environ, home=home),
         daemon_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
@@ -824,6 +923,7 @@ __all__ = [
     "DEFAULT_API_HOST",
     "DEFAULT_API_PORT",
     "DEFAULT_WORKSPACE_DIR",
+    "SESSION_PROVIDER",
     "SOURCE_DASHBOARD_URL",
     "STEP_CHECK",
     "STEP_CONFIG",

@@ -351,11 +351,16 @@ turn and drags in system-prompt frames.
 | Drain-ack durability | survives a restart (`tmux set-environment`) | lost on restart (daemon memory) | in memory |
 | `confirm_stopped` | fresh, cache-bypassing probe | **not implemented** — cannot confirm | n/a |
 
-The shipped default is `sessions.provider: subprocess`, because it is the
+The *code* default is `sessions.provider: subprocess`, because it is the
 provider every host can construct; a default the registry cannot build would
-fail every launch. **Configured local policy:** this install sets
-`sessions.provider: tmux` in `~/.agent-queue/config.yaml`, which is what makes
-attach, peek, nudge and adoption-after-restart work here.
+fail every launch, and the tmux provider does not even import off POSIX.
+**An installed box does not run on it:** tmux is a prerequisite of `aq
+install` (`prereq.tmux`), and its `config.defaults` step writes
+`sessions.provider: tmux` into `~/.agent-queue/config.yaml` once it sees tmux
+on PATH — which is what makes attach, peek, nudge and adoption-after-restart
+work here. The step fills that gap only: a `sessions.provider` you have
+already written is kept, so choosing `subprocess` deliberately survives a
+rerun, and a host with no tmux is left alone.
 
 Consequences of running on `subprocess`, all of them by design rather than
 oversight: the stall ladder skips its nudge rungs and goes straight to restart

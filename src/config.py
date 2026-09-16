@@ -1265,6 +1265,15 @@ class SessionsConfig:
     #: 60 s, forever.  ``validate()`` also refuses a provider this host
     #: cannot construct, so the failure is a config error at load rather
     #: than a notification loop at runtime.
+    #:
+    #: This is the *unconfigured* floor, not what an installed box runs on:
+    #: ``aq install`` requires tmux and its ``config.defaults`` step writes
+    #: ``sessions.provider: tmux`` once it sees the binary
+    #: (``src.install.onboarding._session_provider_plan``), so attach, peek,
+    #: nudge and re-adoption are on by default after an install.  The check
+    #: below cannot do that job: the registry registers ``tmux`` whenever the
+    #: module *imports*, which is every POSIX host, with or without the
+    #: binary -- so only the installer can tell whether tmux is really there.
     provider: str = "subprocess"  # tmux | subprocess | fake
     tmux_socket: str = "aq"
     lease_ttl_seconds: int = 480

@@ -162,6 +162,12 @@ def step(result, step_id):
     return next(row for row in result.steps if row.step_id == step_id)
 
 
+def load_yaml(path: Path) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
 def env_with_password(home: Path) -> None:
     (home / ".env").write_text("AQ_DB_PASSWORD=local-development\n", encoding="utf-8")
 
@@ -221,6 +227,82 @@ def test_the_configuration_step_tunes_for_this_machine_and_keeps_what_exists(tmp
     # Discord-free default survives.
     assert VALID_DSN in body
     assert "messaging_platform: none" in body
+
+
+def test_the_configuration_step_selects_the_tmux_session_provider(tmp_path):
+    """`aq install` requires tmux, so a stock install must not end on `subprocess`.
+
+    The code default is `subprocess` because that is the provider every host's
+    registry can build; on a host that just passed `prereq.tmux` it is the
+    wrong answer, because it silently costs attach, peek, nudge and
+    re-adoption after a daemon restart.
+    """
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    detail = step(result, STEP_CONFIG).detail
+    assert detail["session_provider"] == "tmux"
+    assert "sessions" in detail["written"]
+    assert load_yaml(config)["sessions"]["provider"] == "tmux"
+
+
+def test_a_host_without_tmux_is_left_on_the_portable_session_provider(tmp_path):
+    """Nothing is written when the provider would not be constructible."""
+    home = configured(tmp_path)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    def without_tmux(name):
+        return None if name == "tmux" else f"/usr/bin/{name}"
+
+    result = run(registry_for(home, daemon, which=without_tmux), tmp_path)
+
+    detail = step(result, STEP_CONFIG).detail
+    assert detail["session_provider"] is None
+    assert "sessions" not in detail["written"]
+    assert "sessions" not in load_yaml(config)
+
+
+def test_a_session_provider_the_operator_chose_is_kept(tmp_path):
+    """The step fills gaps; it never overwrites an opinion already in the file."""
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "sessions:\n  provider: subprocess\n"
+        ),
+    )
+    env_with_password(home)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CONFIG).detail["session_provider"] is None
+    assert load_yaml(config)["sessions"]["provider"] == "subprocess"
+
+
+def test_selecting_the_provider_keeps_the_rest_of_an_existing_sessions_section(tmp_path):
+    """`write_section` replaces the whole section, so the other keys travel with it."""
+    home = home_with_config(
+        tmp_path,
+        body=(
+            f"messaging_platform: none\ndatabase:\n  url: {VALID_DSN}\n"
+            "sessions:\n  lease_ttl_seconds: 600\n"
+        ),
+    )
+    env_with_password(home)
+    config = home / "config.yaml"
+    daemon = FakeDaemon(up=True)
+
+    result = run(registry_for(home, daemon), tmp_path)
+
+    assert step(result, STEP_CONFIG).detail["session_provider"] == "tmux"
+    sessions = load_yaml(config)["sessions"]
+    assert sessions == {"lease_ttl_seconds": 600, "provider": "tmux"}
 
 
 def test_a_config_that_does_not_load_names_the_step_and_the_fix(tmp_path):

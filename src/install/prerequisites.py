@@ -194,8 +194,10 @@ def tmux_step(
         STEP_TMUX,
         "tmux",
         title="Check tmux",
-        description="Every agent harness runs inside a tmux session, so tmux is required "
-        "on the daemon host.",
+        description="AQ runs each agent harness inside a tmux session, which is what makes "
+        "it attachable, peekable and re-adoptable after a daemon restart. `aq install` "
+        "selects that provider (`sessions.provider: tmux`) once this step passes, so tmux "
+        "is required on the daemon host.",
         remediation={
             "windows-wsl2": "Install tmux inside WSL with `sudo apt-get install -y tmux`.",
             "default": "Install tmux (macOS: `brew install tmux`).",
