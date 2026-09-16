@@ -139,8 +139,8 @@ Nine of those are the identity markers every session carries
 isolation, pool launches and resource caps.
 
 The terminals themselves belong to the tmux server, so they are visible without
-the daemon at all. On a box configured with `sessions.provider: tmux` and the
-default socket name:
+the daemon at all. On a box configured with `sessions.provider: tmux` — which
+is what `aq install` writes — and the default socket name:
 
 ```bash
 tmux -L aq list-sessions
@@ -344,9 +344,9 @@ Adoption is off if `sessions.adopt_on_start` is `false`; it ships `true`.
 > **Warning.** Adoption is only as good as the provider's ability to enumerate.
 > `SubprocessProvider.list_running` only knows sessions *this daemon process*
 > started, so after a restart it sees nothing — no session is mis-reaped, but
-> none is re-adopted either. This is one of the reasons this install sets
-> `sessions.provider: tmux` in `~/.agent-queue/config.yaml` rather than leaving
-> the shipped `subprocess` default.
+> none is re-adopted either. This is one of the reasons `aq install` writes
+> `sessions.provider: tmux` into `~/.agent-queue/config.yaml` rather than
+> leaving the code's portable `subprocess` default in place.
 
 ## Idle sessions and drains
 

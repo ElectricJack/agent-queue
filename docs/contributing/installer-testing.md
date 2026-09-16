@@ -86,6 +86,7 @@ thing, and the test passes something else in.
 | --- | --- | --- |
 | `prereq.git` | `shutil.which` | a lookup over a scripted PATH |
 | `prereq.tmux` | `shutil.which` | the same lookup |
+| `config.defaults` | `shutil.which` (is tmux really here?) and this box's cores/RAM | the same lookup, over a temporary home |
 | `postgres.package` | `apt-get` / `brew` through `subprocess` | a command runner over a scripted package set |
 | `postgres.service` | `systemctl` / `brew services` | the same runner |
 | `postgres.server` | a TCP connect and an `asyncpg` connection | a probe and an in-memory server |

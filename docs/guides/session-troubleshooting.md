@@ -400,10 +400,11 @@ unreachable tmux server does not produce a massacre.
 
 **The provider matters here.** `SubprocessProvider.list_running` only knows
 sessions this daemon process started, so after a restart it enumerates nothing:
-no session is mis-reaped, but none is re-adopted either. The shipped default is
-`subprocess`, because it is the provider every host can construct; **this
-install sets `sessions.provider: tmux`** in `~/.agent-queue/config.yaml`, for
-that reason among others.
+no session is mis-reaped, but none is re-adopted either. The code default is
+`subprocess`, because it is the provider every host can construct; **`aq
+install` writes `sessions.provider: tmux`** into `~/.agent-queue/config.yaml`
+once it has seen tmux on PATH, for that reason among others. If this box is on
+`subprocess`, something chose it — check the `sessions` section.
 
 **Check what happened:**
 

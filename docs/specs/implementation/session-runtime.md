@@ -628,6 +628,13 @@ from one profile); live sessions drain naturally — `aq session kill` cleans st
       `SessionsConfig.validate()` rejects a provider the registry cannot build. With
       `tmux` as the default, flipping `enabled: true` on a stock install paused every task
       for 60 s *and* posted a Discord notification, per task, forever.
+      That default is the *unconfigured* floor, not the installed one: `aq install`
+      requires tmux (`prereq.tmux`) and its `config.defaults` step writes
+      `sessions.provider: tmux` into the generated `config.yaml` when tmux is on PATH
+      and the registry can build it, so an installed box gets attach, peek, nudge and
+      re-adoption. Note that `validate()`'s registry check only catches a host where
+      the tmux *module* does not import (non-POSIX); a missing tmux *binary* is caught
+      by the installer's prerequisite step, which is why the selection lives there.
 
 **Phase S3 — observation**
 - [x] `transcripts/base.py` + `claude.py` + `codex.py` + `TranscriptWatcher` (events, token
