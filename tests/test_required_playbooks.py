@@ -9,6 +9,7 @@ from src.commands.playbook_v2_commands import PlaybookV2CommandsMixin
 from src.database import Database
 from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.required import (
+    DEFAULT_SYSTEM_PLAYBOOK_IDS,
     REQUIRED_SYSTEM_PLAYBOOK_IDS,
     RequiredPlaybookReconciler,
     ensure_reviewed_playbook_bundles,
@@ -56,7 +57,7 @@ async def test_fresh_database_bootstraps_required_system_activations(tmp_path):
         assert result["ok"]
         assert {activation["playbook_id"] for activation in activations} == set(
             REQUIRED_SYSTEM_PLAYBOOK_IDS
-        )
+        ) | set(DEFAULT_SYSTEM_PLAYBOOK_IDS)
         assert {(activation["scope"], activation["enabled"]) for activation in activations} == {
             ("system", True)
         }
@@ -107,9 +108,12 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
             in result["required"]["default-assignment-routing"]["diagnostic"]
         )
         # One required bundle being invalid must not prevent the independent
-        # Claude usage probe from being imported and activated.
-        [activation] = await db.list_playbook_activations(enabled_only=True)
-        assert activation["playbook_id"] == "provider-usage-probe"
+        # Claude usage probe -- or the shared defaults -- from being activated.
+        activations = await db.list_playbook_activations(enabled_only=True)
+        assert {activation["playbook_id"] for activation in activations} == {
+            "provider-usage-probe",
+            *DEFAULT_SYSTEM_PLAYBOOK_IDS,
+        }
     finally:
         await db.close()
 
@@ -152,5 +156,77 @@ async def test_reconciliation_replays_retained_route_events_after_activation(tmp
 
         assert replay == {"replayed": True, "considered": 1, "run_ids": ["run-1"], "errors": []}
         handler._v2_replay_held_event.assert_awaited_once()
+    finally:
+        await db.close()
+
+
+async def test_a_fresh_install_activates_the_shared_default_playbooks_healthy(tmp_path):
+    """Settings -> Playbooks showed nothing on a fresh install but the required two.
+
+    Health is computed against the live command contract registry, so a shipped
+    bundle that has gone stale fails here rather than activating as stale.
+    """
+    db, _handler, reconciler = await _reconciler(tmp_path)
+    try:
+        result = await reconciler.reconcile()
+
+        for playbook_id in DEFAULT_SYSTEM_PLAYBOOK_IDS:
+            assert result["defaults"][playbook_id] == {
+                "activated": True,
+                "enabled": True,
+                "health": "ready",
+            }
+        assert set(DEFAULT_SYSTEM_PLAYBOOK_IDS).isdisjoint(result["required"])
+    finally:
+        await db.close()
+
+
+async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path):
+    db, _handler, reconciler = await _reconciler(tmp_path)
+    try:
+        await reconciler.reconcile()
+        row = next(
+            activation
+            for activation in await db.list_playbook_activations()
+            if activation["playbook_id"] == "blocked-task-escalation"
+        )
+        await db.set_playbook_activation(
+            playbook_id="blocked-task-escalation",
+            scope="system",
+            scope_identifier="",
+            artifact_sha256=row["active_artifact_sha256"],
+            enabled=False,
+            activated_by="human:operator",
+            health="ready",
+            reasons="[]",
+        )
+
+        restarted = RequiredPlaybookReconciler(
+            config=reconciler._config, db=db, handler=reconciler._handler
+        )
+        result = await restarted.reconcile()
+
+        after = next(
+            activation
+            for activation in await db.list_playbook_activations()
+            if activation["playbook_id"] == "blocked-task-escalation"
+        )
+        assert after["enabled"] is False
+        assert result["defaults"]["blocked-task-escalation"]["activated"] is False
+    finally:
+        await db.close()
+
+
+async def test_a_default_that_cannot_be_imported_does_not_fail_readiness(tmp_path):
+    import shutil
+
+    db, _handler, reconciler = await _reconciler(tmp_path)
+    shutil.rmtree(tmp_path / "vault" / "reviewed-playbooks" / "blocked-task-escalation")
+    try:
+        result = await reconciler.reconcile()
+
+        assert result["ok"] is True
+        assert result["defaults"]["blocked-task-escalation"]["activated"] is False
+        assert "error" in result["defaults"]["blocked-task-escalation"]
     finally:
         await db.close()

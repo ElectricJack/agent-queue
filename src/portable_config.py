@@ -47,6 +47,9 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
         "surface",
         "state_machine",
         "work_graph",
+        # Only limits and policy switches (artifact/result/snapshot sizes,
+        # pending-event and retention policy) -- no path, no credential.
+        "playbooks",
         "swarm",
         "resources",
         "metrics",

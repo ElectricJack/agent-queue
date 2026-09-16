@@ -203,6 +203,7 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
             "container_sweep_interval_seconds": _by_size(machine, 120, 60, 60),
         },
         "state_machine": {"enforce": False},
+        "playbooks": {"enabled": True},
         "surface": {"context_cost_ceiling_tokens": 8000},
         "swarm": {
             "enabled": True,
@@ -429,6 +430,16 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             "The threshold `aq doctor` warns at for prompt context cost; 8k "
             "is roughly where an agent's context stops being mostly task.",
             "Raise on a deployment with deliberately large system prompts.",
+        ),
+        TuningNote(
+            "playbooks.enabled",
+            "Playbooks are how AQ routes a task to a worker, escalates a blocked "
+            "task and probes provider usage. With them off, a task created "
+            "without an explicit profile and class is never routed, and the "
+            "shared system playbooks never activate. The code default is off "
+            "only because it predates the Playbook V2 runtime.",
+            "Set false to run with no playbooks at all (every task must then name "
+            "its profile and intelligence class).",
         ),
         TuningNote(
             "swarm.enabled",
