@@ -120,24 +120,51 @@ else
     python_bin="python3"
 fi
 
-# --- Check out AQ and build its virtualenv -----------------------------------
-if [[ -x "$checkout_dir/.venv/bin/aq" ]]; then
-    aq_command="$checkout_dir/.venv/bin/aq"
-elif command -v aq >/dev/null; then
+# --- Check out AQ, keep it current, and build its virtualenv -----------------
+#
+# Rerunning the one command is the documented way to resume *and* to pick up a
+# fix, so a rerun must not keep running whatever it cloned the first time.
+if [[ -e "$checkout_dir" && ! -d "$checkout_dir/.git" ]]; then
+    printf '%s exists but is not an AQ checkout; refusing to overwrite it.\n' "$checkout_dir" >&2
+    exit 20
+fi
+
+if [[ ! -d "$checkout_dir/.git" ]] && command -v aq >/dev/null; then
+    # An `aq` from somewhere else -- typically a contributor's own checkout,
+    # built with ./setup.sh.  It is not this script's to update or replace.
     aq_command="$(command -v aq)"
+    printf 'Using the aq already on PATH at %s.\n' "$aq_command"
 else
-    if [[ -e "$checkout_dir" && ! -d "$checkout_dir/.git" ]]; then
-        printf '%s exists but is not an AQ checkout; refusing to overwrite it.\n' "$checkout_dir" >&2
-        exit 20
-    fi
     if [[ ! -d "$checkout_dir/.git" ]]; then
         mkdir -p "$(dirname "$checkout_dir")"
         git clone --depth 1 "$repository" "$checkout_dir"
+    elif [[ -n "$(git -C "$checkout_dir" status --porcelain --untracked-files=no)" ]]; then
+        # Somebody edited tracked files in the installer's checkout.  Never
+        # discard that; run what is there and say so.
+        printf 'Not updating %s: it has local changes to tracked files.\n' "$checkout_dir" >&2
+    elif ! git -C "$checkout_dir" rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        printf 'Not updating %s: it has no upstream branch to follow.\n' "$checkout_dir" >&2
     else
-        printf 'Reusing existing AQ checkout at %s (it is not reset or overwritten).\n' "$checkout_dir"
+        before="$(git -C "$checkout_dir" rev-parse --short HEAD)"
+        # The clone is shallow, so the old and new tips share no history a
+        # merge could fast-forward across.  The tree is clean (checked above)
+        # and .venv is ignored, so moving to the upstream tip loses nothing.
+        if git -C "$checkout_dir" fetch --depth 1 --quiet origin \
+            && git -C "$checkout_dir" reset --hard --quiet '@{u}'; then
+            after="$(git -C "$checkout_dir" rev-parse --short HEAD)"
+            if [[ "$before" == "$after" ]]; then
+                printf 'AQ checkout at %s is up to date (%s).\n' "$checkout_dir" "$after"
+            else
+                printf 'Updated AQ checkout at %s (%s -> %s).\n' "$checkout_dir" "$before" "$after"
+            fi
+        else
+            printf 'Could not update %s (offline?); continuing with %s.\n' "$checkout_dir" "$before" >&2
+        fi
     fi
 
-    "$python_bin" -m venv "$checkout_dir/.venv"
+    if [[ ! -x "$checkout_dir/.venv/bin/python" ]]; then
+        "$python_bin" -m venv "$checkout_dir/.venv"
+    fi
 
     # Install from *inside* the checkout.  pyproject's `cli` extra names the
     # generated API client as a PEP 508 direct reference with a relative path
@@ -146,11 +173,14 @@ else
     # installed.  A bootstrap is run from wherever the user happens to be, so
     # resolving it from here looked for packages/aq-client under *that*
     # directory and failed with an OSError.  The subshell keeps the cd local.
+    #
+    # This runs on every pass, not only the first: an update can change the
+    # dependencies, and pip is quick when everything is already satisfied.
     (
         cd "$checkout_dir"
-        ./.venv/bin/pip install --upgrade pip
-        ./.venv/bin/pip install -e "./packages/aq-client"
-        ./.venv/bin/pip install -e ".[cli]"
+        ./.venv/bin/pip install --quiet --upgrade pip
+        ./.venv/bin/pip install --quiet -e "./packages/aq-client"
+        ./.venv/bin/pip install --quiet -e ".[cli]"
     )
     aq_command="$checkout_dir/.venv/bin/aq"
 fi

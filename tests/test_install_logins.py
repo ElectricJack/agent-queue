@@ -17,6 +17,7 @@ from src.install.logins import (
     CredentialStore,
     EnvironmentCredential,
     ProviderLogin,
+    STATUS_TIMEOUT_SECONDS,
     login_step,
     login_steps,
     probe_all,
@@ -165,6 +166,131 @@ def test_environment_credential_reports_only_the_variable_name(tmp_path):
     assert FAKE_KEY not in json.dumps(probe.detail())
 
 
+def _claude_settings(tmp_path, env_block, *, config_dir=None) -> None:
+    root = Path(config_dir) if config_dir else tmp_path / ".claude"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "settings.json").write_text(json.dumps({"env": env_block}), encoding="utf-8")
+
+
+def test_vertex_selected_in_claude_settings_json_is_authenticated(tmp_path):
+    """The macOS one-command install stopped a Vertex-configured Claude Code.
+
+    Vertex was selected in ``~/.claude/settings.json``, which Claude Code applies
+    to itself, so it never appeared in the installer's environment -- and the
+    status command had not answered.  The settings file is evidence on its own.
+    """
+    _claude_settings(
+        tmp_path,
+        {
+            "CLAUDE_CODE_USE_VERTEX": "1",
+            "ANTHROPIC_VERTEX_PROJECT_ID": "demo-project",
+            "CLOUD_ML_REGION": "us-east5",
+        },
+    )
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.method == "cloud-provider"
+    assert probe.source == "CLAUDE_CODE_USE_VERTEX"
+    assert probe.store == "Claude Code settings.json env"
+    assert "demo-project" not in json.dumps(probe.detail())
+
+
+def test_settings_json_honours_claude_config_dir(tmp_path):
+    config_dir = tmp_path / "elsewhere"
+    _claude_settings(tmp_path, {"CLAUDE_CODE_USE_BEDROCK": True}, config_dir=config_dir)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path, CLAUDE_CONFIG_DIR=str(config_dir)),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert probe.authenticated
+    assert probe.source == "CLAUDE_CODE_USE_BEDROCK"
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        '{"env": {"CLAUDE_CODE_USE_VERTEX": "0"}}',
+        '{"env": {"CLAUDE_CODE_USE_VERTEX": false}}',
+        '{"env": "not a mapping"}',
+        "{not json",
+        "",
+    ],
+)
+def test_an_unselected_or_unreadable_settings_file_is_no_evidence(tmp_path, contents):
+    root = tmp_path / ".claude"
+    root.mkdir()
+    (root / "settings.json").write_text(contents, encoding="utf-8")
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=_never_signed_in,
+    )
+
+    assert not probe.authenticated
+    assert "Claude Code settings.json env" in probe.checked
+
+
+def test_a_status_command_that_did_not_answer_is_retried_once(tmp_path):
+    calls = []
+
+    def slow_then_ready(command):
+        calls.append(command)
+        if len(calls) == 1:
+            raise subprocess.TimeoutExpired(command, STATUS_TIMEOUT_SECONDS)
+        return _completed(command)
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=slow_then_ready,
+    )
+
+    assert probe.authenticated
+    assert len(calls) == 2
+
+
+def test_a_status_command_that_answered_no_is_not_retried(tmp_path):
+    calls = []
+
+    def signed_out(command):
+        calls.append(command)
+        return _completed(command, code=1)
+
+    probe_login(CLAUDE_CODE_LOGIN, environ=_env(tmp_path), which=_present("claude"), runner=signed_out)
+
+    assert len(calls) == 1
+
+
+def test_the_default_status_runner_never_reads_the_terminal(monkeypatch):
+    from src.install import logins
+
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        return _completed(command)
+
+    monkeypatch.setattr(logins.subprocess, "run", fake_run)
+    logins._run(("claude", "auth", "status"))
+
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["timeout"] == STATUS_TIMEOUT_SECONDS >= 30
+
+
 def test_credential_store_presence_authenticates_without_reading_the_file(tmp_path):
     cache = tmp_path / ".gemini" / "oauth_creds.json"
     cache.parent.mkdir(parents=True)
@@ -257,6 +383,7 @@ def test_probe_all_reports_every_provider_independently(tmp_path):
         authenticated=False,
         checked=(
             "claude auth status",
+            "Claude Code settings.json env",
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_USE_VERTEX",
             "CLAUDE_CODE_USE_FOUNDRY",
@@ -311,6 +438,7 @@ def test_an_installed_but_unauthenticated_provider_stops_at_a_human_checkpoint(t
         "credential_store": None,
         "checked": [
             "claude auth status",
+            "Claude Code settings.json env",
             "CLAUDE_CODE_USE_BEDROCK",
             "CLAUDE_CODE_USE_VERTEX",
             "CLAUDE_CODE_USE_FOUNDRY",

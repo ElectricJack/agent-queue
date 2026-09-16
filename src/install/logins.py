@@ -35,6 +35,7 @@ tuple, not to the engine.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -51,8 +52,11 @@ CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 CommandLookup = Callable[[str], str | None]
 
 #: A status command that has not answered in this long is treated as "cannot
-#: tell", never as authenticated.  A hung CLI must not hang ``aq install``.
-STATUS_TIMEOUT_SECONDS = 10
+#: tell", never as authenticated.  A hung CLI must not hang ``aq install``, but
+#: the first run of a freshly installed or just-updated CLI can be slow -- a
+#: macOS Gatekeeper scan, a self-update check -- and ten seconds reported a
+#: signed-in harness as signed out on exactly the one-command install path.
+STATUS_TIMEOUT_SECONDS = 30
 
 #: Values that turn a switch-shaped variable (``GOOGLE_GENAI_USE_VERTEXAI``)
 #: off.  ``=false`` means the operator did *not* select that method.
@@ -64,6 +68,10 @@ def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         command,
         check=False,
         capture_output=True,
+        # A status probe must never read the terminal.  `aq install` holds the
+        # user's tty for its own prompts, and a child that waited on it would
+        # turn a readiness check into a hang or a stolen keystroke.
+        stdin=subprocess.DEVNULL,
         text=True,
         timeout=STATUS_TIMEOUT_SECONDS,
     )
@@ -98,6 +106,61 @@ class EnvironmentCredential:
         return tuple(name for name in self.companions if not (environ.get(name) or "").strip())
 
 
+def _config_path(
+    environ: Mapping[str, str], *, filename: str, default_dir: str, directory_variable: str | None
+) -> Path:
+    """Resolve a provider config file the way the provider does."""
+    override = (environ.get(directory_variable) or "").strip() if directory_variable else ""
+    if override:
+        return Path(override).expanduser() / filename
+    home = (environ.get("HOME") or "").strip()
+    root = Path(home) if home else Path.home()
+    return root / default_dir / filename
+
+
+@dataclass(frozen=True, slots=True)
+class SettingsEnvironment:
+    """A provider settings file whose ``env`` block the provider applies itself.
+
+    Claude Code documents ``env`` in ``~/.claude/settings.json`` as variables
+    applied to every session, and it is the usual home for a cloud-provider
+    selection such as ``CLAUDE_CODE_USE_VERTEX``.  Those variables never reach
+    this process's environment, so a probe that looked only at ``os.environ``
+    called a Vertex-configured harness unauthenticated.
+
+    Only the *names* and switch values are consulted, exactly as for a real
+    environment variable; nothing read here is recorded.
+    """
+
+    label: str
+    filename: str
+    default_dir: str
+    directory_variable: str | None = None
+
+    def resolve(self, environ: Mapping[str, str]) -> Path:
+        return _config_path(
+            environ,
+            filename=self.filename,
+            default_dir=self.default_dir,
+            directory_variable=self.directory_variable,
+        )
+
+    def load(self, environ: Mapping[str, str]) -> dict[str, str]:
+        """The file's ``env`` block, or nothing -- a bad file is no evidence."""
+        try:
+            payload = json.loads(self.resolve(environ).read_text())
+        except (OSError, ValueError):
+            return {}
+        block = payload.get("env") if isinstance(payload, dict) else None
+        if not isinstance(block, dict):
+            return {}
+        return {
+            str(name): str(value).lower() if isinstance(value, bool) else str(value)
+            for name, value in block.items()
+            if isinstance(value, (str, int, float, bool))
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class CredentialStore:
     """A provider-owned protected store, checked for existence only.
@@ -117,16 +180,12 @@ class CredentialStore:
     keychain_backed: bool = False
 
     def resolve(self, environ: Mapping[str, str]) -> Path:
-        override = (
-            (environ.get(self.directory_variable) or "").strip()
-            if (self.directory_variable)
-            else ""
+        return _config_path(
+            environ,
+            filename=self.filename,
+            default_dir=self.default_dir,
+            directory_variable=self.directory_variable,
         )
-        if override:
-            return Path(override).expanduser() / self.filename
-        home = (environ.get("HOME") or "").strip()
-        root = Path(home) if home else Path.home()
-        return root / self.default_dir / self.filename
 
     def present(self, environ: Mapping[str, str]) -> bool:
         try:
@@ -158,6 +217,9 @@ class ProviderLogin:
     #: Extra sentence appended to a "not authenticated" report when the
     #: provider's real store is not inspectable on this platform.
     store_note: str = ""
+    #: Settings files whose ``env`` block the provider applies to itself, read
+    #: as environment credentials the process environment does not carry.
+    settings: tuple[SettingsEnvironment, ...] = ()
 
     @property
     def capability(self) -> str:
@@ -206,13 +268,19 @@ def _status_command_says_signed_in(command: Sequence[str], runner: CommandRunner
     The output is deliberately dropped: it can name an account, a plan or an
     organisation, none of which the installer has any business persisting.
     """
-    try:
-        completed = runner(tuple(command))
-    except (OSError, subprocess.SubprocessError):
-        # A missing subcommand, a hung CLI or an old build is "cannot tell",
-        # and the caller falls through to the environment and the store.
-        return False
-    return completed.returncode == 0
+    # One retry when the command could not answer at all: a slow first run
+    # is common and transient, and the one-command install should not stop
+    # the whole machine setup on it.  A command that *answered* "no" is not
+    # retried.
+    for _attempt in range(2):
+        try:
+            completed = runner(tuple(command))
+        except (OSError, subprocess.SubprocessError):
+            # A missing subcommand, a hung CLI or an old build is "cannot
+            # tell", and the caller falls through to the environment and store.
+            continue
+        return completed.returncode == 0
+    return False
 
 
 def probe_login(
@@ -229,9 +297,19 @@ def probe_login(
     credential store.  Each source contributes a name; none contributes a
     value.
     """
-    env = os.environ if environ is None else environ
+    process_env = os.environ if environ is None else environ
     if which(login.executable) is None:
         return AuthProbe(login.provider_id, installed=False, authenticated=False)
+
+    # The provider applies its settings-file `env` block to every session, on
+    # top of what it inherits, so evaluate credentials the same way.
+    from_settings: dict[str, str] = {}
+    settings_label: dict[str, str] = {}
+    for settings in login.settings:
+        for name, value in settings.load(process_env).items():
+            from_settings[name] = value
+            settings_label[name] = settings.label
+    env: Mapping[str, str] = {**process_env, **from_settings} if from_settings else process_env
 
     checked: list[str] = []
     missing: list[str] = []
@@ -250,6 +328,7 @@ def probe_login(
                 checked=tuple(checked),
             )
 
+    checked.extend(settings.label for settings in login.settings)
     for credential in login.environment:
         checked.append(credential.variable)
         if not credential.selected(env):
@@ -264,7 +343,7 @@ def probe_login(
             authenticated=True,
             method=credential.method,
             source=credential.variable,
-            store="environment",
+            store=settings_label.get(credential.variable, "environment"),
             checked=tuple(checked),
         )
 
@@ -434,6 +513,14 @@ CLAUDE_CODE_LOGIN = ProviderLogin(
             keychain_backed=True,
         ),
     ),
+    settings=(
+        SettingsEnvironment(
+            label="Claude Code settings.json env",
+            filename="settings.json",
+            default_dir=".claude",
+            directory_variable="CLAUDE_CONFIG_DIR",
+        ),
+    ),
     headless_hint=(
         "Run `claude setup-token` on a machine that has a browser and export the printed "
         "token here as CLAUDE_CODE_OAUTH_TOKEN, or export ANTHROPIC_API_KEY from a Claude "
@@ -588,6 +675,7 @@ __all__ = [
     "CODEX_LOGIN",
     "GEMINI_LOGIN",
     "STATUS_TIMEOUT_SECONDS",
+    "SettingsEnvironment",
     "AuthProbe",
     "CredentialStore",
     "EnvironmentCredential",

@@ -136,7 +136,7 @@ def test_shell_bootstrap_installs_from_inside_the_checkout() -> None:
     start = text.index('"$python_bin" -m venv')
     install = text[start : text.index("aq_command=", start)]
     assert 'cd "$checkout_dir"' in install
-    assert install.index('cd "$checkout_dir"') < install.index("pip install -e")
+    assert install.index('cd "$checkout_dir"') < install.index("pip install")
     # Every pip install runs relative to the checkout, never an absolute
     # project path that would re-open the same cwd-resolution hole.
     assert '-e "./packages/aq-client"' in install
@@ -194,6 +194,44 @@ def test_shell_bootstrap_forces_interactive_only_with_a_terminal() -> None:
     # Both are inside a branch that established a terminal first.
     assert handoff.index("[[ -t 0 ]]") < handoff.index(interactive_calls[0])
     assert all("</dev/null" not in call for call in interactive_calls)
+
+
+def test_a_rerun_updates_the_installer_checkout_before_installing() -> None:
+    """Rerunning the one command must pick up a fix, not replay the first clone.
+
+    The first version reused any existing checkout untouched, so every
+    bootstrap fix required the user to delete ~/.local/share/agent-queue --
+    an extra step the one-command install exists to avoid.
+    """
+    text = SHELL_BOOTSTRAP.read_text()
+    block = text[text.index("# --- Check out AQ") : text.index("# --- Put `aq` on PATH")]
+
+    update = block.index("fetch --depth 1 --quiet origin")
+    assert block.index("git clone --depth 1") < update
+    assert update < block.index("pip install")
+    assert "reset --hard --quiet '@{u}'" in block
+
+
+def test_a_rerun_never_discards_local_edits_or_someone_elses_aq() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+    block = text[text.index("# --- Check out AQ") : text.index("# --- Put `aq` on PATH")]
+
+    # Edits to tracked files stop the update before any reset can run.
+    assert block.index("status --porcelain --untracked-files=no") < block.index("reset --hard")
+    # A contributor's own `aq` (no installer checkout) is used, never touched.
+    assert '[[ ! -d "$checkout_dir/.git" ]] && command -v aq' in block
+    # Offline is a warning, not a failed install.
+    assert "continuing with" in block
+
+
+def test_dependencies_are_reinstalled_on_every_pass() -> None:
+    text = SHELL_BOOTSTRAP.read_text()
+    block = text[text.index("# --- Check out AQ") : text.index("# --- Put `aq` on PATH")]
+
+    # The venv is created only when missing, but the installs are unconditional.
+    assert 'if [[ ! -x "$checkout_dir/.venv/bin/python" ]]; then' in block
+    venv_guard_end = block.index("fi", block.index('if [[ ! -x "$checkout_dir/.venv/bin/python" ]]'))
+    assert block.index("pip install --quiet -e \".[cli]\"") > venv_guard_end
 
 
 def test_the_old_wsl_url_still_reaches_the_shared_bootstrap() -> None:
