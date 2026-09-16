@@ -377,6 +377,26 @@ class TestSessionResolution:
         r = await handler.execute("session_show", {"task_id": "t1"})
         assert r["session"]["id"] == "sess-1"
 
+    async def test_resolve_by_the_short_id_session_list_prints(self, handler, db, provider):
+        """`aq session list` shows 8 characters of the id; those must work too."""
+        await _make_task(db)
+        await _make_session(db, provider, sid="38f74718-7d4f-4c0c-82c5-f397727b16cd")
+        r = await handler.execute("session_peek", {"session_id": "38f74718"})
+        assert r["success"] is True, r
+
+    async def test_an_ambiguous_prefix_names_the_candidates(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider, sid="abcd1111-a", task_id="t1", name="s-a")
+        await _make_session(db, provider, sid="abcd2222-b", task_id="t1", name="s-b")
+        r = await handler.execute("session_show", {"session_id": "abcd"})
+        assert "error" in r and "matches 2 sessions" in r["error"]
+
+    async def test_a_too_short_prefix_is_not_guessed(self, handler, db, provider):
+        await _make_task(db)
+        await _make_session(db, provider, sid="38f74718-7d4f")
+        r = await handler.execute("session_show", {"session_id": "38f"})
+        assert "error" in r and "No session '38f'" in r["error"]
+
     async def test_missing_identifier_is_an_error(self, handler):
         assert "error" in await handler.execute("session_show", {})
 

@@ -80,6 +80,18 @@ class SessionCommandsMixin:
             instance_token=session.instance_token,
         )
 
+    #: A shorter prefix is too likely to be a typo that happens to match.
+    _MIN_ID_PREFIX = 4
+
+    async def _session_by_id_prefix(self, prefix: str):
+        """``(session, [])`` for a unique id prefix, ``(None, ids)`` when ambiguous."""
+        if len(prefix) < self._MIN_ID_PREFIX:
+            return None, []
+        matches = [row for row in await self.db.list_sessions() if row.id.startswith(prefix)]
+        if len(matches) == 1:
+            return matches[0], []
+        return None, [row.id for row in matches] if len(matches) > 1 else []
+
     async def _resolve_session(self, args: dict):
         """Resolve a session from ``session_id``, ``name`` or ``task_id``.
 
@@ -96,6 +108,18 @@ class SessionCommandsMixin:
                 # failing, because "not found" for a name they can see in
                 # `aq session list` is a confusing error.
                 session = await self.db.get_session_by_name(str(session_id))
+            if session is None:
+                # `aq session list` prints the first 8 characters of each id,
+                # and an operator pastes what they can see: accept a prefix,
+                # but only when it names exactly one session.
+                session, ambiguous = await self._session_by_id_prefix(str(session_id))
+                if ambiguous:
+                    return None, {
+                        "error": (
+                            f"'{session_id}' matches {len(ambiguous)} sessions "
+                            f"({', '.join(sorted(ambiguous))}); use more of the id"
+                        )
+                    }
             if session is None:
                 return None, {"error": f"No session '{session_id}'"}
             return session, None
