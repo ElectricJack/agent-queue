@@ -14,7 +14,7 @@ import {
   sortSnapshots,
   toneFor,
   windowLabel,
-} from "../providerUsage";
+} from "../providerUsageFormat";
 import type { ProviderUsageResponse, ProviderUsageSnapshot } from "../../../api/hooks";
 
 const api = vi.hoisted(() => ({

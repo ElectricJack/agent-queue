@@ -128,7 +128,7 @@
     "dashboard/src/pages/metrics/StatTiles.tsx",
     "dashboard/src/pages/metrics/TimeSeriesChart.tsx",
     "dashboard/src/pages/metrics/chartData.ts",
-    "dashboard/src/pages/metrics/providerUsage.ts",
+    "dashboard/src/pages/metrics/providerUsageFormat.ts",
     "dashboard/src/pages/metrics/series.ts",
     "dashboard/src/pages/metrics/useMetricsFeed.ts",
     "dashboard/src/pages/playbook-graph-v2/ActivationPanel.tsx",

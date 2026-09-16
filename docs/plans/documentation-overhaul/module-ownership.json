@@ -2142,7 +2142,7 @@
       "purpose": "Dashboard page or its supporting module.",
       "catalog": "docs/reference/modules/dashboard.md"
     },
-    "dashboard/src/pages/metrics/providerUsage.ts": {
+    "dashboard/src/pages/metrics/providerUsageFormat.ts": {
       "shard": "dashboard",
       "component": "docs/guides/dashboard.md",
       "category": "production",

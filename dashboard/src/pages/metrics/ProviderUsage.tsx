@@ -23,7 +23,7 @@
 
 import { useProviderUsage } from "../../api/hooks";
 import type { ProviderUsageSnapshot } from "../../api/hooks";
-import { formatAge, formatReset, seriesLabel, sortSnapshots, toneFor } from "./providerUsage";
+import { formatAge, formatReset, seriesLabel, sortSnapshots, toneFor } from "./providerUsageFormat";
 
 export function UsageCard({ row, now }: { row: ProviderUsageSnapshot; now: number }) {
   const percent = Number.isFinite(row.used_percent) ? row.used_percent : 0;
