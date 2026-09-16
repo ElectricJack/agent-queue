@@ -317,25 +317,33 @@ def wizard_registry(monkeypatch, tmp_path):
     return home
 
 
-def _questions(*ids_and_capabilities):
+def _questions(*ids_and_capabilities, advanced=()):
     from src.install.wizard import Question
 
     return tuple(
-        Question(id=name, prompt=f"Use {name}?", capability=capability, default=default)
+        Question(
+            id=name,
+            prompt=f"Use {name}?",
+            capability=capability,
+            default=default,
+            advanced=name in advanced,
+        )
         for name, capability, default in ids_and_capabilities
     )
 
 
 @pytest.fixture
-def scripted_questions(monkeypatch):
-    """Replace the machine probes with a fixed question plan."""
+def scripted_questions(monkeypatch, tmp_path):
+    """Replace the machine probes with a fixed question plan and projects folder."""
     from src.cli import install as install_cli
 
     plan = _questions(
-        ("provider.codex", "provider.codex", False),
+        ("provider.codex", "provider.codex", True),
         ("daemon", "daemon", False),
     )
-    monkeypatch.setattr(install_cli, "wizard_questions", lambda *, advanced: plan)
+    monkeypatch.setattr(install_cli, "wizard_questions", lambda: plan)
+    monkeypatch.setattr(install_cli, "_reserved_folders", lambda: ())
+    monkeypatch.chdir(tmp_path)
     return plan
 
 
@@ -349,7 +357,8 @@ def _plan_action(output: str, step_id: str) -> str:
 def test_the_wizard_asks_its_questions_and_the_answers_select_capabilities(
     install_home, wizard_registry, scripted_questions
 ):
-    result = _invoke("--interactive", "--dry-run", input="y\nn\n")
+    # Two answers, then Enter for the projects folder; a dry run is not confirmed.
+    result = _invoke("--interactive", "--dry-run", input="y\nn\n\n")
 
     assert "Use provider.codex?" in result.output
     assert "Press Enter to accept each default" in result.output
@@ -362,11 +371,11 @@ def test_the_wizard_asks_its_questions_and_the_answers_select_capabilities(
 def test_pressing_enter_through_the_wizard_takes_the_defaults(
     install_home, wizard_registry, scripted_questions
 ):
-    result = _invoke("--interactive", "--dry-run", input="\n\n")
+    result = _invoke("--interactive", "--dry-run", input="\n\n\n")
 
-    assert result.exit_code == 0
-    # Both defaults were "no", so both capability-gated steps are unselected.
-    assert _plan_action(result.output, "provider.codex-cli") == "skip_not_selected"
+    # Codex defaults to yes and the daemon to no.  (The dry run's exit code is
+    # about whether *this* box has Codex signed in, which is not the question.)
+    assert _plan_action(result.output, "provider.codex-cli") != "skip_not_selected"
     assert _plan_action(result.output, "daemon.start") == "skip_not_selected"
 
 
@@ -451,21 +460,132 @@ def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
     assert any("--with discord" in line for line in payload["onboarding"]["skipped"])
 
 
-def test_the_advanced_flag_is_passed_to_the_question_plan(
-    install_home, wizard_registry, monkeypatch
+def test_an_ordinary_run_decides_the_advanced_choices_instead_of_asking(
+    install_home, wizard_registry, monkeypatch, tmp_path
 ):
+    """Only the choices a person must make are asked; the rest take their default."""
     from src.cli import install as install_cli
 
-    seen: list[bool] = []
+    plan = _questions(
+        ("provider.codex", "provider.codex", True),
+        ("daemon", "daemon", False),
+        advanced=("daemon",),
+    )
+    monkeypatch.setattr(install_cli, "wizard_questions", lambda: plan)
+    monkeypatch.setattr(install_cli, "_reserved_folders", lambda: ())
+    monkeypatch.chdir(tmp_path)
 
-    def plan(*, advanced):
-        seen.append(advanced)
-        return ()
+    ordinary = _invoke("--interactive", "--dry-run", input="\n\n")
+    advanced = _invoke("--interactive", "--dry-run", "--advanced", input="\ny\n\n")
 
-    monkeypatch.setattr(install_cli, "wizard_questions", plan)
-    _invoke("--interactive", "--dry-run", "--advanced")
+    assert "Use daemon?" not in ordinary.output
+    assert _plan_action(ordinary.output, "daemon.start") == "skip_not_selected"
+    assert "Use daemon?" in advanced.output
+    assert _plan_action(advanced.output, "daemon.start") != "skip_not_selected"
 
-    assert seen == [True]
+
+def test_the_plan_is_summarised_and_declining_it_changes_nothing(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", input="\n\n\nn\n")
+
+    assert result.exit_code == 0, result.output
+    assert "AQ will:" in result.output
+    assert "Coding agents: Codex CLI" in result.output
+    assert "Go ahead?" in result.output
+    assert "Nothing was changed" in result.output
+    assert not (install_home / "install-state.json").exists()
+
+
+def test_an_approved_plan_runs_without_asking_before_each_step(
+    install_home, wizard_registry, scripted_questions, tmp_path, monkeypatch
+):
+    """The first macOS install asked twenty separate "Create …? [Y/n]" questions."""
+    from src.cli import install as install_cli
+    from src.install.onboarding import onboarding_steps
+    from src.install.prerequisites import data_directory_step, host_step
+    from src.install.results import StepResult
+    from src.install.steps import StepRegistry, StepSpec
+
+    def onboarding_only(_support):
+        # A no-op Codex step instead of the real provider and login steps:
+        # whether this box has Codex signed in would otherwise stop the run
+        # before the projects folder is recorded.
+        codex = StepSpec(
+            id="provider.codex-cli",
+            title="Install or reuse Codex CLI",
+            run=lambda context: StepResult.succeeded("provider.codex-cli", "reused"),
+            capability="provider.codex",
+        )
+        registry = StepRegistry((host_step(), data_directory_step(path=install_home), codex))
+        registry.extend(
+            onboarding_steps(
+                environ={"HOME": str(install_home)},
+                home=install_home,
+                runner=lambda argv, **kwargs: (_ for _ in ()).throw(AssertionError(argv)),
+                which=lambda name: f"/usr/bin/{name}",
+                probe=lambda url: None,
+                dashboard_root=install_home,
+            )
+        )
+        return registry
+
+    monkeypatch.setattr(install_cli, "build_registry", onboarding_only)
+    folder = tmp_path / "code"
+
+    result = _invoke("--interactive", input=f"\n\n{folder}\ny\n")
+
+    assert "Go ahead?" in result.output
+    assert "if it does not exist? [Y/n]" not in result.output
+    assert "Write AQ's default settings" not in result.output
+    assert f"Projects folder: {folder}" in result.output
+    config = (install_home / "config.yaml").read_text(encoding="utf-8")
+    assert "project_roots:" in config and str(folder) in config
+    assert folder.is_dir()
+
+
+def test_a_run_with_no_coding_agent_is_asked_again(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", "--dry-run", input="n\n\ny\n\n\n")
+
+    assert "AQ needs at least one coding agent" in result.output
+    assert result.output.count("Use provider.codex?") == 2
+    assert _plan_action(result.output, "provider.codex-cli") != "skip_not_selected"
+
+
+def test_advanced_keeps_asking_before_each_step(
+    install_home, wizard_registry, scripted_questions, tmp_path
+):
+    result = _invoke(
+        "--interactive", "--advanced", input=f"\n\n{tmp_path / 'code'}\n" + "n\n" * 20
+    )
+
+    assert "Go ahead?" not in result.output
+    assert "[Y/n]" in result.output.split("Where do your code projects live?")[1]
+
+
+def test_a_projects_folder_that_is_the_home_directory_is_refused(
+    install_home, wizard_registry, scripted_questions
+):
+    result = _invoke("--interactive", "--dry-run", input=f"\n\n{Path.home()}\n\n")
+
+    assert "whole home folder is too broad" in result.output
+
+
+def test_an_existing_project_root_is_not_asked_for_again(
+    install_home, wizard_registry, scripted_questions
+):
+    config = install_home / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "project_roots:\n- id: code\n  label: code\n  path: /srv/code\n",
+        encoding="utf-8",
+    )
+
+    result = _invoke("--interactive", "--dry-run", input="\n\n")
+
+    assert "Where do your code projects live?" not in result.output
 
 
 # -- repair and upgrade -----------------------------------------------------

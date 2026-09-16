@@ -23,8 +23,8 @@ the dashboard URL are one run with one resume record.
 ## Usage
 
 ```bash
-aq install                      # the wizard: a few questions, then install
-aq install --advanced           # the same, plus the optional extras (Discord)
+aq install                      # the wizard: agents, projects folder, one "Go ahead?"
+aq install --advanced           # full control: every choice, and approve each step
 aq install --yes                # take every default without being asked
 aq install --dry-run            # report the plan, run only read-only checks
 aq install --non-interactive --yes --json   # unattended, machine-readable
@@ -39,24 +39,43 @@ To remove an installation, see [`aq uninstall`](uninstall.md).
 
 ## The wizard
 
-On a terminal, `aq install` asks a short set of yes/no questions before it
-starts, then reports what it did:
+On a terminal, `aq install` asks only what a person has to decide, shows what
+it is about to do, and asks once before doing it:
 
-| Question | Default | Where the default comes from |
+```text
+Setting up AQ on this machine. Press Enter to accept each default.
+  (already installed)
+  Use Claude Code? [Y/n]:
+  (not installed here; AQ would install it with the provider's own installer)
+  Use Codex CLI? [y/N]:
+  Use Gemini CLI? [y/N]:
+  (AQ creates and works on projects inside this folder)
+  Where do your code projects live? [~/Shared/AI]:
+
+AQ will:
+  • Coding agents: Claude Code
+  • Database: use the PostgreSQL server already running on this machine
+  • Settings tuned for this machine (10 cores, 32 GiB)
+  • Start AQ in the background, build the dashboard and open it in your browser
+  • Projects folder: ~/Shared/AI
+Go ahead? [Y/n]:
+```
+
+| Choice | Asked? | How it is decided |
 | --- | --- | --- |
-| Use Claude Code / Codex / Gemini? | the ones already installed | a read-only `PATH` and `--version` probe of each CLI. On a machine with none, the first supported harness is offered, because a machine with no harness cannot run a task. |
-| Let AQ install and run a local PostgreSQL server? | yes when nothing answers on the configured host and port | a TCP probe. AQ never installs a database server without being asked. |
-| Start the AQ daemon when setup finishes? | yes | this is what serves the dashboard and runs your tasks. |
-| Deliver digests and escalations to Discord? | **no**, and only asked under `--advanced` | AQ is operated from the CLI and the dashboard; Discord is a delivery channel and nothing else depends on it. |
+| Use Claude Code / Codex / Gemini? | **yes** | defaults to the ones already installed (a read-only `PATH` and `--version` probe). At least one is required: a machine with no coding agent cannot run a task, so the questions are asked again. |
+| Where do your code projects live? | **yes**, unless a project root is already configured | defaults to the folder the install was started from when it is a normal folder under your home, else `~/Projects`. The home folder itself, the filesystem root and AQ's own directories are refused. Recorded by `config.project-root`, which creates the folder if needed. |
+| Install and run a local PostgreSQL server? | only under `--advanced` | installed when nothing answers on the configured host and port, reused when a server does. |
+| Start the AQ daemon? | only under `--advanced` | yes — it serves the dashboard and runs every task. |
+| Deliver digests and escalations to Discord? | only under `--advanced` | no; nothing else depends on it. Add it later with `--with discord`. |
 
-Pressing Enter through the list is the supported "just install it" path, and
-`--yes` takes those same defaults without asking. The questions are skipped
-entirely when the selection has already been made — `--with`, `--config`, or
-`--json` (a script parsing stdout is driving consent, not being onboarded) —
-and an unattended run never asks anything.
-
-Answers only *select capabilities*; every mutating step still asks for consent
-(or needs `--approve`/`--yes`) before it changes anything.
+Answering "Go ahead?" approves the whole plan, so the steps then run without a
+prompt each. `--advanced` asks every choice and keeps the per-step approval
+prompts. `--yes` takes every default without asking anything (and records no
+projects folder). The questions are skipped entirely when the selection has
+already been made — `--with`, `--config`, or `--json` (a script parsing stdout
+is driving consent, not being onboarded) — and an unattended run never asks
+anything; its mutating steps need `--approve`/`--yes`.
 
 | Option | Meaning |
 | --- | --- |
@@ -72,7 +91,7 @@ Answers only *select capabilities*; every mutating step still asks for consent
 | `--restart-from STEP` | Redo `STEP` and the steps that depend on it. Nothing else is re-executed. |
 | `--state-file PATH` | Where the resume record lives. Defaults to `~/.agent-queue/install-state.json`. |
 | `--list-steps` | Print the registered steps and exit. |
-| `--advanced` | Ask the optional extra questions (Discord delivery) as well as the short set. |
+| `--advanced` | Full control: ask every choice (database, daemon, Discord) and approve each step. Without it `aq install` asks only which coding agents to use and where your projects live, then one "Go ahead?". |
 
 ## Agent CLI providers
 
@@ -158,6 +177,7 @@ before the credential that lets it reach its database was written.
 | Step | Mutating | Capability | What it does |
 | --- | --- | --- | --- |
 | `config.defaults` | yes | — | Creates `~/.agent-queue/config.yaml` when it is absent and adds resource-aware defaults derived from this box's cores and memory (the same values `aq system config tune --apply` writes). A section you have already written is **kept**, and a numbered backup is taken only when something is actually written. Rationale for every value: [default tuning](../../guides/default-tuning.md). |
+| `config.project-root` | no | — | Adds the projects folder the wizard asked for to `project_roots` (id from the folder name, URL-safe), creating the folder when it does not exist. Existing roots are kept; with no folder chosen (`--yes`, unattended) it changes nothing. A dry run writes nothing. |
 | `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
 | `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
 | `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |

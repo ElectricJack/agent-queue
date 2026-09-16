@@ -8,10 +8,15 @@ end, what is ready, where their data lives and which URL to open.
 Both halves live here as pure functions over plain values:
 
 * :func:`question_plan` turns what was *observed* about the machine — which
-  provider CLIs exist, whether a PostgreSQL server answers — into a short list
-  of questions with good defaults.  Pressing Enter through it is the supported
-  path; ``--advanced`` adds the optional extras rather than lengthening the
-  default flow.
+  provider CLIs exist, whether a PostgreSQL server answers — into every choice
+  the install makes, each with a default decided from those observations.  An
+  ordinary run *asks* only the choices a person has to make (which coding
+  agents to use; see :func:`questions_to_ask`) and decides the rest from the
+  machine — reusing or installing PostgreSQL, starting the daemon — so it cannot
+  be set up wrong by answering a question nobody needed to ask.  ``--advanced``
+  asks every choice.
+* :func:`default_project_folder` and :func:`validate_project_folder` pick and
+  check the one path a person does choose: where their code projects live.
 * :func:`summarize` turns the engine's :class:`~src.install.results.InstallResult`
   into the closing summary.  It reads only the result and the step details the
   onboarding steps recorded, so the human text and the ``--json`` payload are
@@ -23,8 +28,10 @@ a terminal and the summary to a console, and a test binds them to values.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from src.projects.roots import RootFacts, assess_project_roots
@@ -115,6 +122,9 @@ def question_plan(
             )
         )
 
+    # Decided from the machine, asked only under --advanced.  Answering "yes,
+    # install a server" beside one that already answers, or "no" to the daemon
+    # that runs every task, is how a newcomer sets AQ up wrong.
     questions.append(
         Question(
             id="postgres-managed",
@@ -128,6 +138,7 @@ def question_plan(
                 if postgres_reachable
                 else "AQ needs one database; answer no if you already run a server"
             ),
+            advanced=True,
         )
     )
     questions.append(
@@ -137,6 +148,7 @@ def question_plan(
             capability=CAPABILITY_DAEMON,
             default=True,
             detail="this is what serves the dashboard and runs your tasks",
+            advanced=True,
         )
     )
     questions.append(
@@ -152,7 +164,100 @@ def question_plan(
             advanced=True,
         )
     )
+    del advanced  # every choice is planned; questions_to_ask decides which are put to a person
+    return tuple(questions)
+
+
+def questions_to_ask(questions: Iterable[Question], *, advanced: bool) -> tuple[Question, ...]:
+    """The questions a person is actually asked.
+
+    An ordinary run asks only the choices that cannot be inferred; every other
+    question still selects its capability through its default in
+    :func:`capabilities_for`.  ``--advanced`` asks them all.
+    """
     return tuple(question for question in questions if advanced or not question.advanced)
+
+
+# ---------------------------------------------------------------------------
+# The projects folder
+# ---------------------------------------------------------------------------
+
+#: Used when the install was not started from inside a projects-looking folder.
+FALLBACK_PROJECT_FOLDER = "Projects"
+
+
+def _within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def default_project_folder(cwd: Path, home: Path, *, reserved: Iterable[Path] = ()) -> Path:
+    """Where the code projects probably live: the folder the install ran from.
+
+    People start the install from where they keep their code (the first macOS
+    install was run from ``~/Shared/AI``).  That guess is only used when it is a
+    real folder under the home directory -- not the home directory itself, not
+    a hidden directory, not one of AQ's own -- and otherwise ``~/Projects``.
+    """
+    home = home.resolve()
+    candidate = cwd.resolve()
+    # A folder the person types may be anywhere (an external volume, say); a
+    # *guessed* one must be under their home, or the guess is probably a
+    # system or scratch directory the install happened to be started from.
+    if not _within(candidate, home):
+        return home / FALLBACK_PROJECT_FOLDER
+    try:
+        validate_project_folder(str(candidate), home, reserved=reserved)
+    except ValueError:
+        return home / FALLBACK_PROJECT_FOLDER
+    relative = candidate.relative_to(home)
+    if any(part.startswith(".") for part in relative.parts):
+        return home / FALLBACK_PROJECT_FOLDER
+    return candidate
+
+
+def validate_project_folder(raw: str, home: Path, *, reserved: Iterable[Path] = ()) -> Path:
+    """Check a projects folder a person typed; raise ``ValueError`` saying why not.
+
+    AQ may create and change projects anywhere below this folder, so the home
+    directory itself, the filesystem root and AQ's own directories are refused.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("enter a folder")
+    folder = Path(text).expanduser()
+    if not folder.is_absolute():
+        folder = Path.cwd() / folder
+    folder = folder.resolve()
+    home = home.resolve()
+    if folder == Path(folder.anchor):
+        raise ValueError("the filesystem root is too broad; choose the folder your projects are in")
+    if folder == home:
+        raise ValueError(
+            "your whole home folder is too broad; choose the folder your projects are in"
+        )
+    for own in reserved:
+        own = own.expanduser().resolve()
+        if folder == own or _within(folder, own) or _within(own, folder):
+            raise ValueError(f"{folder} overlaps {own}, which AQ manages itself")
+    if folder.exists() and not folder.is_dir():
+        raise ValueError(f"{folder} exists and is not a folder")
+    return folder
+
+
+def project_root_entry(folder: Path, existing_ids: Iterable[str] = ()) -> dict[str, str]:
+    """The ``project_roots`` entry for *folder*, with a URL-safe id not yet in use."""
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", folder.name).strip("-._").lower() or "projects"
+    if not base[0].isalnum():
+        base = f"projects-{base}"
+    taken = set(existing_ids)
+    candidate, counter = base, 2
+    while candidate in taken:
+        candidate, counter = f"{base}-{counter}", counter + 1
+    return {"id": candidate, "label": folder.name or candidate, "path": str(folder)}
 
 
 def capabilities_for(
@@ -371,7 +476,7 @@ def _first_task_readiness(
         ReadinessCheck(
             "dashboard", "Dashboard", dashboard_ready,
             f"The dashboard is reachable at {dashboard.url}." if dashboard_ready else
-            "No reachable dashboard was observed (a source checkout may need its Vite server).",
+            "No reachable dashboard was observed; rerun the install to build and serve it.",
             None if dashboard_ready else "Follow the dashboard hint above, then refresh the browser.",
         ),
         ReadinessCheck(

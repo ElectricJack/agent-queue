@@ -154,8 +154,9 @@ cd agent-queue
 ./setup.sh
 ```
 
-`aq install` then asks a short set of questions. Pressing Enter accepts each
-default, and `aq install --yes` takes them all without asking:
+`aq install` asks only what you have to decide — which coding agents to use
+and where your code projects live — then shows what it is about to do and asks
+once. Pressing Enter accepts each default:
 
 ```text
 Setting up AQ on this machine. Press Enter to accept each default.
@@ -163,18 +164,26 @@ Setting up AQ on this machine. Press Enter to accept each default.
   Use Claude Code? [Y/n]:
   (not installed here; AQ would install it with the provider's own installer)
   Use Codex CLI? [y/N]:
-  ...
-  (no server answered on the configured host and port)
-  Let AQ install and run a local PostgreSQL server? [Y/n]:
-  (this is what serves the dashboard and runs your tasks)
-  Start the AQ daemon when setup finishes? [Y/n]:
+  Use Gemini CLI? [y/N]:
+  (AQ creates and works on projects inside this folder)
+  Where do your code projects live? [~/Shared/AI]:
+
+AQ will:
+  • Coding agents: Claude Code
+  • Database: use the PostgreSQL server already running on this machine
+  • Settings tuned for this machine (10 cores, 32 GiB)
+  • Start AQ in the background, build the dashboard and open it in your browser
+  • Projects folder: ~/Shared/AI
+Go ahead? [Y/n]:
 ```
 
-Add `--advanced` to be asked about the optional extras as well — today that is
-Discord delivery, which is off by default.
+Everything else is decided for you from what the machine already has: an
+existing PostgreSQL server is reused (or one is installed when none answers),
+the daemon is started, and the dashboard is built and opened. `aq install
+--advanced` asks every one of those choices and approves each step separately;
+`aq install --yes` takes every default without asking.
 
-Each step then reports what it did, and every step that would change the
-machine asks first:
+Each step then reports what it did:
 
 ```text
 [1/25] OK Confirm the host is supported
@@ -189,21 +198,16 @@ First-task readiness
   OK Agent authentication: at least one harness has non-secret authentication evidence.
   OK Profile routing: an authenticated worker profile is active.
   OK Workspace prerequisites: Git, tmux, and the worktree location were verified.
-  !! Project root: No project root is configured, so `aq project onboard` has no
-     `--root-id` to onboard into.
-     next: Add one under Settings → Project Roots in the dashboard, or put a
-     `project_roots:` entry (`id`, `label`, `path`) in config.yaml with
-     `aq system config edit`; then rerun `aq install` to recheck it.
+  OK Project root: a project root is configured and writable.
 ```
 
-**Project root** is the one check a correct, complete installation still
-reports as needing attention. AQ's defaults come from this machine's cores and
-memory and name no filesystem location, and choosing where your repositories
-live is a project decision rather than a machine one — so the installer
-measures the gap and names the page that closes it instead of creating a
-directory in your home. Adding one root is a one-time step;
+The projects folder you gave becomes AQ's **project root**: the one folder
+under which AQ may create and onboard projects. It is recorded in
+`config.yaml`, and you can add more later under Settings → Project Roots. An
+install run with `--yes` or unattended asks nothing, so it records no folder
+and reports **Project root** as needing attention;
 [the first-task tutorial](first-task.md#a-realistic-disposable-example) shows
-the YAML.
+the YAML to add one by hand.
 
 The exact step list depends on the host and what you selected; `aq install
 --list-steps` prints it, and [the `aq install` reference](../reference/cli/install.md)

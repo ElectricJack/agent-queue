@@ -47,6 +47,7 @@ CAPABILITY_DISCORD = "discord"
 CAPABILITY_DAEMON = "daemon"
 
 STEP_CONFIG = "config.defaults"
+STEP_PROJECT_ROOT = "config.project-root"
 STEP_CHECK = "config.check"
 STEP_DISCORD = "config.discord"
 STEP_DAEMON = "daemon.start"
@@ -347,6 +348,110 @@ def config_step(
 # ---------------------------------------------------------------------------
 # config.check — it parses, its secrets resolve, and here is where things live
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# config.project-root — where the operator's code projects live
+# ---------------------------------------------------------------------------
+
+
+def project_root_step(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    depends_on: tuple[str, ...] = (STEP_CONFIG,),
+) -> StepSpec:
+    """Record the projects folder the wizard asked for as a project root.
+
+    Every fresh install used to finish with "No project root is configured",
+    leaving the newcomer to hand-edit ``project_roots`` before the first project
+    could be created.  The wizard now asks for the folder (install setting
+    ``project_root``), and this step writes it -- creating the folder if it does
+    not exist yet -- next to any roots already configured.  With no folder
+    chosen it changes nothing, and a configured root is never replaced.
+    """
+    path = config_path_for(environ, home)
+
+    def _roots() -> list[dict[str, Any]]:
+        roots = _read_config(path).get("project_roots") or []
+        return [dict(root) for root in roots if isinstance(root, Mapping)]
+
+    def _chosen(context: StepContext) -> Path | None:
+        raw = context.option("project_root")
+        return Path(str(raw)).expanduser() if raw else None
+
+    def _includes(roots: list[dict[str, Any]], folder: Path) -> bool:
+        return any(Path(str(root.get("path") or "")).expanduser() == folder for root in roots)
+
+    def run(context: StepContext) -> StepResult:
+        from src.config_editor import write_section
+
+        from .wizard import project_root_entry
+
+        roots = _roots()
+        folder = _chosen(context)
+        if folder is None:
+            summary = (
+                f"projects folder already configured: {roots[0].get('path')}"
+                if roots
+                else "no projects folder chosen; add one under Settings → Project Roots"
+            )
+            return StepResult.succeeded(
+                STEP_PROJECT_ROOT, summary, detail={"configured": bool(roots)}
+            )
+        if _includes(roots, folder):
+            return StepResult.succeeded(
+                STEP_PROJECT_ROOT,
+                f"{folder} is already a project root",
+                detail={"configured": True, "path": str(folder)},
+            )
+        if context.dry_run:
+            return StepResult.succeeded(
+                STEP_PROJECT_ROOT,
+                f"would add {folder} as a project root",
+                detail={"configured": False, "path": str(folder), "dry_run": True},
+            )
+        if not path.exists():
+            return StepResult.failed(
+                STEP_PROJECT_ROOT,
+                f"{path} does not exist, so the projects folder cannot be recorded",
+                f"Rerun `aq install` so `{STEP_CONFIG}` writes the configuration first.",
+            )
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            return StepResult.failed(
+                STEP_PROJECT_ROOT,
+                f"could not create the projects folder {folder}: {error}",
+                f"Create {folder} (or choose another folder) and rerun `aq install`.",
+            )
+        entry = project_root_entry(folder, (str(root.get("id")) for root in roots))
+        write_section(str(path), "project_roots", [*roots, entry])
+        return StepResult.succeeded(
+            STEP_PROJECT_ROOT,
+            f"projects folder {folder} is project root `{entry['id']}`",
+            detail={"configured": True, "path": str(folder), "root_id": entry["id"]},
+        )
+
+    def verify(context: StepContext) -> bool:
+        roots = _roots()
+        folder = _chosen(context)
+        return _includes(roots, folder) if folder is not None else bool(roots)
+
+    return StepSpec(
+        id=STEP_PROJECT_ROOT,
+        title="Record your projects folder",
+        description=(
+            "Adds the folder your code projects live in as a project root, so the first "
+            "project can be created from the dashboard. Existing roots are kept."
+        ),
+        run=run,
+        depends_on=depends_on,
+        # Not consent-gated: the folder is the answer the person just gave, and
+        # with no answer the step changes nothing.  A dry run writes nothing.
+        verify=verify,
+        owner="onboarding",
+    )
 
 
 def check_step(
@@ -825,7 +930,10 @@ def onboarding_steps(
 
     return (
         config_step(environ=environ, home=home, depends_on=depends_on),
-        check_step(environ=environ, home=home),
+        project_root_step(environ=environ, home=home),
+        # Checked after the projects folder is recorded, so the check loads the
+        # configuration the daemon will actually start with.
+        check_step(environ=environ, home=home, depends_on=(STEP_PROJECT_ROOT,)),
         discord_step(environ=environ, home=home),
         daemon_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
         dashboard_build_step(
@@ -862,6 +970,7 @@ __all__ = [
     "STEP_DAEMON",
     "STEP_DASHBOARD",
     "STEP_DISCORD",
+    "STEP_PROJECT_ROOT",
     "DashboardInfo",
     "HttpProbe",
     "Location",
@@ -874,6 +983,7 @@ __all__ = [
     "data_locations",
     "describe_project_root",
     "discord_step",
+    "project_root_step",
     "http_status",
     "inspect_dashboard",
     "onboarding_steps",

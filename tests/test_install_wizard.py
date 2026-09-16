@@ -23,7 +23,15 @@ from src.install.results import (
     StepResult,
     StepState,
 )
-from src.install.wizard import capabilities_for, question_plan, summarize
+from src.install.wizard import (
+    capabilities_for,
+    default_project_folder,
+    project_root_entry,
+    question_plan,
+    questions_to_ask,
+    summarize,
+    validate_project_folder,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,17 +54,101 @@ def question(questions, question_id):
 # ---------------------------------------------------------------------------
 
 
-def test_the_short_set_is_short_and_never_asks_about_discord():
+def test_an_ordinary_run_asks_only_which_coding_agents_to_use():
+    """The database, the daemon and Discord are decided from the machine.
+
+    A newcomer once answered "yes, install PostgreSQL" beside a server that was
+    already running; the choices a person cannot usefully make are not asked.
+    """
     questions = question_plan(probes=(), postgres_reachable=True)
 
-    assert [item.id for item in questions] == [
+    assert [item.id for item in questions_to_ask(questions, advanced=False)] == [
+        "provider.claude",
+        "provider.codex",
+        "provider.gemini",
+    ]
+    assert [item.id for item in questions_to_ask(questions, advanced=True)] == [
         "provider.claude",
         "provider.codex",
         "provider.gemini",
         "postgres-managed",
         "daemon",
+        "discord",
     ]
-    assert all(item.advanced is False for item in questions)
+
+
+def test_an_unasked_choice_still_selects_its_default():
+    questions = question_plan(probes=(), postgres_reachable=False)
+    asked = questions_to_ask(questions, advanced=False)
+
+    selected = capabilities_for(questions, {question.id: question.default for question in asked})
+
+    assert {CAPABILITY_MANAGED, CAPABILITY_DAEMON} <= selected
+    assert CAPABILITY_DISCORD not in selected
+
+
+# ---------------------------------------------------------------------------
+# The projects folder
+# ---------------------------------------------------------------------------
+
+
+def test_the_folder_the_install_ran_from_is_the_default(tmp_path):
+    home = tmp_path / "home"
+    code = home / "Shared" / "AI"
+    code.mkdir(parents=True)
+
+    assert default_project_folder(code, home) == code.resolve()
+
+
+@pytest.mark.parametrize("where", ["home", "hidden", "outside", "reserved"])
+def test_an_unsuitable_starting_folder_falls_back_to_projects(tmp_path, where):
+    home = tmp_path / "home"
+    reserved = home / ".local" / "share" / "agent-queue"
+    places = {
+        "home": home,
+        "hidden": home / ".config" / "thing",
+        "outside": tmp_path / "elsewhere",
+        "reserved": reserved,
+    }
+    for place in places.values():
+        place.mkdir(parents=True, exist_ok=True)
+
+    folder = default_project_folder(places[where], home, reserved=(reserved,))
+
+    assert folder == home.resolve() / "Projects"
+
+
+@pytest.mark.parametrize(
+    ("answer", "message"),
+    [
+        ("", "enter a folder"),
+        ("/", "filesystem root"),
+        ("~", "whole home folder"),
+        ("~/.agent-queue/projects", "AQ manages itself"),
+    ],
+)
+def test_a_folder_that_would_set_aq_up_wrong_is_refused(tmp_path, monkeypatch, answer, message):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    with pytest.raises(ValueError, match=message):
+        validate_project_folder(answer, home, reserved=(home / ".agent-queue",))
+
+
+def test_a_file_is_not_a_projects_folder(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "notes").write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a folder"):
+        validate_project_folder(str(home / "notes"), home)
+
+
+def test_the_project_root_entry_has_a_url_safe_unused_id(tmp_path):
+    entry = project_root_entry(tmp_path / "My Code!", existing_ids=("my-code",))
+
+    assert entry == {"id": "my-code-2", "label": "My Code!", "path": str(tmp_path / "My Code!")}
 
 
 def test_advanced_adds_discord_and_defaults_it_to_no():

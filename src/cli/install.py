@@ -229,7 +229,6 @@ def ask_questions(questions: Sequence[Question], target: Console) -> dict[str, b
     answers: dict[str, bool] = {}
     if not questions:
         return answers
-    click.echo("Setting up AQ on this machine. Press Enter to accept each default.", err=True)
     for question in questions:
         if question.detail:
             click.echo(f"  ({question.detail})", err=True)
@@ -240,11 +239,12 @@ def ask_questions(questions: Sequence[Question], target: Console) -> dict[str, b
     return answers
 
 
-def wizard_questions(*, advanced: bool) -> tuple[Question, ...]:
-    """Build the question plan from what this machine already has.
+def wizard_questions() -> tuple[Question, ...]:
+    """Build every choice the install makes from what this machine already has.
 
     The probes are read-only: which harness executables exist and whether a
-    PostgreSQL server answers.  They decide the *defaults*, never the answers.
+    PostgreSQL server answers.  They decide the *defaults*, never the answers;
+    :func:`src.install.wizard.questions_to_ask` decides which are put to a person.
     """
     from src.install.logins import probe_all
     from src.install.postgres import PostgresSettings, tcp_open
@@ -254,8 +254,94 @@ def wizard_questions(*, advanced: bool) -> tuple[Question, ...]:
     return question_plan(
         probes=probe_all(),
         postgres_reachable=tcp_open(settings.host, settings.port, timeout=1.0),
-        advanced=advanced,
     )
+
+
+def _reserved_folders() -> tuple[Path, ...]:
+    """AQ's own directories, which can never be the projects folder."""
+    from src.install.dashboard import source_checkout_root
+    from src.install.onboarding import DEFAULT_WORKSPACE_DIR
+    from src.install.state import default_state_dir
+
+    folders = [default_state_dir(), Path(DEFAULT_WORKSPACE_DIR), Path.home() / ".local"]
+    checkout = source_checkout_root()
+    if checkout is not None:
+        folders.append(checkout)
+    return tuple(folders)
+
+
+def configured_project_roots() -> list[str]:
+    """The project roots the existing configuration already has, if any."""
+    from src.install.onboarding import _read_config, config_path_for
+
+    roots = _read_config(config_path_for()).get("project_roots") or []
+    return [str(root.get("path")) for root in roots if isinstance(root, dict)]
+
+
+def ask_project_folder() -> Path:
+    """Ask where the code projects live, re-asking until the answer is usable."""
+    from src.install.wizard import default_project_folder, validate_project_folder
+
+    home = Path.home()
+    reserved = _reserved_folders()
+    default = default_project_folder(Path.cwd(), home, reserved=reserved)
+    shown = f"~/{default.relative_to(home)}" if default.is_relative_to(home) else str(default)
+
+    def check(value: str) -> Path:
+        try:
+            return validate_project_folder(value, home, reserved=reserved)
+        except ValueError as error:
+            raise click.BadParameter(str(error)) from error
+
+    click.echo("  (AQ creates and works on projects inside this folder)", err=True)
+    return click.prompt(
+        "  Where do your code projects live?",
+        default=shown,
+        value_proc=check,
+        err=True,
+    )
+
+
+def describe_plan(
+    questions: Sequence[Question],
+    answers: dict[str, bool],
+    *,
+    project_folder: Path | None,
+    system: str,
+) -> list[str]:
+    """What the install is about to do, in the words a person decides on."""
+    from src.config_tuning import MachineResources
+    from src.install.providers import provider_installers
+    from src.install.wizard import capabilities_for
+
+    selected = capabilities_for(questions, answers)
+    agents = [
+        installer.title for installer in provider_installers() if installer.capability in selected
+    ]
+    managed = next((q for q in questions if q.id == "postgres-managed"), None)
+    install_database = managed is not None and managed.capability in selected
+    machine = MachineResources.detect()
+    lines = [
+        f"Coding agents: {', '.join(agents)}",
+        (
+            "Database: install PostgreSQL and start it with this machine"
+            if install_database
+            else "Database: use the PostgreSQL server already running on this machine"
+        ),
+        f"Settings tuned for this machine ({machine.cores} cores, {machine.memory_gb:.0f} GiB)",
+        "Start AQ in the background, build the dashboard and open it in your browser",
+    ]
+    if project_folder is not None:
+        home = Path.home()
+        shown = (
+            f"~/{project_folder.relative_to(home)}"
+            if project_folder.is_relative_to(home)
+            else str(project_folder)
+        )
+        lines.append(f"Projects folder: {shown}")
+    if system == "darwin":
+        lines.append("Anything missing (tmux, Git) comes from Homebrew")
+    return lines
 
 
 def render_summary(summary: OnboardingSummary, target: Console) -> None:
@@ -382,7 +468,10 @@ def render_result(result: InstallResult, target: Console) -> None:
 @click.option(
     "--advanced",
     is_flag=True,
-    help="Ask the optional extra questions (Discord delivery) as well as the short set.",
+    help=(
+        "Full control: ask every choice (database, daemon, Discord) and approve each step. "
+        "Without it AQ asks only which coding agents to use and where your projects live."
+    ),
 )
 @click.pass_context
 def install(
@@ -451,9 +540,46 @@ def install(
     # newcomer's questions would let a plain Enter silently *deselect* a
     # capability the operator installed on purpose, so the record's own
     # selection is what those modes carry forward.
+    project_folder: Path | None = None
     if interactive and not as_json and not capabilities and not config_path and not mode.reconciles:
-        questions = wizard_questions(advanced=advanced)
-        answers = {} if assume_yes else ask_questions(questions, console)
+        from src.install.providers import provider_installers
+        from src.install.wizard import questions_to_ask
+
+        questions = wizard_questions()
+        answers: dict[str, bool] = {}
+        if not assume_yes:
+            agent_capabilities = {installer.capability for installer in provider_installers()}
+            click.echo(
+                "Setting up AQ on this machine. Press Enter to accept each default.", err=True
+            )
+            while True:
+                answers = ask_questions(questions_to_ask(questions, advanced=advanced), console)
+                if advanced or agent_capabilities & capabilities_for(questions, answers):
+                    break
+                # An install with no coding agent cannot run a single task:
+                # that is a machine set up wrong, not a choice worth allowing
+                # outside --advanced.
+                click.echo("  AQ needs at least one coding agent to run tasks.\n", err=True)
+            if not configured_project_roots():
+                project_folder = ask_project_folder()
+            click.echo("", err=True)
+            if not advanced:
+                click.echo("AQ will:", err=True)
+                for line in describe_plan(
+                    questions,
+                    answers,
+                    project_folder=project_folder,
+                    system=support.facts.system,
+                ):
+                    click.echo(f"  • {line}", err=True)
+                if not dry_run and not click.confirm("Go ahead?", default=True, err=True):
+                    click.echo("Nothing was changed. Run `aq install` again when ready.", err=True)
+                    return
+                click.echo("", err=True)
+                # The person just approved the whole plan; asking again before
+                # each of its thirty steps is noise, not consent.  --advanced
+                # keeps the per-step prompts.
+                assume_yes = True
         capabilities = tuple(sorted(capabilities_for(questions, answers)))
 
     options = build_options(
@@ -471,6 +597,8 @@ def install(
         mode=mode,
     )
     options = _carry_forward_capabilities(options, state_file)
+    if project_folder is not None:
+        options = replace(options, settings={**options.settings, "project_root": str(project_folder)})
 
     quiet = as_json
     engine = InstallEngine(
