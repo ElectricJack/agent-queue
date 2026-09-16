@@ -26,6 +26,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from .command import CommandOutput, CommandRunner, run_command
+from .node_toolchain import Fetcher, ToolchainError, download, ensure_toolchain
 from .onboarding import (
     DASHBOARD_PATH,
     STEP_CHECK,
@@ -39,13 +40,16 @@ from .onboarding import (
 )
 from .redaction import redact
 from .results import StepResult
+from .state import default_state_dir
 from .steps import StepContext, StepSpec
 
 STEP_DASHBOARD_BUILD = "dashboard.build"
 STEP_DASHBOARD_OPEN = "dashboard.open"
 
-#: The oldest Node.js the dashboard toolchain (Vite 6, openapi-ts) supports.
-MIN_NODE_MAJOR = 18
+#: Where each build's full output goes, under AQ's data directory.
+BUILD_LOG_NAME = "dashboard-build.log"
+#: How many lines of a failed stage's output the step result quotes.
+FAILURE_TAIL_LINES = 12
 
 #: `npm ci` downloads the whole workspace on a first run.
 NPM_INSTALL_TIMEOUT = 1200.0
@@ -134,26 +138,24 @@ def bundle_is_current(root: Path, fingerprint: str | None) -> bool:
         return False
 
 
-def node_major(node: str, execute: CommandRunner) -> int | None:
-    output = execute([node, "--version"])
-    if not output.ok:
-        return None
-    text = output.out.strip().lstrip("v")
-    try:
-        return int(text.split(".", 1)[0])
-    except ValueError:
-        return None
+def failure_excerpt(output: CommandOutput, limit: int = FAILURE_TAIL_LINES) -> str:
+    """The lines of a failed build worth showing: its errors, else its tail.
 
-
-def _node_remediation(context: StepContext) -> str:
-    if context.facts.system == "darwin":
-        install = "`brew install node`"
-    else:
-        install = "`sudo apt-get install -y nodejs npm`"
-    return (
-        f"Install Node.js {MIN_NODE_MAJOR} or newer ({install}), then rerun the install "
-        "command; it builds the dashboard and continues."
-    )
+    A build that fails inside `tsc` or Vite reports why on stdout, and the
+    staging script's own traceback on stderr says only that npm exited non-zero
+    -- which is all a first macOS install ever got to see.
+    """
+    lines = [line.rstrip() for line in (output.stdout + "\n" + output.stderr).splitlines()]
+    lines = [line for line in lines if line.strip()]
+    errors = [
+        line
+        for line in lines
+        if "error" in line.lower() and not line.lstrip().startswith("at ")
+    ]
+    chosen = (errors or lines)[-limit:]
+    if not chosen and output.error:
+        chosen = [output.error]
+    return "\n".join(chosen)
 
 
 def dashboard_build_step(
@@ -165,6 +167,7 @@ def dashboard_build_step(
     probe: HttpProbe | None = None,
     root: Path | None = None,
     python: str | None = None,
+    fetch: Fetcher = download,
     depends_on: tuple[str, ...] = (STEP_CHECK, STEP_DAEMON),
 ) -> StepSpec:
     """Build and serve the dashboard from a source checkout."""
@@ -172,6 +175,7 @@ def dashboard_build_step(
     execute = runner or run_command
     check = probe or http_status
     path = config_path_for(environ, home)
+    state_dir = home or default_state_dir(environ)
     interpreter = python or sys.executable
 
     def _root() -> Path | None:
@@ -237,33 +241,32 @@ def dashboard_build_step(
         if bundle_is_current(checkout, fingerprint):
             return _serve("the dashboard is already built for this checkout", detail)
 
-        npm = lookup("npm")
-        node = lookup("node")
-        if not npm or not node:
-            return StepResult.failed(
-                STEP_DASHBOARD_BUILD,
-                "Node.js is not installed, so the dashboard cannot be built",
-                _node_remediation(context),
+        # The pinned, checksum-verified Node.js AQ owns -- never the machine's.
+        try:
+            toolchain = ensure_toolchain(
+                state_dir, context.facts.system, context.facts.arch, fetch=fetch
             )
-        major = node_major(node, execute)
-        if major is None or major < MIN_NODE_MAJOR:
-            found = "an unreadable version" if major is None else f"Node.js {major}"
+        except ToolchainError as error:
             return StepResult.failed(
                 STEP_DASHBOARD_BUILD,
-                f"the dashboard needs Node.js {MIN_NODE_MAJOR}+, but {node} is {found}",
-                _node_remediation(context),
+                f"could not provide Node.js for the dashboard build: {error}",
+                (
+                    "Check this machine can reach https://nodejs.org (a proxy or firewall is "
+                    "the usual cause), then rerun the install command; it retries the download."
+                ),
+                detail=detail,
             )
 
-        # A Node.js this run just installed (Homebrew) is not on this process's
-        # PATH yet, and npm's scripts look `node` up by name.
         env = dict(os.environ if environ is None else environ)
-        env["PATH"] = os.pathsep.join(
-            dict.fromkeys([str(Path(npm).parent), str(Path(node).parent), env.get("PATH", "")])
-        )
+        env["PATH"] = os.pathsep.join([str(toolchain.bin), env.get("PATH", "")])
+        npm = str(toolchain.npm)
         stages = (
             (
                 "install the dashboard's packages",
-                [npm, "ci", "--no-audit", "--no-fund", "--loglevel=error"],
+                # `--include=dev`: the build tools are devDependencies, and a
+                # machine with NODE_ENV=production or `omit=dev` in its npmrc
+                # would otherwise leave them out.
+                [npm, "ci", "--include=dev", "--no-audit", "--no-fund", "--loglevel=error"],
                 NPM_INSTALL_TIMEOUT,
             ),
             (
@@ -282,17 +285,22 @@ def dashboard_build_step(
                 BUILD_TIMEOUT,
             ),
         )
+        log = state_dir / BUILD_LOG_NAME
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text("", encoding="utf-8")
         for label, argv, timeout in stages:
             output = execute(argv, timeout=timeout, env=env, cwd=str(checkout))
+            with log.open("a", encoding="utf-8") as handle:
+                handle.write(f"$ {' '.join(argv)}\n{output.stdout}{output.stderr}\n")
             if not output.ok:
                 return StepResult.failed(
                     STEP_DASHBOARD_BUILD,
-                    redact(f"could not {label}: {output.message()}"),
+                    redact(f"could not {label}:\n{failure_excerpt(output)}"),
                     (
-                        "Fix what the message names (a network failure is the usual cause), "
-                        "then rerun the install command; it retries the build."
+                        f"The full output is in {log}. Fix what it names, then rerun the "
+                        "install command; it retries the build."
                     ),
-                    detail=detail,
+                    detail={**detail, "log": str(log)},
                 )
 
         if not _bundle_verifies(checkout):
@@ -411,7 +419,7 @@ def dashboard_open_step(
 
 __all__ = [
     "BUILD_INPUTS",
-    "MIN_NODE_MAJOR",
+    "BUILD_LOG_NAME",
     "STAMP_NAME",
     "STEP_DASHBOARD_BUILD",
     "STEP_DASHBOARD_OPEN",
@@ -420,7 +428,7 @@ __all__ = [
     "bundle_is_current",
     "dashboard_build_step",
     "dashboard_open_step",
-    "node_major",
+    "failure_excerpt",
     "source_checkout_root",
     "source_fingerprint",
     "stamp_path",

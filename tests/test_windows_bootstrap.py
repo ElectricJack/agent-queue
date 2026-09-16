@@ -99,10 +99,7 @@ def test_shell_bootstrap_never_types_a_password_for_the_user() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
     escalations = [line for line in commands if line.startswith("sudo ")]
-    assert escalations == [
-        "sudo apt-get update",
-        "sudo apt-get install -y git python3-venv nodejs npm",
-    ]
+    assert escalations == ["sudo apt-get update", "sudo apt-get install -y git python3-venv"]
 
     # Homebrew's installer appears escaped inside a next_action message -- it is
     # printed for the user and the script exits 10, rather than being run.

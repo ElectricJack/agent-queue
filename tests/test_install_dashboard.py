@@ -20,9 +20,11 @@ from src.install.dashboard import (
     bundle_directory,
     dashboard_build_step,
     dashboard_open_step,
+    failure_excerpt,
     source_checkout_root,
     stamp_path,
 )
+from src.install.node_toolchain import NODE_ARCHIVES, VERIFIED_MARKER, toolchain_root
 from src.install.onboarding import STEP_DAEMON, STEP_DASHBOARD
 from src.install.platform import TIER_SUPPORTED, PlatformFacts, SupportVerdict
 from src.install.registry import build_registry
@@ -30,8 +32,6 @@ from src.install.results import StepState
 from src.install.steps import StepContext
 
 BASE = "http://127.0.0.1:8081"
-NPM = "/opt/homebrew/bin/npm"
-NODE = "/opt/homebrew/bin/node"
 GIT = "/usr/bin/git"
 AQ = "/Users/me/.local/bin/aq"
 
@@ -64,13 +64,22 @@ def _stage_bundle(root: Path) -> None:
     )
 
 
-class Host:
-    """Records every command, answers git/node, and builds when the script runs."""
+def _installed_toolchain(state_dir: Path, system="darwin", arch="arm64") -> Path:
+    """A pinned toolchain already unpacked and verified, so no test downloads one."""
+    root = toolchain_root(state_dir, system, arch)
+    (root / "bin").mkdir(parents=True)
+    for name in ("node", "npm"):
+        (root / "bin" / name).write_text("#!/bin/sh\n", encoding="utf-8")
+    (root / VERIFIED_MARKER).write_text(NODE_ARCHIVES[(system, arch)][1], encoding="utf-8")
+    return root / "bin"
 
-    def __init__(self, root: Path, *, head: str = "abc123", node_version: str = "v22.3.0"):
+
+class Host:
+    """Records every command, answers git, and builds when the script runs."""
+
+    def __init__(self, root: Path, *, head: str = "abc123"):
         self.root = root
         self.head = head
-        self.node_version = node_version
         self.calls: list[tuple[tuple[str, ...], dict]] = []
         self.fail: set[str] = set()
         self.daemon_up = False
@@ -88,11 +97,17 @@ class Host:
             return result(stdout=f"{self.head}\n")
         if command[:1] == (GIT,) and "status" in command:
             return result(stdout="")
-        if command == (NODE, "--version"):
-            return result(stdout=f"{self.node_version}\n")
         for label in self.fail:
             if label in command:
-                return result(code=1, stdout=f"{label} exploded")
+                return CommandOutput(
+                    argv=command,
+                    returncode=2,
+                    stdout=(
+                        "> tsc -b && vite build\n"
+                        "src/App.tsx(3,1): error TS2307: Cannot find module './Missing'.\n"
+                    ),
+                    stderr="Traceback ...\nsubprocess.CalledProcessError: exit status 2\n",
+                )
         if any(part.endswith("build_release_artifact.py") for part in command):
             _stage_bundle(self.root)
         if command == (AQ, "restart", "--no-dashboard"):
@@ -110,7 +125,7 @@ class Host:
         return 200 if self.serving else 404
 
 
-def _which(present=(NPM, NODE, GIT, AQ)):
+def _which(present=(GIT, AQ)):
     table = {Path(path).name: path for path in present}
     return table.get
 
@@ -134,16 +149,29 @@ def _context(*, system="darwin", interactive=True) -> StepContext:
     )
 
 
-def _build(tmp_path, host, *, which=None, root=None):
+def _build(tmp_path, host, *, which=None, root=None, fetch=None, toolchain=True):
+    state_dir = tmp_path / "aq"
+    if toolchain and not toolchain_root(state_dir, "darwin", "arm64").exists():
+        _installed_toolchain(state_dir)
+        _installed_toolchain(state_dir, "linux", "x86_64")
+
+    def refuse_download(url, destination):
+        raise AssertionError(f"no test may download {url}")
+
     return dashboard_build_step(
         environ={"HOME": str(tmp_path), "PATH": "/usr/bin"},
-        home=tmp_path / "aq",
+        home=state_dir,
         runner=host.run,
         which=which or _which(),
         probe=host.probe,
         root=root if root is not None else host.root,
         python="/venv/bin/python",
+        fetch=fetch or refuse_download,
     )
+
+
+def _npm(tmp_path, system="darwin", arch="arm64") -> str:
+    return str(toolchain_root(tmp_path / "aq", system, arch) / "bin" / "npm")
 
 
 # -- dashboard.build ---------------------------------------------------------
@@ -164,6 +192,7 @@ def test_a_release_install_has_nothing_to_build(tmp_path):
 def test_a_source_checkout_builds_the_release_bundle_from_inside_the_checkout(tmp_path):
     root = _checkout(tmp_path)
     host = Host(root)
+    NPM = _npm(tmp_path)
 
     result = _build(tmp_path, host).run(_context())
 
@@ -171,7 +200,8 @@ def test_a_source_checkout_builds_the_release_bundle_from_inside_the_checkout(tm
     assert result.detail["built"] is True
     build_commands = [c for c in host.commands() if c[0] in (NPM, "/venv/bin/python")]
     assert build_commands == [
-        (NPM, "ci", "--no-audit", "--no-fund", "--loglevel=error"),
+        # AQ's pinned Node, never the machine's; dev dependencies forced in.
+        (NPM, "ci", "--include=dev", "--no-audit", "--no-fund", "--loglevel=error"),
         (NPM, "-w", "@aq/ts-client", "run", "generate"),
         (
             "/venv/bin/python",
@@ -185,7 +215,7 @@ def test_a_source_checkout_builds_the_release_bundle_from_inside_the_checkout(tm
             # pip-style relative resolution bit the bootstrap once; npm workspaces
             # resolve from the working directory too.
             assert kwargs["cwd"] == str(root)
-            # A Node.js Homebrew installed this run is not on PATH yet.
+            # npm's launcher finds `node` by name: the pinned one comes first.
             assert kwargs["env"]["PATH"].split(":")[0] == str(Path(NPM).parent)
     assert stamp_path(root).read_text(encoding="utf-8").startswith("abc123+")
 
@@ -198,7 +228,7 @@ def test_a_rerun_with_nothing_changed_does_no_work(tmp_path):
     host.calls.clear()
 
     assert step.verify(_context()) is True
-    assert not [c for c in host.commands() if c[0] == NPM]
+    assert not [c for c in host.commands() if c[0] == _npm(tmp_path)]
 
 
 def test_an_updated_checkout_is_rebuilt(tmp_path):
@@ -213,7 +243,7 @@ def test_an_updated_checkout_is_rebuilt(tmp_path):
     host.calls.clear()
     result = step.run(_context())
     assert result.detail["built"] is True
-    assert (NPM, "ci", "--no-audit", "--no-fund", "--loglevel=error") in host.commands()
+    assert any(c[:2] == (_npm(tmp_path), "ci") for c in host.commands())
     assert stamp_path(root).read_text(encoding="utf-8").startswith("def456+")
 
 
@@ -267,41 +297,54 @@ def test_no_daemon_running_is_not_a_restart(tmp_path):
     assert not [c for c in host.commands() if c[:1] == (AQ,)]
 
 
-def test_missing_node_names_the_platform_install_command(tmp_path):
+def test_a_failed_toolchain_download_names_the_network_not_the_machine(tmp_path):
     root = _checkout(tmp_path)
     host = Host(root)
-    step = _build(tmp_path, host, which=_which((GIT, AQ)))
 
-    mac = step.run(_context(system="darwin"))
-    wsl = step.run(_context(system="linux"))
+    def offline(url, destination):
+        raise OSError("nodename nor servname provided")
 
-    assert mac.state is StepState.FAILED and wsl.state is StepState.FAILED
-    assert "brew install node" in (mac.remediation or "")
-    assert "apt-get install -y nodejs npm" in (wsl.remediation or "")
+    result = _build(tmp_path, host, fetch=offline, toolchain=False).run(_context())
+
+    assert result.state is StepState.FAILED
+    assert "nodejs.org" in result.summary and "nodename" in result.summary
+    assert "nodejs.org" in (result.remediation or "")
+    assert not [c for c in host.commands() if "ci" in c]
 
 
-def test_a_node_too_old_for_the_toolchain_is_refused(tmp_path):
+def test_the_linux_host_uses_the_linux_toolchain(tmp_path):
     root = _checkout(tmp_path)
-    host = Host(root, node_version="v16.20.2")
+    host = Host(root)
+
+    _build(tmp_path, host).run(_context(system="linux"))
+
+    assert any(c[0] == _npm(tmp_path, "linux", "x86_64") for c in host.commands())
+
+
+def test_a_failed_stage_shows_the_compiler_error_and_keeps_the_full_log(tmp_path):
+    """A macOS install once saw only "CalledProcessError ... exit status 2"."""
+    root = _checkout(tmp_path)
+    host = Host(root)
+    host.fail.add(str(root / "scripts" / "build_release_artifact.py"))
 
     result = _build(tmp_path, host).run(_context())
 
     assert result.state is StepState.FAILED
-    assert "Node.js 16" in result.summary
-    assert not [c for c in host.commands() if c[0] == NPM]
-
-
-def test_a_failed_stage_names_it_and_leaves_no_stamp(tmp_path):
-    root = _checkout(tmp_path)
-    host = Host(root)
-    host.fail.add("ci")
-
-    result = _build(tmp_path, host).run(_context())
-
-    assert result.state is StepState.FAILED
-    assert "install the dashboard's packages" in result.summary
-    assert "rerun" in (result.remediation or "")
+    assert "build and stage the dashboard" in result.summary
+    assert "error TS2307: Cannot find module './Missing'" in result.summary
+    log = tmp_path / "aq" / "dashboard-build.log"
+    assert str(log) in (result.remediation or "")
+    assert "error TS2307" in log.read_text(encoding="utf-8")
     assert not stamp_path(root).exists()
+
+
+def test_the_excerpt_prefers_error_lines_and_drops_stack_frames():
+    output = CommandOutput(
+        argv=("npm",),
+        returncode=1,
+        stdout="building...\nerror TS1005: ';' expected.\n    at Object.<anonymous> (x.js:1)\ndone\n",
+    )
+    assert failure_excerpt(output) == "error TS1005: ';' expected."
 
 
 def test_this_repository_is_recognised_as_a_source_checkout():

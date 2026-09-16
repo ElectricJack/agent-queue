@@ -435,7 +435,7 @@ operator database; database upgrades are an operator action described in
 | The daemon did not come up | `~/.agent-queue/daemon.log`, then `aq doctor` | Fix what the log names (an unreachable database is the usual answer) and rerun `aq install`. |
 | The configuration does not parse | The `config.check` step names the keys | `aq system config edit`, then rerun. Leave `messaging_platform: none` unless you selected Discord. |
 | No worker can start | `aq agent list-profiles`, then `aq agent check-profile <id>` | Sign in to that profile's harness and rerun `aq install` to refresh eligibility. |
-| The dashboard does not open | Check the summary's Dashboard line | Rerun the install command: `dashboard.build` builds it if it has not (it needs Node.js 18+, which the installer provides) and restarts the daemon to serve it. |
+| The dashboard does not open | Check the summary's Dashboard line | Rerun the install command: `dashboard.build` builds it if it has not (with a Node.js it downloads for itself; `~/.agent-queue/dashboard-build.log` has the full output) and restarts the daemon to serve it. |
 | You need to stop AQ | `aq stop` | This stops the daemon and its agent sessions. Use `aq restart` for a restart that re-adopts live sessions. |
 
 ## Related pages

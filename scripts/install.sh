@@ -109,15 +109,15 @@ else
         fail_unsupported "Ubuntu 24.04 is the supported WSL distribution. Install it from Windows with: wsl --install -d Ubuntu-24.04"
     fi
 
-    # A fresh Ubuntu WSL install has Python, but venv, Git and Node.js (which
-    # builds the dashboard) are not guaranteed.  This sudo prompt belongs to the
-    # WSL distribution, never to a Windows administrator.  Ubuntu 24.04's
-    # nodejs is 18.x, the oldest the dashboard toolchain supports.
-    if ! command -v git >/dev/null || ! python3 -m venv --help >/dev/null 2>&1 \
-        || ! command -v npm >/dev/null; then
-        printf 'Installing the WSL prerequisites (Git, Python venv support, Node.js)...\n'
+    # A fresh Ubuntu WSL install has Python, but venv and Git are not
+    # guaranteed.  This sudo prompt belongs to the WSL distribution, never to a
+    # Windows administrator.  Node.js is not installed here: Ubuntu's is too old
+    # for the dashboard, and `aq install` builds it with a pinned Node it
+    # downloads itself.
+    if ! command -v git >/dev/null || ! python3 -m venv --help >/dev/null 2>&1; then
+        printf 'Installing the WSL prerequisites (Git and Python venv support)...\n'
         sudo apt-get update
-        sudo apt-get install -y git python3-venv nodejs npm
+        sudo apt-get install -y git python3-venv
     fi
     python_bin="python3"
 fi
