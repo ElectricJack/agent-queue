@@ -96,6 +96,13 @@ dependencies = [
     # Click — PYSEC-2026-2132. Also pinned in [cli] extras; hoisted here so
     # transitive pulls (uvicorn, etc.) resolve to a safe version.
     "click>=8.3.3",
+    # WebSockets — the dashboard's live events (/ws/events) and every agent
+    # terminal (/ws/terminal/...) are WebSockets, and uvicorn only serves them
+    # when a WebSocket library is installed; uvicorn does not require one. A
+    # development venv got `websockets` only through google-genai (the `llm`
+    # extra), so the one-command install -- `pip install -e .[cli]` -- served
+    # HTTP but failed every WebSocket upgrade, and no terminal could connect.
+    "websockets>=14.0",
     # mcp — PYSEC-2026-3481, 3482, 3483. Also pinned in [mcp] extras; hoisted
     # here so transitive pulls (claude-agent-sdk, etc.) resolve to a safe
     # version. <2 because the FastMCP import moved in mcp 2.x.

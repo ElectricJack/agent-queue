@@ -98,11 +98,37 @@ def test_the_bare_dashboard_path_survives_the_daemons_catch_all_mount(tmp_path):
         bare = client.get("/dashboard", follow_redirects=False)
         assert bare.status_code == 307
         assert bare.headers["location"] == "/dashboard/"
-        assert client.get("/dashboard?tab=metrics", follow_redirects=False).headers[
-            "location"
-        ] == "/dashboard/?tab=metrics"
+        assert (
+            client.get("/dashboard?tab=metrics", follow_redirects=False).headers["location"]
+            == "/dashboard/?tab=metrics"
+        )
         assert "assets/app.js" in client.get("/dashboard").text
     assert "/dashboard" not in app.openapi()["paths"]
+
+
+def test_the_core_install_can_serve_websockets():
+    """uvicorn serves WebSockets only when a WebSocket library is installed.
+
+    A `pip install -e .[cli]` install -- what the one-command bootstrap does --
+    once had none: `websockets` arrived only through the `llm` extra, so the
+    dashboard's events stream and every agent terminal failed to connect while
+    plain HTTP worked.  The library must be a core dependency, not a lucky
+    transitive one.
+    """
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = [
+        dependency.split(";")[0].strip().lower()
+        for dependency in pyproject["project"]["dependencies"]
+    ]
+    names = {
+        dependency.split("[")[0].split("<")[0].split(">")[0].split("=")[0].split("!")[0].strip()
+        for dependency in core
+    }
+    assert names & {"websockets", "wsproto"} or any(
+        dependency.startswith("uvicorn[standard]") for dependency in core
+    )
 
 
 def test_release_metadata_declares_runtime_resources_and_embedded_base():
