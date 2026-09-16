@@ -220,8 +220,9 @@ def parse_formula(text: str, *, rel_path: str) -> Formula:
             )
         )
 
-    extends = fm.extra.get("extends")
-    extends = str(extends) if extends else None
+    # ``parse_frontmatter`` lifts ``extends`` out of ``extra`` into a field of
+    # its own (profile inheritance uses the same key), so read it from there.
+    extends = fm.extends or None
     # ``extends: system:<name>`` pins that one hop to system scope, which is
     # what lets a project override extend the system formula of the SAME name
     # (``projects/p1/formulas/base.md`` -> ``system`` ``base``).  Without the
