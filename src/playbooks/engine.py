@@ -3326,6 +3326,16 @@ class PlaybookEngine:
         # stop.  Package 6's parity corpus is what surfaced it.
         task_dict = hydrated.get("task")
         if isinstance(task_dict, dict):
+            # Dataclass hydration preserves enum members, whereas the event
+            # schema advertises scalar wire values.  Normalise the task state
+            # before evaluating a guard so a rule can reliably compare it to
+            # an authored status literal (and so an incoming hydrated object
+            # has the same shape as a database-hydrated one).
+            status = task_dict.get("status")
+            if hasattr(status, "value"):
+                task_dict = dict(task_dict)
+                task_dict["status"] = status.value
+                hydrated["task"] = task_dict
             flag_review_task_event(hydrated, task_dict.get("dedup_key"))
         return hydrated
 

@@ -488,6 +488,60 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                 "id": rule,
                 "name": rule,
                 "trigger": {"event_type": "task.route_needed"},
+                # Route-needed is deliberately re-emitted while a task has
+                # no route.  Its event id is therefore not a durable task
+                # identity.  Admit only a currently eligible, still-unrouted
+                # hydrated row so a queued retry cannot invoke the chooser
+                # after another run has routed or completed the task.
+                "guard": {
+                    "type": "bool",
+                    "op": "and",
+                    "operands": [
+                        {
+                            "type": "comparison",
+                            "op": "in",
+                            "left": {"type": "event_ref", "path": "task.status"},
+                            "right": {
+                                "type": "literal",
+                                "value": ["DEFINED", "READY", "BLOCKED"],
+                            },
+                        },
+                        {
+                            "type": "bool",
+                            "op": "or",
+                            "operands": [
+                                {
+                                    "type": "bool",
+                                    "op": "not",
+                                    "operands": [
+                                        {
+                                            "type": "exists",
+                                            "value": {
+                                                "type": "event_ref",
+                                                "path": "task.intelligence_class",
+                                            },
+                                            "mode": "truthy",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "type": "bool",
+                                    "op": "not",
+                                    "operands": [
+                                        {
+                                            "type": "exists",
+                                            "value": {
+                                                "type": "event_ref",
+                                                "path": "task.profile_id",
+                                            },
+                                            "mode": "truthy",
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
                 "entry_step": read,
                 "source": index.rule_ref(rule),
             }

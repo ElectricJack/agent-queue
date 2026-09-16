@@ -25,8 +25,13 @@ no code changes. The design is
 
 ## Rule: route-task
 
-There is no guard. The rule reads the task's routing state and takes exactly
-one of three paths.
+The rule is admitted only when the current hydrated task row is `DEFINED`,
+`READY`, or `BLOCKED` and still lacks either its intelligence class or worker
+profile. This is deliberately a current-row guard rather than a condition on
+the event payload: route-needed events are retried and can arrive after a
+successful route or task completion. Such stale events must start no run and
+must never reach the chooser. An admitted rule reads the task's routing state
+and takes exactly one of three paths.
 
 1. Call `task_route_options` with `task_id` from the event. Bind the result as
    `routing`. It reports the task's fields, whether its class is explicit, and
@@ -62,6 +67,12 @@ Default to `standard-high` for ordinary feature implementation, debugging,
 refactoring, tests, and coordinated changes across modules. Most development
 tasks belong in this class. Use a fast class only for clearly trivial, localized
 work whose requirements are already settled.
+
+When the task is described as straightforward, routine, conventional, or an
+ordinary dependency or bug fix, select `standard-high` whenever it is offered.
+Those descriptions are affirmative evidence for the default, not a reason to
+escalate. Do not select a deep class merely because the task involves an
+unfamiliar library or language, several files, or a failing test.
 
 Use `deep-high` or `astra-high` only for exceptionally difficult work: a
 genuinely unresolved architectural problem, a hard investigation with concrete

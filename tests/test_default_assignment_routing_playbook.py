@@ -195,10 +195,37 @@ async def test_already_routed_task_ends_without_writing(command_handler_factory)
     engine, runs = _engine(handler, artifact)
     set_handler_provider(lambda: handler)
     try:
-        await engine.dispatch_event(_event(before), _principal())
+        result = await engine.dispatch_event(_event(before), _principal())
     finally:
         set_handler_provider(None)
-    (run,) = runs.snapshots.values()
-    assert run.lifecycle.value == "completed", run.error
-    assert [r.step_id for r in runs.receipts if r.step_id.startswith("route-task--apply")] == []
+    assert result.rules_selected == ()
+    assert not runs.snapshots
     assert (await handler.db.get_task("done")).updated_at == before.updated_at
+
+
+async def test_stale_route_event_for_completed_unrouted_task_never_calls_chooser(
+    command_handler_factory, monkeypatch,
+):
+    """The rule guard reads the current row, not stale route-needed payload."""
+    handler = await _handler(command_handler_factory)
+    await handler.db.create_task(Task(
+        id="completed", project_id="p", title="Completed before routing", description="",
+        status=TaskStatus.COMPLETED,
+    ))
+    scripted = _ScriptedLlm({
+        "intelligence_class": "standard-medium", "provider": "anthropic",
+        "profile_id": "standard-medium-claude", "reason": "would be stale",
+    })
+    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", scripted)
+    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
+    engine, runs = _engine(handler, artifact)
+    set_handler_provider(lambda: handler)
+    try:
+        result = await engine.dispatch_event(
+            _event(await handler.db.get_task("completed")), _principal()
+        )
+    finally:
+        set_handler_provider(None)
+    assert result.rules_selected == ()
+    assert not runs.snapshots
+    assert scripted.prompts == []

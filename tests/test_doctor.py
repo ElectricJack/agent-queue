@@ -6,6 +6,7 @@ Covers ``docs/specs/implementation/trust-and-ops.md`` §8 rows 2 and 3.
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -385,6 +386,7 @@ class TestBuiltinCatalog:
             "harness.binaries",
             "harness.drift",
             "logs.llm_size",
+            "logs.llm_repeated_playbook_calls",
             "tasks.stuck",
             "pauses.active",
             "events.registry",
@@ -699,6 +701,53 @@ class TestLogsLlmSizeCheck:
         assert second.data["removed"] == 0
         assert (base / recent).exists()
         assert (await check.run(ctx)).severity is Severity.OK
+
+
+class TestRepeatedPlaybookLlmCallsCheck:
+    @staticmethod
+    def _write_calls(base, calls):
+        day = datetime.now(UTC).strftime("%Y-%m-%d")
+        directory = base / "logs" / "llm" / day
+        directory.mkdir(parents=True)
+        with (directory / "llm.jsonl").open("w", encoding="utf-8") as handle:
+            for call in calls:
+                handle.write(json.dumps(call) + "\n")
+
+    @staticmethod
+    def _call(content="same task"):
+        return {
+            "timestamp": "2026-09-16T00:00:00Z",
+            "caller": "playbook:default-assignment-routing:route-task--choose",
+            "model": "gemini-2.5-flash",
+            "provider": "GoogleProvider",
+            "prompt_fingerprint": "same-template",
+            "input": {
+                "system": "choose a class",
+                "messages": [{"role": "user", "content": content}],
+                "tools": [],
+                "max_tokens": 4096,
+            },
+        }
+
+    async def test_warns_for_repeated_exact_request_from_one_step(self, tmp_path):
+        self._write_calls(tmp_path, [self._call(), self._call(), self._call()])
+        ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=None, handler=None)
+
+        result = await _run_single("logs.llm_repeated_playbook_calls", ctx)
+
+        assert result.severity is Severity.WARN
+        assert result.data["repeated"][0]["caller"].endswith("route-task--choose")
+        assert result.data["repeated"][0]["count"] == 3
+        assert "same task" not in repr(result.data)
+
+    async def test_same_template_for_distinct_prompts_is_not_a_repeat(self, tmp_path):
+        self._write_calls(tmp_path, [self._call("first task"), self._call("second task"), self._call("third task")])
+        ctx = DoctorContext(config=AppConfig(data_dir=str(tmp_path)), db=None, handler=None)
+
+        result = await _run_single("logs.llm_repeated_playbook_calls", ctx)
+
+        assert result.severity is Severity.OK
+        assert result.data["repeated"] == []
 
 
 class TestPausesActiveCheck:

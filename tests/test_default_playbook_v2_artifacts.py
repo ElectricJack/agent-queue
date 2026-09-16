@@ -456,6 +456,52 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
     assert rule.id == "route-task"
     assert rule.trigger.event_type == "task.route_needed"
     assert rule.entry_step == "route-task--read_options"
+    assert rule.guard.model_dump(mode="json") == {
+        "type": "bool",
+        "op": "and",
+        "operands": [
+            {
+                "type": "comparison",
+                "op": "in",
+                "left": {"type": "event_ref", "path": "task.status"},
+                "right": {"type": "literal", "value": ["DEFINED", "READY", "BLOCKED"]},
+            },
+            {
+                "type": "bool",
+                "op": "or",
+                "operands": [
+                    {
+                        "type": "bool",
+                        "op": "not",
+                        "operands": [
+                            {
+                                "type": "exists",
+                                "value": {
+                                    "type": "event_ref",
+                                    "path": "task.intelligence_class",
+                                },
+                                "mode": "truthy",
+                            }
+                        ],
+                    },
+                    {
+                        "type": "bool",
+                        "op": "not",
+                        "operands": [
+                            {
+                                "type": "exists",
+                                "value": {
+                                    "type": "event_ref",
+                                    "path": "task.profile_id",
+                                },
+                                "mode": "truthy",
+                            }
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
 
     read = definition.steps["route-task--read_options"]
     assert read.command == "task_route_options"

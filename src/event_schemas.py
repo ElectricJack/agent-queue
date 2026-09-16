@@ -105,7 +105,40 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
             "task_type",
             "intelligence_class",
             "profile_id",
+            # The router's delivery guard reads the row at dispatch time, not
+            # the possibly stale fields from an event that sat in a queue.
+            # The engine supplies this hydrated object from ``task_id``.
+            "task",
         ],
+        "fields": {
+            "task_id": {"type": "string", "description": "task"},
+            "project_id": {"type": "string", "description": "project"},
+            "title": {"type": "string", "description": "task title"},
+            "description": {"type": "string", "description": "task description"},
+            "priority": {"type": "integer", "description": "task priority"},
+            "task_type": {"type": "string", "description": "task type"},
+            "intelligence_class": {
+                "type": "string",
+                "description": "requested intelligence class",
+            },
+            "profile_id": {"type": "string", "description": "requested worker profile"},
+            "task": {
+                "type": "object",
+                "description": "current task row",
+                "hydrated": True,
+                "fields": {
+                    "status": {"type": "string", "description": "task status"},
+                    "intelligence_class": {
+                        "type": "string",
+                        "description": "current intelligence class",
+                    },
+                    "profile_id": {
+                        "type": "string",
+                        "description": "current worker profile",
+                    },
+                },
+            },
+        },
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],
