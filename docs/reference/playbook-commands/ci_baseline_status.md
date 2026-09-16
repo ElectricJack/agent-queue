@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:a8bc85c6eceb60bcc0a7c4d235d38758456bd15cc1d82c74e3826f661c30c239` |
+| Contract fingerprint | `sha256:f5aee2cefa567b714e98ef0da11c630b52bd26ea18f2be08f296155a0de6a5d9` |
 
 ## Parameters
 
@@ -43,6 +43,10 @@
 | `escalation_key` | `string \| null` | — |
 | `escalation_title` | `string \| null` | — |
 | `escalation_question` | `string \| null` | — |
+| `in_flight` | `string[]` | In-flight repairs |
+| `repair_signature` | `string \| null` | Repair failure signature |
+| `repair_tests` | `string[]` | Tests the repair owns |
+| `repair_checks` | `string[]` | Checks the repair owns |
 
 ## Outcomes
 
@@ -73,13 +77,19 @@ for the head commit of a ref and the check runs on it, classifies the rollup wit
 the same function the merge gate uses, digs the failing pytest node ids out of
 the job logs, and computes a **failure signature** from them.
 
-The signature is the interesting part. It is a digest of *what* is red,
-independent of *which commit* is red, so a new commit that leaves the same tests
-failing is the same problem and must reuse the in-flight repair, while a
-different set of failing tests is a new problem that deserves its own task. The
-command hands back the `dedup_key`, `title` and `description` of that repair
-task, and — once the signature has spent its attempts — the key, title and
-question for a human escalation.
+The signature is a digest of *what* is red, independent of *which commit* is
+red. But a signature alone cannot tell a repair that landed a partial fix from a
+new problem: the moment the failing set shrinks, the signature changes. So the
+command also asks which **live repairs own** the failing tests. A repair owns
+the tests recorded on it by [`ci_repair_adopt`](ci_repair_adopt.md) — the
+sentinel records every repair it files, and an operator adopts one filed by
+hand. When live repairs own every failing test, the command hands back the
+in-flight repair's `dedup_key`, so a commit that leaves the same tests red, or
+fewer of them, reuses it. Otherwise only the tests no live repair owns are a new
+failure, and the repair fields describe a task for exactly those. Once the
+failure has spent its attempts it also returns the key, title and question for a
+human escalation. The ownership rule is
+[`docs/superpowers/specs/2026-09-16-ci-sentinel-repair-coverage-design.md`](../../superpowers/specs/2026-09-16-ci-sentinel-repair-coverage-design.md).
 
 ## When a playbook uses it
 
@@ -93,8 +103,8 @@ five success outcomes are the whole control flow of the rule:
 | `green` | Ends the rule — nothing to repair. |
 | `pending` | Ends the rule — nothing to repair *yet*; the next tick looks again. |
 | `unknown` | Ends the rule — the checks could not be read. |
-| `red` | Step 2 — [`ensure_task`](ensure_task.md) keyed `baseline.dedup_key`. |
-| `red_escalated` | Step 3 — `escalation_create` keyed `baseline.escalation_key`. |
+| `red` | Step 2 — [`ensure_task`](ensure_task.md) keyed `baseline.dedup_key`, then step 3 — [`ci_repair_adopt`](ci_repair_adopt.md) records `baseline.repair_tests` / `baseline.repair_checks` on it. |
+| `red_escalated` | Step 4 — `escalation_create` keyed `baseline.escalation_key`. |
 
 The design is
 [`docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`](../../superpowers/specs/2026-09-05-ci-main-sentinel-design.md);
@@ -106,20 +116,19 @@ deterministic command graph with no prose and no state of its own.
 ## How it works internally
 
 1. The executor builds `CiBaselineStatusArgs`; the adapter
-   ([`src/commands/contracts/builtin.py:554`](../../../src/commands/contracts/builtin.py))
+   ([`src/commands/contracts/builtin.py:628`](../../../src/commands/contracts/builtin.py))
    re-enters `CommandHandler.execute`
    ([`src/commands/handler.py:872`](../../../src/commands/handler.py)), which
    dispatches `_cmd_ci_baseline_status`.
 2. `_cmd_ci_baseline_status`
-   ([`src/commands/ci_commands.py:101`](../../../src/commands/ci_commands.py)):
+   ([`src/commands/ci_commands.py:365`](../../../src/commands/ci_commands.py)):
    - Requires `project_id` and reads the project; `ref` defaults to
      `project.repo_default_branch` or `main`; `max_attempts` defaults to 2 and
      must be an integer ≥ 1.
-   - Derives the GitHub slug from `project.repo_url`. No slug means the state is
-     `unknown` with an explanatory `error` — an install with no GitHub remote is
-     not a broken step.
-   - `git.acommit_head_sha(slug, ref)` then `git.acommit_check_runs(slug,
-     head_sha)`, both run in `config.data_dir`.
+   - `_observe_ci_baseline` (`ci_commands.py:298`) derives the GitHub slug from
+     `project.repo_url` — no slug means the state is `unknown` with an
+     explanatory `error` — then calls `git.acommit_head_sha(slug, ref)` and
+     `git.acommit_check_runs(slug, head_sha)`, both run in `config.data_dir`.
    - `classify_rollup` ([`src/git/ci_gate.py`](../../../src/git/ci_gate.py)) —
      the same classifier the merge gate uses — yields `state`, `failing` and
      `pending`. `green`, `pending` and `unknown` return immediately with no
@@ -127,27 +136,47 @@ deterministic command graph with no prose and no state of its own.
    - For `red`, it walks the failing entries, takes the first `html_url` /
      `details_url` as `run_url`, and calls `git.ajob_failed_tests(slug, job_id)`
      for each, unioning the pytest node ids.
-   - `failure_signature` (`ci_commands.py:34`) is the first 12 hex characters of
+   - `failure_signature` (`ci_commands.py:44`) is the first 12 hex characters of
      a SHA-256 over the sorted node ids, falling back to `check:<name>` entries
      when no test ids could be read — so an unreadable log still yields one
      repair per distinct red matrix rather than none.
-   - `db.list_tasks_by_dedup_prefix(project_id, "ci-baseline:<signature>:")`
-     enumerates prior attempts. A **live** attempt (any status outside
-     `COMPLETED` / `FAILED` / `BLOCKED`) means the current attempt number is the
-     count of attempts and its existing `dedup_key` is reused, with
-     `escalated: False`. With no live attempt the number is `len(attempts) + 1`
-     and `escalated` is `len(spent) >= max_attempts`.
-   - `render_repair_task` (`ci_commands.py:48`) builds the repair task's title
+   - `_ci_repair_attempts` reads every `ci-baseline:*` task in the project with
+     `db.list_tasks_by_dedup_prefix` and their `ci_baseline_repair` records with
+     one `db.get_task_meta_bulk` query. An attempt is **live** unless it is
+     `COMPLETED`, `FAILED` or `BLOCKED`.
+   - `plan_repair` (`ci_commands.py:136`) decides ownership. A recorded repair
+     owns the failing tests it recorded, for the same ref; while no test ids can
+     be read it owns the failing checks it recorded, so a `gh` hiccup never
+     files a duplicate. An unrecorded repair — one filed before repairs were
+     recorded — owns the failure only when its key's signature is exactly the
+     failure's.
+     - When live repairs own every failing test, the oldest one keyed on exactly
+       this failure (else the oldest owner) is reused: `dedup_key` is its key,
+       `in_flight` names every owner, and `escalated` is `False`.
+     - Otherwise the uncovered tests are a new failure: `repair_tests`,
+       `repair_checks` and `repair_signature` describe it, `dedup_key` is
+       `ci-baseline:<repair_signature>:<n>` with `n` one past the highest index
+       already used for that signature, and `in_flight` names the repairs that
+       own the rest.
+     - `prior_attempts` are the spent repairs that owned *all* of the repair's
+       failure, whether recorded for a larger set or keyed on its exact
+       signature. `attempt` is one more than their count, and `escalated` is
+       `len(prior_attempts) >= max_attempts` when nothing is reused — so a
+       failure two fixers could not clear escalates even as partial fixes
+       shrink it.
+   - `render_repair_task` (`ci_commands.py:221`) builds the repair task's title
      (`Fix red CI on <ref> @ <sha8> (attempt n)`) and its description: failing
-     checks, the run URL, up to 40 failing tests, and a "What to do" section
-     that tells the repair agent to reproduce first, fix the defect rather than
-     the test, land through a PR, never push the default branch, and — if the
-     failure is outside the repository's control — close `fail` with a hard
-     failure class so the sentinel escalates instead of filing another attempt.
-   - The escalation fields are keyed `ci-baseline-escalation:<signature>` — on
-     the signature alone, so the human gate is opened once however many attempts
-     were spent.
-3. `_outcome_of` (`builtin.py:517`) maps `state == "red"` **and**
+     checks, the run URL, up to 40 of the tests the repair owns, which in-flight
+     repairs own the rest, and a "What to do" section that tells the repair agent
+     to reproduce first, fix the defect rather than the test, land through a PR,
+     never push the default branch, and — if the failure is outside the
+     repository's control — close `fail` with a hard failure class so the
+     sentinel escalates instead of filing another attempt.
+   - The escalation fields are keyed `ci-baseline-escalation:<repair_signature>`
+     — on the signature alone, so the human gate is opened once however many
+     attempts were spent. `signature` itself always digests the whole observed
+     failure, for callers comparing a branch's failures with the baseline.
+3. `_outcome_of` (`builtin.py:653`) maps `state == "red"` **and**
    `escalated: True` to `red_escalated`, otherwise passes `green` / `red` /
    `pending` / `unknown` through. It reads the state *before* its generic
    error check whenever the result says `success: True`, so an `unknown` that
@@ -163,11 +192,12 @@ events. What it *does* do is run `gh` subprocesses through the async
 mind.
 
 Nothing about the verdict is persisted. The durable state that makes the sentinel
-converge lives entirely in the tasks the *next* steps create: the repair task's
-`tasks.dedup_key`, which is what `list_tasks_by_dedup_prefix` reads back on the
-following tick, and the escalation incident keyed on the signature. That is why
-the attempt counter survives a daemon restart without this command storing
-anything.
+converge lives entirely in the tasks the *next* steps create and record: the
+repair task's `tasks.dedup_key`, which `list_tasks_by_dedup_prefix` reads back on
+the following tick, the `task_metadata` row `ci_baseline_repair` that
+[`ci_repair_adopt`](ci_repair_adopt.md) writes on it, and the escalation incident
+keyed on the signature. That is why the attempt counter and repair ownership
+survive a daemon restart without this command storing anything.
 
 `unknown` and `pending` also carry no signature and no repair fields — a caller
 must branch on the outcome before reading `dedup_key`.
@@ -178,14 +208,14 @@ must branch on the outcome before reading `dedup_key`.
 |---|---|
 | `unknown` (success) | The project has no GitHub `repo_url`, or the check runs for `<slug>@<ref>` could not be read; `error` says which. Not a broken step — the next tick tries again. |
 | `pending` (success) | Checks are still running on the head commit. |
-| `red_escalated` (success) | The branch is red and `max_attempts` repair tasks for this exact signature have already reached `COMPLETED`, `FAILED` or `BLOCKED` while it stayed red. |
+| `red_escalated` (success) | The branch is red, no live repair owns the uncovered failure, and `max_attempts` repair tasks that owned all of it have already reached `COMPLETED`, `FAILED` or `BLOCKED` while it stayed red. |
 | `rejected` | Missing `project_id`; unknown project; a non-integer or `< 1` `max_attempts`; or a `gh`/`GitManager` exception escaping into `CommandHandler.execute`'s error path. |
 | `unauthorized` | The capability gate refused `ci_baseline_status`. |
 | `contract_violation` | The dict did not satisfy `CiBaselineStatusValue` (`state` and `ref` are required), or the outcome has no transition and there is no `runtime_error` edge. |
 | `input_resolution_failed` | A resolved input failed `CiBaselineStatusArgs`. |
 
 Statically,
-[`src/playbooks/validation.py:1604`](../../../src/playbooks/validation.py) emits
+[`src/playbooks/validation.py:1622`](../../../src/playbooks/validation.py) emits
 `argument_missing` when `project_id` has no input, and
 `unmapped_business_outcome` for any of the six declared outcomes without a
 transition — with five successes that branch three different ways, this is the
@@ -194,7 +224,10 @@ check that catches a half-written sentinel rule.
 The rule has no retry: the next timer tick is a better retry than any the run
 could schedule, and deduplication is the guard against a repair storm.
 Diagnose with `aq git ci-baseline-status --project-id <id>` for the same verdict from
-the CLI, and `aq task show <repair-task-id>` for what a spent attempt concluded.
+the CLI — `in_flight` names the repairs it considers in flight — and
+`aq task show <repair-task-id>` for what a spent attempt concluded. A repair
+someone filed by hand is invisible until it is adopted:
+`aq git ci-repair-adopt --project-id <id> --task-id <task-id>`.
 
 ## Example step
 

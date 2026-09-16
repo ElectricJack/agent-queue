@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 361,
+    "leaf_commands": 362,
     "registration": {
-      "generated": 252,
+      "generated": 253,
       "handwritten": 109
     },
     "ownership": {
-      "core": 322,
+      "core": 323,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 360
+      "supported": 361
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 252,
+      "dispatch": 253,
       "registration": 95
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 301
+      "untested": 302
     }
   },
   "commands": [
@@ -2282,6 +2282,47 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq git ci-repair-adopt",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "ci_repair_adopt",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--task-id"
+        ],
+        "optional": [
+          "--ref",
+          "--head-sha",
+          "--failing-tests",
+          "--failing-checks",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--failing-tests",
+          "--failing-checks"
+        ],
         "nullable": []
       }
     },

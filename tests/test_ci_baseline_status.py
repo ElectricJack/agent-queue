@@ -14,7 +14,10 @@ import pytest
 from src.commands.ci_commands import (
     ESCALATION_KEY_PREFIX,
     REPAIR_KEY_PREFIX,
+    REPAIR_RECORD_META,
+    RepairAttempt,
     failure_signature,
+    plan_repair,
     render_repair_task,
 )
 from src.commands.contracts.builtin import _outcome_of
@@ -316,3 +319,243 @@ async def test_dedup_prefix_query_escapes_like_wildcards(db):
     rows = await db.list_tasks_by_dedup_prefix(PROJECT, "ci-baseline:abc:")
     assert [row.dedup_key for row in rows] == ["ci-baseline:abc:1"]
     assert await db.list_tasks_by_dedup_prefix(PROJECT, "ci_baseline:abc:") == []
+
+
+# -- repair ownership: manual repairs, shrinking and growing failures ---------
+
+CHECKS = ["Tests (default)"]
+THIRD = "tests/test_c.py::test_three"
+ALL_TESTS = sorted([*FAILED_TESTS, THIRD])
+
+
+def _key(tests: list[str], n: int = 1) -> str:
+    return f"{REPAIR_KEY_PREFIX}:{failure_signature(tests, CHECKS)}:{n}"
+
+
+async def _adopt(handler, task_id: str, tests: list[str], **extra) -> dict:
+    """What the sentinel's record step does right after ``ensure_task``."""
+    return await handler._cmd_ci_repair_adopt(
+        {
+            "project_id": PROJECT,
+            "task_id": task_id,
+            "failing_tests": list(tests),
+            "failing_checks": CHECKS,
+            **extra,
+        }
+    )
+
+
+async def _recorded(handler, db, tests: list[str], status: TaskStatus = TaskStatus.IN_PROGRESS) -> str:
+    """A sentinel repair keyed for *tests* whose record step ran, left in *status*."""
+    task_id = await _attempt(db, _key(tests), TaskStatus.IN_PROGRESS)
+    assert (await _adopt(handler, task_id, tests))["outcome"] == "recorded"
+    if status is not TaskStatus.IN_PROGRESS:
+        await db.update_task(task_id, status=status)
+    return task_id
+
+
+async def test_a_manual_repair_is_adopted_and_then_reused_by_the_sentinel(handler, db, git):
+    await db.create_task(
+        Task(
+            id="steady-quest",
+            project_id=PROJECT,
+            title="Fix main by hand",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    # Unadopted, a hand-filed repair is invisible and the sentinel would file a second.
+    before = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    assert before["dedup_key"] == _key(FAILED_TESTS) and before["in_flight"] == []
+
+    reads = git.ajob_failed_tests.await_count
+    adopted = await handler._cmd_ci_repair_adopt(
+        {"project_id": PROJECT, "task_id": "steady-quest"}
+    )
+
+    # With no failure named, adoption reads CI itself and owns the whole failure.
+    assert git.ajob_failed_tests.await_count == reads + 1
+    assert adopted["success"] is True and adopted["outcome"] == "adopted"
+    assert _outcome_of("ci_repair_adopt", adopted) == "adopted"
+    assert adopted["dedup_key"] == _key(FAILED_TESTS)
+    assert (adopted["ref"], adopted["head_sha"]) == ("main", SHA)
+    assert adopted["failing_tests"] == FAILED_TESTS and adopted["failing_checks"] == CHECKS
+    assert (await db.get_task("steady-quest")).dedup_key == _key(FAILED_TESTS)
+    record = await db.get_task_meta("steady-quest", REPAIR_RECORD_META)
+    assert record["failing_tests"] == FAILED_TESTS and record["ref"] == "main"
+
+    after = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    assert after["dedup_key"] == adopted["dedup_key"]
+    assert after["in_flight"] == ["steady-quest"]
+    assert after["attempt"] == 1 and after["escalated"] is False
+
+    # The record is written once; adopting again reads nothing and changes nothing.
+    reads = git.ajob_failed_tests.await_count
+    again = await handler._cmd_ci_repair_adopt({"project_id": PROJECT, "task_id": "steady-quest"})
+    assert again["outcome"] == "unchanged" and again["dedup_key"] == adopted["dedup_key"]
+    assert _outcome_of("ci_repair_adopt", again) == "unchanged"
+    assert git.ajob_failed_tests.await_count == reads
+
+
+async def test_a_partial_fix_that_shrinks_the_failing_set_reuses_the_in_flight_repair(
+    handler, db, git
+):
+    legacy = await _attempt(db, _key(ALL_TESTS), TaskStatus.IN_PROGRESS)
+    git.acommit_head_sha.return_value = "e" * 40
+    git.ajob_failed_tests.return_value = list(FAILED_TESTS)
+
+    # Keyed by signature alone, the smaller remaining set looks like a new failure.
+    unrecorded = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    assert unrecorded["dedup_key"] == _key(FAILED_TESTS)
+
+    assert (await _adopt(handler, legacy, ALL_TESTS))["outcome"] == "recorded"
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+
+    assert result["signature"] == failure_signature(FAILED_TESTS, CHECKS)
+    assert result["dedup_key"] == _key(ALL_TESTS)
+    assert result["in_flight"] == [legacy]
+    assert result["attempt"] == 1 and result["escalated"] is False
+    assert _outcome_of("ci_baseline_status", result) == "red"
+
+
+async def test_a_new_failure_beside_an_in_flight_repair_gets_a_repair_for_just_that_failure(
+    handler, db, git
+):
+    owner = await _recorded(handler, db, FAILED_TESTS)
+    git.ajob_failed_tests.return_value = list(ALL_TESTS)
+
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+
+    assert result["signature"] == failure_signature(ALL_TESTS, CHECKS)
+    assert result["in_flight"] == [owner]
+    assert result["repair_tests"] == [THIRD] and result["repair_checks"] == CHECKS
+    assert result["repair_signature"] == failure_signature([THIRD], CHECKS)
+    assert result["dedup_key"] == _key([THIRD])
+    assert result["escalation_key"] == f"{ESCALATION_KEY_PREFIX}:{result['repair_signature']}"
+    assert result["attempt"] == 1 and result["escalated"] is False
+    assert THIRD in result["description"] and FAILED_TESTS[0] not in result["description"]
+    assert owner in result["description"]
+
+    # Once that repair is filed and recorded, the two together own the failure.
+    second = await _attempt(db, result["dedup_key"], TaskStatus.READY)
+    recorded = await _adopt(handler, second, result["repair_tests"])
+    assert recorded["outcome"] == "recorded" and recorded["in_flight"] == []
+    settled = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+    assert settled["in_flight"] == [owner, second]
+    assert settled["dedup_key"] == _key(FAILED_TESTS)
+
+
+async def test_spent_repairs_that_owned_a_shrunken_failure_still_escalate_it(handler, db, git):
+    first = await _recorded(handler, db, ALL_TESTS, TaskStatus.COMPLETED)
+    second = await _recorded(handler, db, FAILED_TESTS, TaskStatus.BLOCKED)
+    await _recorded(handler, db, [THIRD], TaskStatus.COMPLETED)  # never owned what is red now
+    git.ajob_failed_tests.return_value = FAILED_TESTS[:1]
+
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+
+    assert result["in_flight"] == []
+    assert result["prior_attempts"] == [first, second]
+    assert result["escalated"] is True
+    assert _outcome_of("ci_baseline_status", result) == "red_escalated"
+    signature = failure_signature(FAILED_TESTS[:1], CHECKS)
+    assert result["escalation_key"] == f"{ESCALATION_KEY_PREFIX}:{signature}"
+    assert first in result["escalation_question"] and second in result["escalation_question"]
+
+    # Below the budget it is the next attempt, keyed by the failure it owns.
+    below = await handler._cmd_ci_baseline_status({"project_id": PROJECT, "max_attempts": 3})
+    assert below["escalated"] is False and below["attempt"] == 3
+    assert below["dedup_key"] == _key(FAILED_TESTS[:1])
+
+
+async def test_unreadable_logs_do_not_duplicate_a_recorded_repair(handler, db, git):
+    owner = await _recorded(handler, db, FAILED_TESTS)
+    git.ajob_failed_tests.return_value = None
+
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+
+    assert result["failing_tests"] == []
+    assert result["dedup_key"] == _key(FAILED_TESTS) and result["in_flight"] == [owner]
+
+
+async def test_a_recorded_repair_owns_its_failure_only_on_its_own_ref(handler, db):
+    task_id = await _attempt(db, _key(ALL_TESTS), TaskStatus.IN_PROGRESS)
+    assert (await _adopt(handler, task_id, ALL_TESTS, ref="release"))["outcome"] == "recorded"
+
+    result = await handler._cmd_ci_baseline_status({"project_id": PROJECT})
+
+    assert result["in_flight"] == [] and result["dedup_key"] == _key(FAILED_TESTS)
+
+
+async def test_adoption_refuses_a_task_it_cannot_make_the_repair(handler, db, git):
+    blocked = await _attempt(db, _key(FAILED_TESTS), TaskStatus.BLOCKED)
+    refused = await _adopt(handler, blocked, FAILED_TESTS)
+    assert "only a live task" in refused["error"]
+    assert _outcome_of("ci_repair_adopt", refused) == "rejected"
+
+    await db.create_task(
+        Task(
+            id="review-1",
+            project_id=PROJECT,
+            title="review",
+            description="",
+            status=TaskStatus.READY,
+            dedup_key="review:task:abc",
+        )
+    )
+    foreign = await _adopt(handler, "review-1", FAILED_TESTS)
+    assert "not a CI repair key" in foreign["error"]
+    assert (await db.get_task("review-1")).dedup_key == "review:task:abc"
+
+    await db.create_project(Project(id="other", name="Other", repo_url=REPO))
+    elsewhere = await handler._cmd_ci_repair_adopt({"project_id": "other", "task_id": "review-1"})
+    assert "not found in other" in elsewhere["error"]
+
+    await db.create_task(
+        Task(id="manual", project_id=PROJECT, title="m", description="", status=TaskStatus.READY)
+    )
+    git.acommit_check_runs.return_value = list(GREEN_RUNS)
+    green = await handler._cmd_ci_repair_adopt({"project_id": PROJECT, "task_id": "manual"})
+    assert "is green" in green["error"]
+    assert (await db.get_task("manual")).dedup_key is None
+    assert await db.get_task_meta("manual", REPAIR_RECORD_META) is None
+
+    bad = await handler._cmd_ci_repair_adopt(
+        {"project_id": PROJECT, "task_id": "manual", "failing_tests": "tests/test_a.py"}
+    )
+    assert "lists of strings" in bad["error"]
+    assert "required" in (await handler._cmd_ci_repair_adopt({"project_id": PROJECT}))["error"]
+
+
+def test_an_unrecorded_repair_keyed_on_exactly_what_is_left_owns_it():
+    recorded = RepairAttempt(
+        "owner",
+        _key(FAILED_TESTS),
+        live=True,
+        record={"ref": "main", "failing_tests": FAILED_TESTS, "failing_checks": CHECKS},
+    )
+    legacy = RepairAttempt("legacy", _key([THIRD]), live=True)
+
+    plan = plan_repair(
+        ref="main", failing_tests=ALL_TESTS, failing_checks=CHECKS, attempts=[recorded, legacy]
+    )
+
+    assert plan.in_flight == ("owner", "legacy")
+    assert plan.reuse_key == legacy.dedup_key
+    assert plan.tests == (THIRD,) and plan.prior_attempts == ()
+
+
+def test_a_new_repair_key_never_reuses_an_index_of_its_signature():
+    spent = [RepairAttempt(f"t{n}", _key([THIRD], n), live=False) for n in (1, 3)]
+    plan = plan_repair(ref="main", failing_tests=[THIRD], failing_checks=CHECKS, attempts=spent)
+    assert plan.next_key == _key([THIRD], 4) and plan.prior_attempts == ("t1", "t3")
+
+
+async def test_task_meta_values_reads_one_key_for_a_set_of_tasks(db):
+    first = await _attempt(db, "ci-baseline:abc:1", TaskStatus.READY)
+    second = await _attempt(db, "ci-baseline:abc:2", TaskStatus.READY)
+    await db.set_task_meta(first, REPAIR_RECORD_META, {"ref": "main"})
+    await db.set_task_meta(second, "other", "x")
+    assert await db.get_task_meta_values([first, second], REPAIR_RECORD_META) == {
+        first: {"ref": "main"}
+    }
+    assert await db.get_task_meta_values([], REPAIR_RECORD_META) == {}

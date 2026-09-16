@@ -648,14 +648,16 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
 def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
     """The reviewer-authored deterministic graph for ``ci-main-sentinel``.
 
-    Three command steps and two terminals, lowered from the numbered prose
+    Four command steps and two terminals, lowered from the numbered prose
     items so every step carries the line that authorises it.  See
-    ``docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md``.
+    ``docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`` and
+    ``docs/superpowers/specs/2026-09-16-ci-sentinel-repair-coverage-design.md``.
     """
     index = ProseIndex(source, source.vault_path)
     rule = "keep-main-green"
     observe = f"{rule}--read_baseline"
     repair = f"{rule}--ensure_repair_task"
+    record = f"{rule}--record_repair"
     escalate = f"{rule}--escalate_to_human"
     done = f"{rule}--done"
     failed = f"{rule}--failed"
@@ -709,8 +711,30 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                 },
                 "save_result_as": "repair",
                 "transitions": {
-                    "created": done,
-                    "reused": done,
+                    "created": record,
+                    "reused": record,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            record: {
+                "type": "command",
+                "rule": rule,
+                "title": "record_repair",
+                "source": index.step_ref(rule, 3),
+                "command": "ci_repair_adopt",
+                "inputs": {
+                    "project_id": project,
+                    "task_id": {"type": "binding_ref", "binding": "repair", "path": "task_id"},
+                    "ref": bound("ref"),
+                    "head_sha": bound("head_sha"),
+                    "failing_tests": bound("repair_tests"),
+                    "failing_checks": bound("repair_checks"),
+                },
+                "transitions": {
+                    "adopted": done,
+                    "recorded": done,
+                    "unchanged": done,
                     "rejected": failed,
                     "runtime_error": failed,
                 },
@@ -719,7 +743,7 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                 "type": "command",
                 "rule": rule,
                 "title": "escalate_to_human",
-                "source": index.step_ref(rule, 3),
+                "source": index.step_ref(rule, 4),
                 "command": "escalation_create",
                 "inputs": {
                     "project_id": project,
