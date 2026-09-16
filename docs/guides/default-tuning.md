@@ -110,6 +110,18 @@ quota.
 | `integration.merge_ci_policy` | `warn` | The merge path asks GitHub for the check rollup and records the verdict, but still merges. A new install usually has no CI yet, and `required` fails closed on an unreadable rollup — nothing would ever merge. Move to `required` once the default branch is reliably green. |
 | `integration.merge_require_up_to_date` | `true` | A green rollup only proves the head passed against the base as it was when the run started. |
 
+## Playbooks
+
+The tuner sets `playbooks.enabled: true`. Playbooks are how AQ routes a task to
+a worker (`default-assignment-routing`), escalates a blocked task
+(`blocked-task-escalation`) and probes provider usage
+(`provider-usage-probe`); a fresh daemon activates those shared system
+playbooks on its first start. With playbooks off, a task created without an
+explicit profile and intelligence class is never routed, and Settings →
+Playbooks is empty. The code default is `false` only because it predates the
+Playbook V2 runtime. Set `playbooks.enabled: false` to run with no playbooks,
+in which case every task must name its profile and class.
+
 ## Pull-based worker pools
 
 The tuner sets `swarm.enabled: true`. Pull-based pools are how workers get

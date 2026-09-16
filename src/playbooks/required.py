@@ -26,6 +26,12 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
     "default-assignment-routing",
     "provider-usage-probe",
 )
+# Shared system playbooks every install gets, but which are not a readiness
+# requirement: activated once, on the first start that finds no activation for
+# them, and never re-enabled after an operator disables one.  Before this set
+# existed a fresh install activated only the two required policies above, and
+# Settings -> Playbooks showed nothing else even though these ship with AQ.
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
 _ACTOR = "service:required-playbook-reconciler"
 
 
@@ -38,7 +44,7 @@ def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
     """Seed immutable reviewed bundles into the vault without overwriting it."""
     destination_root = Path(data_dir) / "vault" / "reviewed-playbooks"
     installed: list[str] = []
-    for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS:
+    for playbook_id in (*REQUIRED_SYSTEM_PLAYBOOK_IDS, *DEFAULT_SYSTEM_PLAYBOOK_IDS):
         source = reviewed_bundle_source() / playbook_id
         destination = destination_root / playbook_id
         if destination.exists() or not source.is_dir():
@@ -131,11 +137,86 @@ class RequiredPlaybookReconciler:
                     ),
                 }
 
-        self.status = {"ok": all(item["ok"] for item in required.values()), "required": required}
+        defaults = await self._activate_defaults()
+        self.status = {
+            "ok": all(item["ok"] for item in required.values()),
+            "required": required,
+            "defaults": defaults,
+        }
         for playbook_id, item in required.items():
             if not item["ok"]:
                 logger.error("%s", item["diagnostic"])
         return self.status
+
+    async def _activate_defaults(self) -> dict[str, dict[str, Any]]:
+        """Activate each shipped default playbook the first time it is seen.
+
+        Unlike a required playbook, a default is not part of readiness: a
+        failed import is logged and reported here, and an existing activation
+        -- including one an operator disabled -- is left exactly as it is.
+        """
+        defaults: dict[str, dict[str, Any]] = {}
+        for playbook_id in DEFAULT_SYSTEM_PLAYBOOK_IDS:
+            records, _contracts, _profiles = await self._handler._v2_health_records()
+            existing = next(
+                (
+                    record
+                    for record in records
+                    if record.playbook_id == playbook_id
+                    and record.scope == "system"
+                    and record.scope_identifier == ""
+                ),
+                None,
+            )
+            if existing is not None:
+                defaults[playbook_id] = {
+                    "activated": False,
+                    "enabled": existing.enabled,
+                    "health": existing.health.value,
+                }
+                continue
+            imported = await self._handler._cmd_playbook_v2_import(
+                {"path": f"reviewed-playbooks/{playbook_id}"}
+            )
+            if not imported.get("success"):
+                message = imported.get("error", "unknown error")
+                logger.warning(
+                    "default playbook %s was not activated: reviewed artifact import failed: %s",
+                    playbook_id,
+                    message,
+                )
+                defaults[playbook_id] = {"activated": False, "error": message}
+                continue
+            await self._db.set_playbook_activation(
+                playbook_id=playbook_id,
+                scope="system",
+                scope_identifier="",
+                artifact_sha256=imported["artifact_sha256"],
+                enabled=True,
+                activated_by=_ACTOR,
+                health="ready",
+                reasons="[]",
+            )
+            records, _contracts, _profiles = await self._handler._v2_health_records()
+            activation = next(
+                (
+                    record
+                    for record in records
+                    if record.playbook_id == playbook_id
+                    and record.scope == "system"
+                    and record.scope_identifier == ""
+                ),
+                None,
+            )
+            health = activation.health.value if activation is not None else "missing"
+            if health == "ready":
+                logger.info("Activated default system playbook %s", playbook_id)
+            else:
+                logger.warning(
+                    "default playbook %s was activated but its health is %s", playbook_id, health
+                )
+            defaults[playbook_id] = {"activated": True, "enabled": True, "health": health}
+        return defaults
 
     async def replay_route_needed_events(self) -> dict[str, Any]:
         """Replay held routing events after the runtime has refreshed its snapshot."""
