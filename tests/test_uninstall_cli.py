@@ -161,3 +161,93 @@ def test_the_human_output_names_what_it_kept_and_what_it_left_for_you(recorded: 
     assert "Kept" in result.output
     assert "Left for you to remove by hand" in result.output
     assert "brew uninstall tmux" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The PostgreSQL administrator route follows the host the install ran on
+# ---------------------------------------------------------------------------
+
+
+def _state_recorded_on(facts) -> InstallState:
+    """A resume record exactly as the engine writes it: facts, not a verdict."""
+    state = InstallState(installer_version="0.1.0", target_version="0.1.0")
+    state.set_platform(facts)
+    return state
+
+
+def test_a_mac_install_is_uninstalled_through_psql_as_the_invoking_user(tmp_path):
+    """Homebrew's cluster superuser is the macOS user; there is no `postgres` account.
+
+    The record holds platform facts with no ``host_path`` key, and reading that
+    missing key sent a Mac down the ``sudo -u postgres`` route, leaving the
+    database and role the install created behind.
+    """
+    from src.cli.uninstall import _admin_executor
+    from src.install.platform import PlatformFacts
+
+    mac = PlatformFacts(
+        system="darwin",
+        release="24.6.0",
+        machine="arm64",
+        arch="arm64",
+        python_version="3.12.10",
+        macos_version="15.7",
+    )
+    homebrew_psql = "/opt/homebrew/bin/psql"
+
+    executor, reason = _admin_executor(
+        _state_recorded_on(mac),
+        home=tmp_path,
+        environ={"USER": "jack.kern", "HOME": str(tmp_path)},
+        which={"psql": homebrew_psql}.get,
+    )
+
+    assert executor is not None, reason
+    assert executor.label == "psql as jack.kern"
+    assert "sudo" not in executor.label
+
+
+def test_a_psql_only_in_the_homebrew_prefix_is_still_found_on_a_mac(tmp_path, monkeypatch):
+    from src.cli import uninstall
+    from src.install import macos
+    from src.install.platform import PlatformFacts
+
+    prefix = tmp_path / "homebrew"
+    (prefix / "bin").mkdir(parents=True)
+    psql = prefix / "bin" / "psql"
+    psql.write_text("#!/bin/sh\n", encoding="utf-8")
+    psql.chmod(0o755)
+    monkeypatch.setattr(macos, "DEFAULT_PREFIXES", {"arm64": prefix})
+    mac = PlatformFacts(
+        system="darwin", release="24.6.0", machine="arm64", arch="arm64",
+        python_version="3.12.10", macos_version="15.7",
+    )
+
+    executor, reason = uninstall._admin_executor(
+        _state_recorded_on(mac),
+        home=tmp_path,
+        environ={"USER": "jack.kern"},
+        which=lambda name: None,  # the uninstalling shell's PATH has no Homebrew
+    )
+
+    assert executor is not None, reason
+    assert executor.label == "psql as jack.kern"
+
+
+def test_a_wsl_install_keeps_the_postgres_system_user_route(tmp_path):
+    from src.cli.uninstall import _recorded_host_path
+    from src.install.platform import PlatformFacts
+
+    wsl = PlatformFacts(
+        system="linux",
+        release="6.6.0-microsoft-standard-WSL2",
+        machine="x86_64",
+        arch="x86_64",
+        python_version="3.12.3",
+        distro_id="ubuntu",
+        distro_version="24.04",
+        wsl=True,
+        wsl_version=2,
+    )
+
+    assert _recorded_host_path(_state_recorded_on(wsl), {}) == "windows-wsl2"

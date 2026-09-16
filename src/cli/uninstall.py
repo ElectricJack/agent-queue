@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import click
@@ -84,7 +85,13 @@ def selected_scopes(
     return frozenset(scopes)
 
 
-def _admin_executor(state: InstallState, *, home: Path) -> tuple[object | None, str]:
+def _admin_executor(
+    state: InstallState,
+    *,
+    home: Path,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[object | None, str]:
     """Resolve a PostgreSQL administrator connection, or say why there is none.
 
     Imported and resolved lazily, and only when a database removal is actually
@@ -97,16 +104,49 @@ def _admin_executor(state: InstallState, *, home: Path) -> tuple[object | None, 
     from src.install.postgres import PostgresSettings, resolve_admin, subprocess_runner
 
     del home  # settings come from the host's defaults, not from a path
-    facts = state.platform or {}
-    host_path = str(facts.get("host_path") or "")
+    env = os.environ if environ is None else environ
+    host_path = _recorded_host_path(state, env)
+    lookup = which or shutil.which
+    if host_path.startswith("macos"):
+        # A Homebrew PostgreSQL this machine's install added may not be on the
+        # PATH of the shell running the uninstall; the installer found it the
+        # same way.
+        from src.install.macos import brew_aware_which
+
+        lookup = brew_aware_which(lookup)
     access = resolve_admin(
         PostgresSettings(),
         host_path=host_path,
         runner=subprocess_runner,
-        which=shutil.which,
-        environ=os.environ,
+        which=lookup,
+        environ=env,
     )
     return access.executor, (access.remediation or access.reason)
+
+
+def _recorded_host_path(state: InstallState, environ: Mapping[str, str]) -> str:
+    """Which supported host the install ran on, e.g. ``macos-apple-silicon``.
+
+    The resume record stores the *observed platform facts*, not the matrix
+    verdict, so the host path has to be derived from them.  Reading a
+    ``host_path`` key that the record never had returned "" on every machine,
+    and an empty host path takes the Debian/Ubuntu route: on a Mac that meant
+    ``sudo -u postgres`` for a cluster whose superuser is the invoking user, and
+    the database and role the install created were left behind.
+    """
+    from src.install.platform import PlatformFacts, describe_host, evaluate_support
+
+    facts = state.platform or {}
+    recorded = str(facts.get("host_path") or "")
+    if recorded:
+        return recorded
+    if facts:
+        try:
+            return evaluate_support(PlatformFacts.from_dict(facts)).host_path
+        except (KeyError, TypeError, ValueError):
+            pass
+    # No usable record: the uninstall runs on the machine it is removing from.
+    return describe_host(environ=environ).host_path
 
 
 def render_result(result: UninstallResult, target: Console) -> None:
