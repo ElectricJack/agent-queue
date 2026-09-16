@@ -147,10 +147,13 @@ deterministic command graph with no prose and no state of its own.
    - The escalation fields are keyed `ci-baseline-escalation:<signature>` — on
      the signature alone, so the human gate is opened once however many attempts
      were spent.
-3. `_outcome_of` (`builtin.py:476`) maps `state == "red"` **and**
+3. `_outcome_of` (`builtin.py:517`) maps `state == "red"` **and**
    `escalated: True` to `red_escalated`, otherwise passes `green` / `red` /
-   `pending` / `unknown` through, and maps an `error`-carrying result to
-   `rejected`.
+   `pending` / `unknown` through. It reads the state *before* its generic
+   error check whenever the result says `success: True`, so an `unknown` that
+   explains itself in `error` stays `unknown`. Only a `success: False` refusal,
+   or the handler's exception path (`{"error": ...}` with no `success` key),
+   becomes `rejected`.
 
 ## Side effects and persistence
 
