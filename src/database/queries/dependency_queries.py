@@ -319,7 +319,8 @@ class DependencyQueryMixin:
         """
         async with self._engine.begin() as conn:
             value = await conn.scalar(select(tasks.c.is_blocked).where(tasks.c.id == task_id))
-        return value is False
+        # ``tasks.is_blocked`` is an Integer column (0/1), so compare by value.
+        return value is not None and not value
 
     async def get_stuck_active_tasks(
         self,
