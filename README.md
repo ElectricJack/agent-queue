@@ -51,6 +51,9 @@ paths in full, alongside [recovery guidance](docs/tutorials/install.md#recovery-
 The versioned release's platform matrix, artifact checks, and intentionally
 visible acceptance limits are in the [installation release record](docs/validation/installation-release-0.1.0.md).
 
+To update later, run `aq update`: it stops AQ, pulls the latest code, rebuilds what changed and
+starts it again, rolling back if anything goes wrong (`aq update --check` just reports).
+
 Contributing rather than installing? Clone and run `./setup.sh`, which adds the
 dev and dashboard toolchains on top of the same `aq install`.
 

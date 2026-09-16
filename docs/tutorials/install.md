@@ -389,6 +389,7 @@ software unless an explicit uninstall scope says otherwise.
 | --- | --- | --- |
 | Interrupted install or a completed login | `aq install` | Revalidates completed steps and resumes at the first unsatisfied one. |
 | A host changed in a way the normal checks cannot verify | `aq install --repair` | Reconciles the recorded installation; does not delete resources. |
+| Get the latest AQ | `aq update` | Stops the daemon (running agents keep running), fast-forwards the checkout, reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon again. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back if anything fails. `aq update --check` only reports. |
 | Update AQ and make the version transition resumable | `aq install --upgrade` | Performs repair plus records an upgrade transaction before changing steps. |
 | Inspect removal without changing anything | `aq uninstall --dry-run` | Shows what AQ owns, keeps, or leaves for manual removal. |
 | Remove AQ runtime but keep data | `aq uninstall` | Stops AQ and removes its runtime records; configuration, data, and database stay. |

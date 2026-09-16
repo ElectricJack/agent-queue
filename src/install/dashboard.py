@@ -23,6 +23,7 @@ import os
 import shutil
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from .command import CommandOutput, CommandRunner, run_command
@@ -160,6 +161,102 @@ def failure_excerpt(output: CommandOutput, limit: int = FAILURE_TAIL_LINES) -> s
     return "\n".join(chosen)
 
 
+@dataclass(frozen=True, slots=True)
+class BuildOutcome:
+    ok: bool
+    summary: str = ""
+    remediation: str = ""
+    log: str | None = None
+
+
+def build_bundle(
+    checkout: Path,
+    *,
+    state_dir: Path,
+    system: str,
+    arch: str,
+    execute: CommandRunner,
+    fetch: Fetcher = download,
+    interpreter: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    fingerprint: str | None = None,
+    rerun: str = "rerun the command",
+) -> BuildOutcome:
+    """Build and stage the verified dashboard bundle for *checkout*.
+
+    Shared by `aq install` (``dashboard.build``) and `aq update`, so both build
+    with the same pinned Node.js, the same stages and the same log.  *rerun*
+    names the command a failure tells the person to run again.
+    """
+    # The pinned, checksum-verified Node.js AQ owns -- never the machine's.
+    try:
+        toolchain = ensure_toolchain(state_dir, system, arch, fetch=fetch)
+    except ToolchainError as error:
+        return BuildOutcome(
+            False,
+            f"could not provide Node.js for the dashboard build: {error}",
+            (
+                "Check this machine can reach https://nodejs.org (a proxy or firewall is "
+                f"the usual cause), then {rerun}; it retries the download."
+            ),
+        )
+
+    env = dict(os.environ if environ is None else environ)
+    env["PATH"] = os.pathsep.join([str(toolchain.bin), env.get("PATH", "")])
+    npm = str(toolchain.npm)
+    stages = (
+        (
+            "install the dashboard's packages",
+            # `--include=dev`: the build tools are devDependencies, and a
+            # machine with NODE_ENV=production or `omit=dev` in its npmrc
+            # would otherwise leave them out.
+            [npm, "ci", "--include=dev", "--no-audit", "--no-fund", "--loglevel=error"],
+            NPM_INSTALL_TIMEOUT,
+        ),
+        (
+            "generate the dashboard's API client",
+            [npm, "-w", "@aq/ts-client", "run", "generate"],
+            BUILD_TIMEOUT,
+        ),
+        (
+            "build and stage the dashboard",
+            [
+                interpreter or sys.executable,
+                str(checkout / "scripts" / "build_release_artifact.py"),
+                "--project-root",
+                str(checkout),
+            ],
+            BUILD_TIMEOUT,
+        ),
+    )
+    log = state_dir / BUILD_LOG_NAME
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text("", encoding="utf-8")
+    for label, argv, timeout in stages:
+        output = execute(argv, timeout=timeout, env=env, cwd=str(checkout))
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write(f"$ {' '.join(argv)}\n{output.stdout}{output.stderr}\n")
+        if not output.ok:
+            return BuildOutcome(
+                False,
+                redact(f"could not {label}:\n{failure_excerpt(output)}"),
+                f"The full output is in {log}. Fix what it names, then {rerun}; it retries "
+                "the build.",
+                str(log),
+            )
+
+    if not _bundle_verifies(checkout):
+        return BuildOutcome(
+            False,
+            "the dashboard build finished but its bundle does not verify",
+            f"{rerun[0].upper()}{rerun[1:]} to rebuild it.",
+            str(log),
+        )
+    if fingerprint is not None:
+        stamp_path(checkout).write_text(fingerprint + "\n", encoding="utf-8")
+    return BuildOutcome(True, "built the dashboard", log=str(log))
+
+
 def dashboard_build_step(
     *,
     environ: Mapping[str, str] | None = None,
@@ -245,77 +342,25 @@ def dashboard_build_step(
         if bundle_is_current(checkout, fingerprint):
             return _serve("the dashboard is already built for this checkout", detail)
 
-        # The pinned, checksum-verified Node.js AQ owns -- never the machine's.
-        try:
-            toolchain = ensure_toolchain(
-                state_dir, context.facts.system, context.facts.arch, fetch=fetch
-            )
-        except ToolchainError as error:
-            return StepResult.failed(
-                STEP_DASHBOARD_BUILD,
-                f"could not provide Node.js for the dashboard build: {error}",
-                (
-                    "Check this machine can reach https://nodejs.org (a proxy or firewall is "
-                    "the usual cause), then rerun the install command; it retries the download."
-                ),
-                detail=detail,
-            )
-
-        env = dict(os.environ if environ is None else environ)
-        env["PATH"] = os.pathsep.join([str(toolchain.bin), env.get("PATH", "")])
-        npm = str(toolchain.npm)
-        stages = (
-            (
-                "install the dashboard's packages",
-                # `--include=dev`: the build tools are devDependencies, and a
-                # machine with NODE_ENV=production or `omit=dev` in its npmrc
-                # would otherwise leave them out.
-                [npm, "ci", "--include=dev", "--no-audit", "--no-fund", "--loglevel=error"],
-                NPM_INSTALL_TIMEOUT,
-            ),
-            (
-                "generate the dashboard's API client",
-                [npm, "-w", "@aq/ts-client", "run", "generate"],
-                BUILD_TIMEOUT,
-            ),
-            (
-                "build and stage the dashboard",
-                [
-                    interpreter,
-                    str(checkout / "scripts" / "build_release_artifact.py"),
-                    "--project-root",
-                    str(checkout),
-                ],
-                BUILD_TIMEOUT,
-            ),
+        outcome = build_bundle(
+            checkout,
+            state_dir=state_dir,
+            system=context.facts.system,
+            arch=context.facts.arch,
+            execute=execute,
+            fetch=fetch,
+            interpreter=interpreter,
+            environ=environ,
+            fingerprint=fingerprint,
+            rerun="rerun the install command",
         )
-        log = state_dir / BUILD_LOG_NAME
-        log.parent.mkdir(parents=True, exist_ok=True)
-        log.write_text("", encoding="utf-8")
-        for label, argv, timeout in stages:
-            output = execute(argv, timeout=timeout, env=env, cwd=str(checkout))
-            with log.open("a", encoding="utf-8") as handle:
-                handle.write(f"$ {' '.join(argv)}\n{output.stdout}{output.stderr}\n")
-            if not output.ok:
-                return StepResult.failed(
-                    STEP_DASHBOARD_BUILD,
-                    redact(f"could not {label}:\n{failure_excerpt(output)}"),
-                    (
-                        f"The full output is in {log}. Fix what it names, then rerun the "
-                        "install command; it retries the build."
-                    ),
-                    detail={**detail, "log": str(log)},
-                )
-
-        if not _bundle_verifies(checkout):
+        if not outcome.ok:
             return StepResult.failed(
                 STEP_DASHBOARD_BUILD,
-                "the dashboard build finished but its bundle does not verify",
-                "Rerun the install command to rebuild it.",
-                detail=detail,
+                outcome.summary,
+                outcome.remediation,
+                detail={**detail, **({"log": outcome.log} if outcome.log else {})},
             )
-        if fingerprint is not None:
-            stamp_path(checkout).write_text(fingerprint + "\n", encoding="utf-8")
         return _serve("built the dashboard", {**detail, "built": True})
 
     def verify(context: StepContext) -> bool:
@@ -424,10 +469,12 @@ def dashboard_open_step(
 __all__ = [
     "BUILD_INPUTS",
     "BUILD_LOG_NAME",
+    "BuildOutcome",
     "STAMP_NAME",
     "STEP_DASHBOARD_BUILD",
     "STEP_DASHBOARD_OPEN",
     "browser_command",
+    "build_bundle",
     "bundle_directory",
     "bundle_is_current",
     "dashboard_build_step",
