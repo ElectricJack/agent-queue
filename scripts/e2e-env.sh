@@ -354,7 +354,7 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 {
   "harness": "claude",
   "lifecycle": "pool",
-  "default_class": "standard-medium",
+  "default_class": "fast-high",
   "min_active": 0,
   "max_active": 2,
   "max_claims_per_session": 1,
@@ -392,11 +392,11 @@ MD
 # never carry (task solid-forge-63).
 for role in reviewer coding; do
     if [ "$role" = "reviewer" ]; then
-        default_class="standard-low"
+        default_class="fast-low"
         read_only=true
         tools='["Bash", "Read", "Glob", "Grep"]'
     else
-        default_class="standard-medium"
+        default_class="standard-high"
         read_only=false
         tools='["Bash", "Read", "Write", "Edit", "Glob", "Grep"]'
     fi
