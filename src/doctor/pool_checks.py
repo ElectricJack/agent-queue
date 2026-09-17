@@ -62,6 +62,7 @@ from src.git.manager import GitManager
 from src.models import AgentState, ProjectStatus, TaskStatus
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
 from src.pool_claims import is_live_pool_claim_task_status
+from src.profiles.catalog import worker_route
 
 OWNER = "swarm-work-model"
 
@@ -501,10 +502,18 @@ async def _check_pools_disabled(ctx: DoctorContext) -> CheckResult:
 async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
     """Expose push profiles that duplicate a durable pool execution route.
 
-    A task-lifecycle profile with the same harness and intelligence class as
-    a pool starts an unpooled session.  That session consumes a worktree slot
-    while pool supply remains zero, which is operationally misleading even
-    though both profile definitions parse and launch correctly.
+    A task-lifecycle *worker* profile with the same harness and intelligence
+    class as a pool starts an unpooled session.  That session consumes a
+    worktree slot while pool supply remains zero, which is operationally
+    misleading even though both profile definitions parse and launch
+    correctly.
+
+    Only worker routes are compared (:func:`src.profiles.catalog.worker_route`
+    — the same answer rung seeding uses).  The shipped stages run at some
+    class a pool also runs at on every fresh install — ``reviewer`` at
+    ``standard-high``, ``spec-ingest`` and the supervisor at ``deep-high``,
+    ``triage`` at ``fast-low`` — and a read-only or named profile cannot be
+    the generic worker at all, so none of those is a duplicate route.
     """
     if ctx.db is None:
         return _no_db_result("pools.task_lifecycle_shadow")
@@ -521,13 +530,17 @@ async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
     duplicates: list[dict] = []
     duplicate_ids: set[str] = set()
     for profile in profiles:
-        if getattr(profile, "lifecycle", "task") == "pool":
+        lifecycle = getattr(profile, "lifecycle", "task") or "task"
+        if lifecycle != "task":
             continue
-        route = (
-            str(getattr(profile, "harness", "") or "").strip(),
-            str(getattr(profile, "default_class", "") or "").strip(),
+        route = worker_route(
+            profile.id,
+            harness=getattr(profile, "harness", ""),
+            default_class=getattr(profile, "default_class", ""),
+            lifecycle=lifecycle,
+            read_only=bool(getattr(profile, "read_only", False)),
         )
-        matches = sorted(pool_routes.get(route, [])) if all(route) else []
+        matches = sorted(pool_routes.get(route, [])) if route is not None else []
         if matches:
             duplicate_ids.add(profile.id)
             duplicates.append(
