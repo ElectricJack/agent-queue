@@ -86,7 +86,7 @@ def test_merge_nodes_by_key_child_wins_new_appended(reg):
     assert doc["parent"]["title"] == "Review and fix {branch}"
     assert doc["defaults"] == {
         "profile": "{reviewer}",
-        "intelligence_class": "standard-low",
+        "intelligence_class": "fast-low",
     }
 
 
