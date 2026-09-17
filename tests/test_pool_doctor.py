@@ -108,6 +108,78 @@ async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks
     assert {task["task_id"] for task in finding.data["tasks"]} == {"shadowed", "missing"}
 
 
+async def test_task_lifecycle_shadow_ignores_the_shipped_role_profiles(db):
+    """A fresh install runs every stage at some class a pool also runs at.
+
+    ``aq install`` makes every active rung a pool, so ``reviewer`` (claude,
+    standard-high), ``spec-ingest`` and ``supervisor`` (claude, deep-high),
+    ``triage`` (claude, fast-low) and ``pr-merger`` (codex, deep-high) all
+    share a harness/class with a pool.  None of them is a worker route: they
+    are single-purpose stages, and the check must stay clean on a box that
+    has changed nothing.
+    """
+    await db.update_profile("worker", harness="claude", default_class="standard-high")
+    for pool_id, harness, default_class in (
+        ("deep-high-claude", "claude", "deep-high"),
+        ("fast-low-claude", "claude", "fast-low"),
+        ("deep-high-codex", "codex", "deep-high"),
+    ):
+        await db.create_profile(
+            AgentProfile(
+                id=pool_id, name=pool_id, lifecycle="pool", harness=harness,
+                default_class=default_class,
+            )
+        )
+    shipped = (
+        ("reviewer", "claude", "standard-high", "task", True),
+        ("final-reviewer", "claude", "standard-high", "task", True),
+        ("spec-ingest", "claude", "deep-high", "task", False),
+        ("playbook-compiler", "claude", "fast-low", "task", False),
+        ("triage", "claude", "fast-low", "task", False),
+        ("pr-merger", "codex", "deep-high", "task", False),
+        ("supervisor", "claude", "deep-high", "named", False),
+    )
+    for profile_id, harness, default_class, lifecycle, read_only in shipped:
+        await db.create_profile(
+            AgentProfile(
+                id=profile_id, name=profile_id, lifecycle=lifecycle, harness=harness,
+                default_class=default_class, read_only=read_only,
+            )
+        )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.OK, finding.data
+    assert finding.data["profiles"] == []
+
+
+async def test_task_lifecycle_shadow_reports_only_a_writable_worker_copy(db):
+    """The case the check exists for: a hand-authored generic worker at a pool's route.
+
+    An operator's own read-only profile at the same route is a role, not a
+    worker, exactly like the shipped reviewer; the writable task-lifecycle
+    copy is the one that starts unpooled sessions on the pool's route.
+    """
+    await db.update_profile("worker", harness="claude", default_class="standard-high")
+    await db.create_profile(
+        AgentProfile(
+            id="auditor", name="auditor", lifecycle="task", harness="claude",
+            default_class="standard-high", read_only=True,
+        )
+    )
+    await db.create_profile(
+        AgentProfile(
+            id="house-worker", name="house", lifecycle="task", harness="claude",
+            default_class="standard-high",
+        )
+    )
+
+    finding = await pool_checks.run_check(db, "pools.task_lifecycle_shadow", config=None)
+
+    assert finding.severity is Severity.WARN
+    assert [row["profile_id"] for row in finding.data["profiles"]] == ["house-worker"]
+
+
 async def _stale_agent(db, agent_id, **kw):
     """A pool-profile agent old enough to be past the in-flight-launch window.
 
