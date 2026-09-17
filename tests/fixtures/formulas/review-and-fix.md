@@ -21,5 +21,5 @@ nodes:
     title: Fix findings on {branch}
     needs: [review]
     profile: "{fixer}"
-    intelligence_class: standard-medium
+    intelligence_class: standard-high
 ```

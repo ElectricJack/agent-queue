@@ -76,6 +76,26 @@ def test_no_task_graph_fixture_pins_a_retired_intelligence_class():
     assert not stale, stale
 
 
+def test_no_formula_fixture_pins_a_retired_intelligence_class():
+    """``scripts/e2e-env.sh`` copies these into the e2e vault and S4 cooks them.
+
+    A node pinned to a retired class cooks fine and then never routes
+    (``requires intelligence class 'standard-low'``), so the scenario stalls
+    on a session that cannot start.
+    """
+    import re
+
+    fixtures = Path(__file__).parent / "fixtures" / "formulas"
+
+    stale: list[str] = []
+    for path in sorted(fixtures.glob("*.md")):
+        pinned = set(re.findall(r"intelligence_class:\s*(\S+)", path.read_text(encoding="utf-8")))
+        for class_id in sorted(pinned & set(RETIRED_CLASS_REPLACEMENTS)):
+            replacement = RETIRED_CLASS_REPLACEMENTS[class_id]
+            stale.append(f"{path.name} pins {class_id!r}; repoint it to {replacement!r}")
+    assert not stale, stale
+
+
 def test_profile_on_a_retired_class_is_repointed_and_still_parses(tmp_path):
     path = _write_profile(tmp_path, "worker-old", "standard-medium")
     changed = repoint_vault_profile_classes(tmp_path / "vault")
