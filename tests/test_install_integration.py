@@ -140,7 +140,7 @@ def test_the_daemon_is_only_started_after_the_database_answers(tmp_path):
     assert created_database < started_daemon
 
 
-def test_a_provider_probe_on_a_host_with_no_platform_adapter_reads_path(monkeypatch):
+def test_a_provider_probe_on_a_host_with_no_platform_adapter_reads_path(monkeypatch, tmp_path):
     """``build_registry`` composes the provider steps the way the CLI calls it.
 
     WSL2 has no platform adapter, so the lookup the composition passes down is
@@ -149,8 +149,12 @@ def test_a_provider_probe_on_a_host_with_no_platform_adapter_reads_path(monkeypa
     reported a ``TypeError`` from the probe instead of "claude is not on PATH".
     """
     import shutil
+    from pathlib import Path
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    # The provider lookup also searches the user bin directories a provider's own
+    # installer writes into, so the home this test reads must be empty of them.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: Path(tmp_path)))
     registry = build_registry(WSL2)  # exactly what src/cli/install.py does
     context = StepContext(support=WSL2, options={}, dry_run=False, interactive=False)
 
@@ -491,7 +495,15 @@ def test_an_unselected_provider_is_skipped_and_the_install_still_reaches_ready(t
 # ---------------------------------------------------------------------------
 
 
-def test_an_unauthenticated_provider_stops_at_the_human_before_the_daemon_starts(tmp_path):
+def test_an_unauthenticated_provider_asks_the_human_without_costing_the_machine(tmp_path):
+    """Signing in is the operator's action; the rest of the install is not.
+
+    This used to stop the run, so one unauthenticated harness left the machine
+    with no configuration, no daemon and no dashboard, and the sign-in had to be
+    followed by a second `aq install` before anything worked.  The checkpoint is
+    still reported -- outcome needs_user, exit 10, the sign-in as next action --
+    but the steps that do not depend on it now run.
+    """
     host = Machine(
         tmp_path,
         database=provisioned(),
@@ -505,14 +517,13 @@ def test_an_unauthenticated_provider_stops_at_the_human_before_the_daemon_starts
     assert result.exit_code == 10
     assert result.blocking_step.step_id == "provider.claude-login"
     assert "claude" in result.blocking_step.remediation
-    assert states(result)[STEP_DAEMON] == "skipped"
-    assert host.daemon_up is False
-    # The checkpoint is not a failure: what already succeeded stays recorded,
-    # and what the run never reached is absent rather than recorded as skipped.
+    assert states(result)[STEP_DAEMON] == "succeeded"
+    assert host.daemon_up is True
+    # What happened is recorded either way, including the checkpoint itself.
     record = load_state(host.state_path)
     assert record.record_for(CLAUDE_CODE.step_id).state is StepState.SUCCEEDED
     assert record.record_for("provider.claude-login").state is StepState.NEEDS_USER
-    assert record.record_for(STEP_CONNECTION) is None
+    assert record.record_for(STEP_CONNECTION).state is StepState.SUCCEEDED
 
 
 def test_the_rerun_after_the_human_logs_in_continues_to_a_ready_daemon(tmp_path):
@@ -530,7 +541,12 @@ def test_the_rerun_after_the_human_logs_in_continues_to_a_ready_daemon(tmp_path)
 
     assert result.outcome is InstallOutcome.READY
     assert step(result, "provider.claude-login").state is StepState.SUCCEEDED
-    assert host.ran("aq", "start")
+    # The first run already started the daemon -- the login checkpoint no longer
+    # stops it -- so the rerun confirms it rather than starting a second one.
+    assert host.daemon_up is True
+    # The command log was cleared after the first run, so an empty one here means
+    # the rerun confirmed the daemon the login checkpoint no longer stopped.
+    assert host.ran("aq", "start") == []
     # Resuming re-verified the CLI rather than installing it a second time.
     assert list(CLAUDE_CODE.install_command) not in [list(row) for row in host.commands]
 

@@ -34,16 +34,17 @@ from .logins import CommandRunner as ProviderRunner
 from .logins import login_steps
 from .macos import (
     DEFAULT_PREFIXES,
-    STEP_PACKAGES,
     STEP_PYTHON_RUNTIME,
     brew_aware_which,
     macos_steps,
 )
+from .macos import STEP_PACKAGES as STEP_BREW_PACKAGES
 from .onboarding import HttpProbe
 from .onboarding import onboarding_steps as default_onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
     HOST_MACOS_INTEL,
+    HOST_WSL2,
     SupportVerdict,
     describe_host,
 )
@@ -59,11 +60,22 @@ from .prerequisites import (
     python_step,
     tmux_step,
 )
-from .providers import provider_installers, provider_steps
+from .providers import provider_installers, provider_steps, user_bin_aware_which
 from .steps import StepRegistry, StepSpec
+from .wsl import STEP_PACKAGES as STEP_APT_PACKAGES
+from .wsl import wsl_steps
 
 #: Host paths this build has a platform adapter for.
 MACOS_HOSTS = frozenset({HOST_MACOS_ARM, HOST_MACOS_INTEL})
+WSL_HOSTS = frozenset({HOST_WSL2})
+
+#: The adapter step that provisions ``prereq.git``/``prereq.tmux`` on each host
+#: path, so the engine's checks can depend on it by id rather than by platform
+#: branch.  A host path missing from here simply has nothing provisioning them.
+PACKAGE_STEP_BY_HOST: Mapping[str, str] = {
+    **{host: STEP_BREW_PACKAGES for host in MACOS_HOSTS},
+    **{host: STEP_APT_PACKAGES for host in WSL_HOSTS},
+}
 
 
 def platform_steps(
@@ -73,6 +85,8 @@ def platform_steps(
     """The adapter steps for *support*'s host path, or ``()`` when there is none."""
     if support.host_path in MACOS_HOSTS:
         return macos_steps(**kwargs)
+    if support.host_path in WSL_HOSTS:
+        return wsl_steps(**kwargs)
     return ()
 
 
@@ -136,12 +150,13 @@ def build_registry(
     # the interpreter and has installed the prerequisites, so the engine's
     # generic checks run after it and revalidate its work.
     python_after = (STEP_HOST, STEP_PYTHON_RUNTIME) if macos else (STEP_HOST,)
-    command_after = (STEP_HOST, STEP_PACKAGES) if macos else (STEP_HOST,)
-    # On macOS the same run installs Git and tmux (``macos.packages``) and then
-    # checks them.  Naming that step as the provisioner is what keeps a dry run
-    # — which executes no mutating step — from failing at the check and hiding
-    # the rest of the plan.
-    provisioned_by = (STEP_PACKAGES,) if macos else ()
+    # Both supported hosts install Git and tmux in the same run (``macos.packages``
+    # with Homebrew, ``wsl.packages`` with apt) and then check them.  Naming that
+    # step as the provisioner is what keeps a dry run — which executes no
+    # mutating step — from failing at the check and hiding the rest of the plan.
+    package_step = PACKAGE_STEP_BY_HOST.get(verdict.host_path)
+    command_after = (STEP_HOST, package_step) if package_step else (STEP_HOST,)
+    provisioned_by = (package_step,) if package_step else ()
     registry.extend(
         (
             python_step(depends_on=python_after),
@@ -163,7 +178,7 @@ def build_registry(
     )
     if macos:
         postgres_adapter_steps = tuple(
-            replace(step, depends_on=(STEP_HOST, STEP_PACKAGES))
+            replace(step, depends_on=(STEP_HOST, STEP_BREW_PACKAGES))
             if step.id == STEP_POSTGRES_PACKAGE
             else step
             for step in postgres_adapter_steps
@@ -178,11 +193,16 @@ def build_registry(
     # steps take a callable rather than defaulting a None away: without the
     # fallback here, `aq install --with provider.claude` on WSL2 reported a
     # TypeError from the probe instead of "claude is not on PATH".
-    registry.extend(provider_steps(which=lookup or shutil.which, **process))
+    #
+    # Provider CLIs also need the *user* bin directories their own installers
+    # write into: claude.ai/install.sh links into ~/.local/bin, which is on the
+    # next login shell's PATH and not necessarily on this process's.
+    provider_lookup = user_bin_aware_which(lookup or shutil.which)
+    registry.extend(provider_steps(which=provider_lookup, **process))
     registry.extend(
         login_steps(
             environ=environ,
-            which=lookup or shutil.which,
+            which=provider_lookup,
             installers=installers,
             **process,
         )

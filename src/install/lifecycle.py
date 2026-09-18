@@ -323,6 +323,10 @@ MANUAL_KINDS: Mapping[str, str] = {
         "Installed for AQ, but it is a general-purpose CLI: remove it with the "
         "provider's own uninstaller if you no longer want it."
     ),
+    "apt-package": (
+        "Installed with apt and shared with the rest of this WSL distribution: "
+        "`sudo apt-get remove {id}` removes it once you are sure nothing else needs it."
+    ),
     "brew-formula": (
         "Installed with Homebrew and probably shared with the rest of this machine: "
         "`brew uninstall {id}` removes it once you are sure nothing else needs it."

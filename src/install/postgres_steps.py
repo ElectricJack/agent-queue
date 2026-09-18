@@ -629,14 +629,16 @@ class PostgresAdapter:
                     resources=(self._role_resource(settings, owned=False),),
                 )
             if self._role_proven_by_the_server(settings):
-                # The server itself named the role — it rejected a password for
-                # it, or authenticated it into a database that does not exist.
-                # Asking an administrator to confirm what the server just said
-                # would turn a credential problem into a "no admin" problem.
+                # The server authenticated the role and only then reported the
+                # missing database.  Asking an administrator to confirm what the
+                # server just said would turn a credential problem into a
+                # "no admin" problem.
                 return self._role_preserved(settings)
             admin = self.admin(context)
             executor = admin.executor
             if executor is None:
+                if self._role_unproven_without_an_admin(settings):
+                    return self._role_preserved(settings)
                 return self._no_admin(STEP_ROLE, admin, settings)
             try:
                 exists = self._role_exists(executor, settings)
@@ -668,7 +670,7 @@ class PostgresAdapter:
                 return True
             executor = self.admin(context).executor
             if executor is None:
-                return False
+                return self._role_unproven_without_an_admin(settings)
             try:
                 return self._role_exists(executor, settings)
             except SqlError:
@@ -691,8 +693,31 @@ class PostgresAdapter:
         )
 
     def _role_proven_by_the_server(self, settings: PostgresSettings) -> bool:
-        """True when the failed AQ connection already proves the role exists."""
-        return self.aq_check(settings).reason in (REASON_AUTH, REASON_MISSING_DATABASE)
+        """True when the failed AQ connection already proves the role exists.
+
+        Only a *completed* authentication proves it: the server let AQ in and
+        then said the database was missing.  A rejected password does not --
+        PostgreSQL deliberately answers "password authentication failed for
+        user" for an unknown role as well as a wrong password, so on a server
+        whose pg_hba uses password authentication (Ubuntu's default, and
+        therefore every WSL install) that reason is silent about existence.
+        Reading it as proof made ``postgres.role`` report "already exists and
+        was left unchanged" on a brand-new machine, and ``postgres.database``
+        then failed on ``CREATE DATABASE ... OWNER`` with 'role "agent_queue"
+        does not exist'.  macOS hid it: Homebrew's pg_hba trusts local
+        connections, which does answer "role does not exist".
+        """
+        return self.aq_check(settings).reason == REASON_MISSING_DATABASE
+
+    def _role_unproven_without_an_admin(self, settings: PostgresSettings) -> bool:
+        """True when a rejected password is all this run will ever know.
+
+        With no administrator connection there is nothing more authoritative to
+        ask, and a role AQ cannot see is still a role it must not overwrite:
+        treat the rejection as an existing role and let
+        ``postgres.credentials`` report the password mismatch.
+        """
+        return self.aq_check(settings).reason == REASON_AUTH
 
     def _role_preserved(self, settings: PostgresSettings) -> StepResult:
         """A role AQ did not create is recorded, never rewritten.
@@ -1133,6 +1158,13 @@ class PostgresAdapter:
             depends_on=(STEP_CONNECTION,),
             capability=CAPABILITY_MANAGED,
             mutating=True,
+            # The database is already reachable by the time this step runs
+            # (``postgres.connection``); what is at stake is only whether it
+            # comes back by itself after a restart.  A WSL distribution without
+            # systemd cannot promise that, and gating on it cost the operator
+            # their configuration, daemon and dashboard over something they can
+            # settle any time -- or answer with `sudo service postgresql start`.
+            advisory=True,
             consent_prompt="Enable the PostgreSQL service so it starts after a restart?",
             verify=verify,
             owner=OWNER,

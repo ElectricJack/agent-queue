@@ -359,6 +359,11 @@ class Machine:
     def run_provider(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = tuple(str(part) for part in argv)
         self.commands.append(argv)
+        # The probes run the executable by the path `which` resolved, not by its
+        # bare name, so that a CLI its own installer put outside this process's
+        # PATH (~/.local/bin) can still be asked for its version and its
+        # sign-in state.  Match either spelling.
+        named = (Path(argv[0]).name, *argv[1:]) if argv else argv
 
         for installer in provider_installers():
             provider = self.providers[installer.id]
@@ -369,13 +374,13 @@ class Machine:
                 if provider.lands_on_path:
                     self.executables.add(installer.executable)
                 return self._completed(argv, 0, stdout=f"installed {installer.executable}")
-            if argv == (installer.executable, "--version"):
+            if named == (installer.executable, "--version"):
                 if not provider.installed:
                     raise OSError(f"{installer.executable}: no such file")
                 return self._completed(argv, 0, stdout=f"{installer.executable} {provider.version}")
 
         for login in provider_logins():
-            if login.status_command and argv == login.status_command:
+            if login.status_command and named == login.status_command:
                 provider = self.providers[login.provider_id]
                 return self._completed(argv, 0 if provider.signed_in else 1)
         raise AssertionError(f"unexpected provider command: {argv}")

@@ -36,6 +36,7 @@ from .onboarding import (
     HttpProbe,
     _read_config,
     api_base_url,
+    aq_aware_which,
     config_path_for,
     http_status,
 )
@@ -270,7 +271,10 @@ def dashboard_build_step(
     depends_on: tuple[str, ...] = (STEP_CHECK, STEP_DAEMON),
 ) -> StepSpec:
     """Build and serve the dashboard from a source checkout."""
-    lookup = which or shutil.which
+    # The dashboard step restarts the daemon with `aq restart`, so it needs the
+    # same fallback the daemon step has: the console script beside the running
+    # interpreter, for an installer invoked by path with no `aq` on PATH.
+    lookup = aq_aware_which(which or shutil.which)
     execute = runner or run_command
     check = probe or http_status
     path = config_path_for(environ, home)

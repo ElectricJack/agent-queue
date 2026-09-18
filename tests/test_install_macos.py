@@ -59,6 +59,7 @@ from src.install.providers import provider_installers, provider_steps
 from src.install.registry import build_registry
 from src.install.results import InstallOutcome, StepState
 from src.install.steps import StepContext
+from src.install.wsl import STEP_PACKAGES as STEP_APT_PACKAGES
 
 
 @pytest.fixture(autouse=True)
@@ -666,8 +667,12 @@ def test_a_mac_registry_says_which_step_would_install_the_prerequisites_it_check
     assert registry.get(STEP_GIT).provisioned_by == (STEP_PACKAGES,)
 
 
-def test_a_non_mac_host_declares_no_provisioner_for_its_prerequisite_checks():
-    """Nothing in the WSL2 registry installs Git or tmux, so nothing is softened."""
+def test_a_wsl_host_names_its_apt_step_as_the_provisioner_of_git_and_tmux():
+    """WSL installs Git and tmux too (``wsl.packages``), so the checks name it.
+
+    It used to install neither, and ``prereq.tmux`` failed on a fresh Ubuntu
+    telling the operator to run apt themselves.
+    """
     wsl = SupportVerdict(
         host_path=HOST_WSL2,
         tier=TIER_SUPPORTED,
@@ -684,8 +689,9 @@ def test_a_non_mac_host_declares_no_provisioner_for_its_prerequisite_checks():
         ),
     )
     registry = build_registry(wsl)
-    assert registry.get(STEP_TMUX).provisioned_by == ()
-    assert registry.get(STEP_GIT).provisioned_by == ()
+    assert registry.get(STEP_TMUX).provisioned_by == (STEP_APT_PACKAGES,)
+    assert registry.get(STEP_GIT).provisioned_by == (STEP_APT_PACKAGES,)
+    assert registry.get(STEP_TMUX).depends_on == (STEP_HOST, STEP_APT_PACKAGES)
 
 
 def test_a_mac_registry_registers_postgresql_after_homebrew_is_ready():
@@ -717,8 +723,11 @@ def test_a_non_mac_host_registers_no_mac_steps():
     )
     ids = _ids(build_registry(wsl))
     assert not [step for step in ids if step.startswith("macos.")]
-    assert ids[:5] == [STEP_HOST, STEP_PYTHON, STEP_GIT, STEP_TMUX, STEP_DATA_DIR]
-    assert set(ids) == set(_base_registry_ids())
+    # The adapter provisions before the engine checks what it installed; the
+    # sort interleaves the independent branches in between.
+    assert ids[:2] == [STEP_HOST, STEP_APT_PACKAGES]
+    assert ids.index(STEP_APT_PACKAGES) < min(ids.index(STEP_GIT), ids.index(STEP_TMUX))
+    assert set(ids) == {STEP_APT_PACKAGES, *_base_registry_ids()}
     assert ids.index(STEP_POSTGRES_PACKAGE) < ids.index("postgres.server")
 
 

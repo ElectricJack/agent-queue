@@ -25,7 +25,7 @@ network I/O, and writes exactly one file: the resume record.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -347,7 +347,7 @@ class InstallEngine:
                 resources = merge_resources(resources, result.resources)
             if result.satisfied:
                 satisfied.add(step.id)
-            else:
+            elif step.halts:
                 stopped = True
 
             if not options.dry_run and row.action is not PlanAction.WOULD_RUN:
@@ -357,7 +357,8 @@ class InstallEngine:
                     input_schema_version=step.input_schema_version,
                 )
 
-        outcome = self._classify(results)
+        advisory = {step.id for step in ordered if step.advisory}
+        outcome = self._classify(results, advisory=advisory)
         if outcome is InstallOutcome.READY:
             finished = complete_upgrade(state, now=self._clock())
             if finished is not None:
@@ -375,8 +376,9 @@ class InstallEngine:
             steps=tuple(results),
             resources=resources,
             state_path=saved_path,
-            next_action=self._next_action(outcome, results),
+            next_action=self._next_action(outcome, results, advisory=advisory),
             messages=tuple(messages),
+            advisory=tuple(sorted(advisory)),
         )
 
     # -- internals ----------------------------------------------------------
@@ -475,8 +477,7 @@ class InstallEngine:
         return tuple(
             step_id
             for step_id in step.provisioned_by
-            if (row := plan_rows.get(step_id)) is not None
-            and row.action is PlanAction.WOULD_RUN
+            if (row := plan_rows.get(step_id)) is not None and row.action is PlanAction.WOULD_RUN
         )
 
     def _execute(
@@ -631,19 +632,35 @@ class InstallEngine:
             )
         return result
 
-    def _classify(self, results: Iterable[StepResult]) -> InstallOutcome:
+    def _classify(
+        self,
+        results: Iterable[StepResult],
+        *,
+        advisory: Collection[str] = (),
+    ) -> InstallOutcome:
         outcome = InstallOutcome.READY
         for result in results:
+            if result.step_id in advisory:
+                # Reported, never decisive: see StepSpec.advisory.
+                continue
             if result.state is StepState.FAILED:
                 return InstallOutcome.FAILED
             if result.state is StepState.NEEDS_USER:
                 outcome = InstallOutcome.NEEDS_USER
         return outcome
 
-    def _next_action(self, outcome: InstallOutcome, results: Sequence[StepResult]) -> str | None:
+    def _next_action(
+        self,
+        outcome: InstallOutcome,
+        results: Sequence[StepResult],
+        *,
+        advisory: Collection[str] = (),
+    ) -> str | None:
         if outcome is InstallOutcome.READY:
             return None
         for result in results:
+            if result.step_id in advisory:
+                continue
             if result.state in (StepState.FAILED, StepState.NEEDS_USER) and result.remediation:
                 return result.remediation
         return None
@@ -662,6 +679,7 @@ class InstallEngine:
         state_path: str | None,
         next_action: str | None,
         messages: tuple[str, ...],
+        advisory: tuple[str, ...] = (),
     ) -> InstallResult:
         return InstallResult(
             outcome=outcome,
@@ -677,6 +695,7 @@ class InstallEngine:
             state_path=state_path,
             next_action=next_action,
             messages=messages,
+            advisory=advisory,
         )
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -746,8 +747,11 @@ def discord_step(
         channel_id = str(settings.get("channel_id") or "").strip()
         guild_id = str(settings.get("guild_id") or "").strip()
 
-        missing = [name for name, value in (("channel_id", channel_id), ("guild_id", guild_id))
-                   if not value]
+        missing = [
+            name
+            for name, value in (("channel_id", channel_id), ("guild_id", guild_id))
+            if not value
+        ]
         if missing:
             return StepResult.needs_user(
                 STEP_DISCORD,
@@ -840,6 +844,36 @@ def discord_step(
 # ---------------------------------------------------------------------------
 
 
+def aq_aware_which(
+    base: Callable[[str], str | None],
+    *,
+    interpreter: str | None = None,
+) -> Callable[[str], str | None]:
+    """``which`` that can always find the ``aq`` this installer is running as.
+
+    ``aq install`` starts the daemon by running ``aq start``, and looking that up
+    on PATH alone failed with "the `aq` command is not on PATH" whenever the
+    installer itself had been invoked by path -- ``~/.local/bin/aq`` from a shell
+    whose profile has not been re-read, or a virtualenv that was never activated.
+    The console script beside the running interpreter *is* the same
+    installation, so it is the honest answer.
+    """
+    python = Path(interpreter or sys.executable)
+
+    def which(command: str) -> str | None:
+        found = base(command)
+        if found:
+            return found
+        if command not in ("aq", "agent-queue"):
+            return None
+        candidate = python.with_name(command)
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+        return None
+
+    return which
+
+
 def daemon_step(
     *,
     environ: Mapping[str, str] | None = None,
@@ -866,7 +900,7 @@ def daemon_step(
     daemon is restarted; `aq restart` re-adopts live agent sessions.
     """
     path = config_path_for(environ, home)
-    lookup = which or shutil.which
+    lookup = aq_aware_which(which or shutil.which)
     execute = runner or run_command
     check = probe or http_status
     # A test that injects its own probe is talking to a fake daemon; reading
@@ -916,9 +950,7 @@ def daemon_step(
                     STEP_DAEMON,
                     f"the daemon is already answering at {base}",
                     detail={"api_url": base, "started": False},
-                    resources=(
-                        ResourceRecord(kind="daemon", id=base, owned=False, reused=True),
-                    ),
+                    resources=(ResourceRecord(kind="daemon", id=base, owned=False, reused=True),),
                 )
             aq = lookup("aq")
             restarted = (
@@ -1150,9 +1182,7 @@ def onboarding_steps(
             probe=probe,
             depends_on=(STEP_CHECK, STEP_DASHBOARD_BUILD),
         ),
-        dashboard_open_step(
-            environ=environ, home=home, runner=runner, which=which, probe=probe
-        ),
+        dashboard_open_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
     )
 
 
@@ -1175,6 +1205,7 @@ __all__ = [
     "DashboardInfo",
     "HttpProbe",
     "Location",
+    "aq_aware_which",
     "api_base_url",
     "check_step",
     "config_path_for",
