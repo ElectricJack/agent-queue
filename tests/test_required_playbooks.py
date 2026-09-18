@@ -14,6 +14,8 @@ from src.playbooks.required import (
     RequiredPlaybookReconciler,
     ensure_reviewed_playbook_bundles,
     retain_required_route_needed_event,
+    reviewed_bundle_source,
+    shipped_reviewed_playbook_ids,
 )
 from src.playbooks.runtime import V2PlaybookRuntime
 from src.playbooks.profiles import shipped_profile_lookup
@@ -228,5 +230,78 @@ async def test_a_default_that_cannot_be_imported_does_not_fail_readiness(tmp_pat
         assert result["ok"] is True
         assert result["defaults"]["blocked-task-escalation"]["activated"] is False
         assert "error" in result["defaults"]["blocked-task-escalation"]
+    finally:
+        await db.close()
+
+
+def test_every_shipped_reviewed_bundle_reaches_the_vault(tmp_path):
+    """A bundle the vault does not hold is one no operator can import.
+
+    ``playbook_v2_import`` refuses any path outside the vault root, so the
+    project-scoped ``ci-main-sentinel`` recording — which the reconciler never
+    activates — is importable only because seeding copies it across.
+    """
+    written = ensure_reviewed_playbook_bundles(str(tmp_path))
+    root = tmp_path / "vault" / "reviewed-playbooks"
+
+    assert set(written) == set(shipped_reviewed_playbook_ids())
+    assert "ci-main-sentinel" in written
+    for playbook_id in shipped_reviewed_playbook_ids():
+        shipped = reviewed_bundle_source() / playbook_id
+        for name in ("artifact.json", "artifact.sha256", "source.md", "manifest.md"):
+            assert (root / playbook_id / name).read_bytes() == (shipped / name).read_bytes()
+
+
+def test_a_stale_vault_bundle_is_refreshed_from_the_shipped_bytes(tmp_path):
+    """Seeding used to skip any id the vault already had, which stranded upgrades.
+
+    A bundle rebuilt against a changed command contract never reached an
+    existing install: the vault copy was written once and kept forever, and
+    ``playbook_v2_import`` cannot read the corrected bytes from anywhere else.
+    Three activations sat at ``stale_contract`` for that reason alone.
+    """
+    ensure_reviewed_playbook_bundles(str(tmp_path))
+    bundle = tmp_path / "vault" / "reviewed-playbooks" / "default-pipeline"
+    shipped = reviewed_bundle_source() / "default-pipeline"
+    (bundle / "artifact.json").write_bytes(b'{"stale":true}')
+    (bundle / "artifact.sha256").write_text("sha256:stale\n", encoding="utf-8")
+    (bundle / "review.md").write_text("operator note\n", encoding="utf-8")
+
+    refreshed = ensure_reviewed_playbook_bundles(str(tmp_path))
+
+    assert refreshed == ["default-pipeline"]
+    assert (bundle / "artifact.json").read_bytes() == (shipped / "artifact.json").read_bytes()
+    assert (bundle / "artifact.sha256").read_bytes() == (shipped / "artifact.sha256").read_bytes()
+    # Only the recording's own files are rewritten; anything else is the
+    # operator's and is left where they put it.
+    assert (bundle / "review.md").read_text(encoding="utf-8") == "operator note\n"
+    assert ensure_reviewed_playbook_bundles(str(tmp_path)) == []
+
+
+async def test_a_refreshed_bundle_imports_as_the_current_artifact(tmp_path):
+    """The end of the supply line: stale vault bytes must not outlive a restart.
+
+    Importing the seeded bundle has to yield the artifact the repository
+    recorded, not the superseded one the vault happened to be holding.
+    """
+    db = Database(lease_dsn("required-playbooks.db"))
+    await db.initialize()
+    try:
+        ensure_reviewed_playbook_bundles(str(tmp_path))
+        bundle = tmp_path / "vault" / "reviewed-playbooks" / "ci-main-sentinel"
+        superseded = (bundle / "artifact.json").read_bytes().replace(b"ci-main-sentinel", b"stale-x")
+        (bundle / "artifact.json").write_bytes(superseded)
+
+        ensure_reviewed_playbook_bundles(str(tmp_path))
+        handler = _Handler(tmp_path, db)
+        imported = await handler._cmd_playbook_v2_import({"path": "reviewed-playbooks/ci-main-sentinel"})
+
+        shipped_sha = (
+            (reviewed_bundle_source() / "ci-main-sentinel" / "artifact.sha256")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+        assert imported["success"], imported.get("error")
+        assert imported["artifact_sha256"] == shipped_sha
     finally:
         await db.close()

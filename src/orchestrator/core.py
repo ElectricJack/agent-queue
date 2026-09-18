@@ -1513,7 +1513,7 @@ class Orchestrator(
             installed = ensure_reviewed_playbook_bundles(self.config.data_dir)
             if installed:
                 logger.info(
-                    "Installed reviewed required playbook bundles: %s", ", ".join(installed)
+                    "Seeded reviewed playbook bundles into the vault: %s", ", ".join(installed)
                 )
             self.required_playbook_reconciler = RequiredPlaybookReconciler(
                 config=self.config, db=self.db, handler=self._command_handler
