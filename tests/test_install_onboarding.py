@@ -19,6 +19,7 @@ acceptance criteria are about the *run*, not about any one function:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -562,9 +563,14 @@ def test_a_daemon_that_does_not_come_up_names_the_log_and_the_doctor(tmp_path):
     assert "aq doctor" in (failure.remediation or "")
 
 
-def test_a_missing_aq_executable_is_reported_rather_than_guessed(tmp_path):
+def test_a_missing_aq_executable_is_reported_rather_than_guessed(tmp_path, monkeypatch):
     home = configured(tmp_path)
     daemon = FakeDaemon()
+    # The step also accepts the console script beside the running interpreter, so
+    # "no aq anywhere" has to include that: on a machine where AQ is installed
+    # next to the interpreter running the tests -- CI, a venv -- an injected
+    # `which` returning None is not by itself an absent `aq`.
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-venv" / "bin" / "python3"))
 
     result = run(
         registry_for(home, daemon, which=lambda name: None),
