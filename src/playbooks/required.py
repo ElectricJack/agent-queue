@@ -4,6 +4,10 @@ The activation table is durable, while the runtime subscription is not.  This
 module bridges that boundary: it installs the reviewed bundle on a new data
 directory, records the first activation, and makes an inactive required policy
 an explicit readiness failure instead of an empty event subscription.
+
+Seeding is also the only supply line a corrected bundle has.  ``playbook_v2_import``
+refuses every path outside the vault root, so a bundle rebuilt against a changed
+command contract reaches an install only by being written into the vault here.
 """
 
 from __future__ import annotations
@@ -31,7 +35,10 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
 # them, and never re-enabled after an operator disables one.  Before this set
 # existed a fresh install activated only the two required policies above, and
 # Settings -> Playbooks showed nothing else even though these ship with AQ.
-DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation", "default-pipeline")
+#: The bundle files a reviewed recording is made of.  Seeding rewrites exactly
+#: these and leaves anything else in the directory alone.
+_BUNDLE_FILES = ("artifact.json", "artifact.sha256", "source.md", "manifest.md", "diagnostics.json")
 _ACTOR = "service:required-playbook-reconciler"
 
 
@@ -40,19 +47,61 @@ def reviewed_bundle_source() -> Path:
     return Path(__file__).resolve().parents[1] / "prompts" / "reviewed_playbooks"
 
 
+def shipped_reviewed_playbook_ids() -> tuple[str, ...]:
+    """Every reviewed bundle this daemon carries, activated or not.
+
+    The directory is the list.  ``ci-main-sentinel`` is project-scoped and is
+    never activated by the reconciler, but ``playbook_v2_import`` refuses any
+    path outside the vault root, so a bundle an operator cannot find in the
+    vault is a bundle they cannot import at all.
+    """
+    source_root = reviewed_bundle_source()
+    if not source_root.is_dir():
+        return ()
+    return tuple(sorted(entry.name for entry in source_root.iterdir() if entry.is_dir()))
+
+
 def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
-    """Seed immutable reviewed bundles into the vault without overwriting it."""
+    """Seed the shipped reviewed bundles into the vault, refreshing stale bytes.
+
+    Seeding used to skip any id the vault already had, which made the vault
+    copy permanent: a bundle rebuilt against a changed command contract never
+    reached an existing install, and because ``playbook_v2_import`` can only
+    read paths under the vault root, the operator had no supported way to
+    import the corrected bytes either.  That is how three activations sat at
+    ``stale_contract`` while the repository's own fixtures were current.
+
+    A reviewed bundle is content-addressed and the artifact an activation
+    points at lives in the compiled store, so replacing these bytes retires
+    nothing: it only changes what the *next* import reads.  Operator variants
+    live under their own ids and are untouched.
+
+    Returns the ids whose vault bytes this call wrote, newly or refreshed.
+    """
     destination_root = Path(data_dir) / "vault" / "reviewed-playbooks"
-    installed: list[str] = []
-    for playbook_id in (*REQUIRED_SYSTEM_PLAYBOOK_IDS, *DEFAULT_SYSTEM_PLAYBOOK_IDS):
+    written: list[str] = []
+    for playbook_id in shipped_reviewed_playbook_ids():
         source = reviewed_bundle_source() / playbook_id
         destination = destination_root / playbook_id
-        if destination.exists() or not source.is_dir():
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, destination)
+            written.append(playbook_id)
             continue
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, destination)
-        installed.append(playbook_id)
-    return installed
+        refreshed = False
+        for name in _BUNDLE_FILES:
+            shipped_file = source / name
+            if not shipped_file.is_file():
+                continue
+            current = destination / name
+            if current.is_file() and current.read_bytes() == shipped_file.read_bytes():
+                continue
+            shutil.copyfile(shipped_file, current)
+            refreshed = True
+        if refreshed:
+            logger.info("Refreshed the stale reviewed bundle for %s in the vault", playbook_id)
+            written.append(playbook_id)
+    return written
 
 
 class RequiredPlaybookReconciler:
