@@ -132,9 +132,16 @@ class FakeServer:
         roles: dict[str, str] | None = None,
         databases: set[str] | None = None,
         version_num: int = 160004,
+        password_auth: bool = False,
     ) -> None:
         self.listening = listening
         self.speaks_postgres = speaks_postgres
+        #: With ``password_auth``, an unknown role is reported exactly as a wrong
+        #: password is -- which is what a real server does when pg_hba asks for a
+        #: password (Ubuntu's default, so every WSL install).  The default here
+        #: is the trusting local configuration Homebrew ships on macOS, which
+        #: names the missing role and therefore hid this difference.
+        self.password_auth = password_auth
         self.roles = dict(roles or {})
         self.databases = set(databases or set())
         self.version_num = version_num
@@ -153,6 +160,10 @@ class FakeServer:
         role = unquote(parts.username or "")
         database = (parts.path or "/").lstrip("/")
         if role not in self.roles:
+            if self.password_auth:
+                return ConnectionCheck(
+                    REASON_AUTH, f'password authentication failed for user "{role}"'
+                )
             return ConnectionCheck(REASON_MISSING_ROLE, f'role "{role}" does not exist')
         if self.roles[role] != (password or ""):
             return ConnectionCheck(REASON_AUTH, f'password authentication failed for "{role}"')
@@ -539,6 +550,50 @@ def test_an_existing_role_is_never_reset(tmp_path):
     assert CAPABILITY_ROTATE in failure.remediation, "the recovery path is named"
 
 
+def test_a_missing_role_behind_password_auth_is_created_not_assumed(tmp_path):
+    """The bug a fresh WSL install hit: "role exists" inferred from a rejection.
+
+    PostgreSQL answers "password authentication failed" for an unknown role as
+    well as for a wrong password, so on Ubuntu's password-authenticated default
+    the role step reported "already exists and was left unchanged" on a brand-new
+    machine -- and ``postgres.database`` then failed on ``CREATE DATABASE ...
+    OWNER`` with 'role "agent_queue" does not exist'.  With an administrator to
+    ask, the server's own answer decides.
+    """
+    host = FakeHost(FakeServer(roles={}, databases=set(), password_auth=True))
+    result = run(host, tmp_path, capabilities=(CAPABILITY_MANAGED,))
+
+    assert step(result, STEP_ROLE).detail == {
+        "role": "agent_queue",
+        "created": True,
+        "credential_source": "generated",
+    }
+    assert "agent_queue" in host.server.roles
+    assert "agent_queue" in host.server.databases
+    assert result.outcome is InstallOutcome.READY
+
+
+def test_without_an_administrator_a_rejected_password_still_preserves_the_role(tmp_path):
+    """With nothing more authoritative to ask, a rejection is taken at face value.
+
+    The installer must not overwrite a role it cannot see, so the reading that
+    was wrong *with* an administrator is still the right one without one: report
+    the role as existing and let ``postgres.credentials`` name the mismatch.
+    """
+    host = FakeHost(
+        FakeServer(roles={"agent_queue": "someone-elses"}, databases=set(), password_auth=True),
+        executables=("git", "tmux", "sudo", "apt-get", "systemctl"),
+    )
+    result = run(host, tmp_path)
+
+    assert step(result, STEP_ROLE).detail["preserved"] is True
+    assert host.server.roles == {"agent_queue": "someone-elses"}
+    assert not any(
+        statement.startswith("CREATE ROLE") or statement.startswith("ALTER ROLE")
+        for statement in host.server.statements
+    )
+
+
 def test_an_existing_database_is_reused_not_recreated(tmp_path):
     host = FakeHost(FakeServer(roles={}, databases={"agent_queue"}))
     run(host, tmp_path)
@@ -773,7 +828,12 @@ def test_a_wsl_distribution_without_systemd_asks_the_human(tmp_path):
     assert boot.state is StepState.NEEDS_USER
     assert "wsl.conf" in boot.remediation
     assert "systemd=true" in boot.remediation
-    assert result.outcome is InstallOutcome.NEEDS_USER
+    # Advisory: the database is already reachable, and only its *restart*
+    # behaviour is unsettled, so the run reports this and still finishes.
+    # Blocking here cost a WSL distribution without systemd its configuration,
+    # daemon and dashboard over something `sudo service postgresql start`
+    # answers.
+    assert result.outcome is InstallOutcome.READY
 
 
 def test_the_boot_step_runs_after_the_database_is_proven(tmp_path):

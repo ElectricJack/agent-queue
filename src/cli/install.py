@@ -40,7 +40,13 @@ from src.install import (
     exit_code,
 )
 from src.install.results import RESULT_SCHEMA_VERSION
-from src.install.wizard import OnboardingSummary, Question, capabilities_for, summarize
+from src.install.wizard import (
+    OnboardingSummary,
+    Question,
+    capabilities_for,
+    default_project_folder,
+    summarize,
+)
 
 from .app import cli, console
 
@@ -276,6 +282,36 @@ def configured_project_roots() -> list[str]:
 
     roots = _read_config(config_path_for()).get("project_roots") or []
     return [str(root.get("path")) for root in roots if isinstance(root, dict)]
+
+
+def resolve_project_folder(
+    chosen: Path | None,
+    *,
+    dry_run: bool,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    roots: list[str] | None = None,
+) -> Path | None:
+    """The projects folder this run should record, if any.
+
+    An answer the person gave wins.  When nobody was asked -- a piped bootstrap,
+    ``--non-interactive``, a repair -- and no root is configured yet, the wizard's
+    own default stands in: without it the install finished "ready" and *then*
+    reported that no project root was configured, leaving one manual edit between
+    the operator and their first project.  A configured root is left alone, and a
+    dry run proposes nothing it would not also write.
+    """
+    if chosen is not None:
+        return chosen
+    if dry_run:
+        return None
+    if roots is None:
+        roots = configured_project_roots()
+    if roots:
+        return None
+    return default_project_folder(
+        cwd or Path.cwd(), home or Path.home(), reserved=_reserved_folders()
+    )
 
 
 def ask_project_folder() -> Path:
@@ -597,8 +633,11 @@ def install(
         mode=mode,
     )
     options = _carry_forward_capabilities(options, state_file)
+    project_folder = resolve_project_folder(project_folder, dry_run=dry_run)
     if project_folder is not None:
-        options = replace(options, settings={**options.settings, "project_root": str(project_folder)})
+        options = replace(
+            options, settings={**options.settings, "project_root": str(project_folder)}
+        )
 
     quiet = as_json
     engine = InstallEngine(

@@ -114,10 +114,20 @@ else
     # Windows administrator.  Node.js is not installed here: Ubuntu's is too old
     # for the dashboard, and `aq install` builds it with a pinned Node it
     # downloads itself.
-    if ! command -v git >/dev/null || ! python3 -m venv --help >/dev/null 2>&1; then
-        printf 'Installing the WSL prerequisites (Git and Python venv support)...\n'
+    # `python3 -m venv --help` is not the probe to use: the venv module itself
+    # is in python3-minimal, so --help succeeds on a distribution with no
+    # python3-venv and the failure only surfaces later, as ensurepip's
+    # "virtual environment was not created successfully" at creation time.
+    # Importing ensurepip is what actually distinguishes them.  Each
+    # prerequisite is also checked on its own -- a user who already has Git
+    # (most do) was skipping the venv install entirely.
+    missing=()
+    command -v git >/dev/null || missing+=("git")
+    python3 -c 'import ensurepip, venv' >/dev/null 2>&1 || missing+=("python3-venv")
+    if (( ${#missing[@]} )); then
+        printf 'Installing the WSL prerequisites (%s)...\n' "${missing[*]}"
         sudo apt-get update
-        sudo apt-get install -y git python3-venv
+        sudo apt-get install -y "${missing[@]}"
     fi
     python_bin="python3"
 fi

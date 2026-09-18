@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -18,7 +19,7 @@ from src.install.providers import (
     provider_steps,
 )
 from src.install.results import InstallOutcome, StepResult, StepState
-from src.install.steps import StepRegistry, StepSpec
+from src.install.steps import StepContext, StepRegistry, StepSpec
 
 
 def _completed(command, code=0, stdout=""):
@@ -68,7 +69,7 @@ def test_existing_provider_is_reused_with_its_path_and_version():
     assert result.state is StepState.SUCCEEDED
     assert result.detail == {"executable": "/opt/bin/codex", "version": "1.2.3"}
     assert result.resources[0].to_dict()["reused"] is True
-    assert calls == [("codex", "--version")]
+    assert calls == [("/opt/bin/codex", "--version")]
 
 
 def test_selected_missing_provider_installs_then_verifies_the_executable():
@@ -91,7 +92,7 @@ def test_selected_missing_provider_installs_then_verifies_the_executable():
     assert result.state is StepState.SUCCEEDED
     assert result.detail == {"executable": "/opt/bin/gemini", "version": "0.18.0"}
     assert result.resources[0].owned is True
-    assert calls == [GEMINI.install_command, ("gemini", "--version")]
+    assert calls == [GEMINI.install_command, ("/opt/bin/gemini", "--version")]
 
 
 def test_probe_keeps_only_a_version_token_from_executable_output():
@@ -114,8 +115,24 @@ def test_install_success_without_a_working_path_fails_with_a_recovery_action():
     result = step.run(None)  # type: ignore[arg-type]
 
     assert result.state is StepState.FAILED
-    assert "not executable on PATH" in result.summary
+    assert "reported success but claude is not runnable" in result.summary
     assert "provider.claude" in (result.remediation or "")
+
+
+def test_a_silent_installer_failure_carries_the_installers_own_last_words():
+    """Without them the only hint was a guess about PATH; see EXCERPT_LINES."""
+    step = provider_step(
+        CLAUDE_CODE,
+        which=lambda command: None,
+        runner=lambda command: _completed(
+            command, stdout="downloading...\nchecksum mismatch, giving up\n"
+        ),
+    )
+
+    result = step.run(None)  # type: ignore[arg-type]
+
+    assert "checksum mismatch, giving up" in result.summary
+    assert "curl -fsSL https://claude.ai/install.sh" in (result.remediation or "")
 
 
 def test_unselected_provider_steps_are_skipped_and_do_not_block_install(tmp_path):
@@ -164,3 +181,87 @@ def test_provider_registry_accepts_additional_adapters_and_rejects_duplicate_ids
                 ),
             )
         )
+
+
+# -- where a provider's own installer puts its binary -------------------------
+
+
+def test_a_cli_installed_into_the_user_bin_directory_is_found(tmp_path):
+    """The step that installed Claude Code then reported it missing.
+
+    ``claude.ai/install.sh`` links its executable into ``~/.local/bin``, which is
+    on the *next* login shell's PATH and not necessarily on this process's, so
+    the probe said "claude was not executable on PATH after installation" and
+    stopped a run whose work had succeeded.
+    """
+    from src.install.providers import user_bin_aware_which
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    claude = local_bin / "claude"
+    claude.write_text("#!/bin/sh\n", encoding="utf-8")
+    claude.chmod(0o755)
+
+    which = user_bin_aware_which(lambda command: None, home=tmp_path)
+
+    assert which("claude") == str(claude)
+    assert which("codex") is None
+
+
+def test_what_is_already_on_path_wins_over_the_user_bin_directory(tmp_path):
+    from src.install.providers import user_bin_aware_which
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    (local_bin / "claude").write_text("#!/bin/sh\n", encoding="utf-8")
+    (local_bin / "claude").chmod(0o755)
+
+    which = user_bin_aware_which(lambda command: "/usr/bin/claude", home=tmp_path)
+
+    assert which("claude") == "/usr/bin/claude"
+
+
+def test_a_file_that_is_not_executable_is_not_a_cli(tmp_path):
+    from src.install.providers import user_bin_aware_which
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    (local_bin / "claude").write_text("not a program\n", encoding="utf-8")
+    (local_bin / "claude").chmod(0o644)
+
+    assert user_bin_aware_which(lambda command: None, home=tmp_path)("claude") is None
+
+
+def test_the_registry_gives_the_provider_and_login_steps_that_lookup(tmp_path, monkeypatch):
+    """Both halves must agree, or a login probe re-loses what the install found."""
+    from src.install.platform import PlatformFacts, SupportVerdict
+    from src.install.registry import build_registry
+
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    for name in ("claude", "git", "tmux"):
+        (local_bin / name).write_text("#!/bin/sh\n", encoding="utf-8")
+        (local_bin / name).chmod(0o755)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    wsl = SupportVerdict(
+        host_path="windows-wsl2",
+        tier="supported",
+        facts=PlatformFacts(
+            system="linux",
+            release="6.6.0-microsoft-standard-WSL2",
+            machine="x86_64",
+            arch="x86_64",
+            python_version="3.12.3",
+            distro_id="ubuntu",
+            distro_version="24.04",
+            wsl=True,
+            wsl_version=2,
+        ),
+    )
+    registry = build_registry(wsl, which=lambda command: None)
+    context = StepContext(support=wsl, options={}, dry_run=False, interactive=False)
+
+    probe = registry.get("provider.claude-cli").run(context)
+
+    assert probe.detail["executable"] == str(local_bin / "claude")

@@ -294,6 +294,10 @@ class InstallResult:
     state_path: str | None = None
     next_action: str | None = None
     messages: tuple[str, ...] = ()
+    #: Steps whose outcome was a report rather than a gate (``StepSpec.advisory``).
+    #: They are in ``steps`` like any other, but they stopped nothing, so they are
+    #: never the blocking step and never the outcome.
+    advisory: tuple[str, ...] = ()
 
     @property
     def exit_code(self) -> int:
@@ -303,6 +307,8 @@ class InstallResult:
     def blocking_step(self) -> StepResult | None:
         """The first step that stopped the run, if any."""
         for step in self.steps:
+            if step.step_id in self.advisory:
+                continue
             if step.state in (StepState.FAILED, StepState.NEEDS_USER):
                 return step
         return None
@@ -323,6 +329,7 @@ class InstallResult:
             "resources": [resource.to_dict() for resource in self.resources],
             "state_path": self.state_path,
             "blocking_step": self.blocking_step.step_id if self.blocking_step else None,
+            "advisory": list(self.advisory),
             "next_action": self.next_action,
             "messages": list(self.messages),
         }

@@ -143,7 +143,8 @@ def test_provider_status_command_decides_readiness_without_capturing_its_output(
 
     probe = probe_login(CODEX_LOGIN, environ=_env(tmp_path), which=_present("codex"), runner=runner)
 
-    assert calls == [("codex", "login", "status")]
+    # The resolved executable, not the bare name: see the regression test below.
+    assert calls == [("/opt/bin/codex", "login", "status")]
     assert probe.installed and probe.authenticated
     assert probe.method == "provider-login"
     assert probe.source == "codex login status"
@@ -750,3 +751,32 @@ def test_the_published_authentication_table_matches_the_registry():
             assert store.filename in section
         documented = [entry.variable for entry in login.environment if entry.variable in section]
         assert documented, f"{login.provider_id} documents no headless credential"
+
+
+def test_a_cli_outside_this_process_path_is_still_asked_whether_it_is_signed_in(tmp_path):
+    """The Mac failure: an installed, signed-in Claude reported unauthenticated.
+
+    ``claude`` lives in ``~/.local/bin``, which the installer's lookup covers but
+    this process's PATH may not.  Running the status command by bare name then
+    raised ``FileNotFoundError``, which ``_status_command_says_signed_in`` reads
+    as "cannot tell" -- so a harness that was signed in the whole time was
+    reported as not authenticated.
+    """
+    calls = []
+
+    def runner(command):
+        calls.append(command)
+        if command[0] == "claude":
+            raise FileNotFoundError(2, "No such file or directory: 'claude'")
+        return _completed(command, stdout="Signed in")
+
+    probe = probe_login(
+        CLAUDE_CODE_LOGIN,
+        environ=_env(tmp_path),
+        which=_present("claude"),
+        runner=runner,
+    )
+
+    assert probe.authenticated is True
+    assert probe.method == "provider-login"
+    assert [command[0] for command in calls] == ["/opt/bin/claude"]

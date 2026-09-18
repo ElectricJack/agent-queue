@@ -55,6 +55,7 @@ from .logins import (
     provider_logins,
 )
 from .macos import macos_steps
+from .wsl import wsl_steps
 from .onboarding import (
     CAPABILITY_DAEMON,
     CAPABILITY_DISCORD,
@@ -212,6 +213,7 @@ __all__ = [
     "login_step",
     "login_steps",
     "macos_steps",
+    "wsl_steps",
     "onboarding_steps",
     "plan_uninstall",
     "plan_upgrade",

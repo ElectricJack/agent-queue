@@ -127,6 +127,20 @@ browser. When a selected harness is not authenticated, the login step reports
 `needs_user` (exit code `10`) and names the provider's own login command; you
 run it, then rerun `aq install` — rerunning is the whole retry mechanism.
 
+The login step does **not** stop the rest of the run (see [advisory and
+non-halting steps](#advisory-and-non-halting-steps)): signing in happens in your
+browser and nothing later in the install depends on it, so the same run still
+writes the configuration, starts the daemon and builds the dashboard. You come
+back to a working machine with one thing left to do. The outcome is still
+`needs_user`, the sign-in is still the named next action, and the rerun after you
+sign in is what activates the harness's worker profiles and their pools.
+
+Both probes run the executable at the path the lookup **resolved**, not by its
+bare name. A CLI its own installer put in `~/.local/bin` is on the *next* login
+shell's `PATH` and not necessarily on this process's, and asking for `claude` by
+name there reported an installed, signed-in harness as missing or
+unauthenticated.
+
 Readiness is observed without reading credential material, in this order:
 
 1. The provider's own status command, if it documents one. Only its **exit
@@ -253,6 +267,27 @@ existing code is never reassigned.
 | `12` | `unsupported_host` | The host is not in the supported-platform matrix. Nothing was changed. |
 | `20` | `failed` | A step failed. The step and its remediation are named in the result. |
 
+### Advisory and non-halting steps
+
+Most steps are something later ones need, so a step that does not succeed stops
+the run. Two kinds are deliberately different, because halting cost more than it
+protected:
+
+* **Non-halting** (`halts: false`): the run continues past it and the outcome
+  still counts it. The provider login steps are these — an unauthenticated
+  harness is reported as `needs_user` (exit `10`) while the configuration, the
+  daemon and the dashboard, which do not depend on it, are still done.
+* **Advisory** (`advisory: true`): the run continues *and* the outcome ignores
+  it, so an install whose only unfinished business is advisory exits `0`.
+  `postgres.boot` is the one, since the database it is about is already
+  reachable and only its behaviour after a restart is unsettled.
+
+Both appear in the step list and in the resume record exactly like any other
+step, with their own state and remediation; neither is ever the `blocking_step`,
+and `advisory` in the JSON result lists the advisory step ids. Nothing may
+`depends_on` a step of either kind — a dependent would be claiming the guarantee
+the step withholds — and the registry refuses to order such a plan.
+
 ## Machine-readable output
 
 `--json` prints one object:
@@ -361,6 +396,22 @@ view and a script are told the same things:
 `aq install --list-steps --json` prints `{"schema_version": 1, "steps": [...]}`
 with each step's `id`, `title`, `description`, `depends_on`, `capability`,
 `mutating`, `owner` and `input_schema_version`.
+
+## Windows (WSL2, Ubuntu)
+
+WSL has a platform adapter too, and like the macOS one it runs before the generic
+prerequisite checks: it installs what the engine then verifies.
+
+| Step | What it does | When it stops |
+| --- | --- | --- |
+| `wsl.packages` | *Mutating.* `apt-get install`s the prerequisites that are missing (`git`, `tmux`), refreshing the package lists first. Anything already on `PATH` is left alone, and what it installed is recorded as an `apt-package` resource. | `needs_user` when `sudo` would prompt for a password (with `sudo -v` and the apt command to run yourself — the installer never types a password). `failed` with apt's own message and the command to rerun by hand; also `failed` when apt reports success but the command is still not on `PATH`. |
+
+tmux is not optional: every agent harness runs inside a tmux session, and
+`config.defaults` writes `sessions.provider: tmux` only once `prereq.tmux`
+passes. Before this adapter existed, a fresh Ubuntu stopped at `prereq.tmux`
+telling you to run apt yourself. Node is deliberately *not* installed here:
+Ubuntu's is too old for the dashboard, so `dashboard.build` downloads its own
+pinned toolchain.
 
 ## macOS
 
@@ -603,7 +654,11 @@ provisioning:
 * **macOS/Homebrew**: `brew services start postgresql@NN`, which registers a
   launchd agent that starts the server at login.
 * **WSL2 without systemd**: nothing can enable a service at boot, so the step
-  reports `needs_user` and gives the fix — add
+  reports `needs_user` and gives the fix. It is an **advisory** step (see
+  [below](#advisory-and-non-halting-steps)), so the run carries on to the
+  configuration, the daemon and the dashboard and the overall outcome ignores it
+  — the database is already reachable, and only its behaviour after a restart is
+  unsettled. Add
 
   ```ini
   [boot]
