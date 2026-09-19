@@ -13,6 +13,32 @@ from src.database import Database
 logger = logging.getLogger(__name__)
 
 
+async def reset_stale_busy_agent(db: Database, agent, *, bus=None) -> None:
+    """Reset a BUSY agent with no live session to IDLE, clearing its task pin.
+
+    Import path: ``src.orchestrator.agent_reconciler.reset_stale_busy_agent``.
+
+    ``agent`` may be an :class:`~src.models.Agent` instance or a bare agent
+    id string, so this is callable from contexts (e.g. a doctor ``--fix``
+    check) that never build a full ``Agent``. ``bus`` is optional — a caller
+    with no event bus (e.g. an offline doctor check) can still perform the
+    reset; when a bus is given, one ``agent.updated`` event is emitted after
+    the write.
+
+    Never touches ``tasks.assigned_agent_id`` or any integration-owner row:
+    a retained claim keeps its evidence on the task side, not the agent's
+    transient pointer.
+    """
+    from src.models import AgentState
+
+    agent_id = agent.id if hasattr(agent, "id") else agent
+    await db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
+    if bus is not None:
+        await bus.emit("agent.updated", {
+            "event_type": "agent.updated", "agent_id": agent_id,
+        })
+
+
 @dataclass
 class ReconcileReport:
     """Outcome of one AgentReconciler.reconcile() pass."""
@@ -34,7 +60,8 @@ class AgentReconciler:
     """
 
     def __init__(
-        self, db: Database, *, worktrees_enabled: bool = False, data_dir: str | None = None
+        self, db: Database, *, worktrees_enabled: bool = False, data_dir: str | None = None,
+        bus=None,
     ):
         self._db = db
         self._warned_projects: dict[str, str] = {}
@@ -42,6 +69,9 @@ class AgentReconciler:
         # gate below counts inventory exactly as it does today.
         self._worktrees_enabled = worktrees_enabled
         self._data_dir = data_dir
+        # Optional: announces agent.updated after each stale-BUSY reset.
+        # None is fine (e.g. tests that don't care about the event).
+        self._bus = bus
 
     async def reconcile(
         self, *, provider_cooldowns: dict[str, float] | None = None,
@@ -75,13 +105,18 @@ class AgentReconciler:
         for agent in agents:
             if agent.state != AgentState.BUSY or agent.id in live_agents:
                 continue
-            if agent.current_task_id in by_task or agent.current_task_id in live_tasks:
+            if agent.current_task_id in live_tasks:
+                continue
+            task = by_task.get(agent.current_task_id)
+            if task is not None and task.status in (
+                TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            ):
                 continue
             # Pool launch reservations have no task yet; do not steal an
             # identity while its provider is still starting the process.
             if agent.last_heartbeat and time.time() - agent.last_heartbeat < 120:
                 continue
-            await self._db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+            await reset_stale_busy_agent(self._db, agent, bus=self._bus)
             agent.state = AgentState.IDLE
             agent.current_task_id = None
 

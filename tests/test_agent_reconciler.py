@@ -321,6 +321,117 @@ async def test_orphan_busy_reset_to_idle(db):
     assert agents[0].state == AgentState.IDLE
 
 
+class _Bus:
+    """Records emitted events so resets can be asserted on."""
+
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type, payload=None):
+        self.events.append((event_type, dict(payload or {})))
+
+
+async def _seed_busy_agent_on_task(db, *, agent_id, profile_id, task_id, task_status):
+    """A BUSY agent whose current_task_id points at a real task in *task_status*,
+    with no live session for either the agent or the task."""
+    await db.create_task(Task(
+        id=task_id, project_id="p",
+        title=task_id, description=task_id,
+        status=task_status, priority=100,
+        created_at=_time.time(), updated_at=_time.time(),
+    ))
+    await db.create_agent(Agent(
+        id=agent_id, name=agent_id, profile_id=profile_id,
+        state=AgentState.BUSY, current_task_id=task_id,
+    ))
+
+
+async def test_busy_agent_on_completed_task_is_reset_and_announced(db):
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-done", task_status=TaskStatus.COMPLETED,
+    )
+    before = await db.get_task("t-done")
+
+    bus = _Bus()
+    report = await AgentReconciler(db, bus=bus).reconcile()
+
+    agents = await db.list_agents()
+    assert len(agents) == 1
+    assert agents[0].state == AgentState.IDLE
+    assert agents[0].current_task_id is None
+    after = await db.get_task("t-done")
+    assert after.assigned_agent_id == before.assigned_agent_id
+    assert [t for t, _ in bus.events] == ["agent.updated"]
+    assert bus.events[0][1]["agent_id"] == "agent-1"
+    assert report.created == []
+
+
+async def test_busy_agent_on_blocked_task_is_reset(db):
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-blocked", task_status=TaskStatus.BLOCKED,
+    )
+
+    bus = _Bus()
+    await AgentReconciler(db, bus=bus).reconcile()
+
+    agents = await db.list_agents()
+    assert agents[0].state == AgentState.IDLE
+    assert agents[0].current_task_id is None
+    assert [t for t, _ in bus.events] == ["agent.updated"]
+
+
+async def test_busy_agent_on_in_progress_task_is_untouched(db):
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-running", task_status=TaskStatus.IN_PROGRESS,
+    )
+
+    bus = _Bus()
+    await AgentReconciler(db, bus=bus).reconcile()
+
+    agents = await db.list_agents()
+    assert agents[0].state == AgentState.BUSY
+    assert agents[0].current_task_id == "t-running"
+    assert bus.events == []
+
+
+async def test_busy_agent_with_live_session_on_completed_task_is_untouched(db):
+    from src.models import SessionRecord
+
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1, workspace_count=0,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-done", task_status=TaskStatus.COMPLETED,
+    )
+    await db.create_session(SessionRecord(
+        id="sess-1", project_id="p", profile_id="claude-opus",
+        harness="claude", provider="tmux", name="opus-1", lifecycle="task",
+        state="running", work_dir="/tmp", epoch="e", instance_token="tok",
+        started_at=_time.time(), task_id="t-done", agent_id="agent-1",
+    ))
+
+    bus = _Bus()
+    await AgentReconciler(db, bus=bus).reconcile()
+
+    agents = await db.list_agents()
+    assert agents[0].state == AgentState.BUSY
+    assert agents[0].current_task_id == "t-done"
+    assert bus.events == []
+
+
 async def test_missing_profile_keeps_durable_definition(db):
     """A missing profile never justifies rewriting a saved worker definition."""
     await _seed_project_with_profile(
