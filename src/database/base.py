@@ -79,6 +79,29 @@ class DatabaseBackend(Protocol):
         project_id: str | None = None,
     ) -> dict: ...
 
+    async def add_task_subtasks(
+        self, task_id: str, project_id: str, items: list[dict]
+    ) -> list[dict]: ...
+
+    async def list_task_subtasks(self, task_id: str) -> list[dict]: ...
+
+    async def get_task_subtask(self, task_id: str, ordinal: int) -> dict | None: ...
+
+    async def update_task_subtask(
+        self,
+        task_id: str,
+        ordinal: int,
+        *,
+        status: str | None = None,
+        note: str | None = None,
+    ) -> dict | None: ...
+
+    async def skip_open_task_subtasks(self, task_id: str, note: str) -> int: ...
+
+    async def count_task_subtasks(self, task_ids: list[str]) -> dict[str, tuple[int, int]]: ...
+
+    async def delete_task_subtasks(self, task_id: str, *, conn=None) -> None: ...
+
     # --- Lifecycle ---
 
     async def initialize(self) -> None:

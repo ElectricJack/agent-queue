@@ -17,6 +17,7 @@ from src.database.tables import (
     sessions,
     task_comments,
     task_completion_records,
+    task_subtasks,
     tasks,
 )
 from src.models import TaskStatus
@@ -215,7 +216,8 @@ class ArchiveQueryMixin:
             )
 
         # Use the same FK cleanup as permanent deletion, but keep comments
-        # attached to the archived task identity and preserve session history.
+        # and subtasks attached to the archived task identity and preserve
+        # session history.
         await conn.execute(
             update(agents).where(agents.c.current_task_id == task_id).values(current_task_id=None)
         )
@@ -224,6 +226,7 @@ class ArchiveQueryMixin:
             conn=conn,
             preserve_comments=True,
             preserve_completion=True,
+            preserve_subtasks=True,
             gate_resolution="last waiter task archived",
         )
 
@@ -366,6 +369,18 @@ class ArchiveQueryMixin:
                 delete(task_comments).where(
                     task_comments.c.task_id == task_id,
                     task_comments.c.project_id == archived_project_id,
+                    ~exists(
+                        select(tasks.c.id).where(
+                            tasks.c.id == task_id,
+                            tasks.c.project_id == archived_project_id,
+                        )
+                    ),
+                )
+            )
+            await conn.execute(
+                delete(task_subtasks).where(
+                    task_subtasks.c.task_id == task_id,
+                    task_subtasks.c.project_id == archived_project_id,
                     ~exists(
                         select(tasks.c.id).where(
                             tasks.c.id == task_id,

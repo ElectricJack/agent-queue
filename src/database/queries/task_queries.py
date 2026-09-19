@@ -33,6 +33,7 @@ from src.database.tables import (
     task_labels,
     task_metadata,
     task_results,
+    task_subtasks,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -1473,6 +1474,7 @@ class TaskQueryMixin:
         conn,
         preserve_comments: bool = False,
         preserve_completion: bool = False,
+        preserve_subtasks: bool = False,
         gate_resolution: str = "last waiter task deleted",
     ) -> None:
         """Delete an active task and its FK references; archives retain comments and completion history.
@@ -1571,6 +1573,11 @@ class TaskQueryMixin:
             await conn.execute(delete(task_comments).where(
                 task_comments.c.task_id == task_id,
                 task_comments.c.project_id == comment_project_id,
+            ))
+        if not preserve_subtasks:
+            await conn.execute(delete(task_subtasks).where(
+                task_subtasks.c.task_id == task_id,
+                task_subtasks.c.project_id == comment_project_id,
             ))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:

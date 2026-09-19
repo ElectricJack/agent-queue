@@ -467,6 +467,31 @@ task_comments = Table(
     Index("idx_task_comments_project_created", "task_id", "project_id", "created_at", "id"),
 )
 
+# Durable, non-schedulable checklist rows a single agent ticks off inside one
+# task — distinct from task_dependencies/hierarchy, which are schedulable
+# work. No FK on task_id: subtasks survive archive, like task_comments.
+task_subtasks = Table(
+    "task_subtasks",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("ordinal", Integer, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("context", Text, nullable=False, server_default=""),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("note", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "status IN ('pending','in_progress','done','skipped')", name="ck_task_subtasks_status"
+    ),
+    CheckConstraint("length(title) BETWEEN 1 AND 300", name="ck_task_subtasks_title_length"),
+    CheckConstraint("length(context) <= 16000", name="ck_task_subtasks_context_length"),
+    UniqueConstraint("task_id", "ordinal", name="uq_task_subtasks_task_ordinal"),
+    Index("idx_task_subtasks_task", "task_id", "ordinal"),
+)
+
 task_metadata = Table(
     "task_metadata",
     metadata,
