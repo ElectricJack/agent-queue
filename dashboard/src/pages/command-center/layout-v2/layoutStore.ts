@@ -76,6 +76,11 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
     // Each response only describes the cells it was asked for, so replacing
     // these wholesale would drop the avatars and gate badges of every other
     // loaded cell. Merge by identity and prune against the node set below.
+    // A tiles response is authoritative for the workers docked in the nodes
+    // it covers: before merging `res.workers`, any stored worker docked at a
+    // node this response returned is dropped first (see pruneAnnotations) —
+    // absence there means the worker left. A worker docked outside the
+    // response's nodes is untouched.
     workers: base.workers, gates: base.gates,
     stubOverflow: new Map(base.stubOverflow),
     cells: new Map([...base.cells].map(([k, v]) => [k, new Set(v)])),
@@ -98,7 +103,8 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
     for (const c of cells) owners.add(c);
     next.edgeCells.set(k, owners);
   }
-  return pruneAnnotations(next, res.workers ?? [], res.gates ?? []);
+  const responseNodeIds = new Set((res.nodes ?? []).map((n) => n.id));
+  return pruneAnnotations(next, res.workers ?? [], res.gates ?? [], responseNodeIds);
 }
 
 const gateKey = (g: GraphGate) => g.id;
@@ -107,9 +113,22 @@ const gateKey = (g: GraphGate) => g.id;
  * Folds `workers`/`gates` from one response into the store by identity and
  * drops every annotation whose anchor is no longer a known node — a docked
  * agent or a gate badge must not outlive the card it points at.
+ *
+ * `responseNodeIds` is the id set of the `nodes` a tiles response returned
+ * (empty for calls with no response, e.g. `evictFar`/`dropCarried`). The
+ * response is authoritative for the workers docked in those nodes, so any
+ * stored worker docked at one of them is dropped before `workers` (the
+ * response's own list) is merged in — absence there means the worker left.
  */
-function pruneAnnotations(store: LayoutStore, workers: LayoutWorker[], gates: GraphGate[]): LayoutStore {
-  const byAgent = new Map(store.workers.map((w) => [w.agent_id, w]));
+function pruneAnnotations(
+  store: LayoutStore,
+  workers: LayoutWorker[],
+  gates: GraphGate[],
+  responseNodeIds: Set<string> = new Set(),
+): LayoutStore {
+  const byAgent = new Map(
+    store.workers.filter((w) => !responseNodeIds.has(w.docked_at)).map((w) => [w.agent_id, w]),
+  );
   for (const w of workers) byAgent.set(w.agent_id, w);
   const byGate = new Map(store.gates.map((g) => [gateKey(g), g]));
   for (const g of gates) byGate.set(gateKey(g), g);
