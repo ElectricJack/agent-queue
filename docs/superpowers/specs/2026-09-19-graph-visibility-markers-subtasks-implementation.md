@@ -40,7 +40,7 @@ Findings that reshape the planning doc's assumptions (all verified in code, 2026
 
 # Lane B — accurate agent markers
 
-### Task B1: Dock markers from live attempts
+### Task 1 (B1): Dock markers from live attempts
 
 **Files:**
 - Modify: `src/database/queries/task_session_queries.py` (add query), `src/database/queries/digest_queries.py:244-282` (reuse the shared predicate)
@@ -58,7 +58,7 @@ Findings that reshape the planning doc's assumptions (all verified in code, 2026
 - [ ] **Step 5:** In `graph_layout.py`, replace the `db.list_agents()` comprehension with `await db.list_live_task_workers(project_id)`. Leave `dock_workers` untouched.
 - [ ] **Step 6:** `aq test tests/test_task_session_queries.py tests/test_api_graph_layout.py tests/test_digest_queries.py`; all pass (the digest suite proves the extraction was behaviour-preserving). Ruff. Commit `fix(graph): dock agent markers from live attempts, not agents.current_task_id`.
 
-### Task B2: The tiles response is authoritative for the workers it covers
+### Task 2 (B2): The tiles response is authoritative for the workers it covers
 
 **Files:**
 - Modify: `dashboard/src/pages/command-center/layout-v2/layoutStore.ts:70-121`
@@ -73,7 +73,7 @@ Findings that reshape the planning doc's assumptions (all verified in code, 2026
 - [ ] **Step 3:** Implement in `pruneAnnotations` (pass it the set of response node ids) and update the comment at `:76-78` to state the rule.
 - [ ] **Step 4:** Run the whole `layout-v2/__tests__` directory; pass. Commit `fix(dashboard): evict graph workers a tiles response no longer reports`.
 
-### Task B3: Reconcile agents left pointing at non-running tasks, and announce it
+### Task 5 (B3): Reconcile agents left pointing at non-running tasks, and announce it
 
 **Files:**
 - Modify: `src/orchestrator/agent_reconciler.py:60-90`
@@ -85,7 +85,7 @@ Findings that reshape the planning doc's assumptions (all verified in code, 2026
 - [ ] **Step 1:** Failing tests: BUSY agent, no live session, task COMPLETED → reset + one `agent.updated`; same with task BLOCKED → reset; task IN_PROGRESS → untouched; agent with a live session and a COMPLETED task → untouched; assert `tasks.assigned_agent_id` is unchanged in every case.
 - [ ] **Step 2–4:** Fail, implement, pass. Commit `fix(orchestrator): reclaim BUSY agents whose task is no longer running`.
 
-### Task B4: Doctor check `agents.dangling_current_task`
+### Task 8 (B4): Doctor check `agents.dangling_current_task`
 
 **Files:**
 - Modify: `src/doctor/pool_checks.py` (add `_check_agents_dangling_current_task` + optional `_fix_…`, register in `pool_checks()`)
@@ -102,7 +102,7 @@ Findings that reshape the planning doc's assumptions (all verified in code, 2026
 
 **Decisions:** a subtask is a row in a new `task_subtasks` table, never in `tasks` — it is never on the claim frontier, owns no branch, is delivered with its parent's branch, and costs no hierarchy depth. Statuses: `pending | in_progress | done | skipped`. Authors: anyone who may comment on the task (planner at decomposition, or the worker on first read). Closing a task with `pending`/`in_progress` subtasks is refused with `subtasks.open` unless the caller passes `skip_open_subtasks`, which marks them `skipped`. Completion is only ever reported, never inferred. Promotion of a subtask to a real task is out of scope.
 
-### Task C1: `task_subtasks` table, migration, query mixin
+### Task 3 (C1): `task_subtasks` table, migration, query mixin
 
 **Files:**
 - Modify: `src/database/tables.py` (after `task_comments`, ~:468)
@@ -159,7 +159,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 - [ ] **Step 3:** Add the table; write the migration with `_has_table(bind)` guard (`"task_subtasks" in sa.inspect(bind).get_table_names()`) → `op.create_table(...)` with the same columns/constraints/index; `downgrade` drops it if present. Implement the mixin; wire the three cleanup sites.
 - [ ] **Step 4:** `aq test tests/test_task_subtasks.py tests/test_archive.py tests/test_hierarchy_archive_delete.py tests/test_task_comments.py` plus the migration guards `aq test tests/test_migration_string_defaults.py tests/test_migration_boolean_defaults.py tests/test_sqlite_removal.py`; confirm one alembic head via `tests/alembic_revisions.py`. Commit `feat(db): task_subtasks — durable, non-schedulable checklist rows`.
 
-### Task C2: The four subtask commands, fully wired
+### Task 6 (C2): The four subtask commands, fully wired
 
 **Files:**
 - Create: `src/commands/task_subtask_commands.py` (`TaskSubtaskCommandsMixin`)
@@ -189,7 +189,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 - [ ] **Step 4:** Regenerate clients (serialised — see Global Constraints).
 - [ ] **Step 5:** `aq test tests/test_task_subtask_commands.py tests/test_cli_task_subtasks.py tests/test_command_surface.py tests/test_response_model_registry.py tests/test_command_scope_matrix.py tests/test_api_client_contract.py tests/test_tool_registry.py tests/test_mcp_catalog.py`. `test_tool_registry.py` pins tool counts — update the pinned numbers by exactly four. Commit `feat(commands): task subtasks — add, list, get, update over CLI/MCP/API`.
 
-### Task C3: Workers see their subtasks and must settle them
+### Task 9 (C3): Workers see their subtasks and must settle them
 
 **Files:**
 - Modify: `src/prime/sections.py:128-160` (`build_task_section`), `src/prime/templates/tool_guidance.md`, `src/skills/aq-tasks/SKILL.md`
@@ -206,7 +206,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 - [ ] **Step 4:** Add a "Subtasks" section to `aq-tasks/SKILL.md` (list, show, done/start/skip, the close rule, "add your own with `subtask-add` when a task has several distinct steps") and a line to `tool_guidance.md`. Regenerate clients (schema change to `task_close`).
 - [ ] **Step 5:** `aq test tests/test_prime_renderer.py tests/test_task_subtask_commands.py tests/test_swarm_surface.py tests/test_doctor_skill_checks.py tests/test_guidance_docs.py tests/test_api_client_contract.py`. Commit `feat(worker): subtasks in prime, and a close refusal for open ones`.
 
-### Task C4: Subtask progress on graph nodes and in the task view
+### Task 12 (C4): Subtask progress on graph nodes and in the task view
 
 **Files:**
 - Modify: `src/api/models/graph_layout.py:101` (`LayoutNode` gains `subtasks_total: int = 0`, `subtasks_settled: int = 0`), `src/api/graph_layout.py` (one `count_task_subtasks(visible_ids)` per tiles/list/node response, fed into `_node`)
@@ -223,7 +223,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 
 # Lane A — a graph you can read on landing
 
-### Task A1: Phases — ordered containers that gate implicitly
+### Task 4 (A1): Phases — ordered containers that gate implicitly
 
 **Decisions:** a phase is a container task carrying `task_metadata` key `phase` = `{"order": int, "label": str}`. It may sit at the project root or under an epic (depth budget: phase → epic → task, or epic → phase → task). Creating phase *N+1* adds one `blocks` edge onto phase *N* among the same parent's phases. Nothing else gates: the blocked projection keeps the later phase DEFINED, and a DEFINED parent withholds every descendant. A phase completes by ordinary container settlement (all children COMPLETED) — a FAILED child holds the gate, which is the intent. Adding work to a completed phase is refused by the existing `container_closed`.
 
@@ -246,7 +246,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 - [ ] **Step 6:** Formulas: read `src/task_graph/formulas.py` and the `aq-graph` grammar. If a graph node can already carry metadata and nested children, document in `docs/specs/design/formulas.md` how to declare phases (container node + `metadata.phase` + a `blocks` edge) and add one formula test. If it cannot, leave formulas alone and note it in the commit body — do not extend the grammar in this task.
 - [ ] **Step 7:** Commit `feat(phases): ordered phase containers gated by the blocked projection`.
 
-### Task A2: A keyed standing parent, so automated work stops landing in the root
+### Task 7 (A2): A keyed standing parent, so automated work stops landing in the root
 
 **Decisions:** mechanism in code, policy in playbooks. `create_task` and `ensure_task` gain `parent_key`: resolve-or-create a container under that key and file the task inside it. A settled (COMPLETED) keyed container is never reused — a fresh one is created, and the old one leaves through normal archival, so the standing parent is self-cleaning. Which key automated creators use is decided in the playbooks.
 
@@ -262,7 +262,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 - [ ] **Steps:** failing tests (first call creates the container and files under it; second call reuses it; after the container settles, the next call creates a new one and the old one is untouched; concurrent calls → exactly one container; conflict and session refusals; `ensure_task` dedup still holds for the child) → implement → update the sentinel playbook + bundle → regenerate clients → `aq test tests/test_work_graph_commands.py tests/test_ensure_task.py tests/test_hierarchy_commands.py tests/test_api_client_contract.py` plus the sentinel playbook test file → commit `feat(tasks): parent_key — a self-cleaning standing parent for automated work`.
 - [ ] **Follow-up (report only):** list every other non-session `create_task`/`ensure_task` caller found (`grep -rn "ensure_task\|create_task" src/prompts src/commands`) in the commit body with a recommendation; do not change them here. The recovery-incident path is explicitly out of scope.
 
-### Task A3: Land on the active subgraph
+### Task 10 (A3): Land on the active subgraph
 
 **Decisions:** the server computes an "active" expanded set; the client applies it when the viewer has no saved expansion for the project, and on demand from a toolbar button. Active = every container with `agg_running > 0`, plus — when nothing is running — root containers with `agg_active > 0`; ancestors always included; capped at `EXPANDED_CAP`, shallowest first.
 
@@ -276,7 +276,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 
 - [ ] **Steps:** failing pure tests (running leaf three levels down → all its container ancestors; nothing running → root containers with open work; finished-only containers never included; cap respected, shallowest kept) → implement → failing API test (`auto_expand` with empty `expanded` returns `expanded_applied` and nodes resolved against it; with a non-empty `expanded` it is ignored and `expanded_applied` is null) → implement → regenerate clients → failing dashboard tests (first load with no stored expansion sends `auto_expand: true` and persists the returned set exactly once; a project with a stored expansion — even an empty one the user chose — never sends it; the button re-applies) → implement → pass → commit `feat(graph): open on the active subgraph`.
 
-### Task A4: Progress bars on containers, phases and tasks with subtasks
+### Task 13 (A4): Progress bars on containers, phases and tasks with subtasks
 
 **Files:**
 - Create: `dashboard/src/pages/command-center/ProgressBar.tsx`
@@ -290,7 +290,7 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 
 - [ ] **Steps:** failing component tests (segment widths for a known input; hidden at zero; aria-label) → implement `ProgressBar` → failing node tests (container renders a bar; card with subtasks renders one and a card without does not; phase header text; `nodeSignature` changes with `phase_order`/`phase_label`) → implement, including the two `LayoutNode` fields + regenerate → `npx vitest run src/pages/command-center` and `aq test tests/test_api_graph_layout.py tests/test_api_client_contract.py` → commit `feat(graph): progress bars on containers, phases and subtask-bearing tasks`. Depends on A1 and C4.
 
-### Task A5: Draw where derivative work came from
+### Task 11 (A5): Draw where derivative work came from
 
 **Files:** `src/api/graph_layout.py` / `src/database/queries/layout_queries.py` (edge read), `dashboard/.../layout-v2/flowNodes.ts`
 **Test:** `tests/test_api_graph_layout.py`, `flowNodes.test.ts`
@@ -302,6 +302,8 @@ Row dict keys: `id, task_id, project_id, ordinal, title, status, note, created_a
 ---
 
 ## Order and parallelism
+
+Tasks are numbered in execution order (`Task N (lane id)`); cross-references use the lane id. They run one at a time; the waves below only record dependencies.
 
 | Wave | Tasks (parallel within a wave) | Notes |
 |---|---|---|
