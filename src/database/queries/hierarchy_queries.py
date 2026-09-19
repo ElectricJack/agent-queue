@@ -58,6 +58,9 @@ from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
+#: ``task_metadata`` key a phase container carries (graph-visibility A1).
+#: Its presence, not its value, is what :func:`childless_phase` keys off.
+PHASE_KEY = "phase"
 #: Two-key PostgreSQL advisory-lock namespace "AQHI" (AQ hierarchy).
 HIERARCHY_LOCK_NAMESPACE = 0x41514849
 #: Bounds the recursive walk on an already-cyclic graph; far above any real
@@ -82,6 +85,41 @@ def container_flag_exists():
                 task_metadata.c.value == CONTAINER_VALUE,
             )
         )
+    )
+
+
+def childless_phase():
+    """``WHERE`` clause: the correlated ``tasks`` row is a phase with no children.
+
+    A phase is created *before* the work that belongs to it, so it spends a
+    moment with no children at all.  The §7 settlement predicate below asks
+    "no child is un-COMPLETED", which is vacuously true of zero children, and
+    would therefore complete a brand-new phase the instant the promotion
+    cascade released it — after which ``container_closed`` refuses the very
+    work the phase was created to hold.
+
+    The exclusion is deliberately narrowed to *phases* rather than to every
+    childless container: an ordinary container emptied by reparenting its last
+    child away must still settle, or an epic whose work moved elsewhere would
+    hang IN_PROGRESS forever (``test_emptied_container_settles_on_reparent``).
+    A phase emptied the same way stops settling, which is the same rule read
+    the other way round and is asserted explicitly in ``tests/test_phases.py``.
+
+    Shared by :meth:`HierarchyQueryMixin.settle_containers` and
+    :meth:`HierarchyQueryMixin.settle_candidates` so the event path and the
+    backstop sweep can never disagree about what settles.
+    """
+    child = tasks.alias()
+    return and_(
+        exists(
+            select(literal(1)).where(
+                and_(
+                    task_metadata.c.task_id == tasks.c.id,
+                    task_metadata.c.key == PHASE_KEY,
+                )
+            )
+        ),
+        ~exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
     )
 
 
@@ -1195,7 +1233,8 @@ class HierarchyQueryMixin:
         """Complete every seeded container whose children are all done (spec §7).
 
         Predicate: container flag ∧ status = IN_PROGRESS ∧ no live session holds
-        it ∧ no non-COMPLETED child (vacuously true when empty).  Each hit goes
+        it ∧ no non-COMPLETED child (vacuously true when empty) ∧ not a
+        childless *phase* (see :func:`childless_phase`).  Each hit goes
         through ``_apply_transition``, which — via its ``_settle_depth``
         keyword — seeds its own parent back into this method one level
         deeper; the climb is bounded by ``MAX_STRUCTURAL_DEPTH`` levels of
@@ -1265,6 +1304,7 @@ class HierarchyQueryMixin:
                             )
                         )
                     ),
+                    ~childless_phase(),
                     or_(
                         ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                         ~exists(
@@ -1306,7 +1346,12 @@ class HierarchyQueryMixin:
         return result
 
     async def settle_candidates(self) -> list[str]:
-        """Every container the §7 predicate would settle right now (backstop)."""
+        """Every container the §7 predicate would settle right now (backstop).
+
+        Shares :func:`childless_phase` with :meth:`settle_containers`, so the
+        backstop sweep cannot complete a brand-new phase the event path
+        deliberately left alone.
+        """
         child = tasks.alias("child")
         stmt = (
             select(tasks.c.id)
@@ -1339,6 +1384,7 @@ class HierarchyQueryMixin:
                             )
                         )
                     ),
+                    ~childless_phase(),
                     or_(
                         ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                         ~exists(

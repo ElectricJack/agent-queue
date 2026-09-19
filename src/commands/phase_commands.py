@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import logging
 
+from src.database.queries.hierarchy_queries import PHASE_KEY
 from src.models import DepType, TaskStatus
 
 logger = logging.getLogger(__name__)
 
-#: ``task_metadata`` key holding ``{"order": int, "label": str}``.
-PHASE_KEY = "phase"
+__all__ = ["PHASE_KEY", "PhaseCommandsMixin"]
 
 
 class PhaseCommandsMixin:

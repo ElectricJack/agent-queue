@@ -263,31 +263,71 @@ class TestChildlessPhase:
         assert await claimable(orch.db) is None
         assert created["phase"]["id"] not in await frontier(orch.db)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known hazard: the §7 settlement predicate's 'no non-COMPLETED child' "
-            "clause is vacuously true for a container with zero children, so an "
-            "empty phase is swallowed the moment the cascade releases it.  The "
-            "EXISTS(child) guard that would fix it also stops an *emptied* "
-            "container settling, which "
-            "tests/test_hierarchy_settlement.py::TestSettlement::"
-            "test_emptied_container_settles_on_reparent pins as required "
-            "behaviour.  Reported to the plan owner rather than restricted to "
-            "phase-flagged containers unilaterally — see task-4-report.md."
-        ),
-    )
     async def test_a_childless_phase_is_not_settled_by_the_cascade(self, handler, orch):
+        """A phase is created *before* its work, so it must survive empty.
+
+        The §7 predicate's "no un-COMPLETED child" clause is vacuously true of
+        zero children; without ``childless_phase`` the cascade would release
+        the phase to IN_PROGRESS and settle it COMPLETED in the same pass,
+        after which ``container_closed`` refuses the work it was created for.
+        """
         db = orch.db
         created = await phase(handler, "Phase 1")
         phase_id = created["phase"]["id"]
 
         await cascade(orch)
-        assert (await db.get_task(phase_id)).status != TaskStatus.COMPLETED
+        assert (await db.get_task(phase_id)).status == TaskStatus.IN_PROGRESS
 
         async with db._engine.begin() as conn:
             result = await db.settle_containers({phase_id}, conn=conn)
         assert result.settled == []
+        assert phase_id not in await db.settle_candidates()
+
+        # And the work it was waiting for is still accepted.
+        late = await work(handler, "late", phase_id)
+        await cascade(orch)
+        assert (await db.get_task(late)).status == TaskStatus.READY
+
+    async def test_a_phase_that_had_children_settles_normally(self, handler, orch):
+        """The carve-out is childlessness, not phase-ness.
+
+        Once a phase has held work, it settles on exactly the ordinary §7
+        terms — which is what makes the next phase's gate open at all.
+        """
+        db = orch.db
+        created = await phase(handler, "Phase 1")
+        phase_id = created["phase"]["id"]
+        one = await work(handler, "one", phase_id)
+        two = await work(handler, "two", phase_id)
+
+        await cascade(orch)
+        await db.transition_task(one, TaskStatus.COMPLETED)
+        assert (await db.get_task(phase_id)).status == TaskStatus.IN_PROGRESS
+        await db.transition_task(two, TaskStatus.COMPLETED)
+        assert (await db.get_task(phase_id)).status == TaskStatus.COMPLETED
+
+    async def test_a_phase_emptied_by_reparenting_stops_settling(self, handler, orch):
+        """A phase emptied again is a childless phase again — by design.
+
+        ``test_emptied_container_settles_on_reparent`` pins the opposite for an
+        ordinary container: an epic whose last child moves away must complete
+        rather than hang.  A phase deliberately does not, because "empty" is
+        its normal starting state and more work is expected to arrive.
+        """
+        db = orch.db
+        created = await phase(handler, "Phase 1")
+        phase_id = created["phase"]["id"]
+        only = await work(handler, "only", phase_id)
+        elsewhere = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "elsewhere"}
+        )
+        await cascade(orch)
+        assert (await db.get_task(phase_id)).status == TaskStatus.IN_PROGRESS
+
+        async with db._engine.begin() as conn:
+            await db.set_parent(only, elsewhere["created"], conn=conn)
+
+        assert (await db.get_task(phase_id)).status == TaskStatus.IN_PROGRESS
         assert phase_id not in await db.settle_candidates()
 
 
