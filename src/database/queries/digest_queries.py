@@ -24,9 +24,9 @@ signal.  A layout rebuild, a heartbeat or a metrics tick all bump
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
-from src.database.queries.task_session_queries import LIVE_ATTEMPT_STATES
+from src.database.queries.task_session_queries import live_attempt_predicate
 from src.database.tables import (
     agent_questions,
     archived_tasks,
@@ -250,16 +250,8 @@ class DigestQueryMixin:
                     )
                     .join(sessions, sessions.c.id == task_session_attempts.c.session_id)
                     .where(
-                        task_session_attempts.c.ended_at.is_(None),
-                        task_session_attempts.c.state.in_(LIVE_ATTEMPT_STATES),
+                        live_attempt_predicate(now, stale_after),
                         task_session_attempts.c.started_at <= until,
-                        sessions.c.state == "running",
-                        sessions.c.ended_at.is_(None),
-                        or_(
-                            sessions.c.last_activity.is_not(None)
-                            & (sessions.c.last_activity >= now - stale_after),
-                            sessions.c.started_at >= now - stale_after,
-                        ),
                     )
                 )
             ).all()

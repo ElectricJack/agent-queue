@@ -461,11 +461,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             for s in stubs
         ]
 
-        # Workers and gates.
-        agents = [
-            {"id": a.id, "name": a.name, "current_task_id": a.current_task_id}
-            for a in await db.list_agents()
-        ]
+        # Workers and gates.  Docked from live session attempts, not
+        # ``agents.current_task_id``, which only clears on the next
+        # claim/release and dangles on a finished task in between.
+        agents = await db.list_live_task_workers(project_id)
         # `hidden_owner` is the PRE-cull map (it has to be, for edge
         # remapping), so it can dock a worker at a container the rect or the
         # filter culled away.  A worker may only dock at a node we actually

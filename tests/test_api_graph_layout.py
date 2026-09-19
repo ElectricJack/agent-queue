@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event
+from sqlalchemy import event, insert, update
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
 from src.database import Database
-from src.models import Agent, AgentState, Project, Task, TaskStatus
+from src.database.tables import task_session_attempts
+from src.database.tables import tasks as tasks_table
+from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
 from tests.db_fixtures import lease_dsn
 
@@ -34,6 +38,56 @@ def client_factory(db):
     return _make
 
 
+async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot"):
+    """A running session + open attempt, the thing that now docks a marker.
+
+    ``agents.current_task_id`` is no longer read for markers, so a test that
+    wants a worker to dock has to create the live attempt directly.
+    """
+    now = time.time()
+    session_id = f"sess-{agent_id}"
+    await db.create_session(
+        SessionRecord(
+            id=session_id,
+            project_id=project_id,
+            profile_id="p",
+            harness="claude",
+            provider="tmux",
+            name=session_id,
+            lifecycle="pool",
+            work_dir="/w",
+            epoch="e",
+            instance_token=session_id,
+            started_at=now - 60,
+            task_id=task_id,
+            state="running",
+            last_activity=now - 5,
+        )
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id=f"attempt-{agent_id}",
+                session_id=session_id,
+                task_id=task_id,
+                project_id=project_id,
+                agent_id=agent_id,
+                agent_name=name,
+                profile_id="p",
+                name=session_id,
+                lifecycle="pool",
+                model="claude-opus-5",
+                harness="claude",
+                provider="tmux",
+                state="running",
+                work_dir="/w",
+                started_at=now - 60,
+                session_started_at=now - 60,
+                ended_at=None,
+            )
+        )
+
+
 async def seed(db):
     """epic e{c0,c1,pkg{g0,g1}}, root card z blocked by c0, hub with 10 dependents."""
 
@@ -49,7 +103,7 @@ async def seed(db):
     await mk("c0", "e")
     await mk("c1", "e", TaskStatus.COMPLETED)
     await mk("pkg", "e")
-    await mk("g0", "pkg")
+    await mk("g0", "pkg", TaskStatus.IN_PROGRESS)
     await mk("g1", "pkg")
     await mk("z")
     await db.add_dependency("z", "c0")
@@ -60,6 +114,7 @@ async def seed(db):
     await db.create_agent(
         Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY, current_task_id="g0")
     )
+    await dock_live_worker(db, "a1", "g0", name="bot")
     drv = LayoutDriver(db)
     await drv.full_layout("p1", "all")
     await drv.full_layout("p1", "active")
@@ -258,6 +313,11 @@ async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
     await db.create_agent(
         Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY, current_task_id="c0")
     )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table).where(tasks_table.c.id == "c0").values(status="IN_PROGRESS")
+        )
+    await dock_live_worker(db, "a2", "c0", name="bot2")
     async with client_factory() as ac:
         first = (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).json()["nodes"]
         z = next(n for n in first if n["id"] == "z")
@@ -265,6 +325,49 @@ async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
         body = (await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "rect": rect})).json()
     assert {n["id"] for n in body["nodes"]} == {"z"}
     assert body["workers"] == []  # a1 (on g0) and a2 (on c0) both dock at the culled e
+
+
+async def test_tiles_a_finished_task_with_no_live_attempt_docks_no_marker(db, client_factory):
+    """A stale ``agents.current_task_id`` must not resurrect a marker (B1)."""
+    await db.create_task(
+        Task(
+            id="only",
+            project_id="p1",
+            title="Only",
+            description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await db.create_agent(
+        Agent(id="a1", name="bot", profile_id="p", state=AgentState.IDLE, current_task_id="only")
+    )
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.json()["workers"] == []
+
+
+async def test_tiles_a_live_attempt_on_a_visible_task_docks_one_worker(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "expanded": ["e", "pkg"]})
+    body = r.json()
+    assert body["workers"] == [
+        {"agent_id": "a1", "name": "bot", "docked_at": "g0", "in_collapsed": False}
+    ]
+
+
+async def test_tiles_a_live_attempt_in_a_collapsed_container_docks_the_container(
+    db, client_factory
+):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    body = r.json()
+    assert body["workers"] == [
+        {"agent_id": "a1", "name": "bot", "docked_at": "e", "in_collapsed": True}
+    ]
 
 
 async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
