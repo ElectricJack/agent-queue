@@ -68,6 +68,8 @@ For each planning task you:
     "message_inbox",
     "message_reply",
     "message_send",
+    "phase_create",
+    "phase_list",
     "prime",
     "session_drain_ack",
     "task_children",

@@ -647,6 +647,14 @@ from .pending_event_dto_event import PendingEventDTOEvent
 from .pending_event_dto_reason import PendingEventDTOReason
 from .pending_event_replay_dto import PendingEventReplayDTO
 from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
+from .phase_create_request import PhaseCreateRequest
+from .phase_create_response import PhaseCreateResponse
+from .phase_create_response_422 import PhaseCreateResponse422
+from .phase_list_request import PhaseListRequest
+from .phase_list_response import PhaseListResponse
+from .phase_list_response_422 import PhaseListResponse422
+from .phase_ref import PhaseRef
+from .phase_summary import PhaseSummary
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -1827,6 +1835,14 @@ __all__ = (
     "PendingEventDTOReason",
     "PendingEventReplayDTO",
     "PendingEventReplayDTOPolicy",
+    "PhaseCreateRequest",
+    "PhaseCreateResponse",
+    "PhaseCreateResponse422",
+    "PhaseListRequest",
+    "PhaseListResponse",
+    "PhaseListResponse422",
+    "PhaseRef",
+    "PhaseSummary",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",

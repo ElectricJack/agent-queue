@@ -49,6 +49,12 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "project_ready",
         "formula_list",
         "formula_show",
+        # Phase planning (graph-visibility A1).  Both are project-scoped
+        # reads/writes over container tasks; the ``project_id`` pin below
+        # confines a planner session to its own project, and neither command
+        # names a task, so nothing here reaches another agent's work.
+        "phase_create",
+        "phase_list",
         # A worker may move a task it filed (swarm-work-model §12): the
         # command re-derives the held task from the session and admits only
         # worker-filed tasks provenance-linked to it, moved to a parent the

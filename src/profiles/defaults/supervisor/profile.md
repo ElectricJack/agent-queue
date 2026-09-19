@@ -91,6 +91,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "message_reply",
     "message_send",
     "message_status",
+    "phase_create",
+    "phase_list",
     "pool_status",
     "prime",
     "project_ready",

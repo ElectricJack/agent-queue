@@ -195,6 +195,38 @@ class TaskCommentDeleteResponse(BaseModel):
     task_id: str
 
 
+class PhaseRef(BaseModel):
+    """The phase ``phase_create`` just wrote."""
+
+    id: str
+    order: int
+    label: str
+    parent_id: str | None = None
+    #: The previous sibling phase this one carries a ``blocks`` edge onto.
+    blocked_by: str | None = None
+
+
+class PhaseCreateResponse(BaseModel):
+    phase: PhaseRef
+
+
+class PhaseSummary(BaseModel):
+    """One phase as ``phase_list`` reports it."""
+
+    id: str
+    title: str
+    label: str
+    order: int
+    status: str
+    is_blocked: bool = False
+    total: int = 0
+    done: int = 0
+
+
+class PhaseListResponse(BaseModel):
+    phases: list[PhaseSummary] = []
+
+
 class EditTaskResponse(BaseModel):
     updated: str
     fields: list[str]
@@ -833,6 +865,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_comments": TaskCommentsResponse,
     "task_comment_edit": TaskCommentResponse,
     "task_comment_delete": TaskCommentDeleteResponse,
+    "phase_create": PhaseCreateResponse,
+    "phase_list": PhaseListResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
     "stop_task": StopTaskResponse,

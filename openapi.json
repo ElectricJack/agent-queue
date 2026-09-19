@@ -12551,6 +12551,100 @@
         }
       }
     },
+    "/api/task/phase-create": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Create the next ordered phase in a project (or under an epic). A phase is a container task: everything filed under phase N+1 waits until every child of phase N has completed, with no per-task dependency edges. Work joins a phase with 'aq task create --parent <phase-id>'.",
+        "description": "Create the next ordered phase in a project (or under an epic). A phase is a container task: everything filed under phase N+1 waits until every child of phase N has completed, with no per-task dependency edges. Work joins a phase with 'aq task create --parent <phase-id>'.",
+        "operationId": "phase_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/phase-list": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List a project's phases in order, with each phase's status, blocked state and child counts.",
+        "description": "List a project's phases in order, with each phase's status, blocked state and child counts.",
+        "operationId": "phase_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/remove-dependency": {
       "post": {
         "tags": [
@@ -31703,6 +31797,197 @@
         "type": "object",
         "title": "PendingEventReplayDTO",
         "description": "What ``playbooks.v2_pending_event_replay_on_activation`` did here.\n\nAlways present on an activation response, including under the default\n``manual`` policy, so an empty backlog and a policy that never looked at\none are distinguishable without reading the daemon's config.\n``refused_reason`` is the fail-closed path: the policy is ``automatic``\nbut the activation was not a ready, enabled one \u2014 most importantly\n``question_required``, where an unreviewed playbook may not auto-consume\na backlog."
+      },
+      "PhaseCreateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project to add the phase to."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Phase title."
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Short display label; defaults to the title."
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "Epic to nest the phase under. Omit for a phase at the project root."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "title"
+        ],
+        "title": "PhaseCreateRequest"
+      },
+      "PhaseCreateResponse": {
+        "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/PhaseRef"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase"
+        ],
+        "title": "PhaseCreateResponse"
+      },
+      "PhaseListRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project to list phases for."
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "List the phases directly under this epic instead of the project root."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "PhaseListRequest"
+      },
+      "PhaseListResponse": {
+        "properties": {
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseSummary"
+            },
+            "type": "array",
+            "title": "Phases",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "PhaseListResponse"
+      },
+      "PhaseRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "blocked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked By"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "label"
+        ],
+        "title": "PhaseRef",
+        "description": "The phase ``phase_create`` just wrote."
+      },
+      "PhaseSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "label",
+          "order",
+          "status"
+        ],
+        "title": "PhaseSummary",
+        "description": "One phase as ``phase_list`` reports it."
       },
       "PlaybookActivateRequest": {
         "properties": {

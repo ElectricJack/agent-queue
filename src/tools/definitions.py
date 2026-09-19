@@ -231,6 +231,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_comments": "task",
     "task_comment_edit": "task",
     "task_comment_delete": "task",
+    "phase_create": "task",
+    "phase_list": "task",
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
@@ -4461,6 +4463,53 @@ _ALL_TOOL_DEFINITIONS = [
                 "comment_id": {"type": "string", "description": "Comment id to delete."},
             },
             "required": ["task_id", "comment_id"],
+        },
+    },
+    {
+        "name": "phase_create",
+        "description": (
+            "Create the next ordered phase in a project (or under an epic). A phase is a "
+            "container task: everything filed under phase N+1 waits until every child of "
+            "phase N has completed, with no per-task dependency edges. Work joins a phase "
+            "with 'aq task create --parent <phase-id>'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project to add the phase to."},
+                "title": {"type": "string", "description": "Phase title."},
+                "label": {
+                    "type": "string",
+                    "description": "Short display label; defaults to the title.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": (
+                        "Epic to nest the phase under. Omit for a phase at the project root."
+                    ),
+                },
+            },
+            "required": ["project_id", "title"],
+        },
+    },
+    {
+        "name": "phase_list",
+        "description": (
+            "List a project's phases in order, with each phase's status, blocked state and "
+            "child counts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project to list phases for."},
+                "parent_id": {
+                    "type": "string",
+                    "description": (
+                        "List the phases directly under this epic instead of the project root."
+                    ),
+                },
+            },
+            "required": ["project_id"],
         },
     },
     {

@@ -36,6 +36,8 @@ EXPECTED_AGENT_COMMANDS = {
     "project_ready",
     "formula_list",
     "formula_show",
+    "phase_create",
+    "phase_list",
     "subagent_event",
     "reparent_task",
     "integration_status",
