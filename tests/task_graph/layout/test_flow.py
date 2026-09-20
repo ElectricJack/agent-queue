@@ -244,26 +244,44 @@ def _mixed_scopes(seed, count):
         yield sizes, [b for b in buckets if b]
 
 
-@pytest.mark.parametrize("is_root", [False, True])
-def test_the_allocated_area_never_grows_for_any_mixed_scope(is_root):
+def test_the_allocated_area_never_grows_for_any_mixed_scope():
     """F1's headline property, enforced by construction rather than hoped
     for: over 400 seeded mixed-size scopes, at every rank partition and
-    ordering, the clamped target's box is never bigger than the floor's."""
+    ordering, the clamped target's drawn box is never bigger than the
+    floor's."""
     checked = 0
     stepped_down = 0
     for sizes, ordered in _mixed_scopes(seed=20260920, count=400):
-        floor = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
-        ideal = row_target(sizes, is_root=is_root)
-        target = clamp_row_target(ordered, sizes, is_root=is_root, target=ideal)
-        assert floor <= target <= ideal
-        base = allocated_area(flow_at(ordered, sizes, floor, is_root=is_root))
-        got = allocated_area(flow_at(ordered, sizes, target, is_root=is_root))
+        ideal = row_target(sizes, is_root=False)
+        target = clamp_row_target(ordered, sizes, is_root=False, target=ideal)
+        assert TARGET_ROW_WIDTH <= target <= ideal
+        base = allocated_area(flow_at(ordered, sizes, TARGET_ROW_WIDTH))
+        got = allocated_area(flow_at(ordered, sizes, target))
         assert got <= base + 1e-9, (sizes, ordered, target)
         checked += 1
         stepped_down += target < ideal
     assert checked == 400
     # The property would be vacuous if the clamp never had to do anything.
     assert stepped_down > 0
+
+
+def test_the_root_keeps_the_unclamped_ideal():
+    """The root is never banded, so F1's "a whole extra band" failure mode
+    does not exist for it, and it has no parent to push. Area is also the
+    wrong measure there: symptom 1's fix trades width for height on purpose,
+    and the operator's own screenshot gains area by doing so. Clamping the
+    root would throw that fix away, so the engine does not clamp it —
+    pinned here on the screenshot's own numbers."""
+    ids = ["epic"] + [f"c{i}" for i in range(8)]
+    sizes = {"epic": (12.0, 6.0), **unit(ids[1:])}
+    ideal = row_target(sizes, is_root=True)
+    floor_flow = flow_at([ids], sizes, TARGET_ROW_WIDTH_ROOT, is_root=True)
+    ideal_flow = flow_at([ids], sizes, ideal, is_root=True)
+    assert floor_flow.lines_per_rank == [3] and ideal_flow.lines_per_rank == [1]
+    assert ideal_flow.content[1] < floor_flow.content[1]  # shorter …
+    assert allocated_area(ideal_flow) > allocated_area(floor_flow)  # … but larger
+    # So the clamp, if it were applied here, WOULD step this back down.
+    assert clamp_row_target([ids], sizes, is_root=True, target=ideal) < ideal
 
 
 def test_the_clamp_is_bounded_by_the_ladder():

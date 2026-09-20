@@ -352,6 +352,15 @@ construction rather than by sampling — and costs at most
 nothing at all when the target is already the floor. The unit-card table above is
 unaffected: the clamp never fires there.
 
+**The root is exempt, on purpose.** It is never banded — `allocated is content`
+(`flow.py:97-98`) — so there is no band to snap up and F1's failure mode does not exist
+for it, and it has no parent to push. Area is also the wrong measure for the root: trading
+width for height is precisely symptom 1's fix, and the operator's own screenshot gains
+area by doing it (12.20 × 8.99 in three ragged lines → 21.40 × 6.55 in one). Clamping the
+root by area would step that straight back to 12.20 × 7.77 in two lines, i.e. throw the
+headline fix away. So the clamp is applied to containers, which are what "the drawn box"
+means, and F1's own evidence — both counterexamples and the ~8% sweep — is non-root.
+
 The tidy sweep keeps evaluating against the *unclamped* ideal, which depends on `sizes`
 alone. That is deliberate: the sweep's cost landscape stays continuous and independent of
 the candidate ordering, and only the single publishing flow pays for the clamp.

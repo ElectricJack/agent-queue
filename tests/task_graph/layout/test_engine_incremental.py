@@ -213,7 +213,18 @@ def test_target_is_computed_once_per_container_pass(monkeypatch):
     ids = [f"t{i}" for i in range(20)]
     kids = [task(i, created=k) for k, i in enumerate(ids)]
     edges = [(ids[i], ids[i - 4]) for i in range(4, 20)]
-    layout_container(scope(kids, edges=edges), mode="tidy")
+    # A real container, not the root: the root is deliberately not clamped.
+    inner = ContainerScope(
+        container_id="e",
+        container_path="/e/",
+        depth=1,
+        children={t.id: t for t in kids},
+        existing={},
+        sibling_edges=list(edges),
+        child_sizes={t.id: (CARD_W, CARD_H) for t in kids},
+        origin=(0.0, 0.0),
+    )
+    layout_container(inner, mode="tidy")
 
     assert calls["flows"] > 1  # the sweep really did run
     assert calls["row_target"] == 1
@@ -238,3 +249,36 @@ def test_deterministic_under_shuffled_inputs():
     assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in forward.rows.items()} == \
            {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in reverse.rows.items()}
     assert forward.allocated == reverse.allocated
+
+
+def test_a_container_never_publishes_a_bigger_box_than_the_floor_would(monkeypatch):
+    """The clamp reaches the published geometry, not just ``flow.py``.
+
+    ``{pkg (3.0, 6.0), 4 unit cards}`` is one of F1's counterexamples: its
+    ideal target is 11.8, which draws a 12 x 12 box where the floor draws
+    6 x 12. The engine must publish the floor's box.
+    """
+    kids = [task("pkg", container=True)] + [task(f"c{i}", created=i) for i in range(4)]
+    s = ContainerScope(
+        container_id="e",
+        container_path="/e/",
+        depth=1,
+        children={t.id: t for t in kids},
+        existing={},
+        sibling_edges=[],
+        child_sizes={"pkg": (3.0, 6.0)},
+        origin=(0.0, 0.0),
+    )
+    res = layout_container(s, mode="tidy")
+    assert res.allocated == (6.0, 12.0)
+    assert res.allocated[0] * res.allocated[1] == 72.0
+
+
+def test_the_root_is_not_clamped_so_a_wide_epic_keeps_its_line_mates():
+    """Symptom 1's fix is a ROOT effect. The root is never banded, so the
+    clamp — which compares drawn boxes — must not be applied to it, or the
+    operator's screenshot goes straight back to three ragged lines."""
+    kids = [task("epic", container=True)] + [task(f"c{i}", created=i + 1) for i in range(8)]
+    s = scope(kids, sizes={"epic": (12.0, 6.0)})
+    res = layout_container(s, mode="tidy")
+    assert len({r.rel_y for r in res.rows.values()}) == 1  # one line
