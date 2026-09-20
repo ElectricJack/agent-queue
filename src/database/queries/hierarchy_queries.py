@@ -105,6 +105,13 @@ def childless_phase():
     A phase emptied the same way stops settling, which is the same rule read
     the other way round and is asserted explicitly in ``tests/test_phases.py``.
 
+    **An empty phase must be deleted, not left in place.**  Because it never
+    settles, it holds its ``blocks`` edge shut and every later phase with it,
+    indefinitely — there is no timeout and no sweep that will clear it.  The
+    escape hatch is ``task_delete`` (``aq task delete <phase-id>``): deleting
+    the phase removes the edge with it and releases the next phase on the
+    following cascade (``test_deleting_an_abandoned_empty_phase_releases_the_next``).
+
     Shared by :meth:`HierarchyQueryMixin.settle_containers` and
     :meth:`HierarchyQueryMixin.settle_candidates` so the event path and the
     backstop sweep can never disagree about what settles.

@@ -16,8 +16,19 @@ from sqlalchemy import insert, select, update
 
 from src.database.queries.claim_queries import _frontier_where
 from src.database.queries.hierarchy_queries import ProjectIntegrationMode
-from src.database.tables import task_branch_origins, tasks
-from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, TaskStatus
+from src.database.tables import task_branch_origins, task_dependencies, tasks
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    DepType,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 
 PROJECT_ID = "proj"
 
@@ -75,6 +86,67 @@ async def frontier(db, mode=None):
             await conn.execute(select(tasks.c.id).where(_frontier_where(PROJECT_ID, mode)))
         ).scalars().all()
     return set(rows)
+
+
+async def blocks_edges(db, task_id):
+    """The ids *task_id* carries a ``blocks`` edge onto, straight from the table."""
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(task_dependencies.c.depends_on_task_id).where(
+                    task_dependencies.c.task_id == task_id,
+                    task_dependencies.c.dep_type == DepType.BLOCKS.value,
+                )
+            )
+        ).scalars().all()
+    return set(rows)
+
+
+async def planner_session(db, tmp_path, held_id, sid="planner-1", agent_id="planner-agent"):
+    """A live, non-elevated planner session holding *held_id*.
+
+    The planner runs `lifecycle: task` like any other worker, so its
+    `create_task` calls go down the worker-filing path — which is exactly
+    what ``phase_create`` has to place explicitly.
+    """
+    work_dir = tmp_path / sid
+    work_dir.mkdir(parents=True, exist_ok=True)
+    await db.create_agent(
+        Agent(id=agent_id, name=agent_id, profile_id="planner", state=AgentState.BUSY)
+    )
+    now = time.time()
+    await db.create_session(
+        SessionRecord(
+            id=sid,
+            task_id=held_id,
+            project_id=PROJECT_ID,
+            profile_id="planner",
+            harness="claude",
+            provider="fake",
+            name=f"n-planner--{sid}",
+            lifecycle="task",
+            state="running",
+            work_dir=str(work_dir),
+            epoch="e",
+            instance_token=sid,
+            started_at=now,
+            last_activity=now,
+            agent_id=agent_id,
+        )
+    )
+    return sid
+
+
+def scoped(handler, sid, held_id):
+    """Put *handler* in the same non-elevated session scope the API would."""
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": sid,
+        "task_id": held_id,
+        "project_id": PROJECT_ID,
+        "elevated": False,
+    }
+    return handler
 
 
 async def claimable(db):
@@ -416,3 +488,236 @@ class TestHierarchyMode:
         # with no shared parent, so the sibling-delivery predicate ignores it.
         assert await frontier(db, mode) == {late}
         assert await db.hierarchy_runnable_task_ids([late]) == {late}
+
+
+# ---------------------------------------------------------------------------
+# Placement under a real session principal (review finding 1)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionPlacement:
+    """A planner holds a task, so its filings default *under that task*.
+
+    `create_task`'s worker-filing path (swarm-work-model §12) reads an omitted
+    `parent_id` as "a child of the task I hold".  `phase_create` therefore has
+    to say `root` out loud, and must order the phase against the parent the
+    database actually recorded.
+    """
+
+    async def _held(self, orch):
+        await orch.db.create_task(
+            Task(
+                id="held",
+                project_id=PROJECT_ID,
+                title="planning",
+                description="planning",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        return "held"
+
+    async def test_a_root_phase_lands_at_the_root_not_under_the_held_task(
+        self, handler, orch, tmp_path
+    ):
+        db = orch.db
+        held = await self._held(orch)
+        sid = await planner_session(db, tmp_path, held)
+        scoped(handler, sid, held)
+
+        first = await phase(handler, "Phase 1")
+        second = await phase(handler, "Phase 2")
+
+        # The response says root, and the database agrees.
+        assert first["phase"]["parent_id"] is None
+        assert second["phase"]["parent_id"] is None
+        assert (await db.get_task(first["phase"]["id"])).parent_task_id is None
+        assert (await db.get_task(second["phase"]["id"])).parent_task_id is None
+
+        # Order and the gate edge are computed against that same root.
+        assert first["phase"]["order"] == 1
+        assert first["phase"]["blocked_by"] is None
+        assert second["phase"]["order"] == 2
+        assert second["phase"]["blocked_by"] == first["phase"]["id"]
+        assert await blocks_edges(db, second["phase"]["id"]) == {first["phase"]["id"]}
+        assert await blocks_edges(db, first["phase"]["id"]) == set()
+
+        # And phase_list — which reads the root — sees both of them.
+        listed = await handler._cmd_phase_list({"project_id": PROJECT_ID})
+        assert [p["id"] for p in listed["phases"]] == [
+            first["phase"]["id"],
+            second["phase"]["id"],
+        ]
+
+    async def test_a_phase_with_an_in_scope_parent_lands_there(
+        self, handler, orch, tmp_path
+    ):
+        db = orch.db
+        held = await self._held(orch)
+        sid = await planner_session(db, tmp_path, held)
+        scoped(handler, sid, held)
+
+        first = await phase(handler, "Phase 1", parent_id=held)
+        second = await phase(handler, "Phase 2", parent_id=held)
+
+        assert first["phase"]["parent_id"] == held
+        assert (await db.get_task(first["phase"]["id"])).parent_task_id == held
+        assert (await db.get_task(second["phase"]["id"])).parent_task_id == held
+        # Ordered against the held task, not the root.
+        assert second["phase"]["order"] == 2
+        assert second["phase"]["blocked_by"] == first["phase"]["id"]
+        assert await blocks_edges(db, second["phase"]["id"]) == {first["phase"]["id"]}
+        # The root has no phases at all, so the two placements cannot be confused.
+        assert (await handler._cmd_phase_list({"project_id": PROJECT_ID}))["phases"] == []
+        under_held = await handler._cmd_phase_list(
+            {"project_id": PROJECT_ID, "parent_id": held}
+        )
+        assert [p["id"] for p in under_held["phases"]] == [
+            first["phase"]["id"],
+            second["phase"]["id"],
+        ]
+
+    async def test_an_out_of_scope_parent_surfaces_the_filing_refusal(
+        self, handler, orch, tmp_path
+    ):
+        db = orch.db
+        held = await self._held(orch)
+        await db.create_task(
+            Task(
+                id="stranger",
+                project_id=PROJECT_ID,
+                title="stranger",
+                description="stranger",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        sid = await planner_session(db, tmp_path, held)
+        scoped(handler, sid, held)
+
+        refused = await handler._cmd_phase_create(
+            {"project_id": PROJECT_ID, "title": "nope", "parent_id": "stranger"}
+        )
+        assert refused["success"] is False
+        # The filing path's own words, verbatim — the scope refusal carries no
+        # code of its own, and none is invented to paper over that.
+        assert refused["error"] == (
+            "parent must be the held task, one of its descendants, "
+            "or the held task's own parent"
+        )
+        assert refused.get("code") != "phase.create_failed"
+        assert await handler._cmd_phase_list({"project_id": PROJECT_ID}) == {
+            "success": True,
+            "phases": [],
+        }
+
+    async def test_an_idle_session_gets_the_filing_paths_own_code(
+        self, handler, orch, tmp_path
+    ):
+        db = orch.db
+        sid = await planner_session(db, tmp_path, None, sid="idle-1", agent_id="idle-agent")
+        scoped(handler, sid, None)
+
+        refused = await handler._cmd_phase_create({"project_id": PROJECT_ID, "title": "x"})
+        assert refused["success"] is False
+        assert refused["code"] == "idle_session_cannot_file"
+
+
+# ---------------------------------------------------------------------------
+# The escape hatch for an abandoned empty phase (review finding 2)
+# ---------------------------------------------------------------------------
+
+
+class TestAbandonedPhaseRecovery:
+    async def test_deleting_an_abandoned_empty_phase_releases_the_next(
+        self, handler, orch
+    ):
+        """An empty phase never settles, so deletion is the only way out.
+
+        Documented on ``childless_phase()``: because the phase holds its
+        ``blocks`` edge shut indefinitely, an operator who abandons one must
+        delete it rather than leave it in place.
+        """
+        db = orch.db
+        first = await phase(handler, "Phase 1")
+        second = await phase(handler, "Phase 2")
+        late = await work(handler, "late", second["phase"]["id"])
+
+        await cascade(orch)
+        assert (await db.get_task(late)).is_blocked is True
+        assert await frontier(db) == set()
+
+        deleted = await handler._cmd_delete_task({"task_id": first["phase"]["id"]})
+        assert deleted.get("success") is not False, deleted
+        assert await db.get_task(first["phase"]["id"]) is None
+
+        await cascade(orch)
+        assert (await db.get_task(second["phase"]["id"])).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_task(late)).status == TaskStatus.READY
+        assert await frontier(db) == {late}
+        assert await claimable(db) == late
+
+
+# ---------------------------------------------------------------------------
+# Creation through the hierarchy filing service (brief Step 4)
+# ---------------------------------------------------------------------------
+
+
+class TestHierarchyModeCreation:
+    """`phase_create` in a hierarchy-mode project routes through
+    ``file_root_on`` / ``file_prepared_child_on`` rather than the plain
+    creation path, so the container flag, the metadata and the gate have to
+    survive a completely different writer."""
+
+    async def _enable(self, orch, tmp_path, mode="hierarchy"):
+        from src.integration.hierarchy import HierarchyIntegration
+
+        db = orch.db
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "repo"),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode=mode,
+            integration_repository_id="repo",
+        )
+        orch.hierarchy_integration = HierarchyIntegration(
+            db,
+            default_head_resolver=lambda _repo, _branch: "a" * 40,
+            checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+        )
+
+    async def test_phases_are_created_and_gated_under_hierarchy_filing(
+        self, handler, orch, tmp_path
+    ):
+        db = orch.db
+        await self._enable(orch, tmp_path)
+
+        first = await phase(handler, "Phase 1", label="Foundations")
+        second = await phase(handler, "Phase 2")
+        late = await work(handler, "late", second["phase"]["id"])
+
+        # Creation succeeded through the integration writer, with the
+        # container flag and the phase metadata intact.
+        for created, order, label in ((first, 1, "Foundations"), (second, 2, "Phase 2")):
+            task = await db.get_task(created["phase"]["id"])
+            assert task is not None
+            assert task.parent_task_id is None
+            assert await db.get_task_meta(task.id, "container") is True
+            assert await db.get_task_meta(task.id, "phase") == {
+                "order": order,
+                "label": label,
+            }
+        assert second["phase"]["blocked_by"] == first["phase"]["id"]
+        assert await blocks_edges(db, second["phase"]["id"]) == {first["phase"]["id"]}
+
+        # Phase 2 is gated: it stays DEFINED and withholds its own work.
+        await cascade(orch)
+        assert (await db.get_task(first["phase"]["id"])).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_task(second["phase"]["id"])).status == TaskStatus.DEFINED
+        assert (await db.get_task(late)).is_blocked is True
+        mode = ProjectIntegrationMode.of(await db.get_project(PROJECT_ID))
+        assert await frontier(db, mode) == set()

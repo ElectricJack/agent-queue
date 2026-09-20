@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from src.database.queries.hierarchy_queries import PHASE_KEY
+from src.database.queries.hierarchy_queries import PHASE_KEY, HierarchyError
 from src.models import DepType, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,16 @@ class PhaseCommandsMixin:
         The new phase is born DEFINED and is flagged a container *at
         creation*: an unflagged childless phase is a claimable READY task the
         moment the promotion cascade sees it.
+
+        Placement is always **explicit**.  A non-elevated session (a planner
+        holds a task like any other worker) goes down ``create_task``'s
+        worker-filing path, where an *omitted* parent means "a child of the
+        task I am holding" (swarm-work-model §12), not "the project root".
+        Asking for the root by omission would therefore have filed the phase
+        under the planner's own task while the order and the ``blocks`` edge
+        were computed against the root — so no ``parent_id`` is sent as
+        ``root: True``, and the ordering is then computed against the parent
+        the database actually recorded, never against the one requested.
         """
         project_id, parent_id, refusal = await self._phase_scope(args)
         if refusal is not None:
@@ -99,10 +109,6 @@ class PhaseCommandsMixin:
             }
         label = str(args.get("label") or "").strip() or title
 
-        siblings = await self._phase_siblings(project_id, parent_id)
-        order = max((int(meta.get("order") or 0) for _, meta in siblings), default=0) + 1
-        previous = siblings[-1][0].id if siblings else None
-
         create_args: dict = {
             "project_id": project_id,
             "title": title,
@@ -111,30 +117,63 @@ class PhaseCommandsMixin:
             # A phase gates; it is never dispatched.  Starting DEFINED keeps it
             # off the frontier until the cascade releases it as a container.
             "_initial_status": TaskStatus.DEFINED.value,
+            # The worker-filing path refuses a filing with no stated reason.
+            "reason": "phase container",
         }
         if parent_id is not None:
             create_args["parent_id"] = parent_id
-        if previous is not None:
-            create_args["depends_on"] = [
-                {
-                    "task_id": previous,
-                    "dep_type": DepType.BLOCKS.value,
-                    "reason": "phase order",
-                }
-            ]
+        else:
+            create_args["root"] = True
 
         created = await self._cmd_create_task(create_args)
         task_id = created.get("created")
         if created.get("error") or not task_id:
-            return {
-                "success": False,
-                "code": created.get("code") or "phase.create_failed",
-                "error": created.get("error") or "the phase task could not be created",
-            }
+            # Hand back the filing path's own refusal — ``idle_session_cannot_file``,
+            # ``filing_quota_exceeded``, ``reason_required``, ``hierarchy.*``, a
+            # parent-scope error — rather than flattening every one of them into
+            # a code that tells the caller nothing about what to do next.  Not
+            # every refusal upstream carries a ``code``; one is invented here
+            # only when there is genuinely nothing to pass on.
+            refusal = dict(created)
+            refusal["success"] = False
+            if not refusal.get("code") and not refusal.get("error"):
+                refusal["code"] = "phase.create_failed"
+                refusal["error"] = "the phase task could not be created"
+            return refusal
 
+        # Order and the gate edge follow the *written* placement.  The filing
+        # path may legitimately land the task somewhere other than requested
+        # (a naming-depth cap, a repair writer's re-selected parent), and a
+        # phase ordered against a parent it does not live under would gate
+        # nothing.
+        created_task = await self.db.get_task(task_id)
+        actual_parent = created_task.parent_task_id if created_task is not None else parent_id
+        siblings = await self._phase_siblings(project_id, actual_parent)
+        order = max((int(meta.get("order") or 0) for _, meta in siblings), default=0) + 1
+        previous = siblings[-1][0].id if siblings else None
+
+        # One transaction: a crash between the flag and the metadata would
+        # leave a claimable unflagged phase behind.
         async with self.db.immediate() as conn:
             await self.db.mark_container(task_id, conn=conn)
-        await self.db.set_task_meta(task_id, PHASE_KEY, {"order": order, "label": label})
+            await self.db._upsert_meta(
+                task_id, PHASE_KEY, {"order": order, "label": label}, conn=conn
+            )
+
+        if previous is not None:
+            try:
+                await self.db.add_dependency(
+                    task_id, previous, DepType.BLOCKS.value, description="phase order"
+                )
+            except HierarchyError as exc:
+                return {
+                    "success": False,
+                    "code": f"hierarchy.{exc.code}",
+                    "error": (
+                        f"hierarchy.{exc.code}: {exc.detail} (phase '{task_id}' was created "
+                        f"but is not gated behind '{previous}'; add the edge with 'aq task deps')"
+                    ),
+                }
 
         return {
             "success": True,
@@ -142,7 +181,7 @@ class PhaseCommandsMixin:
                 "id": task_id,
                 "order": order,
                 "label": label,
-                "parent_id": parent_id,
+                "parent_id": actual_parent,
                 "blocked_by": previous,
             },
         }
