@@ -943,6 +943,38 @@ aq system list-intelligence-classes
 ls ~/.agent-queue/vault/intelligence-classes/*.retired   # your old bytes
 ```
 
+### A shipped profile that gained a new grant
+
+`ensure_default_profiles()` is write-if-absent, and so is every reseed path:
+once `vault/agent-types/<id>/profile.md` exists, an upgrade never touches it.
+That is the right default for operator edits, but it means a release that adds
+a *capability* to a shipped profile — a new command in `## Config.aq_commands`
+— reaches a fresh install and no existing one.
+
+The graph-visibility release is exactly that case: the shipped worker,
+planner, supervisor, reviewer and pipeline profiles gained
+`task_subtask_add` / `task_subtasks` / `task_subtask_get` /
+`task_subtask_update` and `phase_create` / `phase_list`. On an upgraded box
+the vault copies keep their old command lists, so a worker told by prime to
+run `aq task subtask-done N` gets `capability_denied`, and then a
+`subtasks.open` refusal when it tries to close. (Prime itself now omits the
+"report progress" line for a profile that lacks `task_subtask_update`, so the
+symptom is a checklist the worker can read but not tick, not a denial loop.)
+
+Two commands close the gap:
+
+```bash
+aq doctor --check profiles.system_drift        # which vault copies diverge, and how
+aq agent profile-reseed --profile-id <id>      # rewrite one from the shipped default
+```
+
+`profiles.system_drift` is report-only by design — overwriting a vault copy
+would discard operator edits silently. `aq agent profile-reseed` writes a
+`.bak-<epoch>` beside the file first, so a profile you *had* edited can be
+reconciled by hand afterwards. Reseed the profiles you have not customised,
+and for the ones you have, add the missing commands to their
+`## Config.aq_commands` list yourself.
+
 ### Retiring a shipped default
 
 Deleting one of the *current* shipped defaults is the case that used to

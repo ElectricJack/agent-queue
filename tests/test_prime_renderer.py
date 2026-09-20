@@ -226,6 +226,42 @@ class TestGoldenAssembly:
         assert "Full context for one: `aq task subtask-show N`." in body
         assert "Work them in order unless the task says otherwise." in body
 
+    async def test_subtasks_list_without_the_progress_line_when_updates_are_denied(
+        self, db, config, task
+    ):
+        """An install upgraded from before the grants existed still shows the
+        checklist, but is not told to run a command its own policy denies."""
+        await db.update_profile(
+            "coder",
+            aq_commands=["task_close", "task_subtasks"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        await db.add_task_subtasks("task-1", "proj-1", [{"title": "First"}])
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+
+        assert "## Subtasks" in body
+        assert "- [ ] 1. First" in body
+        assert "Report progress as you go" not in body
+        assert "Work them in order unless the task says otherwise." in body
+
+    async def test_the_progress_line_returns_once_the_profile_grants_the_update(
+        self, db, config, task
+    ):
+        await db.update_profile(
+            "coder",
+            aq_commands=["task_close", "task_subtask_update"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        await db.add_task_subtasks("task-1", "proj-1", [{"title": "First"}])
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "Report progress as you go: `aq task subtask-done N`." in body
+
     async def test_section_order_is_canonical(self, db, config, task):
         from src.prime.models import SECTION_KEYS
 
