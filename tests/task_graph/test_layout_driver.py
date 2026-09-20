@@ -863,11 +863,26 @@ async def test_incremental_trajectory_is_stable(db):
     assert marks == []
 
     # ── finish ────────────────────────────────────────────────────────
+    # A finishing leaf is ``_aggregates_only``: ``all`` rewrites counters in
+    # place and ``active`` deletes the row, so NO container is re-laid at
+    # all. Assert that, not "every pass that ran changed nothing" — there
+    # are no passes, and that assertion would hold vacuously.
+    positions = {v: await _positions(db, v) for v in ("all", "active")}
     await _finish(db, "e-n1")
     records.clear()
     with _record_ordinals(records):
         await _drain(db, drv)
-    assert all(changed == set() for _, changed in records), records
+    assert records == []
+    for variant, before_xy in positions.items():
+        after_xy = await _positions(db, variant)
+        assert {t: xy for t, xy in after_xy.items() if t in before_xy} == {
+            t: xy for t, xy in before_xy.items() if t in after_xy
+        }, variant
+        assert _total_movement(before_xy, after_xy) == 0.0, variant
+        # ``active`` drops the finished leaf; ``all`` keeps it in place.
+        assert (set(before_xy) - set(after_xy)) == (
+            {"e-n1"} if variant == "active" else set()
+        ), variant
 
     # ── create-next ───────────────────────────────────────────────────
     before = {v: await db.load_subtree_rows("p1", v) for v in ("all", "active")}

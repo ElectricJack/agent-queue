@@ -26,7 +26,12 @@ from src.task_graph.layout.constants import (
     TIDY_SECONDS,
 )
 from src.task_graph.layout.cost import container_cost
-from src.task_graph.layout.flow import FlowResult, flow_container, row_target
+from src.task_graph.layout.flow import (
+    FlowResult,
+    clamp_row_target,
+    flow_container,
+    row_target,
+)
 from src.task_graph.layout.layering import break_cycles, minimal_ranks_acyclic
 from src.task_graph.layout.model import ContainerScope, LayoutRow
 from src.task_graph.layout.order_key import between
@@ -173,7 +178,7 @@ def _rows(scope: ContainerScope, ordinals, flow: FlowResult, sizes) -> dict[str,
 
 
 def _evaluate(
-    ordinals, scope, sizes, edges, minimal, is_root, target, chain_target
+    ordinals, scope, sizes, edges, minimal, is_root, *, target, chain_target
 ) -> tuple[float, FlowResult]:
     ordered = _ordered_from(ordinals)
     flow = flow_container(
@@ -237,8 +242,18 @@ def _barycenter_gap(
 
 
 def _place_new(
-    cid: str, ordinals, scope, sizes, edges, minimal, is_root, target, chain_target,
-    budget: _Budget, rng,
+    cid: str,
+    ordinals,
+    scope,
+    sizes,
+    edges,
+    minimal,
+    is_root,
+    budget: _Budget,
+    rng,
+    *,
+    target: float,
+    chain_target: float,
 ) -> None:
     """Choose rank (minimal, or minimal+1 if it pays) and a gap for ``cid``."""
     budget.check_safety()
@@ -248,7 +263,8 @@ def _place_new(
     positions0: dict[str, tuple[float, float]] | None = None
     if blockers:
         _, flow0 = _evaluate(
-            ordinals, scope, sizes, edges, minimal, is_root, target, chain_target
+            ordinals, scope, sizes, edges, minimal, is_root, target=target,
+            chain_target=chain_target,
         )
         positions0 = flow0.positions
     for rank in (rank0, rank0 + 1):
@@ -277,7 +293,8 @@ def _place_new(
             trial = dict(ordinals)
             trial[cid] = (rank, key)
             cost, _ = _evaluate(
-                trial, scope, sizes, edges, minimal, is_root, target, chain_target
+                trial, scope, sizes, edges, minimal, is_root, target=target,
+                chain_target=chain_target,
             )
             budget.used += 1
             if best is None or cost < best[0]:
@@ -290,7 +307,7 @@ def _place_new(
 
 
 def _tidy_sweep(
-    ordinals, scope, sizes, edges, minimal, is_root, target, chain_target, budget, rng
+    ordinals, scope, sizes, edges, minimal, is_root, budget, rng, *, target, chain_target
 ) -> None:
     """Barycenter sweeps then greedy adjacent swaps (§4.7)."""
     ordered = _ordered_from(ordinals)
@@ -322,7 +339,9 @@ def _tidy_sweep(
             prev = between(prev, None)
             ordinals[c] = (r, prev)
     # Greedy adjacent swaps.
-    cur, _ = _evaluate(ordinals, scope, sizes, edges, minimal, is_root, target, chain_target)
+    cur, _ = _evaluate(
+        ordinals, scope, sizes, edges, minimal, is_root, target=target, chain_target=chain_target
+    )
     improved = True
     while improved and not budget.spent():
         budget.check_safety()
@@ -335,7 +354,8 @@ def _tidy_sweep(
                 trial = dict(ordinals)
                 trial[a], trial[b] = (r, ordinals[b][1]), (r, ordinals[a][1])
                 cost, _ = _evaluate(
-                    trial, scope, sizes, edges, minimal, is_root, target, chain_target
+                    trial, scope, sizes, edges, minimal, is_root, target=target,
+                    chain_target=chain_target,
                 )
                 budget.used += 1
                 if cost < cur:
@@ -384,8 +404,8 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
                 ordinals[cid] = (r, prev)
         if len(scope.children) <= MAX_OPTIMIZED_SIBLINGS:
             _tidy_sweep(
-                ordinals, scope, sizes, edges, minimal, is_root, target, chain_target,
-                budget, rng,
+                ordinals, scope, sizes, edges, minimal, is_root, budget, rng,
+                target=target, chain_target=chain_target,
             )
         changed = set(scope.children)
     else:
@@ -424,8 +444,8 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
                     )
                     if blockers:
                         _, flow0 = _evaluate(
-                            ordinals, scope, sizes, edges, minimal, is_root, target,
-                            chain_target,
+                            ordinals, scope, sizes, edges, minimal, is_root,
+                            target=target, chain_target=chain_target,
                         )
                         lo, hi = _barycenter_gap(in_rank, ordinals, flow0.positions, blockers)
                     else:
@@ -434,8 +454,8 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
                     ordinals[cid] = (rank, between(lo, hi))
                 else:
                     _place_new(
-                        cid, ordinals, scope, sizes, edges, minimal, is_root, target,
-                        chain_target, budget, rng,
+                        cid, ordinals, scope, sizes, edges, minimal, is_root, budget,
+                        rng, target=target, chain_target=chain_target,
                     )
                 changed.add(cid)
 
@@ -443,6 +463,30 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
     if missing:
         raise ValueError(f"unplaced children: {sorted(missing)}")
 
-    _, flow = _evaluate(ordinals, scope, sizes, edges, minimal, is_root, target, chain_target)
+    # The published geometry is flowed at the CLAMPED target: the ideal is
+    # computed from sizes alone (so the sweep's cost landscape is
+    # continuous), but what the canvas draws is the content rounded up to a
+    # growth band, and for a heterogeneous scope the ideal can cost a whole
+    # extra band. Clamping here — once, against the ordering that is
+    # actually published — makes "the drawn box never grows" true by
+    # construction (t24 finding F1).
+    ordered = _ordered_from(ordinals)
+    chains = _serial_chains(ordered, edges)
+    published_target = clamp_row_target(
+        ordered,
+        sizes,
+        is_root=is_root,
+        target=target,
+        serpentine_chains=chains,
+        chain_target=chain_target,
+    )
+    flow = flow_container(
+        ordered,
+        sizes,
+        is_root=is_root,
+        serpentine_chains=chains,
+        target=published_target,
+        chain_target=chain_target,
+    )
     rows = _rows(scope, ordinals, flow, sizes)
     return ContainerResult(rows=rows, allocated=flow.allocated, changed_ordinals=changed)
