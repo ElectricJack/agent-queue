@@ -8,7 +8,7 @@ from src.models import Project, Task, TaskStatus
 from src.task_graph.layout import driver as driver_module
 from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
 from src.task_graph.layout.driver import LayoutDriver
-from src.task_graph.layout.flow import row_target
+from src.task_graph.layout.flow import clamp_row_target, row_target
 from tests.db_fixtures import lease_dsn
 
 
@@ -912,9 +912,19 @@ async def test_published_positions_move_only_on_a_band_crossing(db):
     await _drain(db, drv)
 
     def scope_shape(rows):
+        """What actually governs the epic's wrapping: the CLAMPED target
+        (the ideal can move without the published one moving, and vice
+        versa), plus the box the epic is allocated."""
+        kids = {k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"}
+        ordered: dict[int, list[str]] = {}
+        for k, r in sorted(rows.items()):
+            if r.container_id == "e":
+                ordered.setdefault(r.rank, []).append(k)
+        ideal = row_target(kids, is_root=False)
         return (
-            row_target({k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"},
-                       is_root=False),
+            clamp_row_target(
+                [ordered[r] for r in sorted(ordered)], kids, is_root=False, target=ideal
+            ),
             (rows["e"].w, rows["e"].h),
         )
 
