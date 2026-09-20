@@ -20,6 +20,8 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
+import tempfile
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -55,6 +57,55 @@ STATUS_NOT_SEEDED = "not_seeded"
 STATUS_RETIRED = "retired"
 STATUS_DRIFTED = "drifted"
 STATUS_UNREADABLE = "unreadable"
+
+
+def _atomic_write_bytes(
+    path: str,
+    data: bytes,
+    *,
+    fallback_mode_source: str | None = None,
+) -> None:
+    """Write ``data`` to ``path`` atomically via a same-directory temp file.
+
+    A plain ``open(path, "w")`` truncates before writing, so a crash or a
+    killed process mid-write can leave an empty or partial file where a vault
+    profile used to be.  This writes the full content to a sibling temp file
+    first and ``os.replace``s it into place — on POSIX, ``rename(2)`` onto an
+    existing path is atomic, so a reader always sees either the old file or
+    the fully-written new one, never a partial one.
+
+    Preserves ``path``'s own permission bits when it already exists (an
+    operator's chmod survives the write). For a brand-new file, falls back to
+    the mode of ``fallback_mode_source`` if given (matching ``shutil.copy2``'s
+    old behaviour of taking the source file's mode for a fresh reseed);
+    otherwise the temp file's default mode is used.
+    """
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+
+    mode: int | None = None
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        if fallback_mode_source is not None:
+            try:
+                mode = stat.S_IMODE(os.stat(fallback_mode_source).st_mode)
+            except OSError:
+                mode = None
+
+    fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".profile-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def defaults_root() -> str:
@@ -298,8 +349,9 @@ def reseed_profile(
         backup_path = f"{dst}.bak-{int(time.time())}"
         shutil.copy2(dst, backup_path)
 
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    shutil.copy2(shipped_path, dst)
+    with open(shipped_path, "rb") as handle:
+        shipped_bytes = handle.read()
+    _atomic_write_bytes(dst, shipped_bytes, fallback_mode_source=shipped_path)
     return {
         "profile_id": profile_id,
         "path": dst,
@@ -329,6 +381,21 @@ _JSON_FENCE_RE = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
 _ARRAY_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
+def _detect_newline(text: str) -> str:
+    """The file's own line-ending convention: ``"\\r\\n"`` or ``"\\n"``.
+
+    Read with ``open(..., newline="")`` so no universal-newline translation
+    has already collapsed this — otherwise every ``\\r`` is silently gone by
+    the time this function sees the text, and there is nothing left to
+    detect.  Looks at the first line break found; profile files are not
+    expected to mix conventions within one file.
+    """
+    idx = text.find("\n")
+    if idx > 0 and text[idx - 1] == "\r":
+        return "\r\n"
+    return "\n"
+
+
 def _capabilities_json_span(text: str) -> tuple[int, int]:
     """Offsets of the raw JSON inside the vault file's ``## Capabilities`` fence."""
     heading = _CAPABILITIES_HEADING_RE.search(text)
@@ -355,12 +422,23 @@ def _key_line_indent(block_text: str, key_start: int) -> str:
     return candidate if candidate.strip() == "" else ""
 
 
-def _rewrite_capabilities_array(block_text: str, ns: str, new_names: list[str]) -> str:
+def _rewrite_capabilities_array(
+    block_text: str,
+    ns: str,
+    new_names: list[str],
+    newline: str = "\n",
+) -> str:
     """Append ``new_names`` to the ``ns`` array inside a Capabilities JSON block.
 
     Only this one array is touched; everything else in ``block_text`` —
     including the rest of this array's existing entries, their order and
     any other namespace — is preserved verbatim.
+
+    ``newline`` is the file's own line-ending convention (``"\\n"`` or
+    ``"\\r\\n"``, from :func:`_detect_newline`). Every line this function
+    manufactures — the fixed-up last existing line, and every appended one —
+    uses it, so a CRLF vault file comes back fully CRLF rather than a mix of
+    the original convention and this function's own LF.
     """
     pattern = re.compile(r'("' + re.escape(ns) + r'"\s*:\s*)\[(.*?)\]', re.DOTALL)
     match = pattern.search(block_text)
@@ -370,11 +448,13 @@ def _rewrite_capabilities_array(block_text: str, ns: str, new_names: list[str]) 
     prefix, body = match.group(1), match.group(2)
     key_indent = _key_line_indent(block_text, match.start())
 
-    if "\n" in body:
+    if newline in body:
         # Already one-per-line — append after the existing entries, matching
         # their indentation and the shipped-file convention that only the
-        # last entry has no trailing comma.
-        lines = body.split("\n")
+        # last entry has no trailing comma. Splitting on the file's own
+        # ``newline`` (rather than a bare "\n") means a CRLF body yields
+        # clean lines with no embedded "\r" to trip up on later.
+        lines = body.split(newline)
         if lines and lines[-1].strip() == "":
             closing_indent = lines[-1]
             content_lines = lines[:-1]
@@ -395,9 +475,9 @@ def _rewrite_capabilities_array(block_text: str, ns: str, new_names: list[str]) 
         new_item_lines = [f'{item_indent}"{name}",' for name in new_names[:-1]]
         new_item_lines.append(f'{item_indent}"{new_names[-1]}"')
 
-        merged_before = "\n".join(content_lines)
-        appended = "\n".join(new_item_lines)
-        new_array = "[" + merged_before + "\n" + appended + "\n" + closing_indent + "]"
+        merged_before = newline.join(content_lines)
+        appended = newline.join(new_item_lines)
+        new_array = "[" + merged_before + newline + appended + newline + closing_indent + "]"
     else:
         # Compact single-line array (including "[]") — rewritten one-per-line
         # so the appended names are readable; existing entries and their
@@ -407,14 +487,19 @@ def _rewrite_capabilities_array(block_text: str, ns: str, new_names: list[str]) 
         item_indent = key_indent + "  "
         item_lines = [f'{item_indent}"{name}",' for name in all_names[:-1]]
         item_lines.append(f'{item_indent}"{all_names[-1]}"')
-        new_array = "[\n" + "\n".join(item_lines) + "\n" + key_indent + "]"
+        new_array = "[" + newline + newline.join(item_lines) + newline + key_indent + "]"
 
     return block_text[: match.start()] + prefix + new_array + block_text[match.end() :]
 
 
-def _add_capability_grants(text: str, ns: str, names: list[str]) -> str:
+def _add_capability_grants(
+    text: str,
+    ns: str,
+    names: list[str],
+    newline: str = "\n",
+) -> str:
     start, end = _capabilities_json_span(text)
-    new_block = _rewrite_capabilities_array(text[start:end], ns, names)
+    new_block = _rewrite_capabilities_array(text[start:end], ns, names, newline)
     return text[:start] + new_block + text[end:]
 
 
@@ -450,7 +535,9 @@ def merge_profile_grants(
         to merge into.
     ValueError
         The vault copy has no ``## Capabilities`` section (it needs a full
-        reseed or a hand edit instead), or the merged text failed to parse.
+        reseed or a hand edit instead); has one but it fails to parse (the
+        parser's own errors are included); or the merged text failed to
+        parse.
     """
     from src.profiles.parser import parse_profile
 
@@ -462,15 +549,31 @@ def merge_profile_grants(
     if not os.path.isfile(vault_path):
         raise FileNotFoundError(f"no vault copy of '{profile_id}' at {vault_path}")
 
-    with open(shipped_path, encoding="utf-8") as handle:
+    # ``newline=""`` disables universal-newline translation: a CRLF file's
+    # "\r" bytes stay in the string on read (instead of being silently
+    # dropped) and are written back untranslated, so untouched lines survive
+    # byte-for-byte and _detect_newline() has something real to look at.
+    with open(shipped_path, encoding="utf-8", newline="") as handle:
         shipped_text = handle.read()
-    with open(vault_path, encoding="utf-8") as handle:
+    with open(vault_path, encoding="utf-8", newline="") as handle:
         vault_text = handle.read()
 
     shipped_parsed = parse_profile(shipped_text)
     vault_parsed = parse_profile(vault_text)
 
     if vault_parsed.capabilities is None:
+        if "capabilities" in vault_parsed.sections:
+            # The heading and fence are there, but the JSON inside it either
+            # didn't parse or failed capability validation (e.g. a namespace
+            # that is `null` instead of a list) — that is a different, more
+            # specific problem than "no section", and the operator needs the
+            # parser's own diagnosis to fix it, not a pointer to reseed.
+            cap_errors = [e for e in vault_parsed.errors if "capabilities" in e.lower()]
+            detail = "; ".join(cap_errors) if cap_errors else "; ".join(vault_parsed.errors)
+            raise ValueError(
+                f"'{profile_id}' vault copy's '## Capabilities' section does not "
+                f"parse: {detail}"
+            )
         raise ValueError(
             f"'{profile_id}' vault copy has no '## Capabilities' section to merge "
             "grants into — use a full reseed (`aq agent profile-reseed "
@@ -481,9 +584,10 @@ def merge_profile_grants(
     if not added:
         return {"profile_id": profile_id, "added": {}, "backup_path": None, "changed": False}
 
+    newline = _detect_newline(vault_text)
     merged_text = vault_text
     for ns, names in added.items():
-        merged_text = _add_capability_grants(merged_text, ns, names)
+        merged_text = _add_capability_grants(merged_text, ns, names, newline)
 
     revalidated = parse_profile(merged_text)
     if revalidated.errors:
@@ -494,8 +598,7 @@ def merge_profile_grants(
 
     backup_path = f"{vault_path}.bak-{int(time.time())}"
     shutil.copy2(vault_path, backup_path)
-    with open(vault_path, "w", encoding="utf-8") as handle:
-        handle.write(merged_text)
+    _atomic_write_bytes(vault_path, merged_text.encode("utf-8"))
 
     return {
         "profile_id": profile_id,

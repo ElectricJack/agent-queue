@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -515,7 +516,7 @@ def test_merge_refuses_and_leaves_no_backup_when_merged_text_would_not_parse(
 
     _write(_vault(data_dir), VAULT_STALE_GRANTS)
 
-    def _corrupt(block_text: str, ns: str, new_names: list[str]) -> str:
+    def _corrupt(block_text: str, ns: str, new_names: list[str], newline: str = "\n") -> str:
         # Produce syntactically invalid JSON so the pre-write validation
         # guard has something real to catch.
         return block_text + ",,,not json,,,"
@@ -527,6 +528,161 @@ def test_merge_refuses_and_leaves_no_backup_when_merged_text_would_not_parse(
 
     assert _vault(data_dir).read_text(encoding="utf-8") == VAULT_STALE_GRANTS
     assert not [p for p in os.listdir(_vault(data_dir).parent) if ".bak-" in p]
+
+
+# --- F1: CRLF preservation ---------------------------------------------------
+
+
+def _write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def test_merge_preserves_crlf_line_endings(grants_root, data_dir):
+    # A vault file that is CRLF throughout, missing one shipped grant.
+    crlf_vault = SHIPPED_WITH_GRANTS.replace('    "escalation_apply_reply",\n', "").replace(
+        "\n", "\r\n"
+    )
+    vault_path = _vault(data_dir)
+    _write_bytes(vault_path, crlf_vault.encode("utf-8"))
+
+    result = merge_profile_grants(data_dir, "reviewer", root=grants_root)
+    assert result["added"] == {"aq_commands": ["escalation_apply_reply"]}
+
+    merged_bytes = vault_path.read_bytes()
+    merged_text = merged_bytes.decode("utf-8")
+
+    # Every line ends CRLF — no bare LF anywhere, and the file still has
+    # CRLFs (i.e. the merge didn't just strip them all).
+    assert "\r\n" in merged_text
+    assert not re.search(r"(?<!\r)\n", merged_text)
+
+    # The merged text still parses and has the missing grant.
+    from src.profiles.parser import parse_profile
+
+    parsed = parse_profile(merged_text)
+    assert parsed.errors == []
+    assert "escalation_apply_reply" in parsed.capabilities["aq_commands"]
+
+    # The backup is byte-identical to the original CRLF file.
+    assert Path(result["backup_path"]).read_bytes() == crlf_vault.encode("utf-8")
+
+
+# --- F2: atomic write --------------------------------------------------------
+
+
+def test_merge_write_failure_leaves_original_untouched_and_no_temp_file(
+    grants_root, data_dir, monkeypatch
+):
+    import src.profiles.drift as drift_mod
+
+    vault_path = _vault(data_dir)
+    _write(vault_path, VAULT_STALE_GRANTS)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr(drift_mod.os, "replace", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated crash mid-write"):
+        merge_profile_grants(data_dir, "reviewer", root=grants_root)
+
+    assert vault_path.read_text(encoding="utf-8") == VAULT_STALE_GRANTS
+    # A backup is legitimately written before the (failed) atomic replace —
+    # only the temp file the atomic writer itself creates must be cleaned up.
+    temp_leftovers = [
+        p
+        for p in os.listdir(vault_path.parent)
+        if p not in {vault_path.name} and ".bak-" not in p
+    ]
+    assert temp_leftovers == [], f"temp file(s) left behind: {temp_leftovers}"
+
+
+def test_reseed_write_failure_leaves_original_untouched_and_no_temp_file(
+    defaults_root, data_dir, monkeypatch
+):
+    import src.profiles.drift as drift_mod
+
+    vault_path = _vault(data_dir)
+    _write(vault_path, SHIPPED.replace('"read_only": true', '"read_only": false'))
+    original = vault_path.read_text(encoding="utf-8")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr(drift_mod.os, "replace", _boom)
+
+    with pytest.raises(RuntimeError, match="simulated crash mid-write"):
+        reseed_profile(data_dir, "reviewer", defaults_root)
+
+    assert vault_path.read_text(encoding="utf-8") == original
+    leftovers = [
+        p
+        for p in os.listdir(vault_path.parent)
+        if p not in {vault_path.name} and ".bak-" not in p
+    ]
+    assert leftovers == [], f"temp file(s) left behind: {leftovers}"
+
+
+def test_reseed_preserves_the_vault_files_own_mode(defaults_root, data_dir):
+    stale = SHIPPED.replace('"read_only": true', '"read_only": false')
+    vault_path = _vault(data_dir)
+    _write(vault_path, stale)
+    os.chmod(vault_path, 0o640)
+
+    reseed_profile(data_dir, "reviewer", defaults_root)
+
+    import stat as stat_mod
+
+    assert stat_mod.S_IMODE(os.stat(vault_path).st_mode) == 0o640
+
+
+# --- F3: compact non-empty array ---------------------------------------------
+
+
+def test_merge_appends_to_a_compact_nonempty_array(grants_root, data_dir):
+    vault = SHIPPED_WITH_GRANTS.replace(
+        '"aq_commands": [\n    "escalation_apply_reply",\n    "task_close",\n    "task_show"\n  ]',
+        '"aq_commands": ["task_close", "task_show"]',
+    )
+    _write(_vault(data_dir), vault)
+
+    result = merge_profile_grants(data_dir, "reviewer", root=grants_root)
+
+    assert result["added"] == {"aq_commands": ["escalation_apply_reply"]}
+
+    from src.profiles.parser import parse_profile
+
+    merged_text = _vault(data_dir).read_text(encoding="utf-8")
+    parsed = parse_profile(merged_text)
+    assert parsed.errors == []
+    assert parsed.capabilities["aq_commands"] == [
+        "task_close",
+        "task_show",
+        "escalation_apply_reply",
+    ]
+
+
+# --- F4: surface parser errors when Capabilities exists but fails to parse --
+
+
+def test_merge_refuses_with_parser_errors_when_capabilities_fails_to_parse(
+    grants_root, data_dir
+):
+    # Simplest reliable breakage: aq_commands is null instead of a list.
+    broken = SHIPPED_WITH_GRANTS.replace(
+        '"aq_commands": [\n    "escalation_apply_reply",\n    "task_close",\n    "task_show"\n  ]',
+        '"aq_commands": null',
+    )
+    _write(_vault(data_dir), broken)
+
+    with pytest.raises(ValueError) as excinfo:
+        merge_profile_grants(data_dir, "reviewer", root=grants_root)
+
+    message = str(excinfo.value)
+    assert "no '## Capabilities' section" not in message
+    assert "aq_commands" in message
+    assert "array" in message or "NoneType" in message
 
 
 # --- doctor check ----------------------------------------------------------
