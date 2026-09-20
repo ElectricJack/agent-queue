@@ -310,7 +310,8 @@ box the canvas draws):
 | 500 cards | 4.65 × 152.83 → 6 × 192 (1152 u²) | 47.8 | 47.20 × 16.19 → 48 × 24 (**1152 u²**) |
 
 **The allocated area never grows; at 20 and 40 children it halves.** S5 is answered rather
-than argued away.
+than argued away — but only *for these homogeneous scopes*. See the clamp below, which is
+what makes the statement true in general.
 
 And the operator's first screenshot, re-flowed: the 12-unit epic plus 8 cards becomes a
 single line, `epic (0, 0)`, `c0..c7` at `x = 12.15 … 20.20, y = 0` — content 21.40 × 6.55
@@ -332,6 +333,29 @@ content no longer lands under a growth band, so the 60-card epic's drawn box goe
 ladder doubles, so aspect snaps coarsely — a 60-card scope is 5.8:1 landscape rather than
 ~2:1. A finer growth ladder is the remedy and is an open question (§7.3), not bundled here.
 
+**The never-grows clamp (t24 finding F1).** The table above is unit cards. For a
+*heterogeneous* scope — one tall child plus small ones, which is exactly what a container
+holding a container looks like, i.e. this change's whole blast radius — the ideal can buy
+width that the growth ladder then charges a whole band for, and the drawn box **doubles**:
+`{pkg (3.0, 6.0), 4 unit cards}` goes from `6 × 12` (72 u²) at the floor to `12 × 12`
+(144 u²) at the ideal 11.8, as does `{(3,3), (1,1), (1,3), (1,6)}`. A 4,000-scope random
+sweep found growth in ~8% of non-root scopes, worst ×2, and a fatter child widens its
+parent's target, so it cascades upward.
+
+So the property is **enforced, not hoped for**. `clamp_row_target(ordered, sizes, …,
+target)` steps the ideal down the row ladder until the flow's allocated area is no bigger
+than the **floor** target's for the same children in the same ordering; the floor always
+qualifies, because it is the baseline. It runs **once per container pass**, on the
+ordering that is actually published — so "the drawn box never grows" is true by
+construction rather than by sampling — and costs at most
+`1 + len(row_target_rungs(floor, up_to=target))` flow passes, i.e. O(log scope width), and
+nothing at all when the target is already the floor. The unit-card table above is
+unaffected: the clamp never fires there.
+
+The tidy sweep keeps evaluating against the *unclamped* ideal, which depends on `sizes`
+alone. That is deliberate: the sweep's cost landscape stays continuous and independent of
+the candidate ordering, and only the single publishing flow pays for the clamp.
+
 **Alternative rejected: a viewport-derived target.** The persisted layout is shared and
 must not depend on who is looking (§3.5).
 
@@ -339,7 +363,8 @@ must not depend on who is looking (§3.5).
 per `layout_container` call** and threaded through `_evaluate`, never recomputed inside it
 — `_tidy_sweep` calls `_evaluate` thousands of times (`engine.py:309-331`). It depends
 only on `sizes`, never on the candidate ordering, so the cost landscape stays continuous
-and G5 is untouched. Net asymptotic change: none.
+and G5 is untouched. `clamp_row_target` adds O(log scope width) flow passes, also once per
+`layout_container` call and also outside `_evaluate`. Net asymptotic change: none.
 
 **Guarantees.** G1, G2, G5, G6, G7 unchanged. **G3 is relaxed, bounded**: crossing a
 row-target band re-wraps one scope. Because the ladder is the growth ladder, a row-target
@@ -354,7 +379,7 @@ those subtrees and rewrites their `task_layout_cells` rows (`publish_layout`,
 `src/database/queries/layout_queries.py:484`). That is exactly the cost
 `test_root_band_crossing_publish_under_1s` already pins, and §5 Task 1 adds a sibling test
 for the row-target case at the same seed scale. A wider scope also covers more 8×8 cells
-(`flow.py:178-184`) — but the totals above show the allocated box never grows, so the cell
+(`flow.py:178-184`) — but the clamp guarantees the allocated box never grows, so the cell
 count cannot grow either.
 
 ### 3.2 Ordering that surfaces active work — at the tidy seed only
