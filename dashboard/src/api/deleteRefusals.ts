@@ -20,11 +20,18 @@ export const INTEGRATION_HISTORY_MESSAGE =
 /**
  * The explanation for a delete or archive the daemon refused because
  * integration history names the subtree, or null for any other failure.
+ *
+ * `code` is the contract (`src/api/codegen.py` keeps the full refusal body for
+ * these two commands). The `error` prefix is a belt-and-braces fallback: the
+ * daemon renders the prose as `"<code>: <detail>"`, so a surface still
+ * recognises the refusal if the body is ever narrowed back to `{error}`.
  */
 export function integrationHistoryRefusal(error: unknown): string | null {
   const payload = (error as { payload?: unknown } | null)?.payload;
   if (typeof payload !== "object" || payload === null) return null;
-  return (payload as { code?: unknown }).code === INTEGRATION_OWNED
+  const body = payload as { code?: unknown; error?: unknown };
+  if (body.code === INTEGRATION_OWNED) return INTEGRATION_HISTORY_MESSAGE;
+  return typeof body.error === "string" && body.error.startsWith(`${INTEGRATION_OWNED}:`)
     ? INTEGRATION_HISTORY_MESSAGE
     : null;
 }

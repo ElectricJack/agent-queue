@@ -295,6 +295,26 @@ class DeletedBranch(BaseModel):
     base_sha: str
 
 
+class HierarchyRefusalResponse(BaseModel):
+    """The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.
+
+    These refusals are contracts, not prose: a surface branches on ``code``
+    and renders the detail keys. ``branch_discard_required`` names the
+    ``branches`` it wants a choice about, and ``integration_owned`` names the
+    audit ``references`` that make the task permanent. ``extra: allow`` keeps
+    the rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and
+    ``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic
+    envelope from discarding all of them.
+    """
+
+    model_config = {"extra": "allow"}
+
+    success: bool = False
+    #: Namespaced refusal code, e.g. ``hierarchy.integration_owned``.
+    code: str | None = None
+    error: str
+
+
 class DeleteTaskResponse(BaseModel):
     deleted: str
     title: str

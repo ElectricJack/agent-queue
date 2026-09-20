@@ -24,13 +24,28 @@ describe("integrationHistoryRefusal", () => {
     expect(INTEGRATION_HISTORY_MESSAGE).not.toMatch(/hierarchy\.|integration_batch|try again/i);
   });
 
+  it("still recognises the refusal from the prose alone", () => {
+    // Belt and braces: if the 422 body is ever narrowed back to {error}, the
+    // daemon's `"<code>: <detail>"` rendering is enough to classify it.
+    const prose = Object.assign(new Error("API 422"), {
+      payload: {
+        error: "hierarchy.integration_owned: delete would orphan 1 integration record(s)",
+      },
+    });
+    expect(integrationHistoryRefusal(prose)).toBe(INTEGRATION_HISTORY_MESSAGE);
+  });
+
   it("leaves every other failure to the generic error surface", () => {
     expect(integrationHistoryRefusal(new Error("boom"))).toBeNull();
     expect(integrationHistoryRefusal(null)).toBeNull();
     expect(
       integrationHistoryRefusal(
         Object.assign(new Error("API 422"), {
-          payload: { code: "hierarchy.branch_discard_required", branches: [] },
+          payload: {
+            code: "hierarchy.branch_discard_required",
+            error: "hierarchy.branch_discard_required: name a branch policy",
+            branches: [],
+          },
         }),
       ),
     ).toBeNull();

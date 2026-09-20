@@ -11600,12 +11600,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
                 }
               }
             }
@@ -11739,12 +11734,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
                 }
               }
             }
@@ -27471,6 +27461,37 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HierarchyRefusalResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "HierarchyRefusalResponse",
+        "description": "The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and ``integration_owned`` names the\naudit ``references`` that make the task permanent. ``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
       },
       "IdempotencyDTO": {
         "properties": {

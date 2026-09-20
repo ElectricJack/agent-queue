@@ -35,7 +35,6 @@ from .archive_settings_response_422 import ArchiveSettingsResponse422
 from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
-from .archive_task_response_422 import ArchiveTaskResponse422
 from .artifact_ref_dto import ArtifactRefDTO
 from .assignment_route_detail import AssignmentRouteDetail
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
@@ -153,7 +152,6 @@ from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
-from .delete_task_response_422 import DeleteTaskResponse422
 from .deleted_branch import DeletedBranch
 from .digest_escalation_settings import DigestEscalationSettings
 from .digest_preview_request import DigestPreviewRequest
@@ -470,6 +468,7 @@ from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
+from .hierarchy_refusal_response import HierarchyRefusalResponse
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
 from .import_portable_config_request import ImportPortableConfigRequest
@@ -1247,7 +1246,6 @@ __all__ = (
     "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
-    "ArchiveTaskResponse422",
     "ArtifactRefDTO",
     "AssignmentRouteDetail",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
@@ -1366,7 +1364,6 @@ __all__ = (
     "DeleteProjectResponse422",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
-    "DeleteTaskResponse422",
     "DigestEscalationSettings",
     "DigestPreviewRequest",
     "DigestPreviewResponse",
@@ -1676,6 +1673,7 @@ __all__ = (
     "GrepResponse",
     "GrepResponse422",
     "GridPositionDTO",
+    "HierarchyRefusalResponse",
     "HTTPValidationError",
     "IdempotencyDTO",
     "ImportPortableConfigRequest",

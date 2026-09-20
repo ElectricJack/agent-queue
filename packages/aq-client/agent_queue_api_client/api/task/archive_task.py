@@ -7,7 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.archive_task_request import ArchiveTaskRequest
 from ...models.archive_task_response import ArchiveTaskResponse
-from ...models.archive_task_response_422 import ArchiveTaskResponse422
+from ...models.hierarchy_refusal_response import HierarchyRefusalResponse
 from ...types import Response
 
 
@@ -32,14 +32,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ArchiveTaskResponse | ArchiveTaskResponse422 | None:
+) -> ArchiveTaskResponse | HierarchyRefusalResponse | None:
     if response.status_code == 200:
         response_200 = ArchiveTaskResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 422:
-        response_422 = ArchiveTaskResponse422.from_dict(response.json())
+        response_422 = HierarchyRefusalResponse.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ArchiveTaskResponse | ArchiveTaskResponse422]:
+) -> Response[ArchiveTaskResponse | HierarchyRefusalResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -64,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ArchiveTaskRequest,
-) -> Response[ArchiveTaskResponse | ArchiveTaskResponse422]:
+) -> Response[ArchiveTaskResponse | HierarchyRefusalResponse]:
     """Archive tasks. Provide task_id to archive a single task, or project_id to bulk-archive all completed
     tasks in a project.
 
@@ -79,7 +79,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ArchiveTaskResponse | ArchiveTaskResponse422]
+        Response[ArchiveTaskResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -97,7 +97,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ArchiveTaskRequest,
-) -> ArchiveTaskResponse | ArchiveTaskResponse422 | None:
+) -> ArchiveTaskResponse | HierarchyRefusalResponse | None:
     """Archive tasks. Provide task_id to archive a single task, or project_id to bulk-archive all completed
     tasks in a project.
 
@@ -112,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ArchiveTaskResponse | ArchiveTaskResponse422
+        ArchiveTaskResponse | HierarchyRefusalResponse
     """
 
     return sync_detailed(
@@ -125,7 +125,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ArchiveTaskRequest,
-) -> Response[ArchiveTaskResponse | ArchiveTaskResponse422]:
+) -> Response[ArchiveTaskResponse | HierarchyRefusalResponse]:
     """Archive tasks. Provide task_id to archive a single task, or project_id to bulk-archive all completed
     tasks in a project.
 
@@ -140,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ArchiveTaskResponse | ArchiveTaskResponse422]
+        Response[ArchiveTaskResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -156,7 +156,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ArchiveTaskRequest,
-) -> ArchiveTaskResponse | ArchiveTaskResponse422 | None:
+) -> ArchiveTaskResponse | HierarchyRefusalResponse | None:
     """Archive tasks. Provide task_id to archive a single task, or project_id to bulk-archive all completed
     tasks in a project.
 
@@ -171,7 +171,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ArchiveTaskResponse | ArchiveTaskResponse422
+        ArchiveTaskResponse | HierarchyRefusalResponse
     """
 
     return (
