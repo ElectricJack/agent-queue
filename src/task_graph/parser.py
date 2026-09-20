@@ -18,6 +18,11 @@ from typing import Any
 
 import yaml
 
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+)
 from src.task_graph.models import (
     DEFAULT_DEP_TYPE,
     GraphContext,
@@ -113,24 +118,6 @@ def _parse_context(raw: Any, node_key: str) -> tuple[GraphContext | None, list[G
     )
 
 
-def _subtask_bounds() -> tuple[int, int, int]:
-    """``(per-node cap, title cap, context cap)`` from the subtask commands.
-
-    Imported lazily for the same reason ``normalize_deliverables`` is:
-    ``src.commands`` builds the whole ``CommandHandler`` at package import,
-    and that reaches back into ``src.task_graph``.  The numbers are stated in
-    exactly one place — ``src/commands/task_subtask_commands.py`` — so the
-    grammar can never drift from what ``task_subtask_add`` accepts.
-    """
-    from src.commands.task_subtask_commands import (
-        MAX_SUBTASK_CONTEXT,
-        MAX_SUBTASK_TITLE,
-        MAX_SUBTASKS_PER_CALL,
-    )
-
-    return MAX_SUBTASKS_PER_CALL, MAX_SUBTASK_TITLE, MAX_SUBTASK_CONTEXT
-
-
 def _parse_subtask(raw: Any, node_key: str) -> tuple[GraphSubtask | None, list[GraphError]]:
     """Parse one ``subtasks`` entry: a bare title string or ``{title, context}``.
 
@@ -139,7 +126,6 @@ def _parse_subtask(raw: Any, node_key: str) -> tuple[GraphSubtask | None, list[G
     the insert would abort ``write_plan``'s whole transaction with a database
     error instead of a reportable graph finding.
     """
-    _, max_title, max_context = _subtask_bounds()
     if isinstance(raw, str):
         raw = {"title": raw}
     if not isinstance(raw, dict):
@@ -151,21 +137,29 @@ def _parse_subtask(raw: Any, node_key: str) -> tuple[GraphSubtask | None, list[G
             )
         ]
     title = raw.get("title")
-    if not isinstance(title, str) or not 1 <= len(title.strip()) <= max_title:
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= MAX_SUBTASK_TITLE:
         return None, [
             _err(
                 "bad_subtask",
-                f"each subtask title must be a string of 1 to {max_title} characters, "
+                f"each subtask title must be a string of 1 to {MAX_SUBTASK_TITLE} characters, "
                 f"got {title!r}",
                 node_key,
             )
         ]
-    context = raw.get("context", "") or ""
-    if not isinstance(context, str) or len(context) > max_context:
+    # Only an omitted key or an explicit null means "no context" — a bare
+    # YAML ``context:`` is the one way to write "unset", the same reading
+    # ``src/task_graph/formulas.py`` gives a null.  Everything else must pass
+    # the type check: coercing with ``or ""`` would have quietly accepted
+    # ``0``, ``False`` and ``[]`` while rejecting ``5``.
+    context = raw.get("context")
+    if context is None:
+        context = ""
+    if not isinstance(context, str) or len(context) > MAX_SUBTASK_CONTEXT:
         return None, [
             _err(
                 "bad_subtask",
-                f"subtask context must be a string of at most {max_context} characters",
+                f"subtask context must be a string of at most {MAX_SUBTASK_CONTEXT} "
+                f"characters, got {context!r}",
                 node_key,
             )
         ]
@@ -274,7 +268,6 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         if ctx:
             node.context.append(ctx)
 
-    max_subtasks, _title, _context = _subtask_bounds()
     raw_subtasks = raw.get("subtasks", defaults.get("subtasks")) or []
     if isinstance(raw_subtasks, (str, dict)):
         raw_subtasks = [raw_subtasks]
@@ -287,7 +280,7 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
             )
         )
         raw_subtasks = []
-    if len(raw_subtasks) > max_subtasks:
+    if len(raw_subtasks) > MAX_SUBTASKS_PER_CALL:
         # One node's list is one authoring act, so it is capped the way one
         # ``task_subtask_add`` call is.  The durable per-task ceiling
         # (``MAX_SUBTASKS_PER_TASK``) is unreachable from a graph alone — the
@@ -296,7 +289,7 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         errors.append(
             _err(
                 "bad_subtask",
-                f"node has {len(raw_subtasks)} subtasks; at most {max_subtasks} "
+                f"node has {len(raw_subtasks)} subtasks; at most {MAX_SUBTASKS_PER_CALL} "
                 "may be declared on one node",
                 key,
             )

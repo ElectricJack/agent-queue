@@ -12,16 +12,27 @@ from __future__ import annotations
 
 import logging
 
-from src.database.queries.task_subtask_queries import MAX_SUBTASKS_PER_TASK, SUBTASK_STATUSES
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+    MAX_SUBTASKS_PER_TASK,
+    SUBTASK_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
-#: Cap on how many subtasks one ``task_subtask_add`` call may append.
-#: Distinct from ``MAX_SUBTASKS_PER_TASK`` (the durable per-task ceiling).
-MAX_SUBTASKS_PER_CALL = 50
-
-MAX_SUBTASK_TITLE = 300
-MAX_SUBTASK_CONTEXT = 16000
+#: Re-exported from ``src/database/queries/task_subtask_queries.py``, where
+#: they live beside the table whose check constraints they mirror. Kept
+#: importable from here because these commands were their original home and
+#: callers (and tests) still reach for them by this path.
+__all__ = [
+    "MAX_SUBTASK_CONTEXT",
+    "MAX_SUBTASK_TITLE",
+    "MAX_SUBTASKS_PER_CALL",
+    "MAX_SUBTASKS_PER_TASK",
+    "TaskSubtaskCommandsMixin",
+]
 
 
 class TaskSubtaskCommandsMixin:

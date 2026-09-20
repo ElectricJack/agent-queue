@@ -19,7 +19,23 @@ SUBTASK_STATUSES = ("pending", "in_progress", "done", "skipped")
 OPEN_SUBTASK_STATUSES = ("pending", "in_progress")
 SETTLED_SUBTASK_STATUSES = ("done", "skipped")
 
+#: The durable per-task ceiling — what ``add_task_subtasks`` refuses to cross.
 MAX_SUBTASKS_PER_TASK = 200
+
+#: Cap on how many subtasks one authoring act may append: a single
+#: ``task_subtask_add`` call, or a single graph node's ``subtasks:`` list.
+#: Distinct from :data:`MAX_SUBTASKS_PER_TASK`, the durable ceiling.
+MAX_SUBTASKS_PER_CALL = 50
+
+#: Per-row bounds. These mirror the ``ck_task_subtasks_title_length`` and
+#: ``ck_task_subtasks_context_length`` check constraints in
+#: ``src/database/tables.py`` — every writer must reject an out-of-bounds
+#: value *before* the insert, or the constraint aborts the caller's whole
+#: transaction (for the task-graph creator, that is the entire graph).
+#: They live here, in the leaf module beside the table, so a writer that has
+#: no business importing ``src.commands`` can still state the same numbers.
+MAX_SUBTASK_TITLE = 300
+MAX_SUBTASK_CONTEXT = 16000
 
 _LIST_COLUMNS = (
     task_subtasks.c.id,

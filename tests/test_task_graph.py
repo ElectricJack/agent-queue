@@ -24,6 +24,11 @@ from src.task_graph import (
     substitute_vars,
     validate_graph,
 )
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+)
 from src.task_graph.creator import build_plan, write_plan
 from src.task_graph.models import TaskGraph
 from tests.db_fixtures import lease_dsn
@@ -179,6 +184,78 @@ class TestParseGraph:
         assert rules == {"bad_field_type", "bad_need"}
 
 
+class TestSubtaskBoundsLiveWithTheTable:
+    """The three per-row/per-call bounds are leaf constants, not command ones.
+
+    ``src/task_graph/parser.py`` must be able to state the same numbers
+    ``task_subtask_add`` enforces without importing ``src.commands`` — that
+    package builds the whole ``CommandHandler`` at import, and the handler
+    imports ``src.task_graph`` right back.
+    """
+
+    def test_the_bounds_are_reachable_without_importing_the_commands_package(self):
+        """Module import plus the three constants, with ``src.commands`` unloaded.
+
+        Scoped deliberately to the *bounds*: ``_parse_node`` still lazily
+        imports ``normalize_deliverables`` from ``src.commands.task_commands``
+        for the ``deliverables`` field, which is pre-existing and out of scope
+        here — so this probe reads the constants rather than parsing.
+        """
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys;"
+            "import src.task_graph.parser as p;"
+            "assert 'src.commands' not in sys.modules, sorted("
+            "m for m in sys.modules if m.startswith('src.commands'));"
+            "assert not hasattr(p, '_subtask_bounds');"
+            "print(p.MAX_SUBTASKS_PER_CALL, p.MAX_SUBTASK_TITLE, p.MAX_SUBTASK_CONTEXT)"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == [
+            str(MAX_SUBTASKS_PER_CALL),
+            str(MAX_SUBTASK_TITLE),
+            str(MAX_SUBTASK_CONTEXT),
+        ]
+
+    def test_the_commands_module_still_re_exports_them(self):
+        """Their original home stays importable — callers and tests use it."""
+        from src.commands import task_subtask_commands as cmds
+
+        assert (
+            cmds.MAX_SUBTASKS_PER_CALL,
+            cmds.MAX_SUBTASK_TITLE,
+            cmds.MAX_SUBTASK_CONTEXT,
+        ) == (MAX_SUBTASKS_PER_CALL, MAX_SUBTASK_TITLE, MAX_SUBTASK_CONTEXT)
+
+    def test_importing_the_commands_package_first_still_works(self):
+        """The reverse import order must not deadlock on a partial module."""
+        import subprocess
+        import sys
+
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import src.commands.task_subtask_commands;"
+                "import src.task_graph.parser as p;"
+                "print(p.MAX_SUBTASK_TITLE)",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == str(MAX_SUBTASK_TITLE)
+
+
 class TestParseSubtasks:
     """``subtasks:`` on a node — the planning-emits-subtasks grammar (§7.2)."""
 
@@ -218,8 +295,6 @@ class TestParseSubtasks:
         assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
 
     def test_an_over_long_title_is_one_bad_subtask(self):
-        from src.commands.task_subtask_commands import MAX_SUBTASK_TITLE
-
         with pytest.raises(GraphParseError) as exc:
             parse_graph(self._doc(["x" * (MAX_SUBTASK_TITLE + 1)]))
         assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
@@ -231,11 +306,29 @@ class TestParseSubtasks:
         assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
 
     def test_an_over_long_context_is_one_bad_subtask(self):
-        from src.commands.task_subtask_commands import MAX_SUBTASK_CONTEXT
-
         with pytest.raises(GraphParseError) as exc:
             parse_graph(self._doc([{"title": "t", "context": "x" * (MAX_SUBTASK_CONTEXT + 1)}]))
         assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    @pytest.mark.parametrize("context", [0, False, [], {}, 5, ["a"], {"k": "v"}])
+    def test_a_non_string_context_is_one_bad_subtask(self, context):
+        """A *falsy* non-string is as wrong as a truthy one.
+
+        ``raw.get("context", "") or ""`` accepted ``0``/``False``/``[]`` as an
+        empty context while rejecting ``5``, which is the author's mistake
+        being silently swallowed for half the type errors.
+        """
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": context}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert "context" in exc.value.errors[0].detail
+
+    @pytest.mark.parametrize("doc_context", [None, ...])
+    def test_absent_or_null_context_is_the_empty_string(self, doc_context):
+        """Only ``None`` and an omitted key mean "no context"."""
+        entry = {"title": "t"} if doc_context is ... else {"title": "t", "context": None}
+        graph = parse_graph(self._doc([entry]))
+        assert graph.nodes[0].subtasks[0].context == ""
 
     def test_a_non_string_entry_is_one_bad_subtask(self):
         with pytest.raises(GraphParseError) as exc:
@@ -248,16 +341,12 @@ class TestParseSubtasks:
         assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
 
     def test_over_the_per_node_cap_is_one_bad_subtask(self):
-        from src.commands.task_subtask_commands import MAX_SUBTASKS_PER_CALL
-
         with pytest.raises(GraphParseError) as exc:
             parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL + 1)]))
         assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
         assert str(MAX_SUBTASKS_PER_CALL) in exc.value.errors[0].detail
 
     def test_exactly_the_per_node_cap_parses(self):
-        from src.commands.task_subtask_commands import MAX_SUBTASKS_PER_CALL
-
         graph = parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL)]))
         assert len(graph.nodes[0].subtasks) == MAX_SUBTASKS_PER_CALL
 
