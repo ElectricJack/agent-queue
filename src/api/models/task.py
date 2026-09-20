@@ -365,6 +365,10 @@ class ArchiveSettingsResponse(BaseModel):
     statuses: list[str] = []
     archived_count: int = 0
     eligible_count: int = 0
+    #: Eligible roots the sweep cannot archive, with the reason each is held
+    #: back (``integration_owned`` / ``open_descendants`` / ``live_descendants``).
+    blocked_count: int = 0
+    blocked: list[dict] = []
 
 
 class SetTaskStatusResponse(BaseModel):

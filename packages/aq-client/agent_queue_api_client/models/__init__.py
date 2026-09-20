@@ -32,6 +32,7 @@ from .append_note_response_422 import AppendNoteResponse422
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
+from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .archive_task_response_422 import ArchiveTaskResponse422
@@ -1243,6 +1244,7 @@ __all__ = (
     "ArchiveSettingsRequest",
     "ArchiveSettingsResponse",
     "ArchiveSettingsResponse422",
+    "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
     "ArchiveTaskResponse422",

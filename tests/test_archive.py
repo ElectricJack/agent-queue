@@ -509,6 +509,21 @@ class TestArchiveCommands:
         result = await handler.execute("archive_settings", {})
         assert result["archived_count"] == 1
 
+    async def test_archive_settings_reports_blocked_roots(self, handler, db):
+        """The backlog the sweep keeps skipping is visible without running it."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root")
+
+        result = await handler.execute("archive_settings", {})
+        assert result["blocked_count"] == 1
+        assert result["blocked"][0]["task_id"] == "root"
+        assert result["blocked"][0]["reason"] == "integration_owned"
+        # Read-only — the command never archives.
+        assert await db.get_task("root") is not None
+
 
 # ---------------------------------------------------------------------------
 # Markdown note export tests
@@ -1127,3 +1142,103 @@ async def test_completion_history_survives_archive_and_restore(db):
     assert (await db.get_task_completion("history")).summary == "Keep findings"
     await db.delete_task("history")
     assert await db.get_task_completion("history") is None
+
+
+# ---------------------------------------------------------------------------
+# Integration bookkeeping that outlives the task it describes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_hierarchy_project(db: Database, pid: str = "p-hier") -> None:
+    """A hierarchy-mode project with one repo, as the operator's install has."""
+    from src.models import RepoConfig
+
+    await db.create_project(Project(id=pid, name=f"project-{pid}"))
+    await db.create_repo(
+        RepoConfig(id=f"repo-{pid}", project_id=pid, source_type=RepoSourceType.LINK)
+    )
+
+
+async def _enable_hierarchy_mode(db: Database, pid: str = "p-hier") -> None:
+    """Switch the project to hierarchy mode once its task graph is built."""
+    await db.update_project(
+        pid,
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id=f"repo-{pid}",
+    )
+
+
+async def _seed_parent_episode(db: Database, parent_task_id: str, pid: str = "p-hier") -> str:
+    """Write the append-only parent-episode row hierarchy completion writes."""
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_parent_episodes
+
+    episode_id = f"ep-{parent_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id=episode_id,
+                parent_task_id=parent_task_id,
+                repository_id=f"repo-{pid}",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+    return episode_id
+
+
+async def _age(db: Database, *task_ids: str) -> None:
+    old = time.time() - 86400
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"), {"t": old, "id": tid}
+            )
+
+
+class TestArchiveWithIntegrationBookkeeping:
+    """The production failure: one integration-tracked root killed the sweep."""
+
+    async def _seed(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.IN_PROGRESS)
+        await _seed_task(db, "kid", pid="p-hier", status=TaskStatus.READY)
+        await db.add_dependency("kid", "root", "parent-child")
+        async with db._engine.begin() as conn:
+            for tid in ("root", "kid"):
+                await conn.execute(
+                    text("UPDATE tasks SET status = 'COMPLETED' WHERE id = :id"), {"id": tid}
+                )
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root", "kid", "solo")
+
+    async def test_sweep_survives_an_integration_tracked_root(self, db):
+        await self._seed(db)
+
+        archived = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        # The unrelated root leaves the graph; the tracked one stays put.
+        assert archived == ["solo"]
+        assert await db.get_archived_task("solo") is not None
+        assert await db.get_task("root") is not None
+        assert await db.get_task("kid") is not None
+
+    async def test_blocked_roots_are_reported_read_only(self, db):
+        await self._seed(db)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert [b["task_id"] for b in blocked] == ["root"]
+        assert blocked[0]["reason"] == "integration_owned"
+        assert "integration_parent_episodes" in blocked[0]["detail"]
+        # Read-only: nothing moved.
+        assert await db.get_task("root") is not None
+        assert await db.get_task("solo") is not None

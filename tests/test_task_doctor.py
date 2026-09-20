@@ -29,3 +29,66 @@ async def test_stale_attention_check_reports_and_repairs_live_and_completed_rows
     assert await db.get_task_meta("done", "needs_attention") is None
     assert await db.get_task_meta("ready", "needs_attention") == "unresolved"
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_blocked_check_names_integration_tracked_roots(tmp_path):
+    """``tasks.archive_blocked`` reports the sweep's backlog without archiving."""
+    from sqlalchemy import insert
+
+    from src.config import AppConfig, ArchiveConfig
+    from src.database.tables import integration_parent_episodes
+    from src.models import RepoConfig, RepoSourceType
+
+    db = Database(lease_dsn("doctor-archive.db"))
+    await db.initialize()
+    await db.create_project(Project(id="p", name="p"))
+    await db.create_repo(RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK))
+    for task_id in ("tracked", "plain"):
+        await db.create_task(
+            Task(
+                id=task_id,
+                project_id="p",
+                title=task_id,
+                description="",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="ep",
+                parent_task_id="tracked",
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+    config = AppConfig(archive=ArchiveConfig(enabled=True, after_hours=0, statuses=["COMPLETED"]))
+
+    finding = await run_check(db, "tasks.archive_blocked", config=config)
+
+    assert finding.severity is Severity.WARN
+    assert finding.fixable is False
+    assert [row["task_id"] for row in finding.data["roots"]] == ["tracked"]
+    assert finding.data["roots"][0]["reason"] == "integration_owned"
+    # Report-only: both tasks are still there.
+    assert await db.get_task("tracked") is not None
+    assert await db.get_task("plain") is not None
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_blocked_check_is_informational_when_auto_archive_is_off(tmp_path):
+    from src.config import AppConfig, ArchiveConfig
+
+    db = Database(lease_dsn("doctor-archive-off.db"))
+    await db.initialize()
+    config = AppConfig(archive=ArchiveConfig(enabled=False))
+
+    finding = await run_check(db, "tasks.archive_blocked", config=config)
+
+    assert finding.severity is Severity.INFO
+    assert "disabled" in finding.detail
+    await db.close()

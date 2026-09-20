@@ -9,11 +9,13 @@ import time
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.task_references import INTEGRATION_TASK_REFERENCES
 from src.database.tables import (
     agents,
     archived_tasks,
     integration_repair_operations,
     integration_repair_stages,
+    metadata,
     sessions,
     task_comments,
     task_completion_records,
@@ -23,6 +25,15 @@ from src.database.tables import (
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
+
+
+def _failure_signature(exc: BaseException) -> str:
+    """``IntegrityError(fk_…)`` — the exception class plus, where the driver
+    gives one, the constraint that refused.  Short enough for one log line
+    and specific enough to name the offending table in a bug report."""
+    name = type(exc).__name__
+    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
+    return f"{name}({constraint})" if constraint else f"{name}: {exc}"
 
 
 class ArchiveQueryMixin:
@@ -258,6 +269,10 @@ class ArchiveQueryMixin:
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
+            except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
+                logger.warning(
+                    "archive_completed_tasks: skipping %s, %s", tid, _failure_signature(exc)
+                )
 
         return archived
 
@@ -274,6 +289,15 @@ class ArchiveQueryMixin:
         archive, not selected individually. Open grandchildren are caught
         by ``archive_task``'s own subtree check, which raises; those roots
         are logged and skipped.
+
+        **One bad root never stops the sweep.**  Before 2026-09-19 only
+        ``HierarchyError`` was caught here, so the first root an
+        ``IntegrityError`` escaped from aborted the whole hourly pass — on
+        the operator's install that happened 225 times in a row and nothing
+        was ever archived.  Every exception is now per root: logged once at
+        WARNING with the task id and the failure's signature, and the loop
+        continues.  ``list_archive_blocked_roots`` is the read-only view of
+        what keeps getting skipped.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -281,8 +305,29 @@ class ArchiveQueryMixin:
             return []
 
         cutoff = time.time() - older_than_seconds
+        async with self._engine.begin() as conn:
+            result = await conn.execute(self._eligible_archive_roots_stmt(statuses, cutoff))
+            task_ids = [r[0] for r in result.fetchall()]
+
+        archived: list[str] = []
+        for tid in task_ids:
+            try:
+                await self.archive_task(tid)
+                archived.append(tid)
+            except HierarchyError as exc:
+                logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
+            except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
+                logger.warning(
+                    "archive_old_terminal_tasks: skipping %s, %s", tid, _failure_signature(exc)
+                )
+
+        return archived
+
+    @staticmethod
+    def _eligible_archive_roots_stmt(statuses: list[str], cutoff: float):
+        """Terminal subtree roots older than *cutoff* — the sweep's candidates."""
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).where(
+        return select(tasks.c.id).where(
             and_(
                 tasks.c.status.in_(statuses),
                 # Reusable project triage keeps one identity and its run history.
@@ -308,19 +353,128 @@ class ArchiveQueryMixin:
                 ),
             )
         )
+
+    async def list_archive_blocked_roots(
+        self,
+        statuses: list[str],
+        older_than_seconds: float,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Eligible roots the sweep cannot archive, and why.  Read-only.
+
+        Mirrors ``archive_task``'s refusal conditions with plain SELECTs —
+        no archive is attempted — so ``aq doctor --check
+        tasks.archive_blocked`` and ``archive_settings`` can report the
+        backlog cheaply.  Returns ``[{"task_id", "reason", "detail"}]``, at
+        most *limit* rows.  A root blocked several ways reports the first
+        reason found, integration bookkeeping first — that is the one an
+        operator cannot resolve by waiting.
+        """
+        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
+
+        if not statuses:
+            return []
+        cutoff = time.time() - older_than_seconds
         async with self._engine.begin() as conn:
-            result = await conn.execute(stmt)
-            task_ids = [r[0] for r in result.fetchall()]
+            roots = [
+                r[0]
+                for r in (
+                    await conn.execute(self._eligible_archive_roots_stmt(statuses, cutoff))
+                ).fetchall()
+            ]
+            if not roots:
+                return []
+            # One recursive walk maps every descendant back to its root, so
+            # the reason queries below are one statement each regardless of
+            # how many roots are eligible.
+            seed = select(tasks.c.id.label("root"), tasks.c.id.label("id")).where(
+                tasks.c.id.in_(roots)
+            )
+            subtree = seed.cte("archive_blocked_subtree", recursive=True)
+            descendant = tasks.alias("archive_blocked_descendant")
+            subtree = subtree.union_all(
+                select(subtree.c.root, descendant.c.id).join(
+                    subtree, descendant.c.parent_task_id == subtree.c.id
+                )
+            )
+            reasons: dict[str, tuple[str, str]] = {}
 
-        archived: list[str] = []
-        for tid in task_ids:
-            try:
-                await self.archive_task(tid)
-                archived.append(tid)
-            except HierarchyError as exc:
-                logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
+            def note(task_id: str, reason: str, detail: str) -> None:
+                reasons.setdefault(task_id, (reason, detail))
 
-        return archived
+            for ref in INTEGRATION_TASK_REFERENCES:
+                table = metadata.tables[ref.table]
+                column = table.c[ref.column]
+                rows = (
+                    await conn.execute(
+                        select(subtree.c.root, column)
+                        .select_from(subtree.join(table, column == subtree.c.id))
+                        .distinct()
+                    )
+                ).fetchall()
+                for root, task_id in rows:
+                    note(
+                        root,
+                        "integration_owned",
+                        f"{ref.table} still names {task_id} ({ref.written_by})",
+                    )
+            open_rows = (
+                await conn.execute(
+                    select(subtree.c.root, tasks.c.id)
+                    .select_from(subtree.join(tasks, tasks.c.id == subtree.c.id))
+                    .where(
+                        tasks.c.status.notin_(
+                            (
+                                TaskStatus.COMPLETED.value,
+                                TaskStatus.FAILED.value,
+                                TaskStatus.BLOCKED.value,
+                            )
+                        )
+                    )
+                    .distinct()
+                )
+            ).fetchall()
+            for root, task_id in open_rows:
+                note(root, "open_descendants", f"{task_id} is not terminal")
+            live_rows = (
+                await conn.execute(
+                    select(subtree.c.root, sessions.c.task_id)
+                    .select_from(subtree.join(sessions, sessions.c.task_id == subtree.c.id))
+                    .where(sessions.c.state.in_(LIVE_SESSION_STATES))
+                    .distinct()
+                )
+            ).fetchall()
+            for root, task_id in live_rows:
+                note(root, "live_descendants", f"{task_id} still has a live session")
+            repair_rows = (
+                await conn.execute(
+                    select(subtree.c.root, integration_repair_stages.c.repair_task_id)
+                    .select_from(
+                        subtree.join(
+                            integration_repair_stages,
+                            integration_repair_stages.c.repair_task_id == subtree.c.id,
+                        ).join(
+                            integration_repair_operations,
+                            integration_repair_operations.c.id
+                            == integration_repair_stages.c.operation_id,
+                        )
+                    )
+                    .where(
+                        integration_repair_operations.c.state.in_(
+                            ("active", "escalated", "human_required")
+                        )
+                    )
+                    .distinct()
+                )
+            ).fetchall()
+            for root, task_id in repair_rows:
+                note(root, "integration_owned", f"{task_id} is in an active repair operation")
+
+        ordered = [tid for tid in roots if tid in reasons]
+        return [
+            {"task_id": tid, "reason": reasons[tid][0], "detail": reasons[tid][1]}
+            for tid in sorted(ordered)[:limit]
+        ]
 
     async def list_archived_tasks(
         self,

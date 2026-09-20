@@ -629,6 +629,27 @@ class MonitoringMixin:
             logger.error("Auto-archive error: %s", e)
             return
 
+        # ``archive_old_terminal_tasks`` skips a root it cannot archive rather
+        # than aborting the sweep, so a persistent backlog is invisible in the
+        # "archived N" line.  Name it once per pass; ``aq doctor --check
+        # tasks.archive_blocked`` and ``aq task archive-settings`` show it on
+        # demand.
+        try:
+            blocked = await self.db.list_archive_blocked_roots(
+                statuses=archive_cfg.statuses,
+                older_than_seconds=older_than_seconds,
+            )
+        except Exception as e:  # noqa: BLE001 — reporting must not break the sweep
+            logger.debug("Auto-archive blocked-root report failed: %s", e)
+            blocked = []
+        if blocked:
+            logger.warning(
+                "Auto-archive skipped %d eligible root(s): %s%s",
+                len(blocked),
+                ", ".join(f"{b['task_id']} ({b['reason']})" for b in blocked[:10]),
+                "..." if len(blocked) > 10 else "",
+            )
+
         if archived_ids:
             logger.info(
                 "Auto-archived %d terminal task(s) older than %.1fh: %s%s",

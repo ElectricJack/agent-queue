@@ -15481,6 +15481,20 @@
             "type": "integer",
             "title": "Eligible Count",
             "default": 0
+          },
+          "blocked_count": {
+            "type": "integer",
+            "title": "Blocked Count",
+            "default": 0
+          },
+          "blocked": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Blocked",
+            "default": []
           }
         },
         "type": "object",

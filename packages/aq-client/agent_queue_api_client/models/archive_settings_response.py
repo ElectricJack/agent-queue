@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
+
 
 T = TypeVar("T", bound="ArchiveSettingsResponse")
 
@@ -20,6 +24,8 @@ class ArchiveSettingsResponse:
         statuses (list[str] | Unset):
         archived_count (int | Unset):  Default: 0.
         eligible_count (int | Unset):  Default: 0.
+        blocked_count (int | Unset):  Default: 0.
+        blocked (list[ArchiveSettingsResponseBlockedItem] | Unset):
     """
 
     enabled: bool | Unset = False
@@ -27,6 +33,8 @@ class ArchiveSettingsResponse:
     statuses: list[str] | Unset = UNSET
     archived_count: int | Unset = 0
     eligible_count: int | Unset = 0
+    blocked_count: int | Unset = 0
+    blocked: list[ArchiveSettingsResponseBlockedItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -42,6 +50,15 @@ class ArchiveSettingsResponse:
 
         eligible_count = self.eligible_count
 
+        blocked_count = self.blocked_count
+
+        blocked: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.blocked, Unset):
+            blocked = []
+            for blocked_item_data in self.blocked:
+                blocked_item = blocked_item_data.to_dict()
+                blocked.append(blocked_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -55,11 +72,17 @@ class ArchiveSettingsResponse:
             field_dict["archived_count"] = archived_count
         if eligible_count is not UNSET:
             field_dict["eligible_count"] = eligible_count
+        if blocked_count is not UNSET:
+            field_dict["blocked_count"] = blocked_count
+        if blocked is not UNSET:
+            field_dict["blocked"] = blocked
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
+
         d = dict(src_dict)
         enabled = d.pop("enabled", UNSET)
 
@@ -71,12 +94,25 @@ class ArchiveSettingsResponse:
 
         eligible_count = d.pop("eligible_count", UNSET)
 
+        blocked_count = d.pop("blocked_count", UNSET)
+
+        _blocked = d.pop("blocked", UNSET)
+        blocked: list[ArchiveSettingsResponseBlockedItem] | Unset = UNSET
+        if _blocked is not UNSET:
+            blocked = []
+            for blocked_item_data in _blocked:
+                blocked_item = ArchiveSettingsResponseBlockedItem.from_dict(blocked_item_data)
+
+                blocked.append(blocked_item)
+
         archive_settings_response = cls(
             enabled=enabled,
             after_hours=after_hours,
             statuses=statuses,
             archived_count=archived_count,
             eligible_count=eligible_count,
+            blocked_count=blocked_count,
+            blocked=blocked,
         )
 
         archive_settings_response.additional_properties = d
