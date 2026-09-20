@@ -179,6 +179,64 @@ describe("useLayoutTiles auto_expand", () => {
     await waitFor(() => expect(onExpandedApplied).toHaveBeenCalledWith(["e", "pkg"]));
   });
 
+  it("latches only on an applied response, so a 202 does not burn the one shot", async () => {
+    // A layout still building answers 202: the request never reached the
+    // expansion at all, and a fresh project would otherwise land collapsed.
+    fetchTiles.mockResolvedValueOnce({ pending: true });
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: ["e"] });
+    const autoParams = { ...params, autoExpand: true };
+    const { result, rerender } = renderHook(({ rect }) => useLayoutTiles("p1", autoParams, rect),
+      { initialProps: { rect: { x0: 0, y0: 0, x1: 4, y1: 4 } } });
+    await waitFor(() => expect(result.current.pending).toBe(true));
+    rerender({ rect: { x0: 40, y0: 40, x1: 44, y1: 44 } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(2));
+    expect((fetchTiles.mock.calls[1]![2] as { autoExpand?: boolean }).autoExpand).toBe(true);
+  });
+
+  it("re-arms after an aborted request", async () => {
+    let resolveFirst!: (v: unknown) => void;
+    fetchTiles.mockImplementationOnce(() => new Promise((r) => { resolveFirst = r; }));
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: ["e"] });
+    const autoParams = { ...params, autoExpand: true };
+    const { rerender } = renderHook(({ p }) => useLayoutTiles("p1", p, { x0: 0, y0: 0, x1: 4, y1: 4 }),
+      { initialProps: { p: { ...autoParams, q: "" } } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+    // A params change aborts the in-flight request; the response it would
+    // have carried never lands, so the one shot must still be available.
+    rerender({ p: { ...autoParams, q: "needle" } });
+    await act(async () => { resolveFirst(ok([node("a", 1, 1)])); });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(2));
+    expect((fetchTiles.mock.calls[1]![2] as { autoExpand?: boolean }).autoExpand).toBe(true);
+  });
+
+  it("stops asking once a response applied an expansion", async () => {
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: ["e"] });
+    const autoParams = { ...params, autoExpand: true };
+    const { rerender } = renderHook(({ rect }) => useLayoutTiles("p1", autoParams, rect),
+      { initialProps: { rect: { x0: 0, y0: 0, x1: 4, y1: 4 } } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+    rerender({ rect: { x0: 40, y0: 40, x1: 44, y1: 44 } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(2));
+    expect((fetchTiles.mock.calls[1]![2] as { autoExpand?: boolean }).autoExpand).toBe(false);
+  });
+
+  it("re-arms when autoExpand goes false -> true again (Focus active)", async () => {
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: ["e"] });
+    const autoParams = { ...params, autoExpand: true };
+    const { rerender } = renderHook(({ p }) => useLayoutTiles("p1", p, { x0: 0, y0: 0, x1: 4, y1: 4 }),
+      { initialProps: { p: autoParams } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+    // The applied set is persisted, so the project now has a stored
+    // expansion and the layer stops asking...
+    rerender({ p: { ...params, expanded: ["e"], autoExpand: false } });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(2));
+    expect((fetchTiles.mock.calls[1]![2] as { autoExpand?: boolean }).autoExpand).toBe(false);
+    // ...until "Focus active" clears it and asks again.
+    rerender({ p: autoParams });
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(3));
+    expect((fetchTiles.mock.calls[2]![2] as { autoExpand?: boolean }).autoExpand).toBe(true);
+  });
+
   it("does not fire onExpandedApplied when expanded_applied is null", async () => {
     fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: null });
     const onExpandedApplied = vi.fn();

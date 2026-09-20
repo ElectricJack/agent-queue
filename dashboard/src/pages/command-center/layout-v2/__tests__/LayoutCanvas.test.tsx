@@ -60,16 +60,21 @@ const tiles = vi.hoisted(() => ({
   refetchVisible: vi.fn(),
   loaded: true,
   params: null as unknown,
+  /** The last params each project's own layer asked for. A multi-project
+   * canvas renders one layer per project, so `params` alone only ever shows
+   * whichever rendered last. */
+  paramsByProject: {} as Record<string, unknown>,
   /** The `options` (third-party callbacks) the canvas last passed in. */
   options: null as { onExpandedApplied?: (ids: string[]) => void } | null,
 }));
 const extents = vi.hoisted(() => ({ pending: false }));
 vi.mock("../useLayoutTiles", () => ({
   useLayoutTiles: (
-    _projectId: string, params: unknown, rect: unknown,
+    projectId: string, params: unknown, rect: unknown,
     options?: { onExpandedApplied?: (ids: string[]) => void },
   ) => {
     tiles.params = params;
+    tiles.paramsByProject[projectId] = params;
     tiles.rects.push(rect);
     tiles.options = options ?? null;
     return tiles;
@@ -619,6 +624,39 @@ describe("LayoutCanvas", () => {
         const last = puts[puts.length - 1]!;
         expect((last.value as { expanded_task_ids: string[] }).expanded_task_ids).toEqual(["z"]);
       });
+      view.unmount();
+    });
+
+    it("each layer sends only its OWN project's stored expansion", async () => {
+      // p1 has expanded something; p2 has never been initialised. The union
+      // `expandedTaskIds` used to go to both layers, which made p2 look
+      // expanded and suppressed its auto_expand indefinitely.
+      seedDashboardDoc("command_center_project_view", "p1", {
+        expanded_task_ids: ["e"],
+        expanded_finished_task_ids: [],
+        manual_positions: {},
+        expanded_initialised: true,
+      });
+      tiles.paramsByProject = {};
+      const view = render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <GraphStateProvider projectIds={["p1", "p2"]}>
+            <MemoryRouter>
+              <LayoutCanvas {...base} projectIds={["p1", "p2"]}
+                projectNames={new Map([["p1", "P1"], ["p2", "P2"]])} />
+            </MemoryRouter>
+          </GraphStateProvider>
+        </QueryClientProvider>,
+      );
+      await screen.findAllByTestId("node-e");
+      await waitFor(() => {
+        const p1 = tiles.paramsByProject.p1 as { expanded: string[]; autoExpand?: boolean };
+        expect(p1.expanded).toEqual(["e"]);
+        expect(p1.autoExpand).toBe(false);
+      });
+      const p2 = tiles.paramsByProject.p2 as { expanded: string[]; autoExpand?: boolean };
+      expect(p2.expanded).toEqual([]);
+      expect(p2.autoExpand).toBe(true);
       view.unmount();
     });
   });

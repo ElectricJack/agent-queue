@@ -68,15 +68,20 @@ export function useLayoutTiles(
   onBudget.current = opts.onBudgetExceeded;
   const onExpandedApplied = useRef(opts.onExpandedApplied);
   onExpandedApplied.current = opts.onExpandedApplied;
-  // One-shot latch for `auto_expand` (design A3, fix F3): this hook instance
-  // IS one "view generation" for this project (`ProjectLayer` keys it by
-  // project id), so a plain ref that never resets is exactly the right
-  // scope. It flips the instant a request is actually DISPATCHED with
-  // `auto_expand: true` -- not merely when a render computes
-  // `params.autoExpand` true -- so a follow-up request (a pan, a filter
-  // edit) that fires before the caller's persisted write lands and
-  // `params.autoExpand` catches up still cannot send a second one.
+  // One-shot latch for `auto_expand` (design A3), spent on an APPLIED
+  // response rather than on dispatch. Latching at dispatch spent the one
+  // shot on requests that never reached an expansion at all -- a 202
+  // layout-pending answer, an abort, a network error -- and left a fresh
+  // project collapsed with nothing to re-arm it. A request is still never
+  // duplicated: `inflight` serialises loads, so by the time a follow-up
+  // (a pan, a filter edit) runs, the response that would latch has landed.
   const autoExpandSent = useRef(false);
+  // "Focus active" clears the project's stored expansion, which flips
+  // `params.autoExpand` back to true; that transition re-arms the latch, so
+  // the button works in a mount that has already auto-expanded once.
+  const autoExpandWanted = useRef(false);
+  if (!!params.autoExpand && !autoExpandWanted.current) autoExpandSent.current = false;
+  autoExpandWanted.current = !!params.autoExpand;
 
   const load = useCallback(async () => {
     if (!projectId || failed.current) return;
@@ -99,7 +104,6 @@ export function useLayoutTiles(
     const ac = new AbortController();
     inflight.current = ac;
     const effectiveAutoExpand = !!paramsRef.current.autoExpand && !autoExpandSent.current;
-    if (effectiveAutoExpand) autoExpandSent.current = true;
     const requestParams = { ...paramsRef.current, autoExpand: effectiveAutoExpand };
     try {
       const res = await fetchTiles(projectId, cellRect(batch), requestParams, ac.signal);
@@ -112,7 +116,12 @@ export function useLayoutTiles(
       setPending(false);
       setLoaded(true);
       setError(null);
-      if (res.expanded_applied != null) onExpandedApplied.current?.(res.expanded_applied);
+      if (res.expanded_applied != null) {
+        // The server honored `auto_expand` and computed a set: that, and
+        // only that, spends the one shot.
+        autoExpandSent.current = true;
+        onExpandedApplied.current?.(res.expanded_applied);
+      }
       // Under `root` the server ignores the rect and answers with the whole
       // subtree, so evicting by cell would throw away nodes the response just
       // delivered and make every pan re-download them.

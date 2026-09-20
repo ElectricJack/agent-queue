@@ -126,6 +126,8 @@ interface LayerProps {
   onBudgetExceeded: () => void;
   /** Whether THIS project has ever stored an expansion (design A3). */
   hasStoredExpansion: (projectId: string) => boolean;
+  /** The expanded ids stored for THIS project, never the canvas-wide union. */
+  expandedForProject: (projectId: string) => readonly string[];
   /** Persists a server-computed `expanded_applied` for THIS project. */
   onExpandedApplied: (projectId: string, ids: string[]) => void;
   onElements: (projectId: string, elements: LayerElements) => void;
@@ -156,7 +158,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  */
 function ProjectLayer({
   projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded,
-  hasStoredExpansion, onExpandedApplied, onElements, density, simpleEdges,
+  hasStoredExpansion, expandedForProject, onExpandedApplied, onElements, density, simpleEdges,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -184,8 +186,22 @@ function ProjectLayer({
   // rather than to a render, since this value can (correctly) keep
   // recomputing `true` across several renders of the same still-uninitialised
   // project before the first response even comes back.
-  const autoExpand = params.expanded.length === 0 && !params.root && !hasStoredExpansion(projectId);
-  const layerParams = useMemo<TilesParams>(() => ({ ...params, autoExpand }), [params, autoExpand]);
+  //
+  // The ids come from THIS project's stored expansion, not the canvas-wide
+  // union `params.expanded` carries: expansions are stored per project, a
+  // tiles request is per project, and sending a sibling's ids made an
+  // uninitialised project look expanded -- which suppressed its own
+  // `auto_expand` and left it collapsed for as long as any other project on
+  // the canvas had something open.
+  const ownExpanded = useMemo(
+    () => [...expandedForProject(projectId)].sort().join("\u0001"),
+    [expandedForProject, projectId],
+  );
+  const autoExpand = ownExpanded.length === 0 && !params.root && !hasStoredExpansion(projectId);
+  const layerParams = useMemo<TilesParams>(
+    () => ({ ...params, expanded: ownExpanded ? ownExpanded.split("\u0001") : [], autoExpand }),
+    [params, ownExpanded, autoExpand],
+  );
 
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
@@ -229,7 +245,8 @@ function Inner(props: LayoutCanvasProps) {
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const {
-    expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, applyExpandedResult,
+    expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, expandedForProject,
+    applyExpandedResult,
     requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition,
   } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
@@ -616,6 +633,7 @@ function Inner(props: LayoutCanvasProps) {
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
             onBudgetExceeded={onBudgetExceeded} hasStoredExpansion={hasStoredExpansion}
+            expandedForProject={expandedForProject}
             onExpandedApplied={applyExpandedResult} onElements={onElements}
             density={density} simpleEdges={simpleEdges} />
         ))}

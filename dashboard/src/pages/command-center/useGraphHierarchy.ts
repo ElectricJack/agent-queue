@@ -18,6 +18,11 @@ interface GraphState {
    * A3) -- `false` only until the first explicit expand, `setExpandedTaskIds`
    * call, or server-computed `expanded_applied` is persisted. */
   hasStoredExpansion: (projectId: string) => boolean;
+  /** The expanded ids stored for ONE project. `expandedTaskIds` is the union
+   * across every project on the canvas, which is what a multi-project graph
+   * draws, but a tiles request is per project: sending a sibling's ids makes
+   * an uninitialised project look expanded and suppresses its `auto_expand`. */
+  expandedForProject: (projectId: string) => readonly string[];
   /** Persist a server-computed `expanded_applied` (design A3) for exactly ONE
    * project, with real set semantics -- unlike `setExpandedTaskIds`, this
    * never intersects `ids` against the stored expansion, so it is safe to
@@ -39,6 +44,10 @@ interface GraphState {
 }
 
 const GraphStateContext = createContext<GraphState | null>(null);
+
+/** Stable identity for "this project stores nothing", so a layer's request
+ * params do not get a new identity on every render. */
+const EMPTY_EXPANSION: readonly string[] = [];
 
 // Isolated component tests do not mount the route provider. This in-memory
 // store has intentionally no browser backing; production uses server defaults
@@ -100,15 +109,20 @@ function useFallbackState(): GraphState {
     setFallbackExpanded(next);
   }, []);
   const hasStoredExpansion = useCallback(() => snapshot.expandedInitialised, [snapshot.expandedInitialised]);
+  // The fallback store has no per-project split, so one project's expansion
+  // IS the whole expansion here.
+  const expandedForProject = useCallback(() => [...snapshot.expandedTaskIds], [snapshot.expandedTaskIds]);
   const applyExpandedResult = useCallback((_projectId: string, ids: string[]) => { setFallbackExpanded(new Set(ids)); }, []);
   const requestActiveExpansion = useCallback(() => { resetExpandedInitialisation(); }, []);
   return useMemo(() => ({
-    ...snapshot, toggleExpanded, setExpandedTaskIds: setFallbackExpanded, hasStoredExpansion, applyExpandedResult,
+    ...snapshot, toggleExpanded, setExpandedTaskIds: setFallbackExpanded, hasStoredExpansion,
+    expandedForProject, applyExpandedResult,
     requestActiveExpansion, density: fallbackDensity,
     setDensity: (density) => { fallbackDensity = density; notifyFallback(); }, manualPositions: fallbackPositions,
     saveGraphPosition: (scope, id, position) => { fallbackPositions = { ...fallbackPositions, [scope]: { ...fallbackPositions[scope], [id]: position } }; notifyFallback(); },
     clearGraphPositions: (scope) => { const { [scope]: _removed, ...rest } = fallbackPositions; fallbackPositions = rest; notifyFallback(); },
-  }), [snapshot, toggleExpanded, hasStoredExpansion, applyExpandedResult, requestActiveExpansion]);
+  }), [snapshot, toggleExpanded, hasStoredExpansion, expandedForProject, applyExpandedResult,
+    requestActiveExpansion]);
 }
 
 function projectValue(document: DashboardDocument<CommandCenterProjectViewValue>): Required<CommandCenterProjectViewValue> {
@@ -217,6 +231,10 @@ export function GraphStateProvider({ projectIds, children }: { projectIds: strin
     const document = documents.get(projectId);
     return document ? projectValue(document).expanded_initialised : false;
   }, [documents]);
+  const expandedForProject = useCallback((projectId: string) => {
+    const document = documents.get(projectId);
+    return document ? projectValue(document).expanded_task_ids : EMPTY_EXPANSION;
+  }, [documents]);
   // Clears BOTH lists (F2 ruling): the server validator requires
   // `expanded_finished_task_ids` to stay a subset of `expanded_task_ids`, so
   // clearing only the first is rejected and silently reverted.
@@ -237,11 +255,11 @@ export function GraphStateProvider({ projectIds, children }: { projectIds: strin
   const setDensity = useCallback((next: LayoutDensity) => { queueUpdate<CommandCenterPreferencesValue>("command_center_preferences", null, (value) => ({ ...value, density: next })); }, [queueUpdate]);
   const value = useMemo<GraphState>(() => ({
     expandedTaskIds, expandedFinishedIds, toggleExpanded, setExpandedTaskIds: replaceExpanded,
-    hasStoredExpansion, applyExpandedResult, requestActiveExpansion, density, setDensity, manualPositions,
-    saveGraphPosition, clearGraphPositions,
+    hasStoredExpansion, expandedForProject, applyExpandedResult, requestActiveExpansion, density,
+    setDensity, manualPositions, saveGraphPosition, clearGraphPositions,
   }), [expandedTaskIds, expandedFinishedIds, toggleExpanded, replaceExpanded, hasStoredExpansion,
-    applyExpandedResult, requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition,
-    clearGraphPositions]);
+    expandedForProject, applyExpandedResult, requestActiveExpansion, density, setDensity,
+    manualPositions, saveGraphPosition, clearGraphPositions]);
   return createElement(GraphStateContext.Provider, { value }, children);
 }
 
