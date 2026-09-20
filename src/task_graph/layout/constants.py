@@ -36,6 +36,10 @@ TIDY_JOB_SECONDS = 60.0
 FINISHED_STATUSES = frozenset({"COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"})
 RUNNING_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS"})
 RANKING_DEP_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks"})
+#: Dependency types the canvas actually draws an arrow for. Re-exported by
+#: ``view.py`` (its historical home); the driver needs it too, to tell whether
+#: a finished container is still somebody's edge endpoint.
+DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovered-from"})
 VARIANTS = ("all", "active")
 ROOT = "__root__"
 

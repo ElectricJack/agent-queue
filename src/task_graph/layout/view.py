@@ -12,7 +12,22 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from src.task_graph.layout.compaction import Box as BoxLike
+from src.task_graph.layout.constants import DRAWN_TYPES
 from src.task_graph.layout.model import LayoutRow
+
+__all__ = [
+    "DRAWN_TYPES",
+    "Visible",
+    "active_expansion",
+    "ancestors_of",
+    "cap_stubs",
+    "depth_first_order",
+    "dock_workers",
+    "forced_expansion_for",
+    "owner_map",
+    "remap_edges",
+    "resolve_visible",
+]
 
 
 def ancestors_of(path: str) -> list[str]:
@@ -88,9 +103,6 @@ def depth_first_order(rows: dict[str, LayoutRow]) -> list[str]:
         return tuple((rows[p].rank, rows[p].order_key) if p in rows else (0, "") for p in parts)
 
     return sorted(rows, key=lambda t: key(rows[t]))
-
-
-DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovered-from"})
 
 
 def owner_map(

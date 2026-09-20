@@ -201,7 +201,7 @@ async def test_moved_container_relays_its_whole_subtree(db):
     assert not _inside(rows["a"], rows["a-c0"])
 
 
-async def test_container_collapses_to_stub_then_reopens_in_active(db):
+async def test_container_leaves_active_when_it_finishes_then_reopens(db):
     kids = await seed_epic(db, epic="e", n=2)
     await db.create_task(Task(id="gc", project_id="p1", title="gc", description=""))
     async with db._engine.begin() as conn:
@@ -214,9 +214,9 @@ async def test_container_collapses_to_stub_then_reopens_in_active(db):
     async with db._engine.begin() as conn:
         await db.mark_layout_dirty("p1", ["gc", *kids, "e"], "status.finished", conn=conn)
     await drv.process_dirty("p1", min_age_seconds=0)
-    rows = await db.load_layout_rows("p1", "active", ["e", *kids, "gc"])
-    assert set(rows) == {"e"}
-    assert rows["e"].kind == "stub" and (rows["e"].w, rows["e"].h) == (1.0, 1.0)
+    # `e` finished too, and nothing unfinished points into it, so the whole
+    # subtree leaves the variant rather than lingering as a stub.
+    assert await db.load_layout_rows("p1", "active", ["e", *kids, "gc"]) == {}
 
     await db.transition_task("gc", TaskStatus.READY, force=True)
     await db.transition_task(kids[0], TaskStatus.READY, force=True)
@@ -654,3 +654,144 @@ async def test_last_finished_child_still_collapses_its_container_to_a_stub(db):
     assert rows["e"].kind == "stub"
     for k in kids:
         assert k not in rows
+
+
+# ── active variant: dropping finished containers nothing needs ───────────
+#
+# A finished container is kept in ``active`` only as *context*: the spec's
+# stub exists "so the epic remains findable" (§3.3/§4.8) and to give a drawn
+# edge from unfinished work a visible far endpoint (``view.cap_stubs`` drops
+# an edge whose far end has no row in the variant). When nothing unfinished
+# points into its subtree and it holds no unfinished descendant, it is
+# context for nothing and leaves the variant entirely.
+
+
+async def _finish(db, *ids):
+    for tid in ids:
+        await db.transition_task(tid, TaskStatus.COMPLETED, force=True)
+
+
+async def test_finished_container_nothing_needs_leaves_the_active_variant(db):
+    kids = await seed_epic(db, epic="done", n=2, completed=2)
+    await _finish(db, "done")
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    active = await db.load_layout_rows("p1", "active", ["done", *kids, "live"])
+    assert set(active) == {"live"}
+    # ``all`` is untouched: the epic is still there, as a real container.
+    all_rows = await db.load_layout_rows("p1", "all", ["done", *kids, "live"])
+    assert set(all_rows) == {"done", *kids, "live"}
+    assert all_rows["done"].kind == "container"
+
+
+async def test_finished_container_an_unfinished_task_depends_on_stays_a_stub(db):
+    kids = await seed_epic(db, epic="done", n=2, completed=2)
+    await _finish(db, "done")
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    await db.add_dependency("live", "done")
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    rows = await db.load_layout_rows("p1", "active", ["done", *kids, "live"])
+    assert rows["done"].kind == "stub"
+    assert set(rows) == {"done", "live"}
+
+
+async def test_finished_container_a_deep_edge_points_into_stays_a_stub(db):
+    """The edge lands on a *child*: the whole subtree is the anchor."""
+    kids = await seed_epic(db, epic="done", n=2, completed=2)
+    await _finish(db, "done")
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    await db.add_dependency("live", kids[0], dep_type="discovered-from")
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    rows = await db.load_layout_rows("p1", "active", ["done", *kids, "live"])
+    assert rows["done"].kind == "stub"
+
+
+async def test_edge_between_two_finished_tasks_does_not_anchor_a_container(db):
+    kids = await seed_epic(db, epic="done", n=2, completed=2)
+    await _finish(db, "done")
+    await db.create_task(Task(id="gone", project_id="p1", title="gone", description=""))
+    await db.add_dependency("gone", kids[0])
+    await _finish(db, "gone")
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    assert set(await db.load_layout_rows("p1", "active", ["done", *kids, "gone"])) == set()
+
+
+async def test_finished_ancestor_of_unfinished_work_stays_present(db):
+    kids = await seed_epic(db, epic="done", n=2, completed=1)
+    await _finish(db, "done")
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    rows = await db.load_layout_rows("p1", "active", ["done", *kids])
+    assert rows["done"].kind == "container"
+    assert kids[1] in rows and kids[0] not in rows
+
+
+async def test_anchored_nested_epic_keeps_its_finished_ancestor_as_a_container(db):
+    """A dropped ancestor comes back as a real container for an anchored child."""
+    await _make_container(db, "outer", n=0)
+    await _make_container(db, "inner", parent="outer", n=1)
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    await db.add_dependency("live", "inner")
+    await _finish(db, "inner-k0", "inner", "outer")
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+
+    rows = await db.load_layout_rows("p1", "active", ["outer", "inner", "inner-k0", "live"])
+    assert rows["outer"].kind == "container"
+    assert rows["inner"].kind == "stub"
+    assert "inner-k0" not in rows
+
+
+async def test_finishing_the_container_itself_drops_it_from_active_incrementally(db):
+    kids = await seed_epic(db, epic="done", n=2)
+    await db.create_task(Task(id="live", project_id="p1", title="live", description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    await _finish(db, *kids, "done")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    assert set(await db.load_layout_rows("p1", "active", ["done", *kids])) == set()
+
+
+async def test_reconcile_heals_an_active_variant_stub_the_rules_no_longer_keep(db):
+    """An install laid out under the old rules converges with no operator action.
+
+    The rows are published exactly as the pre-change engine published them
+    (a finished epic kept as a stub), then the reconcile sweep notices the
+    drift and ``process_dirty`` retires it.
+    """
+    kids = await seed_epic(db, epic="done", n=2, completed=2)
+    await _finish(db, "done")
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    # The old rule was "every finished container is kept as a stub", i.e. every
+    # candidate counted as anchored.
+    with patch(
+        "src.task_graph.layout.driver._edge_anchored",
+        lambda snapshot, candidates, edges: set(candidates),
+    ):
+        await drv.full_layout("p1", "active")
+    assert (await db.load_layout_rows("p1", "active", ["done"]))["done"].kind == "stub"
+
+    assert await drv.reconcile("p1") == 1
+    await drv.process_dirty("p1", min_age_seconds=0)
+    assert set(await db.load_layout_rows("p1", "active", ["done", *kids])) == set()

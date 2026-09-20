@@ -1059,7 +1059,14 @@ async def test_a_collapsed_subtree_far_from_the_rect_is_not_read(db, client_fact
     assert not any("/e/" in p for batch in seen for p in batch), seen
 
 
-async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_factory):
+async def _finished_epic_project(db, *, anchored: bool):
+    """A finished epic beside one live task, laid out in both variants.
+
+    With *anchored*, the live task depends on the epic, so the ``active``
+    variant still carries it as a stub; without, nothing unfinished needs
+    it and it leaves that variant entirely.
+    """
+
     async def create(tid, parent=None):
         await db.create_task(
             Task(id=tid, project_id="p1", title=tid, description="", status=TaskStatus.DEFINED)
@@ -1073,9 +1080,38 @@ async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_fact
     await create("live")
     for tid in ("child", "done"):
         await db.transition_task(tid, TaskStatus.COMPLETED, force=True)
+    if anchored:
+        await db.add_dependency("live", "done")
     driver = LayoutDriver(db)
     await driver.full_layout("p1", "all")
     await driver.full_layout("p1", "active")
+
+
+async def test_tiles_omit_a_finished_epic_nothing_needs_from_the_active_view(db, client_factory):
+    await _finished_epic_project(db, anchored=False)
+
+    async with client_factory() as client:
+        response = await client.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
+                "expanded": [],
+            },
+        )
+        all_response = await client.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "expanded": ["done"]}
+        )
+
+    assert response.status_code == 200
+    assert {node["id"] for node in response.json()["nodes"]} == {"live"}
+    # "Show completed" still shows it, children and all.
+    assert all_response.status_code == 200
+    assert {node["id"] for node in all_response.json()["nodes"]} == {"done", "child", "live"}
+
+
+async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_factory):
+    await _finished_epic_project(db, anchored=True)
 
     async with client_factory() as client:
         response = await client.post(
