@@ -1,5 +1,7 @@
 # Archiving finished tasks that carry integration audit history
 
+> **Status (2026-09-20): NOT APPROVED — on hold.** An adversarial review rejected this draft (see "Review outcome" at the end). Do not implement from it as written.
+
 **Date:** 2026-09-20
 **Status:** proposed — gate for a schema change on a production database
 **Branch:** `feat/graph-visibility` (HEAD `df86e2bcf`)
@@ -818,3 +820,22 @@ blocked. Cheapest fix: have the upgrade path clear every stored
 post-upgrade sweep writes a fresh one. Not specified above because it is a
 convenience, not a correctness issue — but it is one `DELETE` in the migration and
 probably worth it.
+
+
+## 12. Review outcome and operator preflight (2026-09-20)
+
+**Verdict of the adversarial review: REJECT in this form.** The migration DDL and the id-reuse analysis hold; the refusal rule and the reader audit do not.
+
+Blocking findings to resolve in a revision:
+- **B1 — a terminal operation does not mean the work landed.** A verified, `completed` root that is still a parent-train candidate (held by a `hold:%` label or an open gate, not yet delivered to the default branch) would become archivable; archive retires its branch origin, so it silently leaves the train and never reaches main. Today the episode FK is the only thing preventing that. The rule must also require that the root's work has landed (default-branch `code` receipt / terminal batch membership) or is provably abandoned.
+- **B2 — tests must be built through the real collection path**, with receipts and checkpoints, and the spec must state the expected outcome for each earlier guard refusal (`sealed`, `delivery_target_fixed`, `branch_discard_required`).
+- **B3 — "no reader needs a change" is false.** 20+ reads resolve `operation.parent_task_id` against `tasks`; `RecoveryControls.resume/abort` (`_project_id_on`), `RepairService._operation_project_id_on`, `recovery_controls.py:484`, `repair.py:3218`, `orchestrator/workspace.py:611` raise on an archived parent. Redo §3.5 as a full table and make the project-id resolvers tolerate an archived parent.
+- Should-change: state CAS on the two `repair.py` escalation updates (S1); match FKs by columns not names and fail if any remains (S2); `delete_project` is a third unguarded removal path (S3); archive releases a workspace lock that retirement deliberately keeps as a cleanup blocker (S4); `tests/test_migration_parent_collection.py` / `test_migration_candidate_authority.py` assert the FKs exist and run only under `-m migration` (S5); `idx_` naming and an index for `integration_repair_stages.repair_task_id` (S6).
+
+**Read-only preflight on the operator's database (facts, not inference):**
+- The four FK names match the spec: `fk_integration_parent_episodes_parent_task`, `fk_integration_parent_verifications_parent_task`, `fk_integration_repair_operations_verifier_task` (all RESTRICT), `fk_integration_candidate_resolutions_task` (NO ACTION).
+- **All six stuck roots are in projects whose mode is `development`, not `hierarchy`/`train`.** `guard_integration_mutation` stands down for that mode, which is why production reached the raw `DELETE`. Every rule in this spec must be stated for `development` mode as well.
+- Operation states for the five episode-bearing roots: `keen-harbor` **cancelled**, `noble-ridge` **cancelled**, `nimble-dune` **active**, `smart-dune` **active**, `sound-current` **active** (generation 8) — although all five root tasks are `COMPLETED`. `verify-81d0aaee-…` is the FAILED verifier of `keen-harbor`'s cancelled operation. No episode lacks an operation row. Whole database: 5 completed, 3 active, 3 cancelled operations.
+- Live (un-retired) branch origins remain in every one of those subtrees (`keen-harbor` 17, `noble-ridge` 13, `sound-current` 9, `nimble-dune` 7 of 10, `smart-dune` 7 of 12).
+
+**Consequence.** Even a correct version of this change would release at most three of the six roots (`keen-harbor`, `noble-ridge`, the verifier); the other three are held by operations that are still `active` on `COMPLETED` parents, which is an integration-health question (are those operations stalled?), not an archival one. And B1 applies squarely to the two cancelled roots, which still carry many live origins. The visible goal — finished work out of the graph — is better served first by hiding finished subtrees from the `active` layout variant (Task 16b); this schema change should wait for a revision that answers B1–B3 and for a decision on the three active operations.
