@@ -157,7 +157,7 @@ Part II claims/pools/worker-filed work). Off by default (`swarm.enabled: false`)
 | `src/orchestrator/pools.py` | `_measure_pools` (`PoolMeasurement`) and the `_reconcile_pools` cascade step — fleet-wide demand/supply aggregation, placement, pool session launch/terminate |
 | `src/scheduler.py` | (also) pure `size_pools(...) -> list[PoolAction]` (fleet-wide, one pool per profile) and `place_pool_actions(...)` (which project each start/drain applies to) — table-tested, no I/O |
 | `src/sessions/reconciler.py` | (also) pool carve-outs on the session reconciler steps — `_step_prepare_timeout`, pool branches of `_step_orphans`/`_step_exits` |
-| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `pools.global_bounds_migration`, `pools.floor_exceeds_max`, `pools.placement_starved`, `claims.holder_consistency` (report-only) |
+| `src/doctor/pool_checks.py` | `pools.stuck`, `pools.orphan_agents`, `pools.preparing_stuck`, `pools.stranded_feature_branches`, `pools.global_bounds_migration`, `pools.floor_exceeds_max`, `pools.placement_starved`, `claims.holder_consistency` (report-only), `agents.dangling_current_task` (fixable — resets a BUSY-or-not agent whose `current_task_id` names a missing/non-live task via `reset_stale_busy_agent`) |
 | `src/profiles/parser.py` | (also) `lifecycle: pool` + `min_active`/`max_active`/`min_per_project`/`max_claims_per_session` parsing |
 
 ### Formulas (Swarm Work Model, Part III)

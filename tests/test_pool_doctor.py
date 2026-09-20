@@ -14,11 +14,14 @@ from __future__ import annotations
 import json
 import sys
 import time
+from uuid import uuid4
 
 import pytest
+from sqlalchemy import insert
 
 import src.doctor  # noqa: F401 -- side effect: populates sys.modules
 from src.doctor.models import Severity
+from src.database.tables import task_session_attempts
 from src.models import (
     Agent,
     AgentProfile,
@@ -73,6 +76,7 @@ def test_check_names():
         "pools.global_bounds_migration",
         "pools.floor_exceeds_max",
         "pools.placement_starved",
+        "agents.dangling_current_task",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
 
@@ -779,3 +783,126 @@ async def test_placement_starved_info_without_a_reachable_orchestrator(db):
 def test_placement_starved_has_no_fix():
     check = next(c for c in pool_checks.CHECKS if c.id == "pools.placement_starved")
     assert check.fix is None
+
+
+# ---------------------------------------------------------------------------
+# agents.dangling_current_task
+# ---------------------------------------------------------------------------
+
+
+async def _live_session_and_attempt(db, agent_id, task_id, *, now):
+    await db.create_session(
+        SessionRecord(
+            id=f"s-{agent_id}",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="claude",
+            provider="tmux",
+            name=f"s-{agent_id}",
+            lifecycle="pool",
+            work_dir="/w",
+            epoch="e",
+            instance_token=agent_id,
+            started_at=now - 60,
+            task_id=task_id,
+            state="running",
+            last_activity=now - 10,
+        )
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id=uuid4().hex,
+                session_id=f"s-{agent_id}",
+                task_id=task_id,
+                project_id=PROJECT_ID,
+                agent_id=agent_id,
+                agent_name=agent_id,
+                profile_id="worker",
+                name="worker",
+                lifecycle="pool",
+                model="claude-opus-5",
+                harness="claude",
+                provider="tmux",
+                state="running",
+                work_dir="/w",
+                started_at=now - 60,
+                session_started_at=now - 60,
+                ended_at=None,
+            )
+        )
+
+
+async def test_dangling_current_task_ok_when_clean(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data.get("count", 0) == 0
+
+
+async def test_dangling_current_task_warns_on_completed_task(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.IDLE, current_task_id="t1")
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.WARN
+    assert finding.data["agents"] == [
+        {"agent_id": "a1", "task_id": "t1", "task_status": "COMPLETED"}
+    ]
+
+
+async def test_dangling_current_task_skipped_with_a_live_attempt(db):
+    """A BUSY agent whose task went COMPLETED but is still finishing its
+    write-up (a live attempt) is not dangling -- only the state-transition
+    race, not a mid-flight worker."""
+    now = time.time()
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+    await _live_session_and_attempt(db, "a1", "t1", now=now)
+
+    finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
+    assert finding.severity is Severity.OK
+    assert finding.data.get("count", 0) == 0
+
+
+async def test_dangling_current_task_fix_clears_the_agent(db):
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
+
+    repaired = await pool_checks.run_check(
+        db, "agents.dangling_current_task", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+    assert repaired.data.get("count", 0) == 0
+
+    agent = await db.get_agent("a1")
+    assert agent is not None
+    assert agent.state is AgentState.IDLE
+    assert agent.current_task_id is None
+
+
+def test_dangling_current_task_is_fixable():
+    check = next(c for c in pool_checks.CHECKS if c.id == "agents.dangling_current_task")
+    assert check.fix is not None

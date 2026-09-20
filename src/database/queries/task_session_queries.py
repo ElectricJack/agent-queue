@@ -183,6 +183,38 @@ class TaskSessionQueryMixin:
             )
         return out
 
+    async def list_live_attempt_agent_ids(
+        self,
+        *,
+        now: float | None = None,
+        stale_after: float = DEFAULT_STALE_AFTER,
+    ) -> set[str]:
+        """Every agent id with a currently-live attempt, across all projects.
+
+        Used by the ``agents.dangling_current_task`` doctor check: unlike
+        ``list_live_task_workers`` this is not scoped to a project and does
+        not filter by task status, since "no live attempt" is exactly the
+        thing that check needs to test for an agent whose ``current_task_id``
+        already points at a task that is missing or not ASSIGNED/IN_PROGRESS.
+        """
+        now = time.time() if now is None else now
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_session_attempts.c.agent_id)
+                    .select_from(
+                        task_session_attempts.join(
+                            sessions, sessions.c.id == task_session_attempts.c.session_id
+                        )
+                    )
+                    .where(
+                        live_attempt_predicate(now, stale_after),
+                        task_session_attempts.c.agent_id.is_not(None),
+                    )
+                )
+            ).all()
+        return {row.agent_id for row in rows}
+
     async def get_task_session_attempt(self, attempt_id: str) -> dict | None:
         async with self._engine.connect() as conn:
             row = (
