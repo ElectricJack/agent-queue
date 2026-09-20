@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ShortcutsProvider } from "../../../shell/hotkeys/useShortcuts";
 import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
+import { resetExpandedInitialisation, setExpandedTaskIds, useGraphState } from "../useGraphHierarchy";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
@@ -45,7 +46,10 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
 function Probe() {
   const workspace = useTaskWorkspace();
   const location = useLocation();
-  return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output><output data-testid="query">{location.search}</output></>;
+  const { hasStoredExpansion } = useGraphState();
+  return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
+    <output data-testid="query">{location.search}</output>
+    <output data-testid="expansion">{hasStoredExpansion("alpha") ? "stored" : "unset"}</output></>;
 }
 function mount(path = "/projects/alpha/graph") {
   return render(<MemoryRouter initialEntries={[path]}><ShortcutsProvider><Routes>
@@ -55,6 +59,7 @@ function mount(path = "/projects/alpha/graph") {
 }
 afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
+  resetExpandedInitialisation();
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -180,6 +185,29 @@ describe("layout-aware task controls", () => {
     vi.spyOn(window, "confirm").mockReturnValueOnce(true);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));
     expect(mocks.tidy).toHaveBeenCalledOnce();
+  });
+
+  it("puts Focus active in the toolbar, immediately left of Tidy layout", () => {
+    mount("/projects/alpha/graph");
+    const focus = screen.getByRole("button", { name: "Focus active" });
+    const tidyButton = screen.getByRole("button", { name: "Tidy layout" });
+    expect(focus.parentElement).toBe(tidyButton.parentElement);
+    expect(focus.nextElementSibling).toBe(tidyButton);
+  });
+
+  it("re-arms the active expansion when Focus active is clicked", async () => {
+    setExpandedTaskIds(new Set(["e"]));
+    mount("/projects/alpha/graph");
+    expect(screen.getByTestId("expansion")).toHaveTextContent("stored");
+
+    await userEvent.click(screen.getByRole("button", { name: "Focus active" }));
+
+    expect(screen.getByTestId("expansion")).toHaveTextContent("unset");
+  });
+
+  it("keeps Focus active off the Tasks tab, which draws no graph", () => {
+    mount("/projects/alpha/tasks");
+    expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
   });
 
   it("disables Show completed while a container is focused", () => {

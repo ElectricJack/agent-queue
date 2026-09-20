@@ -247,7 +247,7 @@ function Inner(props: LayoutCanvasProps) {
   const {
     expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, expandedForProject,
     applyExpandedResult,
-    requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition,
+    density, setDensity, manualPositions, saveGraphPosition,
   } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
@@ -667,11 +667,6 @@ function Inner(props: LayoutCanvasProps) {
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
           <Panel position="top-right">
-            <button type="button" title="Re-open the active containers: anything running, or with open work if nothing is"
-              onClick={() => requestActiveExpansion(projectIds)}
-              className="mr-2 rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800">
-              Focus active
-            </button>
             <label className="rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300">
               Density
               <select aria-label="Graph density" value={density} onChange={(event) => setDensity(event.target.value as LayoutDensity)}

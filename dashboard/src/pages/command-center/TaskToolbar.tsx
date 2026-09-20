@@ -19,7 +19,7 @@ export default function TaskToolbar() {
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters);
-  const { clearGraphPositions } = useGraphState();
+  const { clearGraphPositions, requestActiveExpansion } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -62,6 +62,11 @@ export default function TaskToolbar() {
       </button>}
       {hasFilters && <button type="button" aria-label="Clear task filters" title="Clear filters" onClick={clearFilters}
         className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100"><XMarkIcon className="h-4 w-4" /></button>}
+      {onGraph && <button type="button" onClick={() => requestActiveExpansion()}
+        title="Re-open the active containers: anything running, or with open work if nothing is"
+        className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">
+        Focus active
+      </button>}
       {projectId && <button type="button" disabled={tidy.isPending}
         title="Re-arrange every node in this project"
         onClick={() => { if (window.confirm("Tidy re-arranges every node in this project. Continue?")) tidy.mutate(); }}

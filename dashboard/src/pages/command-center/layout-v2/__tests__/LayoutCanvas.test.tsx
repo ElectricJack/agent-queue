@@ -152,7 +152,18 @@ import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
 import { GraphStateProvider } from "../../useGraphHierarchy";
-import { resetExpandedInitialisation, setExpandedTaskIds } from "../../useGraphHierarchy";
+import { resetExpandedInitialisation, setExpandedTaskIds, useGraphState } from "../../useGraphHierarchy";
+
+/** "Focus active" lives in the task toolbar, not in the canvas overlay (it
+ * covered the card underneath it). These tests still own the canvas half of
+ * the behaviour -- that re-arming the expansion makes the next tiles request
+ * ask for `auto_expand` again -- so they drive it through the same
+ * `requestActiveExpansion` call the toolbar button makes. The button itself is
+ * covered by `command-center/__tests__/TaskToolbar.test.tsx`. */
+function FocusActiveProbe({ projectIds }: { projectIds?: string[] }) {
+  const { requestActiveExpansion } = useGraphState();
+  return <button type="button" onClick={() => requestActiveExpansion(projectIds)}>Focus active (toolbar)</button>;
+}
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
@@ -517,14 +528,21 @@ describe("LayoutCanvas", () => {
       expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
     });
 
-    it("the Focus active button clears the stored expansion and re-requests auto_expand", () => {
+    it("re-arms auto_expand when the toolbar clears the stored expansion", () => {
       setExpandedTaskIds(new Set(["e"]));
-      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      render(<MemoryRouter><LayoutCanvas {...base} /><FocusActiveProbe /></MemoryRouter>);
       expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
 
-      fireEvent.click(screen.getByRole("button", { name: "Focus active" }));
+      fireEvent.click(screen.getByRole("button", { name: "Focus active (toolbar)" }));
       expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
       expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
+    });
+
+    it("no longer floats Focus active over the canvas, where it covered a card", () => {
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
+      // The Density control stays in the overlay (out of scope).
+      expect(screen.getByRole("combobox", { name: "Graph density" })).toBeInTheDocument();
     });
   });
 
@@ -534,7 +552,7 @@ describe("LayoutCanvas", () => {
       return render(
         <QueryClientProvider client={qc}>
           <GraphStateProvider projectIds={["p1"]}>
-            <MemoryRouter><LayoutCanvas {...base} {...props} /></MemoryRouter>
+            <MemoryRouter><LayoutCanvas {...base} {...props} /><FocusActiveProbe /></MemoryRouter>
           </GraphStateProvider>
         </QueryClientProvider>,
       );
@@ -581,7 +599,7 @@ describe("LayoutCanvas", () => {
       await waitFor(() => expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e", "pkg"]));
 
       dashboardStateFake.puts.length = 0;
-      fireEvent.click(screen.getByRole("button", { name: "Focus active" }));
+      fireEvent.click(screen.getByRole("button", { name: "Focus active (toolbar)" }));
 
       await waitFor(() => {
         const put = dashboardStateFake.puts.find((p) => p.namespace === "command_center_project_view");
