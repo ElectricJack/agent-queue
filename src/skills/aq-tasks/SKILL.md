@@ -348,9 +348,37 @@ semantic — a phase is a container with a `blocks` edge onto every earlier
 open sibling phase, and a blocked container withholds its children, so one
 edge gates a whole stage. Stop at five per level. If two groups could
 overlap, they are not phases; use `needs`/`blocks` edges between the
-individual tasks. Do not create phases in a project whose integration mode
-is `hierarchy` or `train` — there a phase container would own its
-children's delivery branch, and the command refuses them.
+individual tasks. Phases are refused outright in a project whose integration
+mode is `hierarchy` or `train` — there a phase container would own its
+children's delivery branch — with one code,
+`hierarchy.phases_unsupported_mode`, from `phase_create` and from a graph
+alike.
+
+**Prefer declaring them in the graph.** One `aq-graph` document can carry
+its phases, so the containers, their metadata, the gate edges, the tasks and
+their subtasks are created in a single transaction that a `--dry-run`
+reviews first:
+
+```yaml
+phases:
+  - key: schema
+    title: "Phase 1 — schema"
+    label: schema
+  - key: engine
+    title: "Phase 2 — engine"
+nodes:
+  - key: tables
+    phase: schema
+    title: "Add the messages table"
+```
+
+That creates `<epic>.1`/`<epic>.2` for the phases and `<epic>.1.1…` for
+their work; a node that names no phase stays a direct child of the epic.
+Because epic → phase → task is the whole depth budget, such a document must
+be created at the project root — `phases:` with `--parent` is refused with
+`graph.phases_need_root`. Filing phases one `phase-create` call at a time is
+still available and is what you use to add a phase to an epic that already
+exists.
 
 A phase is an ordered container that gates implicitly: phase *N+1* stays
 blocked until every child of phase *N* is COMPLETED, with no extra edges to
