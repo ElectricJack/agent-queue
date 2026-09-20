@@ -188,7 +188,10 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
       sourceHandle: vertical ? "out-bottom" : rightward ? "out-right" : "out-left",
       targetHandle: vertical ? "in-top" : rightward ? "in-left" : "in-right",
       label: ctx.simpleEdges || (e.count ?? 1) <= 1 ? undefined : `×${e.count}`,
-      markerEnd: { type: MarkerType.ArrowClosed },
+      // A `discovered-from` edge is provenance, not a dependency: it draws
+      // as a quiet dashed annotation (edgeStyleForType) with no arrowhead,
+      // so it never reads as another blocker line.
+      markerEnd: e.dep_type === "discovered-from" ? undefined : { type: MarkerType.ArrowClosed },
       style: edgeStyleForType(e.dep_type), data: { depType: e.dep_type },
     };
     cache.edges.set(id, { sig, edge });

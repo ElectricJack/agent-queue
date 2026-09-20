@@ -192,6 +192,28 @@ async def test_tiles_default_collapsed(db, client_factory):
     assert body["layout_version"] == 1
 
 
+async def test_tiles_includes_discovered_from_provenance_edge(db, client_factory):
+    """A `discovered-from` edge between two visible nodes is annotation, not
+    a dependency: it rides the same wire as `blocks`/`waits-for` (both
+    endpoints stay put; no stub is manufactured) but keeps its own
+    `dep_type` so the client can draw it differently.
+    """
+    await seed(db)
+    await db.add_dependency("z", "hub", "discovered-from")
+    await LayoutDriver(db).full_layout("p1", "all")
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    body = r.json()
+    assert {
+        "from": "z",
+        "to": "hub",
+        "dep_type": "discovered-from",
+        "description": None,
+        "count": 1,
+    } in body["edges"]
+
+
 async def test_tiles_expanded_and_rect_culling(db, client_factory):
     await seed(db)
     async with client_factory() as ac:

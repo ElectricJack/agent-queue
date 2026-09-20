@@ -163,6 +163,23 @@ describe("toFlowElements", () => {
     expect(moved.nodes[0]!.position.y).toBeCloseTo(4 * 156);
   });
 
+  it("renders a discovered-from provenance edge dashed, dimmed and without an arrowhead", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],
+      edges: [
+        { from: "b", to: "a", dep_type: "blocks", description: null, count: 1 },
+        { from: "a", to: "b", dep_type: "discovered-from", description: null, count: 1 },
+      ],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { edges } = toFlowElements(store, ctx);
+    const blocks = edges.find((e) => (e.data as { depType: string }).depType === "blocks")!;
+    const discovered = edges.find((e) => (e.data as { depType: string }).depType === "discovered-from")!;
+    expect(blocks.markerEnd).toBeDefined();
+    expect(discovered.markerEnd).toBeUndefined();
+    expect(discovered.style).toMatchObject({ strokeDasharray: "2 4" });
+  });
+
   it("drops to straight unlabelled edges at far zoom", () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],

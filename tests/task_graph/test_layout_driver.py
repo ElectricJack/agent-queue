@@ -69,6 +69,22 @@ async def test_full_layout_places_top_level_dependents_below_blockers(db):
     assert rows["b"].rank == 1 and rows["b"].abs_y > rows["a"].abs_y
 
 
+async def test_full_layout_ignores_discovered_from_for_ranking(db):
+    """`discovered-from` is a provenance annotation, not a ranking edge
+
+    (`RANKING_DEP_TYPES` in `src/task_graph/layout/constants.py` excludes
+    it): unlike a `blocks` edge, it must not pull the dependent below its
+    origin, so geometry is identical to the no-edge case.
+    """
+    for t in ("a", "b"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    await db.add_dependency("b", "a", "discovered-from")
+    await LayoutDriver(db).full_layout("p1", "all")
+    rows = await db.load_layout_rows("p1", "all", ["a", "b"])
+    assert rows["a"].rank == 0 and rows["b"].rank == 0
+    assert rows["a"].abs_y == rows["b"].abs_y
+
+
 async def test_empty_project_publishes_empty_meta(db):
     v = await LayoutDriver(db).full_layout("p1", "all")
     meta = await db.get_layout_meta("p1", "all")
