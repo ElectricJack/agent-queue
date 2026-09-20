@@ -2963,6 +2963,26 @@ class TaskCommandsMixin:
             }, None
         return None, parent
 
+    @staticmethod
+    def _phases_need_root_refusal(graph, parent_id: str | None) -> dict | None:
+        """Refuse ``phases:`` combined with ``parent_id``, or ``None``.
+
+        A phased graph is three levels — epic → phase → task — which is the
+        whole ``MAX_STRUCTURAL_DEPTH`` budget, so it has to start at the
+        project root.  Shared by ``create_task_graph`` and ``formula_cook``,
+        which share the grammar and ``_validate_graph_parent`` with it.
+        """
+        if not graph.phases or not parent_id:
+            return None
+        return {
+            "success": False,
+            "code": "graph.phases_need_root",
+            "error": (
+                "a graph that declares phases must be created at the project root; "
+                "the phases are its second level"
+            ),
+        }
+
     async def _cmd_create_task_graph(self, args: dict) -> dict:
         """Create a whole task graph in one transaction (supervisor-agent §8).
 
@@ -3030,6 +3050,10 @@ class TaskCommandsMixin:
             }
         except OSError as exc:
             return {"error": f"Could not read spec '{spec_path}': {exc}"}
+
+        phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+        if phases_refusal is not None:
+            return phases_refusal
 
         for node in graph.nodes:
             if node.profile is None and args.get("profile_id"):

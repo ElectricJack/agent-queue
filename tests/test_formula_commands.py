@@ -30,7 +30,7 @@ async def setup(tmp_path):
     vault_root = tmp_path / "vault"
     (vault_root / "formulas").mkdir(parents=True)
     (vault_root / "projects" / "p1" / "formulas").mkdir(parents=True)
-    for name in ("base-review.md", "review-and-fix.md", "with-subtasks.md"):
+    for name in ("base-review.md", "review-and-fix.md", "with-subtasks.md", "with-phases.md"):
         shutil.copy(FIXTURES / name, vault_root / "formulas" / name)
     registry = FormulaRegistry()
     assert load_from_vault(registry, str(vault_root)) == []
@@ -52,7 +52,7 @@ class TestList:
         h, *_ = setup
         res = await h._cmd_formula_list({"project_id": "p1"})
         names = {f["name"]: f for f in res["formulas"]}
-        assert set(names) == {"base-review", "review-and-fix", "with-subtasks"}
+        assert set(names) == {"base-review", "review-and-fix", "with-subtasks", "with-phases"}
         assert names["review-and-fix"]["extends"] == "base-review"
         assert names["base-review"]["vars"]["branch"] == {"required": True, "default": None, "enum": None}
         assert names["base-review"]["scope"] == "system"
@@ -144,6 +144,23 @@ class TestCook:
         assert [(r["ordinal"], r["title"]) for r in rows] == [
             (1, "Rebase feat/x"), (2, "Run the focused tests")]
         assert (await db.get_task_subtask(node_id, 2))["context"] == "Only the files feat/x touches."
+
+    async def test_cook_files_nodes_into_declared_phases(self, setup):
+        """Formulas inherit the ``aq-graph`` grammar, so they inherit ``phases:``."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "vars": {"branch": "feat/x"}})
+        assert res["success"] is True, res
+        container = res["container_id"]
+        phases = {p["key"]: p for p in res["phases"]}
+        assert [p["task_id"] for p in res["phases"]] == [f"{container}.1", f"{container}.2"]
+        assert phases["build"]["title"] == "Phase 1 — build feat/x"
+        assert await db.get_task_meta(phases["build"]["task_id"], "phase") == {
+            "order": 1, "label": "build"}
+        node_id = next(n["task_id"] for n in res["nodes"] if n["key"] == "compile")
+        assert node_id == f"{container}.1.1"
+        assert (await db.get_task(node_id)).parent_task_id == phases["build"]["task_id"]
+        assert (await db.get_task(phases["verify"]["task_id"])).is_blocked is True
 
     async def test_cook_dry_run_writes_nothing(self, setup):
         h, db, *_ = setup

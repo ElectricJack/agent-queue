@@ -294,6 +294,10 @@ class FormulaCommandsMixin:
                 "warnings": [w.to_dict() for w in warnings],
             }
 
+        phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+        if phases_refusal is not None:
+            return phases_refusal
+
         parent_error, _parent = await self._validate_graph_parent(project_id, parent_id)
         if parent_error is not None:
             return {**parent_error, "success": False}

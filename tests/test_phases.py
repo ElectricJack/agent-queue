@@ -712,10 +712,13 @@ class TestAbandonedPhaseRecovery:
 
 
 class TestHierarchyModeCreation:
-    """`phase_create` in a hierarchy-mode project routes through
-    ``file_root_on`` / ``file_prepared_child_on`` rather than the plain
-    creation path, so the container flag, the metadata and the gate have to
-    survive a completely different writer."""
+    """Phases are refused in `hierarchy` and `train` mode, at both doors.
+
+    There a phase container owns a branch and its children deliver *to it*:
+    phase *N+1* could open on a base that lacks phase *N*'s work, and one
+    FAILED child strands the whole stage's delivery — the same hazard
+    ``hierarchy.parent_key_unsupported_mode`` already bars for standing
+    parents (design §3.1).  One check, one code, both doors."""
 
     async def _enable(self, orch, tmp_path, mode="hierarchy"):
         from src.integration.hierarchy import HierarchyIntegration
@@ -740,34 +743,145 @@ class TestHierarchyModeCreation:
             checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
         )
 
-    async def test_phases_are_created_and_gated_under_hierarchy_filing(
+    @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+    async def test_phase_create_is_refused_and_writes_nothing(
+        self, handler, orch, tmp_path, mode
+    ):
+        db = orch.db
+        await self._enable(orch, tmp_path, mode=mode)
+
+        result = await handler._cmd_phase_create(
+            {"project_id": PROJECT_ID, "title": "Phase 1", "label": "Foundations"}
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "hierarchy.phases_unsupported_mode"
+        assert "phase" in result["error"]
+        # Refused before ``_cmd_create_task``: no task row at all, not a
+        # created-then-unflagged one.
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
+    @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+    async def test_a_phased_graph_is_refused_with_the_same_code(
+        self, handler, orch, tmp_path, mode
+    ):
+        """The graph door reports the one shared refusal, and creates nothing."""
+        db = orch.db
+        await self._enable(orch, tmp_path, mode=mode)
+
+        result = await handler._cmd_create_task_graph(
+            {
+                "project_id": PROJECT_ID,
+                "graph": {
+                    "version": 1,
+                    "parent": {"title": "Epic"},
+                    "phases": [{"key": "one", "title": "Phase 1"}],
+                    "nodes": [
+                        {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}
+                    ],
+                },
+            }
+        )
+
+        assert result["code"] == "hierarchy.phases_unsupported_mode"
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
+    async def test_an_unphased_graph_is_still_created(self, handler, orch, tmp_path):
+        """The refusal is about phases only — hierarchical graphs still file."""
+        await self._enable(orch, tmp_path)
+
+        result = await handler._cmd_create_task_graph(
+            {
+                "project_id": PROJECT_ID,
+                "graph": {
+                    "version": 1,
+                    "parent": {"title": "Epic"},
+                    "nodes": [{"key": "a", "title": "A", "acceptance": ["x"]}],
+                },
+            }
+        )
+
+        assert "error" not in result, result
+        assert len(result["task_ids"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Development mode — the gate the operator's projects actually run on
+# ---------------------------------------------------------------------------
+
+
+class TestDevelopmentModeGate:
+    """A phased graph gates correctly in ``development`` mode.
+
+    This pins an escape that nothing else covers.  A ``blocks`` edge is
+    unsatisfied while the prerequisite is not COMPLETED **or**
+    ``_development_delivery_pending(prerequisite)`` is true, and that
+    predicate requires ``task.branch_name IS NOT NULL``
+    (``src/database/queries/blocked_state.py:146``).  A phase container never
+    owns a branch, so the delivery half is always false for an inter-phase
+    edge and the gate releases on COMPLETED alone — which for a container
+    means every child COMPLETED.  Give a container a ``branch_name`` in
+    development mode and every inter-phase gate silently stops releasing.
+    """
+
+    async def _enable(self, orch, tmp_path):
+        db = orch.db
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "repo"),
+            )
+        )
+        # With a repository configured, ``_development_delivery_pending``'s
+        # join resolves — so the only thing making it false is the container's
+        # NULL ``branch_name``.
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="development",
+            integration_repository_id="repo",
+        )
+
+    @staticmethod
+    def _graph() -> dict:
+        return {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "phases": [
+                {"key": "schema", "title": "Phase 1"},
+                {"key": "engine", "title": "Phase 2"},
+            ],
+            "nodes": [
+                {"key": "tables", "title": "Tables", "acceptance": ["x"], "phase": "schema"},
+                {"key": "cascade", "title": "Cascade", "acceptance": ["x"], "phase": "engine"},
+            ],
+        }
+
+    async def test_phase_two_releases_only_when_phase_one_settles(
         self, handler, orch, tmp_path
     ):
         db = orch.db
         await self._enable(orch, tmp_path)
 
-        first = await phase(handler, "Phase 1", label="Foundations")
-        second = await phase(handler, "Phase 2")
-        late = await work(handler, "late", second["phase"]["id"])
+        report = await handler._cmd_create_task_graph(
+            {"project_id": PROJECT_ID, "graph": self._graph()}
+        )
+        assert "error" not in report, report
+        phases = {p["key"]: p["task_id"] for p in report["phases"]}
+        nodes = {n["key"]: n["task_id"] for n in report["nodes"]}
 
-        # Creation succeeded through the integration writer, with the
-        # container flag and the phase metadata intact.
-        for created, order, label in ((first, 1, "Foundations"), (second, 2, "Phase 2")):
-            task = await db.get_task(created["phase"]["id"])
-            assert task is not None
-            assert task.parent_task_id is None
-            assert await db.get_task_meta(task.id, "container") is True
-            assert await db.get_task_meta(task.id, "phase") == {
-                "order": order,
-                "label": label,
-            }
-        assert second["phase"]["blocked_by"] == first["phase"]["id"]
-        assert await blocks_edges(db, second["phase"]["id"]) == {first["phase"]["id"]}
-
-        # Phase 2 is gated: it stays DEFINED and withholds its own work.
         await cascade(orch)
-        assert (await db.get_task(first["phase"]["id"])).status == TaskStatus.IN_PROGRESS
-        assert (await db.get_task(second["phase"]["id"])).status == TaskStatus.DEFINED
-        assert (await db.get_task(late)).is_blocked is True
-        mode = ProjectIntegrationMode.of(await db.get_project(PROJECT_ID))
-        assert await frontier(db, mode) == set()
+        assert (await db.get_task(phases["engine"])).is_blocked is True
+        assert (await db.get_task(nodes["cascade"])).is_blocked is True
+        assert (await db.get_task(nodes["tables"])).status == TaskStatus.READY
+        assert await claimable(db) == nodes["tables"]
+
+        await db.transition_task(nodes["tables"], TaskStatus.COMPLETED)
+        assert (await db.get_task(phases["schema"])).status == TaskStatus.COMPLETED
+
+        await cascade(orch)
+        assert (await db.get_task(phases["engine"])).is_blocked is False
+        assert (await db.get_task(phases["engine"])).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_task(nodes["cascade"])).status == TaskStatus.READY
+        assert await claimable(db) == nodes["cascade"]

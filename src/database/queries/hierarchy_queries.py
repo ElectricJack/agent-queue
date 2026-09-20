@@ -161,6 +161,10 @@ def childless_held_open_container():
 #: predicates below.  ``disabled`` (and anything unrecognised) does not.
 HIERARCHY_MODES = ("hierarchy", "train")
 
+#: Refusal code both phase doors return in a :data:`HIERARCHY_MODES` project —
+#: ``phase_create`` and a graph document declaring ``phases:``.
+PHASES_UNSUPPORTED_MODE_CODE = "hierarchy.phases_unsupported_mode"
+
 
 @dataclass(frozen=True)
 class ProjectIntegrationMode:
@@ -410,6 +414,43 @@ class HierarchyQueryMixin:
                 "integration_required",
                 "bulk parent writes must use atomic hierarchy filing",
             )
+
+    async def phase_mode_refusal(self, project_id: str, *, conn=None) -> dict | None:
+        """The phase refusal for *project_id*, or ``None`` when phases are fine.
+
+        Phases are refused in :data:`HIERARCHY_MODES` and nowhere else.  There
+        a phase container owns a branch and its children deliver *to it*, so
+        phase *N+1* can open on a base without phase *N*'s work and one FAILED
+        child strands the whole stage — the hazard
+        ``hierarchy.parent_key_unsupported_mode`` already bars for standing
+        parents.  In ``disabled``/``observe``/``development`` a container is a
+        plain task row with no branch and phases are safe.
+
+        This is the *one* check behind both doors: ``phase_create`` calls it
+        before filing anything, and ``write_plan`` calls it inside the graph's
+        transaction so a caller that skipped the command layer cannot bypass
+        it.  *conn* joins that transaction instead of opening a connection.
+        """
+        stmt = select(projects.c.hierarchical_integration_mode).where(
+            projects.c.id == project_id
+        )
+        if conn is not None:
+            mode = (await conn.execute(stmt)).scalar_one_or_none()
+        else:
+            async with self._engine.connect() as owned:
+                mode = (await owned.execute(stmt)).scalar_one_or_none()
+        if mode not in HIERARCHY_MODES:
+            return None
+        return {
+            "success": False,
+            "code": PHASES_UNSUPPORTED_MODE_CODE,
+            "error": (
+                f"project '{project_id}' delivers hierarchically, where a phase container "
+                "would own its children's delivery branch and hold a whole stage's work "
+                "off the default branch; order the work with 'aq task add-dependency' "
+                "instead"
+            ),
+        }
 
     async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]:
         """Return tasks whose project mode/origin permits writer assignment."""

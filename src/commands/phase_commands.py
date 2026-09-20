@@ -102,6 +102,14 @@ class PhaseCommandsMixin:
         project_id, parent_id, refusal = await self._phase_scope(args)
         if refusal is not None:
             return refusal
+        # Before anything is filed: in hierarchy/train a phase container owns
+        # its children's delivery branch (see ``phase_mode_refusal``).  The
+        # graph door refuses the same thing with the same code.  ``phase_list``
+        # deliberately does not consult this — reading the phases a project
+        # already has is never unsafe.
+        refusal = await self.db.phase_mode_refusal(project_id)
+        if refusal is not None:
+            return refusal
         title = str(args.get("title") or "").strip()
         if not title:
             return {
