@@ -35,6 +35,7 @@ from src.task_graph.layout.flow import (
 from src.task_graph.layout.layering import break_cycles, minimal_ranks_acyclic
 from src.task_graph.layout.model import ContainerScope, LayoutRow
 from src.task_graph.layout.order_key import between
+from src.task_graph.layout.ordering import tidy_seed_key
 
 logger = logging.getLogger(__name__)
 
@@ -393,12 +394,17 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
     if mode == "tidy":
         ordinals = {cid: (minimal[cid], "") for cid in scope.children}
         budget = _Budget(TIDY_EVALS, TIDY_SECONDS)
-        # Seed keys by created_at so the sweep has a deterministic start.
+        # Seed keys by phase, then activity, then created_at so the sweep
+        # has a deterministic start AND running work leads its rank (§3.2).
+        # Where every sibling is one class this reduces to (created_at, id),
+        # i.e. exactly the pre-§3.2 seed.
         for r in set(minimal.values()):
             prev = None
             for cid in sorted(
                 (c for c in scope.children if minimal[c] == r),
-                key=lambda c: (scope.children[c].created_at, c),
+                key=lambda c: tidy_seed_key(
+                    scope.children[c], scope.child_aggregates.get(c)
+                ),
             ):
                 prev = between(prev, None)
                 ordinals[cid] = (r, prev)

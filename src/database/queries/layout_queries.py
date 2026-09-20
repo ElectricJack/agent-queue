@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Iterable
@@ -274,7 +275,11 @@ class LayoutQueryMixin:
 
     # ── snapshot & rows ──────────────────────────────────────────────────
     async def load_project_snapshot(self, project_id: str):
-        from src.database.queries.hierarchy_queries import CONTAINER_KEY, CONTAINER_VALUE
+        from src.database.queries.hierarchy_queries import (
+            CONTAINER_KEY,
+            CONTAINER_VALUE,
+            PHASE_KEY,
+        )
         from src.database.tables import task_dependencies, task_metadata, tasks
         from src.task_graph.layout.model import SnapTask
 
@@ -305,6 +310,25 @@ class LayoutQueryMixin:
                         )
                     ).fetchall()
                 }
+            # One extra statement on the full-layout path, the same shape as
+            # the container read above: the tidy seed orders declared phases
+            # by their order (§3.2).
+            phase_orders: dict[str, int] = {}
+            if ids:
+                for tid, raw in (
+                    await conn.execute(
+                        select(task_metadata.c.task_id, task_metadata.c.value).where(
+                            task_metadata.c.task_id.in_(ids),
+                            task_metadata.c.key == PHASE_KEY,
+                        )
+                    )
+                ).fetchall():
+                    try:
+                        order = json.loads(raw).get("order")
+                    except (ValueError, AttributeError):
+                        continue
+                    if isinstance(order, int) and not isinstance(order, bool):
+                        phase_orders[tid] = order
             edges = []
             if ids:
                 edges = [
@@ -327,6 +351,7 @@ class LayoutQueryMixin:
                 status=r[2],
                 created_at=r[3],
                 title=r[4] or "",
+                phase_order=phase_orders.get(r[0]),
             )
             for r in trows
         }

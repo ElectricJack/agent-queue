@@ -288,3 +288,12 @@ async def test_matching_rows_ordered_caps_in_sql(db):
         "p1", "all", q="", status="DEFINED", limit=10
     )
     assert [r.task_id for r in rows] == ["b", "c", "a"] and truncated is False
+
+
+async def test_snapshot_carries_phase_order(db):
+    await db.create_task(Task(id="p1a", project_id="p1", title="Phase 1", description=""))
+    await db.create_task(Task(id="loose", project_id="p1", title="Loose", description=""))
+    await db.set_task_meta("p1a", "phase", {"order": 2, "label": "Build"})
+    tasks, _ = await db.load_project_snapshot("p1")
+    assert tasks["p1a"].phase_order == 2
+    assert tasks["loose"].phase_order is None

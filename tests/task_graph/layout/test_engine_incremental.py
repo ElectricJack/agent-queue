@@ -282,3 +282,29 @@ def test_the_root_is_not_clamped_so_a_wide_epic_keeps_its_line_mates():
     s = scope(kids, sizes={"epic": (12.0, 6.0)})
     res = layout_container(s, mode="tidy")
     assert len({r.rel_y for r in res.rows.values()}) == 1  # one line
+
+
+def test_incremental_ordering_ignores_activity_and_aggregates():
+    """The activity-aware seed is a TIDY-only change (reorganisation design
+    §3.2): incremental placement is still pure creation order, whatever the
+    children's statuses are and whatever aggregates the scope carries."""
+    plain = [task(f"n{i}", created=i) for i in range(6)]
+    mixed = [
+        SnapTask(
+            id=f"n{i}",
+            parent_id=None,
+            is_container=i % 2 == 0,
+            status=("COMPLETED", "IN_PROGRESS", "READY")[i % 3],
+            created_at=i,
+            phase_order=(None, 1, 2)[i % 3],
+        )
+        for i in range(6)
+    ]
+    aggs = {f"n{i}": {"descendants": 3, "running": i % 2, "active": 3} for i in range(6)}
+    baseline = layout_container(scope(plain), mode="incremental")
+    s = scope(mixed)
+    s.child_aggregates = aggs
+    with_activity = layout_container(s, mode="incremental")
+    assert {c: r.ordinal for c, r in with_activity.rows.items()} == {
+        c: r.ordinal for c, r in baseline.rows.items()
+    }
