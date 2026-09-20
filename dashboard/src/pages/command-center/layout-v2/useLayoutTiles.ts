@@ -68,6 +68,15 @@ export function useLayoutTiles(
   onBudget.current = opts.onBudgetExceeded;
   const onExpandedApplied = useRef(opts.onExpandedApplied);
   onExpandedApplied.current = opts.onExpandedApplied;
+  // One-shot latch for `auto_expand` (design A3, fix F3): this hook instance
+  // IS one "view generation" for this project (`ProjectLayer` keys it by
+  // project id), so a plain ref that never resets is exactly the right
+  // scope. It flips the instant a request is actually DISPATCHED with
+  // `auto_expand: true` -- not merely when a render computes
+  // `params.autoExpand` true -- so a follow-up request (a pan, a filter
+  // edit) that fires before the caller's persisted write lands and
+  // `params.autoExpand` catches up still cannot send a second one.
+  const autoExpandSent = useRef(false);
 
   const load = useCallback(async () => {
     if (!projectId || failed.current) return;
@@ -89,8 +98,11 @@ export function useLayoutTiles(
     const batch = boundedBatch(missing, centreRef.current);
     const ac = new AbortController();
     inflight.current = ac;
+    const effectiveAutoExpand = !!paramsRef.current.autoExpand && !autoExpandSent.current;
+    if (effectiveAutoExpand) autoExpandSent.current = true;
+    const requestParams = { ...paramsRef.current, autoExpand: effectiveAutoExpand };
     try {
-      const res = await fetchTiles(projectId, cellRect(batch), paramsRef.current, ac.signal);
+      const res = await fetchTiles(projectId, cellRect(batch), requestParams, ac.signal);
       if (ac.signal.aborted) return;
       if ("pending" in res) {
         setPending(true);

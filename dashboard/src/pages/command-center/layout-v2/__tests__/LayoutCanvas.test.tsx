@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { NodeChange } from "@xyflow/react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import type { TilesResponse } from "@aq/ts-client";
@@ -85,9 +85,68 @@ vi.mock("../../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: vi.fn() }),
 }));
 
+// A minimal fake of the daemon's dashboard-state network boundary (F1/F2/F4):
+// stubbing HERE -- `dashboardStateGet`/`dashboardStatePut`, the two SDK calls
+// `fetchDashboardDocument`/`putDashboardDocument` make -- exercises the REAL
+// `GraphStateProvider`, not a mock of the provider itself.
+interface FakeDoc { revision: number; value: unknown }
+const dashboardStateFake = vi.hoisted(() => ({
+  docs: new Map<string, FakeDoc>(),
+  puts: [] as { namespace: string; subject?: string | null; base_revision: number | null; value: unknown }[],
+}));
+function fakeDocKey(namespace: string, subject?: string | null) { return `${namespace}\u0001${subject ?? ""}`; }
+/** Test helper: seed a document as if an earlier session had already written it. */
+function seedDashboardDoc(namespace: string, subject: string | null, value: unknown, revision = 1) {
+  dashboardStateFake.docs.set(fakeDocKey(namespace, subject), { revision, value });
+}
+vi.mock("../../../../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../api/client")>();
+  return {
+    ...actual,
+    dashboardStateGet: vi.fn(async ({ body }: { body: { namespace: string; subject?: string } }) => {
+      const row = dashboardStateFake.docs.get(fakeDocKey(body.namespace, body.subject ?? null));
+      return {
+        data: {
+          document: {
+            namespace: body.namespace, subject: body.subject ?? null,
+            revision: row?.revision ?? 0, exists: !!row, value: row?.value ?? {},
+          },
+        },
+      };
+    }),
+    dashboardStatePut: vi.fn(async (
+      { body }: { body: { namespace: string; subject?: string; base_revision: number | null; value: unknown } },
+    ) => {
+      dashboardStateFake.puts.push(body);
+      const key = fakeDocKey(body.namespace, body.subject ?? null);
+      const current = dashboardStateFake.docs.get(key);
+      if (body.base_revision != null && body.base_revision !== (current?.revision ?? 0)) {
+        const err = new Error("API 409: revision conflict") as Error & { payload?: unknown };
+        err.payload = {
+          success: false, error_code: "revision_conflict",
+          current: {
+            namespace: body.namespace, subject: body.subject ?? null,
+            revision: current?.revision ?? 0, exists: !!current, value: current?.value ?? {},
+          },
+        };
+        throw err;
+      }
+      const revision = (current?.revision ?? 0) + 1;
+      dashboardStateFake.docs.set(key, { revision, value: body.value });
+      return {
+        data: {
+          document: { namespace: body.namespace, subject: body.subject ?? null, revision, exists: true, value: body.value },
+        },
+      };
+    }),
+  };
+});
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
+import { GraphStateProvider } from "../../useGraphHierarchy";
 import { resetExpandedInitialisation, setExpandedTaskIds } from "../../useGraphHierarchy";
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
@@ -125,6 +184,8 @@ beforeEach(() => {
   layoutNode.data = undefined;
   // The expanded set is one live store, not per-component state.
   setExpandedTaskIds(new Set());
+  dashboardStateFake.docs.clear();
+  dashboardStateFake.puts.length = 0;
 });
 afterEach(cleanup);
 
@@ -459,6 +520,106 @@ describe("LayoutCanvas", () => {
       fireEvent.click(screen.getByRole("button", { name: "Focus active" }));
       expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
       expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
+    });
+  });
+
+  describe("against the REAL GraphStateProvider (F1/F2/F3 fix verification)", () => {
+    function mountWithRealProvider(props: Partial<typeof base> = {}) {
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      return render(
+        <QueryClientProvider client={qc}>
+          <GraphStateProvider projectIds={["p1"]}>
+            <MemoryRouter><LayoutCanvas {...base} {...props} /></MemoryRouter>
+          </GraphStateProvider>
+        </QueryClientProvider>,
+      );
+    }
+
+    it("F1: persists a server-computed expanded_applied as a real SET, not intersected against the (empty) stored expansion", async () => {
+      // No seeded document: `command_center_project_view` for "p1" has never
+      // been written, so the project starts un-initialised.
+      mountWithRealProvider();
+      await screen.findByTestId("node-e");
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
+      expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
+
+      // The server's response carries ids the client had never stored before.
+      // The OLD `replaceExpanded`-based setter would have intersected these
+      // against the stored `[]` and written `[]` right back.
+      await act(async () => { tiles.options?.onExpandedApplied?.(["e", "pkg"]); });
+
+      await waitFor(() => {
+        const put = dashboardStateFake.puts.find((p) => p.namespace === "command_center_project_view");
+        expect(put).toBeDefined();
+        expect((put!.value as { expanded_task_ids: string[] }).expanded_task_ids).toEqual(["e", "pkg"]);
+        expect((put!.value as { expanded_initialised: boolean }).expanded_initialised).toBe(true);
+      });
+
+      // The persisted write lands in the query cache, `hasStoredExpansion`
+      // flips, and the layer's NEXT request sends the set explicitly with no
+      // `auto_expand` -- never re-asking the server to compute it.
+      await waitFor(() => {
+        expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e", "pkg"]);
+        expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
+      });
+    });
+
+    it("F2: Focus active clears BOTH expanded_task_ids and expanded_finished_task_ids", async () => {
+      seedDashboardDoc("command_center_project_view", "p1", {
+        expanded_task_ids: ["e", "pkg"],
+        expanded_finished_task_ids: ["pkg"],
+        manual_positions: {},
+        expanded_initialised: true,
+      });
+      mountWithRealProvider();
+      await screen.findByTestId("node-e");
+      await waitFor(() => expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e", "pkg"]));
+
+      dashboardStateFake.puts.length = 0;
+      fireEvent.click(screen.getByRole("button", { name: "Focus active" }));
+
+      await waitFor(() => {
+        const put = dashboardStateFake.puts.find((p) => p.namespace === "command_center_project_view");
+        expect(put).toBeDefined();
+        const value = put!.value as { expanded_task_ids: string[]; expanded_finished_task_ids: string[] };
+        // Both lists clear: the server validator requires finished to stay a
+        // subset of expanded, so a write that cleared only one is rejected
+        // and silently reverted (F2).
+        expect(value.expanded_task_ids).toEqual([]);
+        expect(value.expanded_finished_task_ids).toEqual([]);
+      });
+      // No conflict (revision_conflict) response was ever recorded: had the
+      // write been rejected, `putDashboardDocument`'s catch path would have
+      // reconciled onto the server's `current` document instead.
+      expect(dashboardStateFake.puts.every((p) => p.value !== undefined)).toBe(true);
+    });
+
+    it("F3: a multi-project canvas persists per project instead of being gated off", async () => {
+      // Two projects, both never initialised.
+      const view = render(
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <GraphStateProvider projectIds={["p1", "p2"]}>
+            <MemoryRouter>
+              <LayoutCanvas {...base} projectIds={["p1", "p2"]}
+                projectNames={new Map([["p1", "P1"], ["p2", "P2"]])} />
+            </MemoryRouter>
+          </GraphStateProvider>
+        </QueryClientProvider>,
+      );
+      await screen.findAllByTestId("node-e");
+      // Both layers rendered against the mocked `useLayoutTiles`, so
+      // `tiles.params`/`tiles.options` reflect whichever rendered last; what
+      // matters here is that persisting p2's result does not depend on p1
+      // being the only project (the old single-project gate would have left
+      // `onExpandedApplied` `undefined` for a 2-project canvas).
+      await act(async () => { tiles.options?.onExpandedApplied?.(["z"]); });
+      await waitFor(() => {
+        const puts = dashboardStateFake.puts.filter((p) => p.namespace === "command_center_project_view");
+        expect(puts.length).toBeGreaterThan(0);
+        const last = puts[puts.length - 1]!;
+        expect((last.value as { expanded_task_ids: string[] }).expanded_task_ids).toEqual(["z"]);
+      });
+      view.unmount();
     });
   });
 });

@@ -124,7 +124,10 @@ interface LayerProps {
   expanded: ReadonlySet<string>;
   handlers: FlowHandlers;
   onBudgetExceeded: () => void;
-  onExpandedApplied?: (ids: string[]) => void;
+  /** Whether THIS project has ever stored an expansion (design A3). */
+  hasStoredExpansion: (projectId: string) => boolean;
+  /** Persists a server-computed `expanded_applied` for THIS project. */
+  onExpandedApplied: (projectId: string, ids: string[]) => void;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
   simpleEdges: boolean;
@@ -153,7 +156,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  */
 function ProjectLayer({
   projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded,
-  onExpandedApplied, onElements, density, simpleEdges,
+  hasStoredExpansion, onExpandedApplied, onElements, density, simpleEdges,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -173,15 +176,26 @@ function ProjectLayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rect = useMemo<Rect | null>(() => rawRect, [coverage]);
 
+  // "Land on the active subgraph" (design A3), per project (F3): whether
+  // THIS project wants auto_expand, recomputed on every render from
+  // `hasStoredExpansion`. The one-shot guard against a follow-up request
+  // firing before a persisted write lands (F3) is NOT here -- it lives
+  // inside `useLayoutTiles`, keyed to the actual dispatch of a request
+  // rather than to a render, since this value can (correctly) keep
+  // recomputing `true` across several renders of the same still-uninitialised
+  // project before the first response even comes back.
+  const autoExpand = params.expanded.length === 0 && !params.root && !hasStoredExpansion(projectId);
+  const layerParams = useMemo<TilesParams>(() => ({ ...params, autoExpand }), [params, autoExpand]);
+
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
   const applied = useRef(onExpandedApplied);
   applied.current = onExpandedApplied;
   const options = useMemo(() => ({
     onBudgetExceeded: () => budget.current(),
-    onExpandedApplied: (ids: string[]) => applied.current?.(ids),
-  }), []);
-  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
+    onExpandedApplied: (ids: string[]) => applied.current(projectId, ids),
+  }), [projectId]);
+  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, layerParams, rect, options);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -215,8 +229,8 @@ function Inner(props: LayoutCanvasProps) {
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const {
-    expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, requestActiveExpansion,
-    setExpandedTaskIds, density, setDensity, manualPositions, saveGraphPosition,
+    expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, applyExpandedResult,
+    requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition,
   } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
@@ -310,12 +324,12 @@ function Inner(props: LayoutCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingExtents]);
 
-  // "Land on the active subgraph" (design A3): only when nothing is
-  // explicitly expanded yet AND every displayed project has never stored an
-  // expansion -- an explicit (even empty) choice on any of them, or a focus
-  // root already in play, always wins.
-  const autoExpand = expandedTaskIds.size === 0 && !focusId
-    && projectIds.every((pid) => !hasStoredExpansion(pid));
+  // "Land on the active subgraph" (design A3): each `ProjectLayer` decides
+  // FOR ITSELF (via `hasStoredExpansion`/`applyExpandedResult`, both
+  // per-project) whether its own next request carries `auto_expand` -- see
+  // F3. `params` here is the shared base every layer starts from; a root
+  // (focus) always disables it, same as the shared `expanded` being
+  // non-empty (auto_expand only takes effect server-side when it is).
   const params = useMemo<TilesParams>(() => ({
     variant: requestVariant,
     expanded: [...expandedTaskIds].sort(),
@@ -323,18 +337,7 @@ function Inner(props: LayoutCanvasProps) {
     maxDepth: maxDepth === null || maxDepth === Infinity ? null : maxDepth,
     q: filters.query.trim(),
     status: filters.status,
-    autoExpand,
-  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status, autoExpand]);
-  // Persisting a server-computed `expanded_applied` is only safe when there
-  // is exactly one project on screen: the shared `setExpandedTaskIds` call
-  // replaces every displayed project's stored expansion with the ids in the
-  // response, and a response only ever carries ONE project's container ids.
-  const onExpandedApplied = useMemo(
-    () => (projectIds.length === 1
-      ? (ids: string[]) => setExpandedTaskIds(new Set(ids))
-      : undefined),
-    [projectIds.length, setExpandedTaskIds],
-  );
+  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
 
   const selectedId = selectedPlaybookId
     ? `playbook:${selectedPlaybookId}`
@@ -612,7 +615,8 @@ function Inner(props: LayoutCanvasProps) {
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
-            onBudgetExceeded={onBudgetExceeded} onExpandedApplied={onExpandedApplied} onElements={onElements}
+            onBudgetExceeded={onBudgetExceeded} hasStoredExpansion={hasStoredExpansion}
+            onExpandedApplied={applyExpandedResult} onElements={onElements}
             density={density} simpleEdges={simpleEdges} />
         ))}
         <ReactFlow

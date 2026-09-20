@@ -1185,3 +1185,56 @@ async def test_tiles_without_auto_expand_never_sets_expanded_applied(db, client_
         r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
     assert r.status_code == 200
     assert r.json()["expanded_applied"] is None
+
+
+async def test_tiles_auto_expand_costs_exactly_one_statement_when_used_and_zero_otherwise(
+    db, client_factory
+):
+    """`load_active_container_rows` runs once when `auto_expand` is honored,
+    never when it isn't (design A3, fix F5) -- the same style of budget as
+    `test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count`.
+    """
+    await seed(db)
+
+    def _active_container_reads(statements: list[str]) -> list[str]:
+        # The WHERE clause SQLAlchemy renders for `load_active_container_rows`
+        # is the only place in this endpoint that compares `agg_running` with
+        # an inequality; every other read of `task_layouts` selects the whole
+        # row (the column appears in the SELECT list) but never filters on it.
+        return [s for s in statements if "agg_running >" in s]
+
+    async with client_factory() as ac:
+        # `expanded` is non-empty, so `auto_expand` must be ignored entirely --
+        # zero added statements.
+        statements_without: list[str] = []
+
+        def _hook_without(conn, cursor, statement, parameters, context, executemany):
+            statements_without.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _hook_without)
+        try:
+            r1 = await ac.post(
+                "/api/projects/p1/graph/tiles",
+                json={**ALL, "auto_expand": True, "expanded": ["e"]},
+            )
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _hook_without)
+        assert r1.status_code == 200
+        assert r1.json()["expanded_applied"] is None
+        assert _active_container_reads(statements_without) == []
+
+        # `expanded` is empty, so `auto_expand` is honored -- exactly one
+        # added statement.
+        statements_with: list[str] = []
+
+        def _hook_with(conn, cursor, statement, parameters, context, executemany):
+            statements_with.append(statement)
+
+        event.listen(db._engine.sync_engine, "before_cursor_execute", _hook_with)
+        try:
+            r2 = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "auto_expand": True})
+        finally:
+            event.remove(db._engine.sync_engine, "before_cursor_execute", _hook_with)
+        assert r2.status_code == 200
+        assert r2.json()["expanded_applied"] is not None
+        assert len(_active_container_reads(statements_with)) == 1
