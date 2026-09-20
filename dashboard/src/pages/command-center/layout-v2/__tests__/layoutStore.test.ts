@@ -129,7 +129,7 @@ describe("layoutStore", () => {
       workers: [{ agent_id: "w1", name: "W1", docked_at: "n2", in_collapsed: false }],
     }));
     expect(merged.workers.length).toBe(1);
-    expect(merged.workers[0].docked_at).toBe("n2");
+    expect(merged.workers[0]?.docked_at).toBe("n2");
   });
 
   it("leaves gates unaffected by the worker-eviction rule", () => {
