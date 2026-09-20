@@ -1189,6 +1189,60 @@ async def test_tiles_subtask_lookup_is_one_statement_regardless_of_visible_count
     assert len(subtask_reads) == 1, subtask_reads
 
 
+async def test_list_subtask_lookup_is_one_statement_regardless_of_page_size(db, client_factory):
+    """One ``count_task_subtasks`` call over the whole page, not one per row.
+
+    Mirrors ``test_tiles_subtask_lookup_is_one_statement_regardless_of_visible_count``
+    for the ``list`` endpoint, which pages over ``page`` the same way ``tiles``
+    pages over ``with_tasks``.
+    """
+    await seed(db)
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}])
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert len(r.json()["nodes"]) > 1  # a real multi-node page, not a fluke
+    subtask_reads = [s for s in statements if "task_subtasks" in s]
+    assert len(subtask_reads) == 1, subtask_reads
+
+
+async def test_list_subtask_lookup_is_skipped_for_an_empty_page(db, client_factory):
+    """No ``task_subtasks`` statement at all when the page has nothing on it."""
+    await seed(db)
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}])
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post(
+                "/api/projects/p1/graph/list",
+                json={**ALL, "q": "no-such-title-anywhere"},
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    assert r.json()["nodes"] == []
+    subtask_reads = [s for s in statements if "task_subtasks" in s]
+    assert subtask_reads == []
+
+
 async def test_list_reports_subtask_counts(db, client_factory):
     await seed(db)
     await db.add_task_subtasks("z", "p1", [{"title": "one"}])
