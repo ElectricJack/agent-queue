@@ -179,6 +179,106 @@ class TestParseGraph:
         assert rules == {"bad_field_type", "bad_need"}
 
 
+class TestParseSubtasks:
+    """``subtasks:`` on a node — the planning-emits-subtasks grammar (§7.2)."""
+
+    @staticmethod
+    def _doc(subtasks) -> dict:
+        return {
+            "version": 1,
+            "nodes": [{"key": "a", "title": "A", "subtasks": subtasks}],
+        }
+
+    def test_three_string_entries_become_three_subtasks(self):
+        graph = parse_graph(self._doc(["one", "two", "three"]))
+        node = graph.nodes[0]
+        assert [s.title for s in node.subtasks] == ["one", "two", "three"]
+        assert [s.context for s in node.subtasks] == ["", "", ""]
+
+    def test_mixed_string_and_object_entries_parse(self):
+        graph = parse_graph(
+            self._doc(["bare", {"title": "rich", "context": "why it matters"}])
+        )
+        node = graph.nodes[0]
+        assert [(s.title, s.context) for s in node.subtasks] == [
+            ("bare", ""),
+            ("rich", "why it matters"),
+        ]
+
+    def test_subtasks_round_trip_through_to_dict(self):
+        graph = parse_graph(self._doc([{"title": "t", "context": "c"}]))
+        assert graph.to_dict()["nodes"][0]["subtasks"] == [{"title": "t", "context": "c"}]
+
+    def test_a_bare_string_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc("just one"))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_a_bare_object_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc({"title": "just one"}))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_an_over_long_title_is_one_bad_subtask(self):
+        from src.commands.task_subtask_commands import MAX_SUBTASK_TITLE
+
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["x" * (MAX_SUBTASK_TITLE + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert exc.value.errors[0].node == "a"
+
+    def test_an_empty_title_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["   "]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_an_over_long_context_is_one_bad_subtask(self):
+        from src.commands.task_subtask_commands import MAX_SUBTASK_CONTEXT
+
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": "x" * (MAX_SUBTASK_CONTEXT + 1)}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_a_non_string_entry_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([17]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_a_non_list_value_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(17))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_over_the_per_node_cap_is_one_bad_subtask(self):
+        from src.commands.task_subtask_commands import MAX_SUBTASKS_PER_CALL
+
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert str(MAX_SUBTASKS_PER_CALL) in exc.value.errors[0].detail
+
+    def test_exactly_the_per_node_cap_parses(self):
+        from src.commands.task_subtask_commands import MAX_SUBTASKS_PER_CALL
+
+        graph = parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL)]))
+        assert len(graph.nodes[0].subtasks) == MAX_SUBTASKS_PER_CALL
+
+    def test_defaults_supply_subtasks_when_a_node_omits_them(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "defaults": {"subtasks": ["shared"]},
+                "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B"}],
+            }
+        )
+        assert [s.title for s in graph.nodes[0].subtasks] == ["shared"]
+        assert [s.title for s in graph.nodes[1].subtasks] == ["shared"]
+
+    def test_a_document_without_subtasks_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert all(node.subtasks == [] for node in graph.nodes)
+        assert all(n["subtasks"] == [] for n in graph.to_dict()["nodes"])
+
+
 class TestExtractFromSpec:
     def test_extracts_the_fenced_block(self):
         markdown = (FIXTURES / "valid_spec.md").read_text(encoding="utf-8")
@@ -278,6 +378,35 @@ class TestSubstituteVars:
         assert graph.parent.profile == "coding"
         assert unknown == set()
         assert "p" in used
+
+    def test_subtask_titles_and_contexts_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"branch": "feat/x"},
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "subtasks": [{"title": "Rebase {branch}", "context": "onto {branch}"}],
+                    }
+                ],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"branch"}, set())
+        subtask = graph.nodes[0].subtasks[0]
+        assert (subtask.title, subtask.context) == ("Rebase feat/x", "onto feat/x")
+
+    def test_an_undeclared_var_in_a_subtask_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [{"key": "a", "title": "A", "subtasks": ["Rebase {nope}"]}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
 
     def test_context_type_is_expanded(self):
         graph = parse_graph(

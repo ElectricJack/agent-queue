@@ -42,47 +42,60 @@ class TaskSubtaskQueriesMixin:
     """Query mixin for ``task_subtasks``. Expects ``self._engine``."""
 
     async def add_task_subtasks(
-        self, task_id: str, project_id: str, items: list[dict]
+        self, task_id: str, project_id: str, items: list[dict], *, conn=None
     ) -> list[dict]:
         """Append ``items`` after the current max ordinal, in one transaction.
 
         ``items`` is ``[{"title": str, "context": str = ""}, ...]``. Raises
         ``ValueError("subtask_limit")`` if the append would exceed
         ``MAX_SUBTASKS_PER_TASK``. Returns the inserted rows, ordinal-ordered.
+
+        *conn* joins the caller's transaction instead of opening one, so the
+        task-graph creator can seed a node's checklist inside ``write_plan``'s
+        single transaction — a graph is created whole or not at all, and that
+        has to include the rows the nodes were planned with.
         """
         if not items:
             return []
+        if conn is None:
+            async with self._engine.begin() as owned:
+                return await self._add_task_subtasks_on(owned, task_id, project_id, items)
+        return await self._add_task_subtasks_on(conn, task_id, project_id, items)
+
+    async def _add_task_subtasks_on(
+        self, conn, task_id: str, project_id: str, items: list[dict]
+    ) -> list[dict]:
+        """The append itself, on an already-open connection."""
         now = time.time()
-        async with self._engine.begin() as conn:
-            current_max = (
-                await conn.execute(
-                    select(func.max(task_subtasks.c.ordinal)).where(
-                        task_subtasks.c.task_id == task_id
-                    )
+        current_max = (
+            await conn.execute(
+                select(func.max(task_subtasks.c.ordinal)).where(
+                    task_subtasks.c.task_id == task_id
                 )
-            ).scalar()
-            base = current_max or 0
-            if base + len(items) > MAX_SUBTASKS_PER_TASK:
-                raise ValueError("subtask_limit")
-            rows = []
-            for offset, item in enumerate(items, start=1):
-                ordinal = base + offset
-                rows.append(
-                    {
-                        "id": _subtask_id(task_id, ordinal),
-                        "task_id": task_id,
-                        "project_id": project_id,
-                        "ordinal": ordinal,
-                        "title": item["title"],
-                        "context": item.get("context", ""),
-                        "status": "pending",
-                        "note": None,
-                        "created_at": now,
-                        "updated_at": now,
-                    }
-                )
-            await conn.execute(task_subtasks.insert(), rows)
-            return rows
+            )
+        ).scalar()
+        base = current_max or 0
+        if base + len(items) > MAX_SUBTASKS_PER_TASK:
+            raise ValueError("subtask_limit")
+        rows = []
+        for offset, item in enumerate(items, start=1):
+            ordinal = base + offset
+            rows.append(
+                {
+                    "id": _subtask_id(task_id, ordinal),
+                    "task_id": task_id,
+                    "project_id": project_id,
+                    "ordinal": ordinal,
+                    "title": item["title"],
+                    "context": item.get("context", ""),
+                    "status": "pending",
+                    "note": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+        await conn.execute(task_subtasks.insert(), rows)
+        return rows
 
     async def list_task_subtasks(self, task_id: str) -> list[dict]:
         """Ordinal-ordered subtasks for ``task_id``, without ``context``."""

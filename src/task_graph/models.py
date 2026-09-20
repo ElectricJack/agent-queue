@@ -100,6 +100,25 @@ class GraphContext:
 
 
 @dataclass
+class GraphSubtask:
+    """One ``task_subtasks`` checklist row a node declares.
+
+    Subtasks are never scheduled or claimed — they are per-task progress
+    visibility for the single agent that holds the task.  They live in the
+    graph grammar because the subtask write fence only lets a session write
+    subtasks on the task it *holds*, so a planner can never seed them after
+    the fact: whoever writes the task row must write the checklist with it
+    (see the planning-emits-subtasks design §2.1).
+    """
+
+    title: str
+    context: str = ""
+
+    def to_dict(self) -> dict:
+        return {"title": self.title, "context": self.context}
+
+
+@dataclass
 class GraphNode:
     """One task in the graph, keyed graph-locally by ``key``."""
 
@@ -110,6 +129,8 @@ class GraphNode:
     deliverables: list[dict[str, str]] = field(default_factory=list)
     context: list[GraphContext] = field(default_factory=list)
     needs: list[GraphNeed] = field(default_factory=list)
+    #: Checklist rows seeded onto this node's task, in document order.
+    subtasks: list[GraphSubtask] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
     priority: int = 100
     profile: str | None = None
@@ -128,6 +149,7 @@ class GraphNode:
             "deliverables": [dict(item) for item in self.deliverables],
             "context": [c.to_dict() for c in self.context],
             "needs": [n.to_dict() for n in self.needs],
+            "subtasks": [s.to_dict() for s in self.subtasks],
             "labels": list(self.labels),
             "priority": self.priority,
             "profile": self.profile,

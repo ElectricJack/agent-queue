@@ -317,6 +317,175 @@ class TestValidationEnvelope:
         assert result["errors"][0]["rule"] == "missing_key"
 
 
+def _subtask_graph() -> dict:
+    return {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "nodes": [
+            {
+                "key": "a",
+                "title": "A",
+                "acceptance": ["x"],
+                "subtasks": [
+                    "first",
+                    {"title": "second", "context": "the brief for two"},
+                    "third",
+                ],
+            },
+            {"key": "b", "title": "B", "acceptance": ["x"]},
+        ],
+    }
+
+
+class TestNodeSubtasks:
+    """``subtasks:`` seeded by the graph creator, in write_plan's transaction."""
+
+    async def test_rows_are_created_ordinal_ordered_with_titles_and_contexts(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        assert "error" not in result
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        rows = await db.list_task_subtasks(node_id)
+        assert [(r["ordinal"], r["title"]) for r in rows] == [
+            (1, "first"),
+            (2, "second"),
+            (3, "third"),
+        ]
+        assert all(r["status"] == "pending" for r in rows)
+        assert (await db.get_task_subtask(node_id, 2))["context"] == "the brief for two"
+        other_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "b")
+        assert await db.list_task_subtasks(other_id) == []
+
+    async def test_report_counts_subtasks_per_node(self, setup):
+        handler, _db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        assert {n["key"]: n["subtasks"] for n in result["nodes"]} == {"a": 3, "b": 0}
+
+    async def test_dry_run_reports_the_count_and_writes_nothing(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "dry_run": True}
+        )
+        assert {n["key"]: n["subtasks"] for n in result["nodes"]} == {"a": 3, "b": 0}
+        assert await db.list_tasks(project_id="p1") == []
+        async with db._engine.connect() as conn:
+            from sqlalchemy import func, select
+
+            from src.database.tables import task_subtasks
+
+            assert await conn.scalar(select(func.count()).select_from(task_subtasks)) == 0
+
+    async def test_a_failed_insert_leaves_zero_subtask_rows(self, setup, monkeypatch):
+        """The single-transaction contract (§12) covers the checklist too."""
+        handler, db, _vault = setup
+        from src.task_graph import creator as creator_module
+
+        real_insert = creator_module._insert_task
+        calls = {"n": 0}
+
+        async def failing(conn, row):
+            calls["n"] += 1
+            if calls["n"] > 2:  # container + first node succeed
+                raise RuntimeError("boom")
+            await real_insert(conn, row)
+
+        monkeypatch.setattr(creator_module, "_insert_task", failing)
+        with pytest.raises(RuntimeError):
+            await handler._cmd_create_task_graph(
+                {"project_id": "p1", "graph": _subtask_graph()}
+            )
+        assert await db.list_tasks(project_id="p1") == []
+        async with db._engine.connect() as conn:
+            from sqlalchemy import func, select
+
+            from src.database.tables import task_subtasks
+
+            assert await conn.scalar(select(func.count()).select_from(task_subtasks)) == 0
+
+    async def test_provisional_ids_seed_the_reserved_id_not_the_placeholder(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "parent_id": "epic"}
+        )
+        assert result["provisional"] is True
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        assert node_id == "epic.1"
+        assert [r["title"] for r in await db.list_task_subtasks(node_id)] == [
+            "first",
+            "second",
+            "third",
+        ]
+        assert await db.list_task_subtasks("epic.?") == []
+
+    async def test_prime_renders_the_subtasks_block_for_a_graph_created_task(self, setup):
+        handler, db, _vault = setup
+        from src.prime.sections import build_task_subtasks_summary
+
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        summary = await build_task_subtasks_summary(db, await db.get_task(node_id))
+        assert summary.startswith("## Subtasks")
+        assert "- [ ] 1. first" in summary
+        assert "- [ ] 3. third" in summary
+        assert "the brief for two" not in summary
+
+
+class TestSubtasksUnreportable:
+    """A profile whose policy cannot tick the checklist earns a warning, not a refusal."""
+
+    @staticmethod
+    def _graph() -> dict:
+        doc = _subtask_graph()
+        doc["nodes"][0]["profile"] = "coding"
+        return doc
+
+    async def test_warning_when_the_profile_cannot_update_subtasks(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_close"])
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph()}
+        )
+        assert "error" not in result
+        warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"]
+        assert len(warnings) == 1
+        assert warnings[0]["severity"] == "warning"
+        assert warnings[0]["node"] == "a"
+        assert "aq agent profile-reseed --profile-id coding --grants-only" in warnings[0]["detail"]
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        assert len(await db.list_task_subtasks(node_id)) == 3
+
+    async def test_no_warning_when_the_profile_grants_the_command(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_subtask_update"])
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph()}
+        )
+        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+
+    async def test_no_warning_for_a_node_without_subtasks(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_close"])
+        doc = _simple_graph()
+        doc["nodes"][0]["profile"] = "coding"
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+
+
 class TestDryRun:
     async def test_reports_ids_without_writing(self, setup):
         handler, db, _vault = setup

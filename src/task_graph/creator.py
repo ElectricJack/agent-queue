@@ -83,6 +83,10 @@ class GraphPlan:
     dependency_rows: list[dict] = field(default_factory=list)
     context_rows: list[dict] = field(default_factory=list)
     criteria_rows: list[dict] = field(default_factory=list)
+    #: ``{"_key", "title", "context"}`` per declared subtask, document order.
+    #: Written through ``add_task_subtasks(..., conn=conn)`` so the checklist
+    #: commits with the task row it belongs to.
+    subtask_rows: list[dict] = field(default_factory=list)
     label_rows: list[dict] = field(default_factory=list)
     routing_task_ids: list[str] = field(default_factory=list)
     #: graph key → assigned (or provisional) task id
@@ -319,6 +323,16 @@ async def build_plan(
                 }
             )
 
+        for subtask in node.subtasks:
+            plan.subtask_rows.append(
+                {
+                    "task_id": task_id,
+                    "title": subtask.title,
+                    "context": subtask.context,
+                    "_key": node.key,
+                }
+            )
+
         for label in node.labels:
             if label.strip():
                 plan.label_rows.append(
@@ -355,7 +369,7 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
     for row in plan.dependency_rows:
         row["task_id"] = real.get(row.get("_task_key"), row["task_id"])
         row["depends_on_task_id"] = real.get(row.get("_dep_key"), row["depends_on_task_id"])
-    for coll in (plan.context_rows, plan.criteria_rows, plan.label_rows):
+    for coll in (plan.context_rows, plan.criteria_rows, plan.subtask_rows, plan.label_rows):
         for row in coll:
             row["task_id"] = real.get(row.get("_key"), row["task_id"])
 
@@ -544,6 +558,19 @@ async def write_plan(
             await conn.execute(
                 insert(task_criteria), [_strip_private(r) for r in plan.criteria_rows]
             )
+        if plan.subtask_rows:
+            # Grouped per task so each node's checklist is one append with
+            # contiguous ordinals in document order.  ``conn=conn`` keeps it
+            # inside this transaction: the subtask write fence means a planner
+            # could never seed these after the fact (design §2.1), so they
+            # have to land with the task row or not at all.
+            per_task: dict[str, list[dict]] = {}
+            for row in plan.subtask_rows:
+                per_task.setdefault(row["task_id"], []).append(
+                    {"title": row["title"], "context": row["context"]}
+                )
+            for task_id, items in per_task.items():
+                await db.add_task_subtasks(task_id, plan.project_id, items, conn=conn)
         if plan.label_rows:
             # Duplicate (task_id, label) pairs would violate the PK; the
             # author's intent for a repeated label is one label.
@@ -605,6 +632,7 @@ def build_report(
                 "key": node.key,
                 "task_id": plan.ids[node.key],
                 "title": node.title,
+                "subtasks": len(node.subtasks),
                 "needs": [
                     {
                         "on": need.on,

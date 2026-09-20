@@ -107,6 +107,46 @@ async def test_add_past_limit_raises_subtask_limit(db):
         await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one too many"}])
 
 
+async def test_add_with_a_caller_connection_joins_that_transaction(db):
+    """The graph creator seeds subtasks inside ``write_plan``'s one transaction,
+    so a rollback there must leave no checklist behind."""
+    await mktask(db, "t")
+    try:
+        async with db._engine.begin() as conn:
+            rows = await db.add_task_subtasks(
+                "t", PROJECT_ID, [{"title": "one"}, {"title": "two"}], conn=conn
+            )
+            assert [r["ordinal"] for r in rows] == [1, 2]
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    assert await db.list_task_subtasks("t") == []
+
+
+async def test_add_with_a_caller_connection_commits_with_it(db):
+    await mktask(db, "t")
+    async with db._engine.begin() as conn:
+        await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one"}], conn=conn)
+    assert [r["title"] for r in await db.list_task_subtasks("t")] == ["one"]
+
+
+async def test_add_without_a_connection_still_commits_on_its_own(db):
+    await mktask(db, "t")
+    rows = await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one"}])
+    assert [r["ordinal"] for r in rows] == [1]
+    assert [r["title"] for r in await db.list_task_subtasks("t")] == ["one"]
+
+
+async def test_limit_is_raised_on_the_caller_connection_too(db):
+    await mktask(db, "t")
+    await db.add_task_subtasks(
+        "t", PROJECT_ID, [{"title": f"item-{i}"} for i in range(MAX_SUBTASKS_PER_TASK)]
+    )
+    with pytest.raises(ValueError, match="subtask_limit"):
+        async with db._engine.begin() as conn:
+            await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one too many"}], conn=conn)
+
+
 async def test_skip_open_flips_only_open_rows_and_returns_count(db):
     await mktask(db, "t")
     await db.add_task_subtasks(

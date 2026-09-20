@@ -21,6 +21,7 @@ from src.task_graph.models import (
     GraphNode,
     GraphParent,
     GraphParseError,
+    GraphSubtask,
     TaskGraph,
 )
 from src.task_graph.parser import (
@@ -45,6 +46,7 @@ __all__ = [
     "GraphNode",
     "GraphParent",
     "GraphParseError",
+    "GraphSubtask",
     "TaskGraph",
     "assign_child_ids",
     "build_report",

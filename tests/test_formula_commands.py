@@ -30,7 +30,7 @@ async def setup(tmp_path):
     vault_root = tmp_path / "vault"
     (vault_root / "formulas").mkdir(parents=True)
     (vault_root / "projects" / "p1" / "formulas").mkdir(parents=True)
-    for name in ("base-review.md", "review-and-fix.md"):
+    for name in ("base-review.md", "review-and-fix.md", "with-subtasks.md"):
         shutil.copy(FIXTURES / name, vault_root / "formulas" / name)
     registry = FormulaRegistry()
     assert load_from_vault(registry, str(vault_root)) == []
@@ -52,7 +52,7 @@ class TestList:
         h, *_ = setup
         res = await h._cmd_formula_list({"project_id": "p1"})
         names = {f["name"]: f for f in res["formulas"]}
-        assert set(names) == {"base-review", "review-and-fix"}
+        assert set(names) == {"base-review", "review-and-fix", "with-subtasks"}
         assert names["review-and-fix"]["extends"] == "base-review"
         assert names["base-review"]["vars"]["branch"] == {"required": True, "default": None, "enum": None}
         assert names["base-review"]["scope"] == "system"
@@ -131,6 +131,19 @@ class TestCook:
         assert fix.profile_id == "coding" and fix.is_blocked is True
         emitted = [c.args for c in h.orchestrator.bus.emit.await_args_list if c.args[0] == "formula.cooked"]
         assert emitted and emitted[0][1]["container_id"] == cid
+
+    async def test_cook_seeds_node_subtasks(self, setup):
+        """Formulas inherit the ``aq-graph`` grammar, so they inherit ``subtasks:``."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-subtasks", "project_id": "p1",
+                                         "vars": {"branch": "feat/x"}})
+        assert res["success"] is True
+        assert {n["key"]: n["subtasks"] for n in res["nodes"]} == {"ship": 2}
+        node_id = next(n["task_id"] for n in res["nodes"] if n["key"] == "ship")
+        rows = await db.list_task_subtasks(node_id)
+        assert [(r["ordinal"], r["title"]) for r in rows] == [
+            (1, "Rebase feat/x"), (2, "Run the focused tests")]
+        assert (await db.get_task_subtask(node_id, 2))["context"] == "Only the files feat/x touches."
 
     async def test_cook_dry_run_writes_nothing(self, setup):
         h, db, *_ = setup

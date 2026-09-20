@@ -129,6 +129,9 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
             ctx.content = expand(ctx.content)
         for need in node.needs:
             need.on = expand(need.on) or need.on
+        for subtask in node.subtasks:
+            subtask.title = expand(subtask.title) or subtask.title
+            subtask.context = expand(subtask.context) or subtask.context
 
     unknown |= _surviving_var_names(graph)
     return used, unknown
@@ -171,6 +174,9 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
             scan(ctx.content)
         for need in node.needs:
             scan(need.on)
+        for subtask in node.subtasks:
+            scan(subtask.title)
+            scan(subtask.context)
 
     return names
 
@@ -478,6 +484,49 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
     return errors
 
 
+async def _check_subtasks_reportable(graph: TaskGraph, db: Any) -> list[GraphError]:
+    """Warn when a node's checklist is one its worker could not tick off.
+
+    ``ensure_default_profiles`` is write-if-absent, so a vault upgraded from
+    before the subtask grants existed has profiles without
+    ``task_subtask_update``.  Such a worker still *sees* the checklist in
+    prime — it just is not told to report progress — so the checklist is
+    still worth writing and this is a **warning**, not an error.  Saying so
+    at ``--dry-run`` time is what lets a planner fix the grants first.
+
+    Runs after :func:`_check_profiles`, which rewrites ``node.profile`` to the
+    id that actually resolved, so the reseed command this names is the real
+    profile id.  A node with no profile resolves to nothing and is skipped —
+    ``profile_allows_command`` fails open there, and so does this.
+    """
+    if db is None:
+        return []
+    from src.prime.sections import SUBTASK_UPDATE_COMMAND, profile_allows_command
+
+    findings: list[GraphError] = []
+    allowed: dict[str, bool] = {}
+    for node in graph.nodes:
+        if not node.subtasks or not node.profile:
+            continue
+        if node.profile not in allowed:
+            allowed[node.profile] = await profile_allows_command(
+                db, node.profile, SUBTASK_UPDATE_COMMAND
+            )
+        if allowed[node.profile]:
+            continue
+        findings.append(
+            _error(
+                "subtasks_unreportable",
+                f"profile '{node.profile}' cannot run '{SUBTASK_UPDATE_COMMAND}', so the "
+                "worker will see this checklist but not be told to tick it off — "
+                f"run `aq agent profile-reseed --profile-id {node.profile} --grants-only`",
+                node.key,
+                severity="warning",
+            )
+        )
+    return findings
+
+
 def _check_spec_refs(
     graph: TaskGraph,
     *,
@@ -581,6 +630,7 @@ async def validate_graph(
     findings.extend(_check_foreign_projects(graph, project_id))
     findings.extend(await _check_needs(graph, project_id, db))
     findings.extend(await _check_profiles(graph, project_id, db))
+    findings.extend(await _check_subtasks_reportable(graph, db))
     findings.extend(_check_spec_refs(graph, vault_root=vault_root))
 
     return findings

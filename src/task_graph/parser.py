@@ -26,6 +26,7 @@ from src.task_graph.models import (
     GraphNode,
     GraphParent,
     GraphParseError,
+    GraphSubtask,
     TaskGraph,
 )
 
@@ -110,6 +111,65 @@ def _parse_context(raw: Any, node_key: str) -> tuple[GraphContext | None, list[G
         ),
         [],
     )
+
+
+def _subtask_bounds() -> tuple[int, int, int]:
+    """``(per-node cap, title cap, context cap)`` from the subtask commands.
+
+    Imported lazily for the same reason ``normalize_deliverables`` is:
+    ``src.commands`` builds the whole ``CommandHandler`` at package import,
+    and that reaches back into ``src.task_graph``.  The numbers are stated in
+    exactly one place — ``src/commands/task_subtask_commands.py`` — so the
+    grammar can never drift from what ``task_subtask_add`` accepts.
+    """
+    from src.commands.task_subtask_commands import (
+        MAX_SUBTASK_CONTEXT,
+        MAX_SUBTASK_TITLE,
+        MAX_SUBTASKS_PER_CALL,
+    )
+
+    return MAX_SUBTASKS_PER_CALL, MAX_SUBTASK_TITLE, MAX_SUBTASK_CONTEXT
+
+
+def _parse_subtask(raw: Any, node_key: str) -> tuple[GraphSubtask | None, list[GraphError]]:
+    """Parse one ``subtasks`` entry: a bare title string or ``{title, context}``.
+
+    Length bounds are checked here, before anything is written, because they
+    are ``CheckConstraint``s on ``task_subtasks`` — an oversize title reaching
+    the insert would abort ``write_plan``'s whole transaction with a database
+    error instead of a reportable graph finding.
+    """
+    _, max_title, max_context = _subtask_bounds()
+    if isinstance(raw, str):
+        raw = {"title": raw}
+    if not isinstance(raw, dict):
+        return None, [
+            _err(
+                "bad_subtask",
+                f"'subtasks' entries must be strings or objects, got {raw!r}",
+                node_key,
+            )
+        ]
+    title = raw.get("title")
+    if not isinstance(title, str) or not 1 <= len(title.strip()) <= max_title:
+        return None, [
+            _err(
+                "bad_subtask",
+                f"each subtask title must be a string of 1 to {max_title} characters, "
+                f"got {title!r}",
+                node_key,
+            )
+        ]
+    context = raw.get("context", "") or ""
+    if not isinstance(context, str) or len(context) > max_context:
+        return None, [
+            _err(
+                "bad_subtask",
+                f"subtask context must be a string of at most {max_context} characters",
+                node_key,
+            )
+        ]
+    return GraphSubtask(title=title.strip(), context=context), []
 
 
 def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None, list[GraphError]]:
@@ -213,6 +273,40 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         errors.extend(errs)
         if ctx:
             node.context.append(ctx)
+
+    max_subtasks, _title, _context = _subtask_bounds()
+    raw_subtasks = raw.get("subtasks", defaults.get("subtasks")) or []
+    if isinstance(raw_subtasks, (str, dict)):
+        raw_subtasks = [raw_subtasks]
+    if not isinstance(raw_subtasks, list):
+        errors.append(
+            _err(
+                "bad_subtask",
+                f"'subtasks' must be a list, got {type(raw_subtasks).__name__}",
+                key,
+            )
+        )
+        raw_subtasks = []
+    if len(raw_subtasks) > max_subtasks:
+        # One node's list is one authoring act, so it is capped the way one
+        # ``task_subtask_add`` call is.  The durable per-task ceiling
+        # (``MAX_SUBTASKS_PER_TASK``) is unreachable from a graph alone — the
+        # task is brand new and the base ordinal is 0 — and stays what
+        # ``add_task_subtasks`` raises for a later ``subtask-add``.
+        errors.append(
+            _err(
+                "bad_subtask",
+                f"node has {len(raw_subtasks)} subtasks; at most {max_subtasks} "
+                "may be declared on one node",
+                key,
+            )
+        )
+        raw_subtasks = []
+    for entry in raw_subtasks:
+        subtask, errs = _parse_subtask(entry, key)
+        errors.extend(errs)
+        if subtask:
+            node.subtasks.append(subtask)
 
     return node, errors
 
