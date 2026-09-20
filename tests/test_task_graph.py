@@ -368,6 +368,175 @@ class TestParseSubtasks:
         assert all(n["subtasks"] == [] for n in graph.to_dict()["nodes"])
 
 
+class TestParsePhases:
+    """``phases:`` at the top level and ``phase:`` on a node (§7.3)."""
+
+    @staticmethod
+    def _doc(phases, node_phase=None) -> dict:
+        node = {"key": "a", "title": "A"}
+        if node_phase is not None:
+            node["phase"] = node_phase
+        return {"version": 1, "phases": phases, "nodes": [node]}
+
+    def test_phases_parse_in_document_order(self):
+        graph = parse_graph(
+            self._doc(
+                [
+                    {"key": "schema", "title": "Phase 1", "label": "schema"},
+                    {"key": "engine", "title": "Phase 2"},
+                ]
+            )
+        )
+        assert [(p.key, p.title, p.label) for p in graph.phases] == [
+            ("schema", "Phase 1", "schema"),
+            ("engine", "Phase 2", None),
+        ]
+
+    def test_a_node_names_its_phase(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1"}], node_phase="schema")
+        )
+        assert graph.nodes[0].phase == "schema"
+
+    def test_phases_round_trip_through_to_dict(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1", "label": "s"}], node_phase="schema")
+        )
+        payload = graph.to_dict()
+        assert payload["phases"] == [{"key": "schema", "title": "Phase 1", "label": "s"}]
+        assert payload["nodes"][0]["phase"] == "schema"
+        assert parse_graph(payload).phases[0].key == "schema"
+
+    def test_a_non_list_phases_value_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc({"key": "schema"}))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_non_object_entry_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["schema"]))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_phase_without_a_key_is_one_missing_phase_key(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "Phase 1"}]))
+        assert [e.rule for e in exc.value.errors] == ["missing_phase_key"]
+
+    def test_a_non_string_node_phase_is_one_bad_field_type(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"key": "schema", "title": "P"}], node_phase=7))
+        assert [e.rule for e in exc.value.errors] == ["bad_field_type"]
+
+    def test_a_document_without_phases_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert graph.phases == []
+        assert graph.to_dict()["phases"] == []
+        assert all(n["phase"] is None for n in graph.to_dict()["nodes"])
+
+
+class TestPhaseValidation:
+    """The §7.3 finding table: two errors and two warnings."""
+
+    @staticmethod
+    async def _findings(doc, vault):
+        graph = parse_graph(doc)
+        return await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+
+    async def test_a_duplicate_phase_key_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "one", "title": "Again"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "duplicate_phase_key"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+
+    async def test_a_node_naming_an_undeclared_phase_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "two"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "unknown_phase"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+
+    async def test_a_phase_with_no_nodes_is_a_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "phase_without_nodes"]
+        assert len(matched) == 1
+        assert matched[0].severity == "warning"
+        assert "two" in matched[0].detail
+
+    async def test_an_edge_onto_an_earlier_phase_is_a_redundant_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "redundant_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].severity, matched[0].node) == ("warning", "b")
+
+    async def test_an_edge_within_one_phase_is_not_redundant(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f for f in findings if f.rule == "redundant_phase_edge"] == []
+
+    async def test_a_phased_graph_with_no_findings_validates_clean(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        assert findings == []
+
+
 class TestExtractFromSpec:
     def test_extracts_the_fenced_block(self):
         markdown = (FIXTURES / "valid_spec.md").read_text(encoding="utf-8")
@@ -492,6 +661,30 @@ class TestSubstituteVars:
             {
                 "version": 1,
                 "nodes": [{"key": "a", "title": "A", "subtasks": ["Rebase {nope}"]}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
+
+    def test_phase_titles_and_labels_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"release": "24.1"},
+                "phases": [{"key": "one", "title": "Ship {release}", "label": "{release}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"release"}, set())
+        assert (graph.phases[0].title, graph.phases[0].label) == ("Ship 24.1", "24.1")
+
+    def test_an_undeclared_var_in_a_phase_title_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "Ship {nope}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
             }
         )
         _used, unknown = substitute_vars(graph)

@@ -119,6 +119,25 @@ class GraphSubtask:
 
 
 @dataclass
+class GraphPhase:
+    """One ordered phase container the graph's nodes are filed into.
+
+    A phase is an ordinary container task carrying ``task_metadata.phase``
+    plus a ``blocks`` edge onto every earlier sibling phase, so everything in
+    phase *N+1* waits for phase *N* with no per-task edge (work-graph §13b).
+    ``key`` is graph-local — a node names it in its own ``phase`` field — and
+    document order is the phase order, 1..N.
+    """
+
+    key: str
+    title: str = ""
+    label: str | None = None
+
+    def to_dict(self) -> dict:
+        return {"key": self.key, "title": self.title, "label": self.label}
+
+
+@dataclass
 class GraphNode:
     """One task in the graph, keyed graph-locally by ``key``."""
 
@@ -131,6 +150,9 @@ class GraphNode:
     needs: list[GraphNeed] = field(default_factory=list)
     #: Checklist rows seeded onto this node's task, in document order.
     subtasks: list[GraphSubtask] = field(default_factory=list)
+    #: ``key`` of the declared phase this node belongs to.  ``None`` keeps the
+    #: node a direct child of the container, beside the phases.
+    phase: str | None = None
     labels: list[str] = field(default_factory=list)
     priority: int = 100
     profile: str | None = None
@@ -150,6 +172,7 @@ class GraphNode:
             "context": [c.to_dict() for c in self.context],
             "needs": [n.to_dict() for n in self.needs],
             "subtasks": [s.to_dict() for s in self.subtasks],
+            "phase": self.phase,
             "labels": list(self.labels),
             "priority": self.priority,
             "profile": self.profile,
@@ -187,6 +210,9 @@ class TaskGraph:
     vars: dict[str, str] = field(default_factory=dict)
     defaults: dict = field(default_factory=dict)
     parent: GraphParent | None = None
+    #: Ordered phase containers, document order = phase order 1..N.  Empty
+    #: for every document written before the key existed.
+    phases: list[GraphPhase] = field(default_factory=list)
     nodes: list[GraphNode] = field(default_factory=list)
     #: Set when the graph came from ``--from-spec``.  Drives the severity of
     #: the ``spec_ref`` checks: error from a spec, warning from a bare graph
@@ -205,6 +231,7 @@ class TaskGraph:
             "vars": dict(self.vars),
             "defaults": dict(self.defaults),
             "parent": self.parent.to_dict() if self.parent else None,
+            "phases": [p.to_dict() for p in self.phases],
             "nodes": [n.to_dict() for n in self.nodes],
             "from_spec": self.from_spec,
             "source_path": self.source_path,

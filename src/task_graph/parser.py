@@ -31,6 +31,7 @@ from src.task_graph.models import (
     GraphNode,
     GraphParent,
     GraphParseError,
+    GraphPhase,
     GraphSubtask,
     TaskGraph,
 )
@@ -236,6 +237,12 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.task_type = task_type
 
+    phase = raw.get("phase", defaults.get("phase"))
+    if phase is not None and (not isinstance(phase, str) or not phase.strip()):
+        errors.append(_err("bad_field_type", f"'phase' must be a nonempty string, got {phase!r}", key))
+    elif isinstance(phase, str):
+        node.phase = phase.strip()
+
     project = raw.get("project", raw.get("project_id"))
     if project is not None and not isinstance(project, str):
         errors.append(_err("bad_field_type", f"'project' must be a string, got {project!r}", key))
@@ -302,6 +309,30 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
             node.subtasks.append(subtask)
 
     return node, errors
+
+
+def _parse_phase(raw: Any, index: int) -> tuple[GraphPhase | None, list[GraphError]]:
+    """Parse one ``phases`` entry: ``{key, title, label?}``.
+
+    Unlike a node there is no shorthand form — a phase is written out, because
+    its ``key`` is what every node in it references and a bare string would
+    have to serve as both key and title.
+    """
+    if not isinstance(raw, dict):
+        return None, [
+            _err("bad_phase", f"phase #{index} must be an object, got {type(raw).__name__}")
+        ]
+    key = raw.get("key")
+    if not isinstance(key, str) or not key.strip():
+        return None, [_err("missing_phase_key", f"phase #{index} is missing a 'key'")]
+    key = key.strip()
+    title = raw.get("title", "") or ""
+    if not isinstance(title, str):
+        return None, [_err("bad_phase", f"'phases.title' must be a string, got {title!r}")]
+    label = raw.get("label")
+    if label is not None and not isinstance(label, str):
+        return None, [_err("bad_phase", f"'phases.label' must be a string, got {label!r}")]
+    return GraphPhase(key=key, title=title, label=label), []
 
 
 def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
@@ -417,6 +448,20 @@ def parse_graph(source: str | dict, *, fmt: str = "auto") -> TaskGraph:
     parent, parent_errors = _parse_parent(data.get("parent"))
     errors.extend(parent_errors)
 
+    raw_phases = data.get("phases")
+    phases: list[GraphPhase] = []
+    if raw_phases is not None:
+        if not isinstance(raw_phases, list):
+            errors.append(
+                _err("bad_phase", f"'phases' must be a list, got {type(raw_phases).__name__}")
+            )
+        else:
+            for index, raw_phase in enumerate(raw_phases):
+                phase, phase_errors = _parse_phase(raw_phase, index)
+                errors.extend(phase_errors)
+                if phase:
+                    phases.append(phase)
+
     raw_nodes = data.get("nodes")
     if raw_nodes is None:
         errors.append(_err("no_nodes", "graph has no 'nodes'"))
@@ -448,6 +493,7 @@ def parse_graph(source: str | dict, *, fmt: str = "auto") -> TaskGraph:
         vars=graph_vars,
         defaults=defaults,
         parent=parent,
+        phases=phases,
         nodes=nodes,
     )
 

@@ -113,6 +113,12 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
         # `unknown_profile '{p}'` *and* a bogus `unused_var 'p'`.
         graph.parent.profile = expand(graph.parent.profile)
 
+    for phase in graph.phases:
+        # The key is graph-local plumbing, like ``node.key``, and is left
+        # alone; the title and label are what a reader sees.
+        phase.title = expand(phase.title) or ""
+        phase.label = expand(phase.label)
+
     for node in graph.nodes:
         node.title = expand(node.title) or ""
         node.description = expand(node.description) or ""
@@ -157,6 +163,10 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
         scan(graph.parent.profile)
         for label in graph.parent.labels:
             scan(label)
+
+    for phase in graph.phases:
+        scan(phase.title)
+        scan(phase.label)
 
     for node in graph.nodes:
         scan(node.title)
@@ -271,6 +281,72 @@ def _check_keys(graph: TaskGraph) -> list[GraphError]:
             errors.append(_error("duplicate_key", f"duplicate node key '{node.key}'", node.key))
         seen.add(node.key)
     return errors
+
+
+def _check_phases(graph: TaskGraph) -> list[GraphError]:
+    """The ``phases:``/``phase:`` rules (planning-emits-phases §7.3).
+
+    Two errors — a duplicate phase key and a node naming a phase that was
+    never declared — and two warnings.  The warnings are warnings on purpose:
+    an empty phase and a belt-and-braces edge are both *legal*, and whether
+    they are wanted is the planner's judgement, not the validator's (§3.5).
+    """
+    findings: list[GraphError] = []
+    order: dict[str, int] = {}
+    for index, phase in enumerate(graph.phases):
+        if phase.key in order:
+            findings.append(
+                _error("duplicate_phase_key", f"duplicate phase key '{phase.key}'")
+            )
+            continue
+        order[phase.key] = index
+
+    populated: set[str] = set()
+    for node in graph.nodes:
+        if node.phase is None:
+            continue
+        if node.phase not in order:
+            findings.append(
+                _error(
+                    "unknown_phase",
+                    f"node '{node.key}' names phase '{node.phase}', which the document's "
+                    "'phases' does not declare",
+                    node.key,
+                )
+            )
+            continue
+        populated.add(node.phase)
+
+    for key in order:
+        if key not in populated:
+            findings.append(
+                _error(
+                    "phase_without_nodes",
+                    f"phase '{key}' has no nodes; it is created anyway and stays open "
+                    "until work is filed into it or it is deleted",
+                    severity="warning",
+                )
+            )
+
+    node_phase = {node.key: node.phase for node in graph.nodes}
+    for node in graph.nodes:
+        if node.phase not in order:
+            continue
+        for need in node.needs:
+            target = node_phase.get(need.on)
+            if target is None or target not in order:
+                continue
+            if order[target] < order[node.phase]:
+                findings.append(
+                    _error(
+                        "redundant_phase_edge",
+                        f"node '{node.key}' needs '{need.on}', which is in the earlier "
+                        f"phase '{target}' — the phase gate already covers it",
+                        node.key,
+                        severity="warning",
+                    )
+                )
+    return findings
 
 
 def _check_titles(graph: TaskGraph) -> list[GraphError]:
@@ -622,6 +698,7 @@ async def validate_graph(
         )
 
     findings.extend(_check_keys(graph))
+    findings.extend(_check_phases(graph))
     findings.extend(_check_titles(graph))
     findings.extend(_check_acceptance(graph))
     findings.extend(_check_dep_types(graph))
