@@ -1,8 +1,10 @@
 """Phases — ordered containers that gate implicitly (graph-visibility A1).
 
 A phase is nothing new: it is an ordinary container task carrying a
-``task_metadata`` key ``phase`` (``{"order": int, "label": str}``) plus one
-``blocks`` edge onto the previous sibling phase.  Everything that makes the
+``task_metadata`` key ``phase`` (``{"order": int, "label": str}``) plus a
+``blocks`` edge onto every earlier sibling phase that has not COMPLETED —
+not only the immediate predecessor, so deleting an abandoned middle phase
+leaves the remaining gates standing.  Everything that makes the
 ordering work already exists — the persisted ``is_blocked`` projection keeps
 the later phase DEFINED, and a DEFINED parent withholds every descendant
 through the ``parent-child`` rule — so the claim frontier needs no
@@ -151,6 +153,16 @@ class PhaseCommandsMixin:
         siblings = await self._phase_siblings(project_id, actual_parent)
         order = max((int(meta.get("order") or 0) for _, meta in siblings), default=0) + 1
         previous = siblings[-1][0].id if siblings else None
+        # A gate onto EVERY earlier phase that has not completed, not only the
+        # immediate predecessor.  With one edge per phase, deleting an
+        # abandoned middle phase dropped the only edge its successor had and
+        # released it while an earlier phase was still open (final review I4).
+        # Redundant-looking edges are the point: they are what survives a
+        # deletion.  A COMPLETED phase gates nothing, so it is left out — the
+        # projection would resolve such an edge immediately anyway.
+        gates = [
+            task.id for task, _ in siblings if task.status is not TaskStatus.COMPLETED
+        ]
 
         # One transaction: a crash between the flag and the metadata would
         # leave a claimable unflagged phase behind.
@@ -160,10 +172,10 @@ class PhaseCommandsMixin:
                 task_id, PHASE_KEY, {"order": order, "label": label}, conn=conn
             )
 
-        if previous is not None:
+        for gate in gates:
             try:
                 await self.db.add_dependency(
-                    task_id, previous, DepType.BLOCKS.value, description="phase order"
+                    task_id, gate, DepType.BLOCKS.value, description="phase order"
                 )
             except HierarchyError as exc:
                 return {
@@ -171,7 +183,7 @@ class PhaseCommandsMixin:
                     "code": f"hierarchy.{exc.code}",
                     "error": (
                         f"hierarchy.{exc.code}: {exc.detail} (phase '{task_id}' was created "
-                        f"but is not gated behind '{previous}'; add the edge with 'aq task deps')"
+                        f"but is not gated behind '{gate}'; add the edge with 'aq task deps')"
                     ),
                 }
 
@@ -182,7 +194,10 @@ class PhaseCommandsMixin:
                 "order": order,
                 "label": label,
                 "parent_id": actual_parent,
+                # The immediate predecessor, unchanged: what a caller shows as
+                # "this comes after". ``blocked_by_all`` is the full gate set.
                 "blocked_by": previous,
+                "blocked_by_all": gates,
             },
         }
 

@@ -21,6 +21,7 @@ class PhaseRef:
         label (str):
         parent_id (None | str | Unset):
         blocked_by (None | str | Unset):
+        blocked_by_all (list[str] | Unset):
     """
 
     id: str
@@ -28,6 +29,7 @@ class PhaseRef:
     label: str
     parent_id: None | str | Unset = UNSET
     blocked_by: None | str | Unset = UNSET
+    blocked_by_all: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +51,10 @@ class PhaseRef:
         else:
             blocked_by = self.blocked_by
 
+        blocked_by_all: list[str] | Unset = UNSET
+        if not isinstance(self.blocked_by_all, Unset):
+            blocked_by_all = self.blocked_by_all
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -62,6 +68,8 @@ class PhaseRef:
             field_dict["parent_id"] = parent_id
         if blocked_by is not UNSET:
             field_dict["blocked_by"] = blocked_by
+        if blocked_by_all is not UNSET:
+            field_dict["blocked_by_all"] = blocked_by_all
 
         return field_dict
 
@@ -92,12 +100,15 @@ class PhaseRef:
 
         blocked_by = _parse_blocked_by(d.pop("blocked_by", UNSET))
 
+        blocked_by_all = cast(list[str], d.pop("blocked_by_all", UNSET))
+
         phase_ref = cls(
             id=id,
             order=order,
             label=label,
             parent_id=parent_id,
             blocked_by=blocked_by,
+            blocked_by_all=blocked_by_all,
         )
 
         phase_ref.additional_properties = d

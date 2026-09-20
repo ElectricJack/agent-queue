@@ -32224,6 +32224,14 @@
               }
             ],
             "title": "Blocked By"
+          },
+          "blocked_by_all": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocked By All",
+            "default": []
           }
         },
         "type": "object",

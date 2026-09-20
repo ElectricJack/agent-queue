@@ -655,6 +655,56 @@ class TestAbandonedPhaseRecovery:
         assert await frontier(db) == {late}
         assert await claimable(db) == late
 
+    async def test_deleting_an_empty_middle_phase_keeps_the_later_gates(
+        self, handler, orch
+    ):
+        """Each phase gates behind EVERY earlier open phase, not just one.
+
+        With a single edge onto the immediate predecessor, deleting an empty
+        phase 2 dropped the only edge phase 3 had and released it while
+        phase 1 was still open — an operator tidying an abandoned phase
+        silently un-gated the rest of the plan.
+        """
+        db = orch.db
+        first = await phase(handler, "Phase 1")
+        second = await phase(handler, "Phase 2")
+        third = await phase(handler, "Phase 3")
+        assert third["phase"]["blocked_by"] == second["phase"]["id"]
+        assert third["phase"]["blocked_by_all"] == [
+            first["phase"]["id"], second["phase"]["id"]
+        ]
+        early = await work(handler, "early", first["phase"]["id"])
+        late = await work(handler, "late", third["phase"]["id"])
+
+        await cascade(orch)
+        assert await frontier(db) == {early}
+
+        deleted = await handler._cmd_delete_task({"task_id": second["phase"]["id"]})
+        assert deleted.get("success") is not False, deleted
+
+        await cascade(orch)
+        # Phase 3 is still gated: phase 1 has not completed.
+        assert (await db.get_task(third["phase"]["id"])).is_blocked is True
+        assert (await db.get_task(late)).status != TaskStatus.READY
+        assert await frontier(db) == {early}
+
+        await db.transition_task(early, TaskStatus.COMPLETED, force=True)
+        await cascade(orch)
+        assert (await db.get_task(late)).status == TaskStatus.READY
+
+    async def test_a_new_phase_does_not_gate_behind_a_completed_one(self, handler, orch):
+        """A completed phase gates nothing; only open earlier phases do."""
+        db = orch.db
+        first = await phase(handler, "Phase 1")
+        await db.transition_task(first["phase"]["id"], TaskStatus.COMPLETED, force=True)
+        second = await phase(handler, "Phase 2")
+        third = await phase(handler, "Phase 3")
+
+        assert second["phase"]["blocked_by_all"] == []
+        assert third["phase"]["blocked_by_all"] == [second["phase"]["id"]]
+        assert await blocks_edges(db, second["phase"]["id"]) == set()
+        assert await blocks_edges(db, third["phase"]["id"]) == {second["phase"]["id"]}
+
 
 # ---------------------------------------------------------------------------
 # Creation through the hierarchy filing service (brief Step 4)

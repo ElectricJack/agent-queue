@@ -249,8 +249,14 @@ class PhaseRef(BaseModel):
     order: int
     label: str
     parent_id: str | None = None
-    #: The previous sibling phase this one carries a ``blocks`` edge onto.
+    #: The immediate previous sibling phase, whatever its status — what a
+    #: surface shows as "this comes after".
     blocked_by: str | None = None
+    #: Every earlier sibling phase this one actually carries a ``blocks`` edge
+    #: onto: all of them that have not COMPLETED, in order. One edge per phase
+    #: would leave the successor ungated the moment an abandoned middle phase
+    #: is deleted.
+    blocked_by_all: list[str] = []
 
 
 class PhaseCreateResponse(BaseModel):
