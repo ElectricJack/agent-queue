@@ -16,6 +16,10 @@ import {
 
 interface Options {
   onBudgetExceeded?: () => void;
+  /** Fired once per response that carries a non-null `expanded_applied`
+   * (design A3: the server computed and applied the active subgraph because
+   * this request's `auto_expand` was honored). */
+  onExpandedApplied?: (ids: string[]) => void;
 }
 
 /**
@@ -62,6 +66,8 @@ export function useLayoutTiles(
   paramsRef.current = params;
   const onBudget = useRef(opts.onBudgetExceeded);
   onBudget.current = opts.onBudgetExceeded;
+  const onExpandedApplied = useRef(opts.onExpandedApplied);
+  onExpandedApplied.current = opts.onExpandedApplied;
 
   const load = useCallback(async () => {
     if (!projectId || failed.current) return;
@@ -94,6 +100,7 @@ export function useLayoutTiles(
       setPending(false);
       setLoaded(true);
       setError(null);
+      if (res.expanded_applied != null) onExpandedApplied.current?.(res.expanded_applied);
       // Under `root` the server ignores the rect and answers with the whole
       // subtree, so evicting by cell would throw away nodes the response just
       // delivered and make every pan re-download them.

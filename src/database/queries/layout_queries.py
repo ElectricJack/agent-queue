@@ -781,6 +781,38 @@ class LayoutQueryMixin:
                     out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
             return out
 
+    async def load_active_container_rows(self, project_id, variant) -> dict:
+        """Container candidates for `active_expansion` (design A3), one statement.
+
+        Every ``container``-kind row that could possibly be selected: any
+        with ``agg_running > 0``, or a root (``container_id IS NULL``) with
+        ``agg_active > 0``. Both `active_expansion` branches read from this
+        one set -- it is a superset of whichever branch actually applies,
+        never a per-branch query -- so `auto_expand` costs exactly one
+        statement. A finished container under ``variant="active"`` is a
+        ``"stub"`` row and is excluded by the ``kind`` filter, same as
+        `active_expansion` itself.
+        """
+        from sqlalchemy import and_, or_
+        from src.database.tables import task_layouts
+
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts).where(
+                    task_layouts.c.project_id == project_id,
+                    task_layouts.c.variant == variant,
+                    task_layouts.c.kind == "container",
+                    or_(
+                        task_layouts.c.agg_running > 0,
+                        and_(
+                            task_layouts.c.container_id.is_(None),
+                            task_layouts.c.agg_active > 0,
+                        ),
+                    ),
+                )
+            )
+            return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
+
     async def load_rows_for_containers(self, project_id, variant, container_ids):
         """Rows directly inside any of *container_ids*, joined to their tasks.
 

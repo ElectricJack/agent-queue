@@ -158,3 +158,34 @@ describe("useLayoutTiles", () => {
     expect((rect as { x0: number }).x0).toBeGreaterThanOrEqual(64);
   });
 });
+
+describe("useLayoutTiles auto_expand", () => {
+  it("sends auto_expand through to fetchTiles", async () => {
+    fetchTiles.mockResolvedValue(ok([node("a", 1, 1)]));
+    const autoParams = { ...params, autoExpand: true };
+    renderHook(() => useLayoutTiles("p1", autoParams, { x0: 0, y0: 0, x1: 4, y1: 4 }));
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+    const [, , sentParams] = fetchTiles.mock.calls[0]!;
+    expect((sentParams as { autoExpand?: boolean }).autoExpand).toBe(true);
+  });
+
+  it("fires onExpandedApplied when the response carries expanded_applied", async () => {
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: ["e", "pkg"] });
+    const onExpandedApplied = vi.fn();
+    const autoParams = { ...params, autoExpand: true };
+    renderHook(() => useLayoutTiles(
+      "p1", autoParams, { x0: 0, y0: 0, x1: 4, y1: 4 }, { onExpandedApplied },
+    ));
+    await waitFor(() => expect(onExpandedApplied).toHaveBeenCalledWith(["e", "pkg"]));
+  });
+
+  it("does not fire onExpandedApplied when expanded_applied is null", async () => {
+    fetchTiles.mockResolvedValue({ ...ok([node("a", 1, 1)]), expanded_applied: null });
+    const onExpandedApplied = vi.fn();
+    const { result } = renderHook(() => useLayoutTiles(
+      "p1", params, { x0: 0, y0: 0, x1: 4, y1: 4 }, { onExpandedApplied },
+    ));
+    await waitFor(() => expect(result.current.store.nodes.has("a")).toBe(true));
+    expect(onExpandedApplied).not.toHaveBeenCalled();
+  });
+});

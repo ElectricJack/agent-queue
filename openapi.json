@@ -16713,6 +16713,11 @@
             "type": "object",
             "maxProperties": 5000,
             "title": "Manual Positions"
+          },
+          "expanded_initialised": {
+            "type": "boolean",
+            "title": "Expanded Initialised",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -45713,6 +45718,11 @@
             "type": "string",
             "title": "Status",
             "default": ""
+          },
+          "auto_expand": {
+            "type": "boolean",
+            "title": "Auto Expand",
+            "default": false
           }
         },
         "type": "object",
@@ -45774,6 +45784,20 @@
           "layout_version": {
             "type": "integer",
             "title": "Layout Version"
+          },
+          "expanded_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expanded Applied"
           }
         },
         "type": "object",

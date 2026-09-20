@@ -8,7 +8,7 @@ to clients.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from src.task_graph.layout.compaction import Box as BoxLike
@@ -218,6 +218,31 @@ def dock_workers(
         elif cur in hidden_owner:
             out.append({"agent": a, "docked_at": hidden_owner[cur], "in_collapsed": True})
     return out
+
+
+def active_expansion(rows: Iterable[LayoutRow], *, cap: int) -> list[str]:
+    """The "land on the active subgraph" expanded set (design A3).
+
+    Active = every container with ``agg_running > 0``; when nothing is
+    running project-wide, every ROOT container with ``agg_active > 0``
+    instead. A row is only a candidate when ``kind == "container"`` --
+    a finished container under ``variant="active"`` is a ``"stub"`` and
+    must never be opened.
+
+    ``agg_running``/``agg_active`` are subtree rollups
+    (``driver.py::_refresh_aggregates``), so a running container's whole
+    ancestor chain already qualifies on its own aggregate -- no separate
+    ancestor walk is needed. Capping shallowest-first (``depth``, then
+    ``order_key``) is what keeps an ancestor chain intact under the cap:
+    every ancestor of a kept row sorts before it and is kept too.
+    """
+    containers = [r for r in rows if r.kind == "container"]
+    running = [r for r in containers if r.agg_running > 0]
+    selected = running if running else [
+        r for r in containers if r.container_id is None and r.agg_active > 0
+    ]
+    selected.sort(key=lambda r: (r.depth, r.order_key))
+    return [r.task_id for r in selected[:cap]]
 
 
 def forced_expansion_for(matches: set[str], rows: dict[str, LayoutRow]) -> set[str]:

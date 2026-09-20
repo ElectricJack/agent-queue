@@ -51,6 +51,10 @@ class TilesRequest(BaseModel):
     max_depth: int | None = None
     q: str = ""
     status: str = ""
+    #: Compute the "active subgraph" expanded set server-side (design A3)
+    #: instead of using ``expanded``. Only takes effect when ``expanded``
+    #: is empty -- an explicit (even empty) expansion always wins.
+    auto_expand: bool = False
 
 
 class ListRequest(BaseModel):
@@ -155,6 +159,10 @@ class TilesResponse(BaseModel):
     workers: list[LayoutWorker] = []
     gates: list[GraphGate] = []
     layout_version: int
+    #: The expanded set the server computed and applied for this response,
+    #: when ``auto_expand`` was honored (``expanded`` was empty). ``None``
+    #: when the request's own ``expanded`` was used instead.
+    expanded_applied: list[str] | None = None
 
 
 class ListResponse(BaseModel):

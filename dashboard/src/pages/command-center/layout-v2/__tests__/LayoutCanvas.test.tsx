@@ -60,12 +60,18 @@ const tiles = vi.hoisted(() => ({
   refetchVisible: vi.fn(),
   loaded: true,
   params: null as unknown,
+  /** The `options` (third-party callbacks) the canvas last passed in. */
+  options: null as { onExpandedApplied?: (ids: string[]) => void } | null,
 }));
 const extents = vi.hoisted(() => ({ pending: false }));
 vi.mock("../useLayoutTiles", () => ({
-  useLayoutTiles: (_projectId: string, params: unknown, rect: unknown) => {
+  useLayoutTiles: (
+    _projectId: string, params: unknown, rect: unknown,
+    options?: { onExpandedApplied?: (ids: string[]) => void },
+  ) => {
     tiles.params = params;
     tiles.rects.push(rect);
+    tiles.options = options ?? null;
     return tiles;
   },
 }));
@@ -82,7 +88,7 @@ vi.mock("../../../../api/graphLayout", () => ({
 import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
-import { setExpandedTaskIds } from "../../useGraphHierarchy";
+import { resetExpandedInitialisation, setExpandedTaskIds } from "../../useGraphHierarchy";
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
@@ -419,5 +425,40 @@ describe("LayoutCanvas", () => {
     layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
     view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
     expect(fitBounds).toHaveBeenCalledTimes(1);
+  });
+
+  describe("land on the active subgraph (design A3)", () => {
+    it("a first load with no stored expansion sends auto_expand and persists the applied set once", async () => {
+      resetExpandedInitialisation();
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
+      expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
+
+      // The server's response carries the computed set; the layer reports it
+      // back through `onExpandedApplied`, exactly as a real response would.
+      act(() => tiles.options?.onExpandedApplied?.(["e"]));
+      await screen.findByTestId("node-e");
+      expect((tiles.params as { expanded: string[] }).expanded).toEqual(["e"]);
+      // Now that the project has a stored expansion, a later render must not
+      // ask the server to compute it again.
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
+    });
+
+    it("a project with a stored expansion -- even an empty one the user chose -- never sends auto_expand", () => {
+      setExpandedTaskIds(new Set());
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
+    });
+
+    it("the Focus active button clears the stored expansion and re-requests auto_expand", () => {
+      setExpandedTaskIds(new Set(["e"]));
+      render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(false);
+
+      fireEvent.click(screen.getByRole("button", { name: "Focus active" }));
+      expect((tiles.params as { expanded: string[] }).expanded).toEqual([]);
+      expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
+    });
   });
 });

@@ -26,6 +26,7 @@ class TilesRequest:
         max_depth (int | None | Unset):
         q (str | Unset):  Default: ''.
         status (str | Unset):  Default: ''.
+        auto_expand (bool | Unset):  Default: False.
     """
 
     rect: LayoutRect
@@ -35,6 +36,7 @@ class TilesRequest:
     max_depth: int | None | Unset = UNSET
     q: str | Unset = ""
     status: str | Unset = ""
+    auto_expand: bool | Unset = False
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +64,8 @@ class TilesRequest:
 
         status = self.status
 
+        auto_expand = self.auto_expand
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -81,6 +85,8 @@ class TilesRequest:
             field_dict["q"] = q
         if status is not UNSET:
             field_dict["status"] = status
+        if auto_expand is not UNSET:
+            field_dict["auto_expand"] = auto_expand
 
         return field_dict
 
@@ -117,6 +123,8 @@ class TilesRequest:
 
         status = d.pop("status", UNSET)
 
+        auto_expand = d.pop("auto_expand", UNSET)
+
         tiles_request = cls(
             rect=rect,
             variant=variant,
@@ -125,6 +133,7 @@ class TilesRequest:
             max_depth=max_depth,
             q=q,
             status=status,
+            auto_expand=auto_expand,
         )
 
         tiles_request.additional_properties = d

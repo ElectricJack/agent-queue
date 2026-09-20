@@ -1109,3 +1109,57 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     ]
     gate_reads = [s for s in statements if "FROM gates" in s or "task_gates" in s]
     assert len(gate_reads) <= 2, gate_reads
+
+
+async def test_tiles_auto_expand_with_empty_expanded_returns_and_applies_active_set(
+    db, client_factory
+):
+    """`auto_expand` with an empty `expanded` computes and applies the active set.
+
+    In `seed`, g0 (inside pkg, inside e) is IN_PROGRESS, so both containers'
+    `agg_running` rollups are nonzero -- `active_expansion` opens both,
+    shallowest first.
+    """
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles", json={**ALL, "auto_expand": True}
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["expanded_applied"] == ["e", "pkg"]
+    kinds = {n["id"]: n["kind"] for n in body["nodes"]}
+    # The computed set was actually used to resolve visibility: e and pkg
+    # are opened, exposing their children rather than sitting collapsed.
+    assert kinds["e"] == "container" and kinds["pkg"] == "container"
+    assert {"c0", "c1", "g0", "g1"} <= set(kinds)
+
+
+async def test_tiles_auto_expand_is_ignored_when_expanded_is_non_empty(db, client_factory):
+    """A non-empty `expanded` -- even one that names nothing active -- wins.
+
+    `expanded_applied` must be null so the client never mistakes an
+    unrelated explicit expansion for one the server computed and applied.
+    """
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "expanded": ["e"], "auto_expand": True},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["expanded_applied"] is None
+    kinds = {n["id"]: n["kind"] for n in body["nodes"]}
+    # Only the client's explicit expansion applied: e is open, but pkg --
+    # which the active set would also have opened -- stays collapsed.
+    assert kinds["e"] == "container"
+    assert kinds.get("pkg") == "collapsed"
+
+
+async def test_tiles_without_auto_expand_never_sets_expanded_applied(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    assert r.json()["expanded_applied"] is None

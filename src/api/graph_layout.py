@@ -57,6 +57,7 @@ from src.api.scope import check_request_scope
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
+    active_expansion,
     ancestors_of,
     cap_stubs,
     depth_first_order,
@@ -375,6 +376,19 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             variant = "all"
         else:
             variant = await _variant_for_expanded(project_id, variant, req.expanded)
+
+        # "Land on the active subgraph" (design A3): only the FIRST request
+        # of a viewer's session may ask for this -- an explicit `expanded`
+        # (even an empty one the client already persisted) always wins, so
+        # this branch only ever fires when `req.expanded` came in empty.
+        # One added statement, and only when it is actually used.
+        expanded_applied: list[str] | None = None
+        if req.auto_expand and not req.expanded:
+            active_rows = await db.load_active_container_rows(project_id, variant)
+            computed = active_expansion(active_rows.values(), cap=EXPANDED_CAP)
+            req = req.model_copy(update={"expanded": computed})
+            expanded_applied = computed
+
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return None
@@ -514,6 +528,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             workers=workers,
             gates=gates_out,
             layout_version=meta["layout_version"],
+            expanded_applied=expanded_applied,
         )
 
     @router.post(

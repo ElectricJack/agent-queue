@@ -35,6 +35,9 @@ export interface TilesParams {
   maxDepth?: number | null;
   q?: string;
   status?: string;
+  /** "Land on the active subgraph" (design A3). Only takes effect server-side
+   * when `expanded` is empty -- an explicit (even empty) expansion wins. */
+  autoExpand?: boolean;
 }
 
 export async function fetchTiles(
@@ -55,6 +58,7 @@ export async function fetchTiles(
       max_depth: params.maxDepth ?? null,
       q: params.q ?? "",
       status: params.status ?? "",
+      auto_expand: params.autoExpand ?? false,
     },
     throwOnError: true,
   });

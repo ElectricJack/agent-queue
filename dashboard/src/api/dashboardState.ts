@@ -62,6 +62,10 @@ export interface CommandCenterProjectViewValue {
   expanded_task_ids?: string[];
   expanded_finished_task_ids?: string[];
   manual_positions?: Record<string, ManualPosition>;
+  /** Whether the viewer has ever stored an expansion for this project (design
+   * A3, "land on the active subgraph") -- distinguishes "never expanded
+   * anything" from "chose an empty expansion". */
+  expanded_initialised?: boolean;
 }
 
 export interface PlaybookGraphViewValue {
@@ -89,6 +93,7 @@ export function defaultDashboardValue(namespace: DashboardNamespace): DashboardV
     case "command_center_preferences": return { density: "comfortable" };
     case "command_center_project_view": return {
       expanded_task_ids: [], expanded_finished_task_ids: [], manual_positions: {},
+      expanded_initialised: false,
     };
     case "playbook_graph_view": return { manual_positions: {} };
   }

@@ -14,6 +14,14 @@ interface GraphState {
   expandedFinishedIds: ReadonlySet<string>;
   toggleExpanded: (id: string, finished?: boolean, projectId?: string) => void;
   setExpandedTaskIds: (ids: ReadonlySet<string>) => void;
+  /** Whether the viewer has ever stored an expansion for this project (design
+   * A3) -- `false` only until the first explicit expand, `setExpandedTaskIds`
+   * call, or server-computed `expanded_applied` is persisted. */
+  hasStoredExpansion: (projectId: string) => boolean;
+  /** "Focus active": clears the stored expansion back to the un-initialised
+   * state (leaving `expanded_finished_task_ids` alone) so the next tiles
+   * request asks the server to compute and apply the active subgraph again. */
+  requestActiveExpansion: (projectIds?: string[]) => void;
   density: LayoutDensity;
   setDensity: (density: LayoutDensity) => void;
   manualPositions: ManualPositions;
@@ -28,12 +36,19 @@ const GraphStateContext = createContext<GraphState | null>(null);
 // until GraphStateProvider loads the user's documents.
 let fallbackExpanded: ReadonlySet<string> = new Set();
 let fallbackFinished: ReadonlySet<string> = new Set();
-let fallbackSnapshotValue = { expandedTaskIds: fallbackExpanded, expandedFinishedIds: fallbackFinished };
+let fallbackExpandedInitialised = false;
+let fallbackSnapshotValue = {
+  expandedTaskIds: fallbackExpanded, expandedFinishedIds: fallbackFinished,
+  expandedInitialised: fallbackExpandedInitialised,
+};
 let fallbackDensity: LayoutDensity = DEFAULT_DENSITY;
 let fallbackPositions: ManualPositions = {};
 const fallbackListeners = new Set<() => void>();
 const notifyFallback = () => {
-  fallbackSnapshotValue = { expandedTaskIds: fallbackExpanded, expandedFinishedIds: fallbackFinished };
+  fallbackSnapshotValue = {
+    expandedTaskIds: fallbackExpanded, expandedFinishedIds: fallbackFinished,
+    expandedInitialised: fallbackExpandedInitialised,
+  };
   for (const listener of fallbackListeners) listener();
 };
 
@@ -41,6 +56,7 @@ function fallbackSnapshot() { return fallbackSnapshotValue; }
 function setFallbackExpanded(next: ReadonlySet<string>) {
   fallbackExpanded = new Set(next);
   fallbackFinished = new Set([...fallbackFinished].filter((id) => fallbackExpanded.has(id)));
+  fallbackExpandedInitialised = true;
   notifyFallback();
 }
 
@@ -49,6 +65,13 @@ export function setExpandedTaskIds(next: ReadonlySet<string>) {
   fallbackDensity = DEFAULT_DENSITY;
   fallbackPositions = {};
   setFallbackExpanded(next);
+}
+
+/** Test helper: back to "never stored an expansion" (design A3). */
+export function resetExpandedInitialisation() {
+  fallbackExpanded = new Set();
+  fallbackExpandedInitialised = false;
+  notifyFallback();
 }
 
 function useFallbackState(): GraphState {
@@ -64,12 +87,15 @@ function useFallbackState(): GraphState {
     fallbackFinished = nextFinished;
     setFallbackExpanded(next);
   }, []);
+  const hasStoredExpansion = useCallback(() => snapshot.expandedInitialised, [snapshot.expandedInitialised]);
+  const requestActiveExpansion = useCallback(() => { resetExpandedInitialisation(); }, []);
   return useMemo(() => ({
-    ...snapshot, toggleExpanded, setExpandedTaskIds: setFallbackExpanded, density: fallbackDensity,
+    ...snapshot, toggleExpanded, setExpandedTaskIds: setFallbackExpanded, hasStoredExpansion, requestActiveExpansion,
+    density: fallbackDensity,
     setDensity: (density) => { fallbackDensity = density; notifyFallback(); }, manualPositions: fallbackPositions,
     saveGraphPosition: (scope, id, position) => { fallbackPositions = { ...fallbackPositions, [scope]: { ...fallbackPositions[scope], [id]: position } }; notifyFallback(); },
     clearGraphPositions: (scope) => { const { [scope]: _removed, ...rest } = fallbackPositions; fallbackPositions = rest; notifyFallback(); },
-  }), [snapshot, toggleExpanded]);
+  }), [snapshot, toggleExpanded, hasStoredExpansion, requestActiveExpansion]);
 }
 
 function projectValue(document: DashboardDocument<CommandCenterProjectViewValue>): Required<CommandCenterProjectViewValue> {
@@ -77,6 +103,7 @@ function projectValue(document: DashboardDocument<CommandCenterProjectViewValue>
     expanded_task_ids: document.value.expanded_task_ids ?? [],
     expanded_finished_task_ids: document.value.expanded_finished_task_ids ?? [],
     manual_positions: document.value.manual_positions ?? {},
+    expanded_initialised: document.value.expanded_initialised ?? false,
   };
 }
 
@@ -135,14 +162,30 @@ export function GraphStateProvider({ projectIds, children }: { projectIds: strin
       if (opening) expanded.add(id);
       const completed = new Set(value.expanded_finished_task_ids);
       if (opening && finished) completed.add(id); else completed.delete(id);
-      return { ...value, expanded_task_ids: [...expanded], expanded_finished_task_ids: [...completed] };
+      return {
+        ...value, expanded_task_ids: [...expanded], expanded_finished_task_ids: [...completed],
+        expanded_initialised: true,
+      };
     });
   }, [documents, projectIds, updateProject]);
+  // Also used to persist a server-computed `expanded_applied` (design A3):
+  // any explicit write of the expanded set -- even to an empty one -- is a
+  // stored choice, so it always marks the project initialised.
   const replaceExpanded = useCallback((ids: ReadonlySet<string>) => {
     for (const projectId of projectIds) updateProject(projectId, (value) => ({
       ...value,
       expanded_task_ids: value.expanded_task_ids.filter((id) => ids.has(id)),
       expanded_finished_task_ids: value.expanded_finished_task_ids.filter((id) => ids.has(id)),
+      expanded_initialised: true,
+    }));
+  }, [projectIds, updateProject]);
+  const hasStoredExpansion = useCallback((projectId: string) => {
+    const document = documents.get(projectId);
+    return document ? projectValue(document).expanded_initialised : false;
+  }, [documents]);
+  const requestActiveExpansion = useCallback((targetIds?: string[]) => {
+    for (const projectId of targetIds ?? projectIds) updateProject(projectId, (value) => ({
+      ...value, expanded_task_ids: [], expanded_initialised: false,
     }));
   }, [projectIds, updateProject]);
   const saveGraphPosition = useCallback((scope: string, id: string, position: ManualPosition) => {
@@ -155,7 +198,12 @@ export function GraphStateProvider({ projectIds, children }: { projectIds: strin
   }, [queueUpdate, updateProject]);
   const density = preferences.data?.value.density ?? DEFAULT_DENSITY;
   const setDensity = useCallback((next: LayoutDensity) => { queueUpdate<CommandCenterPreferencesValue>("command_center_preferences", null, (value) => ({ ...value, density: next })); }, [queueUpdate]);
-  const value = useMemo<GraphState>(() => ({ expandedTaskIds, expandedFinishedIds, toggleExpanded, setExpandedTaskIds: replaceExpanded, density, setDensity, manualPositions, saveGraphPosition, clearGraphPositions }), [expandedTaskIds, expandedFinishedIds, toggleExpanded, replaceExpanded, density, setDensity, manualPositions, saveGraphPosition, clearGraphPositions]);
+  const value = useMemo<GraphState>(() => ({
+    expandedTaskIds, expandedFinishedIds, toggleExpanded, setExpandedTaskIds: replaceExpanded,
+    hasStoredExpansion, requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition,
+    clearGraphPositions,
+  }), [expandedTaskIds, expandedFinishedIds, toggleExpanded, replaceExpanded, hasStoredExpansion,
+    requestActiveExpansion, density, setDensity, manualPositions, saveGraphPosition, clearGraphPositions]);
   return createElement(GraphStateContext.Provider, { value }, children);
 }
 

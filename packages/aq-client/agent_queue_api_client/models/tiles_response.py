@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -31,6 +31,7 @@ class TilesResponse:
         stub_overflow (list[StubOverflow] | Unset):
         workers (list[LayoutWorker] | Unset):
         gates (list[GraphGate] | Unset):
+        expanded_applied (list[str] | None | Unset):
     """
 
     layout_version: int
@@ -40,6 +41,7 @@ class TilesResponse:
     stub_overflow: list[StubOverflow] | Unset = UNSET
     workers: list[LayoutWorker] | Unset = UNSET
     gates: list[GraphGate] | Unset = UNSET
+    expanded_applied: list[str] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,6 +89,15 @@ class TilesResponse:
                 gates_item = gates_item_data.to_dict()
                 gates.append(gates_item)
 
+        expanded_applied: list[str] | None | Unset
+        if isinstance(self.expanded_applied, Unset):
+            expanded_applied = UNSET
+        elif isinstance(self.expanded_applied, list):
+            expanded_applied = self.expanded_applied
+
+        else:
+            expanded_applied = self.expanded_applied
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -106,6 +117,8 @@ class TilesResponse:
             field_dict["workers"] = workers
         if gates is not UNSET:
             field_dict["gates"] = gates
+        if expanded_applied is not UNSET:
+            field_dict["expanded_applied"] = expanded_applied
 
         return field_dict
 
@@ -175,6 +188,23 @@ class TilesResponse:
 
                 gates.append(gates_item)
 
+        def _parse_expanded_applied(data: object) -> list[str] | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, list):
+                    raise TypeError()
+                expanded_applied_type_0 = cast(list[str], data)
+
+                return expanded_applied_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(list[str] | None | Unset, data)
+
+        expanded_applied = _parse_expanded_applied(d.pop("expanded_applied", UNSET))
+
         tiles_response = cls(
             layout_version=layout_version,
             nodes=nodes,
@@ -183,6 +213,7 @@ class TilesResponse:
             stub_overflow=stub_overflow,
             workers=workers,
             gates=gates,
+            expanded_applied=expanded_applied,
         )
 
         tiles_response.additional_properties = d

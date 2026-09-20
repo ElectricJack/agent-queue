@@ -124,6 +124,7 @@ interface LayerProps {
   expanded: ReadonlySet<string>;
   handlers: FlowHandlers;
   onBudgetExceeded: () => void;
+  onExpandedApplied?: (ids: string[]) => void;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
   simpleEdges: boolean;
@@ -151,7 +152,8 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements, density, simpleEdges,
+  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded,
+  onExpandedApplied, onElements, density, simpleEdges,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -173,7 +175,12 @@ function ProjectLayer({
 
   const budget = useRef(onBudgetExceeded);
   budget.current = onBudgetExceeded;
-  const options = useMemo(() => ({ onBudgetExceeded: () => budget.current() }), []);
+  const applied = useRef(onExpandedApplied);
+  applied.current = onExpandedApplied;
+  const options = useMemo(() => ({
+    onBudgetExceeded: () => budget.current(),
+    onExpandedApplied: (ids: string[]) => applied.current?.(ids),
+  }), []);
   const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
 
   useEffect(
@@ -207,7 +214,10 @@ function Inner(props: LayoutCanvasProps) {
     projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
     selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
-  const { expandedTaskIds, expandedFinishedIds, toggleExpanded, density, setDensity, manualPositions, saveGraphPosition } = useGraphState();
+  const {
+    expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, requestActiveExpansion,
+    setExpandedTaskIds, density, setDensity, manualPositions, saveGraphPosition,
+  } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -300,6 +310,12 @@ function Inner(props: LayoutCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingExtents]);
 
+  // "Land on the active subgraph" (design A3): only when nothing is
+  // explicitly expanded yet AND every displayed project has never stored an
+  // expansion -- an explicit (even empty) choice on any of them, or a focus
+  // root already in play, always wins.
+  const autoExpand = expandedTaskIds.size === 0 && !focusId
+    && projectIds.every((pid) => !hasStoredExpansion(pid));
   const params = useMemo<TilesParams>(() => ({
     variant: requestVariant,
     expanded: [...expandedTaskIds].sort(),
@@ -307,7 +323,18 @@ function Inner(props: LayoutCanvasProps) {
     maxDepth: maxDepth === null || maxDepth === Infinity ? null : maxDepth,
     q: filters.query.trim(),
     status: filters.status,
-  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
+    autoExpand,
+  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status, autoExpand]);
+  // Persisting a server-computed `expanded_applied` is only safe when there
+  // is exactly one project on screen: the shared `setExpandedTaskIds` call
+  // replaces every displayed project's stored expansion with the ids in the
+  // response, and a response only ever carries ONE project's container ids.
+  const onExpandedApplied = useMemo(
+    () => (projectIds.length === 1
+      ? (ids: string[]) => setExpandedTaskIds(new Set(ids))
+      : undefined),
+    [projectIds.length, setExpandedTaskIds],
+  );
 
   const selectedId = selectedPlaybookId
     ? `playbook:${selectedPlaybookId}`
@@ -585,7 +612,8 @@ function Inner(props: LayoutCanvasProps) {
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
-            onBudgetExceeded={onBudgetExceeded} onElements={onElements} density={density} simpleEdges={simpleEdges} />
+            onBudgetExceeded={onBudgetExceeded} onExpandedApplied={onExpandedApplied} onElements={onElements}
+            density={density} simpleEdges={simpleEdges} />
         ))}
         <ReactFlow
           nodes={nodes}
@@ -617,6 +645,11 @@ function Inner(props: LayoutCanvasProps) {
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
           <Panel position="top-right">
+            <button type="button" title="Re-open the active containers: anything running, or with open work if nothing is"
+              onClick={() => requestActiveExpansion(projectIds)}
+              className="mr-2 rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300 hover:bg-gray-800">
+              Focus active
+            </button>
             <label className="rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300">
               Density
               <select aria-label="Graph density" value={density} onChange={(event) => setDensity(event.target.value as LayoutDensity)}
