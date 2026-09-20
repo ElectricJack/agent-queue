@@ -11,7 +11,9 @@ import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
 import { edgeStyleForType } from "./edgeStyle";
 import { useGraphState } from "../useGraphHierarchy";
-import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
+import {
+  useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
+} from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
@@ -89,6 +91,9 @@ export interface LayoutCanvasProps extends Pick<GraphViewProps,
   filters: TaskFilters;
   focusId: string | null;
   setFocus: (id: string | null) => void;
+  /** Wired to the empty state's "Show completed" button, when the canvas has
+   * nothing to draw because finished work is hidden. */
+  setShowCompleted: (show: boolean) => void;
   /** A located match the toolbar asked for; each request is a fresh object. */
   jumpTarget?: LocateHit | null;
 }
@@ -241,8 +246,8 @@ function ProjectLayer({
 
 function Inner(props: LayoutCanvasProps) {
   const {
-    projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
-    selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
+    projectIds, projectNames, variant, filters, focusId, setFocus, setShowCompleted, jumpTarget, onTaskClick,
+    onBackgroundClick, selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const {
     expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, expandedForProject,
@@ -250,6 +255,10 @@ function Inner(props: LayoutCanvasProps) {
     density, manualPositions, saveGraphPosition,
   } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
+  // Only meaningful for the empty-graph caption: how many finished tasks are
+  // hidden, read only from whatever the "all" variant's extent already sits
+  // in the query cache -- never a request of its own.
+  const hiddenFinishedCount = useHiddenFinishedCount(projectIds, requestVariant);
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -687,7 +696,29 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {allLoaded && !pending && !layerError && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
+        {allLoaded && !pending && !layerError && nodes.length === 0 && (
+          filters.showCompleted ? (
+            <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">
+              No tasks yet.
+            </p>
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-gray-500">
+              {/* Show completed defaults off (design decision 2026-09-20), so a
+                * fully-finished project would otherwise land on a blank canvas
+                * with no explanation. */}
+              <p className="pointer-events-none">
+                No unfinished work here.
+                {hiddenFinishedCount !== null && hiddenFinishedCount > 0 && (
+                  <> {hiddenFinishedCount} finished {hiddenFinishedCount === 1 ? "task" : "tasks"} hidden.</>
+                )}
+              </p>
+              <button type="button" onClick={() => setShowCompleted(true)}
+                className="pointer-events-auto rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">
+                Show completed
+              </button>
+            </div>
+          )
+        )}
       </div>
     </div>
   );

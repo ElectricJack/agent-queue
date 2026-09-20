@@ -143,6 +143,39 @@ export function useLayoutExtents(
   });
 }
 
+/**
+ * The `all` variant's total node count, read ONLY from whatever the query
+ * cache already holds for it -- `enabled: false` means this never issues a
+ * request of its own. It captions the empty-graph state with how many
+ * finished tasks are hidden when that number is already known for free (the
+ * operator toggled Show completed on and off again, or another view already
+ * fetched it); otherwise it returns `null` and the caption leaves the number
+ * out rather than paying for a fetch just to fill in a caption.
+ */
+export function useHiddenFinishedCount(
+  projectIds: string[],
+  variant: Variant,
+): number | null {
+  const results = useQueries({
+    queries: projectIds.map((pid) => ({
+      queryKey: layoutExtentKey(pid, "all"),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchExtent(pid, "all", signal),
+      enabled: false,
+      staleTime: 30_000,
+    })),
+    combine: (results) => results.map((r) => r.data as ExtentResponse | { pending: true } | undefined),
+  });
+  // Only meaningful while active work is the one being hidden -- once the
+  // canvas is already requesting `all`, there is nothing left to reveal.
+  if (variant !== "active" || projectIds.length === 0) return null;
+  let total = 0;
+  for (const extent of results) {
+    if (!extent || "pending" in extent) return null;
+    total += extent.node_count;
+  }
+  return total;
+}
+
 export function useLayoutNode(projectId: string | undefined, taskId: string | null) {
   return useQuery({
     queryKey: ["layoutNode", projectId, taskId],

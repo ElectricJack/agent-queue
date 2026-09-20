@@ -81,11 +81,15 @@ vi.mock("../useLayoutTiles", () => ({
   },
 }));
 const layoutNode = vi.hoisted(() => ({ data: undefined as unknown }));
+/** null (default) means "not cheaply available"; a test sets a number to
+ * simulate the `all` variant's extent already sitting in the query cache. */
+const hiddenFinishedCount = vi.hoisted(() => ({ value: null as number | null }));
 vi.mock("../../../../api/graphLayout", () => ({
   useLayoutExtents: (ids: string[]) => ids.map(() => extents.pending
     ? { pending: true }
     : { layout_version: 1, extent_w: 10, extent_h: 10, node_count: 3 }),
   useLayoutNode: () => layoutNode,
+  useHiddenFinishedCount: () => hiddenFinishedCount.value,
   locate: vi.fn(),
   useTidyLayout: () => ({ mutate: vi.fn() }),
 }));
@@ -189,6 +193,7 @@ const base = {
   filters,
   focusId: null,
   setFocus: vi.fn(),
+  setShowCompleted: vi.fn(),
   onTaskClick: vi.fn(),
 };
 
@@ -202,6 +207,8 @@ beforeEach(() => {
   tiles.loaded = true;
   tiles.refetchVisible = vi.fn();
   extents.pending = false;
+  hiddenFinishedCount.value = null;
+  base.setShowCompleted.mockClear();
   fitBounds.mockReset();
   setCenter.mockReset();
   setViewport.mockReset();
@@ -416,15 +423,49 @@ describe("LayoutCanvas", () => {
     tiles.store = emptyStore();
     tiles.loaded = false;
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
     expect(screen.getByRole("region", { name: "Task graph" })).toBeInTheDocument();
   });
 
-  it("shows the empty state once every layer has loaded with nothing to draw", () => {
+  it("shows no empty state while nodes are present", () => {
+    // The default beforeEach store already has nodes "e" and "z".
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
+  });
+
+  it("says there's no unfinished work and offers a button that turns Show completed on", () => {
     tiles.store = emptyStore();
     tiles.loaded = true;
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(screen.getByText("No tasks or playbooks match these filters.")).toBeInTheDocument();
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.getByText(/no unfinished work here/i)).toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Show completed" });
+    fireEvent.click(button);
+    expect(base.setShowCompleted).toHaveBeenCalledWith(true);
+  });
+
+  it("says there are no tasks yet when Show completed is already on and the graph is still empty", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+    expect(screen.getByText(/no tasks yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).not.toBeInTheDocument();
+  });
+
+  it("includes a hidden-finished-tasks count in the caption when it's already cached", () => {
+    hiddenFinishedCount.value = 12;
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.getByText(/12 finished tasks hidden/i)).toBeInTheDocument();
+  });
+
+  it("omits the hidden-finished-tasks count when it would need a new request", () => {
+    tiles.store = emptyStore();
+    tiles.loaded = true;
+    render(<MemoryRouter><LayoutCanvas {...base} filters={{ ...filters, showCompleted: false }} /></MemoryRouter>);
+    expect(screen.queryByText(/finished tasks? hidden/i)).toBeNull();
   });
 
   it("loads tiles when a project's extent stops being pending", () => {
@@ -477,7 +518,8 @@ describe("LayoutCanvas", () => {
     render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("rect larger than 64.0 units");
-    expect(screen.queryByText("No tasks or playbooks match these filters.")).toBeNull();
+    expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
+    expect(screen.queryByText(/no tasks yet/i)).toBeNull();
     tiles.refetchVisible.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(tiles.refetchVisible).toHaveBeenCalled();

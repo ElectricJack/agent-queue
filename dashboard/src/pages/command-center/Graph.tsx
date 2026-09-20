@@ -88,7 +88,7 @@ function GraphShell(props: ShellProps) {
 
 /** The graph tab: server-laid-out tiles on demand, so no full snapshot is fetched. */
 export default function CommandCenterGraph() {
-  const { projectId, projectIds, projects, filters, focusId, setFocus, isLoadingProjects, projectsError } = useTaskWorkspace();
+  const { projectId, projectIds, projects, filters, focusId, setFocus, setShowCompleted, isLoadingProjects, projectsError } = useTaskWorkspace();
   const chrome = useGraphChrome();
   const { selectTask } = chrome;
   // The tiled canvas hands back the clicked card's payload, so a task that
@@ -122,7 +122,7 @@ export default function CommandCenterGraph() {
             expanded={expandedTaskIds} toggleExpanded={toggleExpanded} onFocus={setFocus}
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            focusId={focusId} setFocus={setFocus} jumpTarget={jumpTarget}
+            focusId={focusId} setFocus={setFocus} setShowCompleted={setShowCompleted} jumpTarget={jumpTarget}
             selectedTaskId={chrome.selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={chrome.clearSelection}
             playbooks={chrome.playbooks} selectedPlaybookId={chrome.selectedPlaybookId}
             onPlaybookClick={chrome.openPlaybook} />}
