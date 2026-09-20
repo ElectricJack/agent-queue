@@ -27,6 +27,11 @@ class EnsureTaskRequest:
         intelligence_class (None | str | Unset): Vault intelligence class for the task on create. A pinned profile is
             not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both
             apply only when this call creates the task.
+        parent_key (None | str | Unset): File the task under the standing container keyed by this name, creating it if
+            none is open (e.g. 'maintenance'). Applies only when this call creates the task; a dedup replay returns the
+            existing task untouched.
+        parent_title (None | str | Unset): Title for the standing container when parent_key has to create one. Defaults
+            to the key, title-cased.
     """
 
     project_id: str
@@ -36,6 +41,8 @@ class EnsureTaskRequest:
     priority: int | Unset = 100
     profile_id: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
+    parent_key: None | str | Unset = UNSET
+    parent_title: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +68,18 @@ class EnsureTaskRequest:
         else:
             intelligence_class = self.intelligence_class
 
+        parent_key: None | str | Unset
+        if isinstance(self.parent_key, Unset):
+            parent_key = UNSET
+        else:
+            parent_key = self.parent_key
+
+        parent_title: None | str | Unset
+        if isinstance(self.parent_title, Unset):
+            parent_title = UNSET
+        else:
+            parent_title = self.parent_title
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -78,6 +97,10 @@ class EnsureTaskRequest:
             field_dict["profile_id"] = profile_id
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
+        if parent_key is not UNSET:
+            field_dict["parent_key"] = parent_key
+        if parent_title is not UNSET:
+            field_dict["parent_title"] = parent_title
 
         return field_dict
 
@@ -112,6 +135,24 @@ class EnsureTaskRequest:
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
 
+        def _parse_parent_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_key = _parse_parent_key(d.pop("parent_key", UNSET))
+
+        def _parse_parent_title(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_title = _parse_parent_title(d.pop("parent_title", UNSET))
+
         ensure_task_request = cls(
             project_id=project_id,
             dedup_key=dedup_key,
@@ -120,6 +161,8 @@ class EnsureTaskRequest:
             priority=priority,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
+            parent_key=parent_key,
+            parent_title=parent_title,
         )
 
         ensure_task_request.additional_properties = d

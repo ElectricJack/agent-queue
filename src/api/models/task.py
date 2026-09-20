@@ -134,6 +134,9 @@ class CreateTaskResponse(BaseModel):
     gate_id: str | None = None
     status: str | None = None
     reason: str | None = None
+    # The container the task was filed under: an explicit ``parent_id``, or
+    # the standing parent a ``parent_key`` resolved (graph-visibility A2).
+    parent_id: str | None = None
     depends_on: list[dict[str, Any]] = []
 
 
@@ -599,6 +602,7 @@ class EnsureTaskResponse(BaseModel):
     restarted: bool = False
     skipped: bool = False
     reason: str | None = None
+    parent_id: str | None = None
 
 
 class DownstreamTask(BaseModel):

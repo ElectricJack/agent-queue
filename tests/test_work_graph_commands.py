@@ -466,3 +466,243 @@ class TestGateCommands:
         # And carries the flipped task id.
         payloads = [p for (t, p) in captured if t == "task.unblocked"]
         assert any(p.get("task_id") == "t1" for p in payloads)
+
+
+# ── parent_key: the keyed standing parent (graph-visibility A2) ──────────
+
+
+async def standing(db, key="maintenance"):
+    """Every task in the project carrying the standing-parent dedup key."""
+    from src.database.tables import tasks as tasks_table
+
+    async with db._engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                tasks_table.select().where(
+                    tasks_table.c.project_id == PROJECT_ID,
+                    tasks_table.c.dedup_key == f"parent:{key}",
+                )
+            )
+        ).mappings().fetchall()
+    return [row["id"] for row in rows]
+
+
+class TestParentKey:
+    """``create_task``'s ``parent_key`` — resolve-or-create a standing container.
+
+    Mechanism only: which key an automated creator uses is playbook policy.
+    """
+
+    async def test_first_call_creates_the_container_and_files_under_it(self, handler, db):
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "CI repair", "parent_key": "maintenance"}
+        )
+        assert res.get("success") is True, res
+        container_ids = await standing(db)
+        assert len(container_ids) == 1
+        container_id = container_ids[0]
+        assert res["parent_id"] == container_id
+
+        container = await db.get_task(container_id)
+        assert container is not None
+        # Titled from the key, flagged a container at creation, and born
+        # DEFINED so nothing can claim it and settlement cannot reach it.
+        assert container.title == "Maintenance"
+        assert container.parent_task_id is None
+        assert container.task_type is not None and container.task_type.value == "chore"
+        assert container.status == TaskStatus.DEFINED
+        assert await db.get_task_meta(container_id, "container") is True
+        assert (await db.get_task(res["created"])).parent_task_id == container_id
+
+    async def test_explicit_parent_title_wins(self, handler, db):
+        await handler._cmd_create_task(
+            {
+                "project_id": PROJECT_ID,
+                "title": "CI repair",
+                "parent_key": "maintenance",
+                "parent_title": "Routine maintenance",
+            }
+        )
+        container_id = (await standing(db))[0]
+        assert (await db.get_task(container_id)).title == "Routine maintenance"
+
+    async def test_second_call_reuses_the_same_container(self, handler, db):
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] == first["parent_id"]
+        assert len(await standing(db)) == 1
+
+    async def test_a_settled_container_is_never_reused(self, handler, db):
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        old = first["parent_id"]
+        await db.transition_task(old, TaskStatus.COMPLETED, force=True)
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] != old
+        # The settled container is left exactly as it was — it leaves through
+        # normal archival, not by being re-opened.
+        assert (await db.get_task(old)).status == TaskStatus.COMPLETED
+        assert (await db.get_children(old))[0].id == first["created"]
+        assert len(await standing(db)) == 2
+
+    async def test_a_failed_container_is_never_reused(self, handler, db):
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        await db.transition_task(first["parent_id"], TaskStatus.FAILED, force=True)
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] != first["parent_id"]
+
+    async def test_a_blocked_container_is_still_reused(self, handler, db):
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        await db.transition_task(first["parent_id"], TaskStatus.BLOCKED, force=True)
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] == first["parent_id"]
+
+    async def test_concurrent_creators_make_exactly_one_container(self, handler, db):
+        import asyncio
+
+        results = await asyncio.gather(*[
+            handler._cmd_create_task(
+                {"project_id": PROJECT_ID, "title": f"t{n}", "parent_key": "maintenance"}
+            )
+            for n in range(5)
+        ])
+        assert all(r.get("success") is True for r in results), results
+        container_ids = await standing(db)
+        assert len(container_ids) == 1, container_ids
+        assert {r["parent_id"] for r in results} == set(container_ids)
+        # Five children, one container, and no moment at which an empty
+        # container was a settle candidate.
+        assert len(await db.get_children(container_ids[0])) == 5
+        assert await db.settle_candidates() == []
+
+    async def test_an_empty_standing_container_is_never_a_settle_candidate(self, handler, db):
+        await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        assert await db.settle_candidates() == []
+
+    async def test_parent_key_conflicts_with_parent_id(self, handler, db):
+        await mktask(db, "other")
+        res = await handler._cmd_create_task(
+            {
+                "project_id": PROJECT_ID,
+                "title": "x",
+                "parent_key": "maintenance",
+                "parent_id": "other",
+            }
+        )
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_conflict"
+        assert await standing(db) == []
+
+    async def test_parent_key_conflicts_with_root(self, handler, db):
+        res = await handler._cmd_create_task(
+            {
+                "project_id": PROJECT_ID,
+                "title": "x",
+                "parent_key": "maintenance",
+                "root": True,
+            }
+        )
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_conflict"
+        assert await standing(db) == []
+
+    async def test_parent_key_is_refused_for_session_principals(self, handler, db):
+        handler._current_scope = {
+            "kind": "session",
+            "session_id": "s1",
+            "project_id": PROJECT_ID,
+            "elevated": False,
+        }
+        try:
+            res = await handler._cmd_create_task(
+                {"project_id": PROJECT_ID, "title": "x", "parent_key": "maintenance"}
+            )
+        finally:
+            handler._current_scope = None
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_key_not_for_sessions"
+        assert await standing(db) == []
+
+    async def test_two_keys_get_two_containers(self, handler, db):
+        one = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        two = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "sentinel"}
+        )
+        assert one["parent_id"] != two["parent_id"]
+        assert len(await standing(db, "maintenance")) == 1
+        assert len(await standing(db, "sentinel")) == 1
+
+
+class TestParentKeyUnderHierarchyFiling:
+    """A hierarchy/train project routes creation through ``HierarchyIntegration``.
+
+    Both halves of the resolve-or-create — the standing container itself
+    (``file_root_on``) and the work filed inside it
+    (``file_prepared_child_on``) — go through that writer, so the flag, the
+    dedup key and the edge have to survive it.
+    """
+
+    async def _enable(self, handler, db, tmp_path):
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(
+                id="repo",
+                project_id=PROJECT_ID,
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "repo"),
+            )
+        )
+        await db.update_project(
+            PROJECT_ID,
+            hierarchical_integration_mode="hierarchy",
+            integration_repository_id="repo",
+        )
+        handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+            db,
+            default_head_resolver=lambda _repo, _branch: "a" * 40,
+            checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+        )
+
+    async def test_container_and_child_are_filed_through_the_integration_writer(
+        self, handler, db, tmp_path
+    ):
+        await self._enable(handler, db, tmp_path)
+
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        assert first.get("success") is True, first
+        container_id = first["parent_id"]
+        container = await db.get_task(container_id)
+        assert container is not None
+        assert container.parent_task_id is None
+        assert container.status == TaskStatus.DEFINED
+        assert await db.get_task_meta(container_id, "container") is True
+        assert (await db.get_task(first["created"])).parent_task_id == container_id
+
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] == container_id
+        assert len(await standing(db)) == 1

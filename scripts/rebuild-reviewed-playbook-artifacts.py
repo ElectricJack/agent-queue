@@ -697,6 +697,8 @@ def _ci_main_sentinel_body(source: PlaybookSource) -> dict[str, Any]:
                     "description": bound("description"),
                     "priority": {"type": "literal", "value": 5},
                     "intelligence_class": {"type": "literal", "value": "deep-high"},
+                    "parent_key": {"type": "literal", "value": "maintenance"},
+                    "parent_title": {"type": "literal", "value": "Maintenance"},
                 },
                 "save_result_as": "repair",
                 "transitions": {

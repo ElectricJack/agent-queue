@@ -18202,6 +18202,30 @@
             "description": "For worker-filed work, create at project root instead of defaulting beside the held task. Mutually exclusive with parent_id.",
             "default": false
           },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key",
+            "description": "File under the standing container keyed by this name, creating it if none is open (e.g. 'maintenance'), so automated work does not accumulate in the project root. Mutually exclusive with parent_id and root, and refused for worker sessions, which already file under the task they hold."
+          },
+          "parent_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Title",
+            "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
+          },
           "depends_on": {
             "anyOf": [
               {
@@ -18411,6 +18435,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
           },
           "depends_on": {
             "items": {
@@ -21058,6 +21093,30 @@
             ],
             "title": "Intelligence Class",
             "description": "Vault intelligence class for the task on create. A pinned profile is not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both apply only when this call creates the task."
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key",
+            "description": "File the task under the standing container keyed by this name, creating it if none is open (e.g. 'maintenance'). Applies only when this call creates the task; a dedup replay returns the existing task untouched."
+          },
+          "parent_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Title",
+            "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
           }
         },
         "type": "object",
@@ -21110,6 +21169,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
           }
         },
         "type": "object",

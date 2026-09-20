@@ -7,6 +7,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import PurePosixPath, PureWindowsPath
 
@@ -61,6 +62,19 @@ logger = logging.getLogger(__name__)
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
 _PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+
+#: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
+#: resolver (graph-visibility A2).  Deliberately **not**
+#: ``HIERARCHY_LOCK_NAMESPACE``: the resolver holds its lock across a whole
+#: ``create_task``, and ``create_task_under`` / ``file_prepared_child_on``
+#: take the hierarchy lock on their *own* connections, so reusing that
+#: namespace here would have every keyed creation deadlock against itself.
+STANDING_PARENT_LOCK_NAMESPACE = 0x4151504B
+
+
+def standing_parent_dedup_key(parent_key: str) -> str:
+    """The ``tasks.dedup_key`` a standing container for *parent_key* carries."""
+    return f"parent:{parent_key}"
 
 
 def _fmt_epoch(ts: float) -> str:
@@ -1692,7 +1706,156 @@ class TaskCommandsMixin:
             return None, error or f"system fallback profile '{candidate_id}' is not defined"
         return candidate, None
 
+    # ----- the keyed standing parent (graph-visibility A2) -----------------
+    #
+    # Mechanism only.  *Which* key an automated creator uses — "maintenance",
+    # "sentinel", … — is policy and lives in the playbook that creates the
+    # work, never here.
+
+    @asynccontextmanager
+    async def _standing_parent_lock(self, project_id: str, parent_key: str):
+        """Serialize resolve-or-create for one ``(project, parent_key)``.
+
+        A transaction-scoped advisory lock on a connection of its own, held
+        across *both* halves of the critical section — resolving the
+        container and filing the first child into it.  That is what makes
+        the container never observable as childless: a second creator waits
+        here until the first has committed a child, rather than reading an
+        empty container (or, worse, missing it entirely and creating a
+        second one).
+
+        The nested ``create_task`` calls run on their own pooled connections
+        and commit as they go, so the reader behind this lock sees the
+        committed container the moment it is granted.
+        """
+        from sqlalchemy import func, select
+
+        async with self.db._engine.begin() as conn:
+            await conn.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        STANDING_PARENT_LOCK_NAMESPACE,
+                        func.hashtext(f"{project_id}:{parent_key}"),
+                    )
+                )
+            )
+            yield
+
+    async def _resolve_standing_parent(
+        self, project_id: str, parent_key: str, parent_title: str
+    ) -> tuple[str | None, dict | None]:
+        """The open container for *parent_key*, creating one if none is open.
+
+        Returns ``(container_id, refusal)``.  A COMPLETED or FAILED container
+        is settled and never reused — a fresh one is created beside it and
+        the old one leaves through normal archival, so the standing parent is
+        self-cleaning.  Every other status (BLOCKED, PAUSED, …) is reused:
+        the container is still open work.
+
+        Must be called under :meth:`_standing_parent_lock`.
+        """
+        dedup_key = standing_parent_dedup_key(parent_key)
+        existing = await self.db.find_task_by_dedup_key(project_id, dedup_key)
+        if existing is not None:
+            return existing.id, None
+
+        created = await self._create_task({
+            "project_id": project_id,
+            "title": parent_title,
+            "description": (
+                f"Standing parent for automated work keyed '{parent_key}'. Created and "
+                "reused by the creators that pass parent_key; a settled one is replaced."
+            ),
+            "task_type": "chore",
+            "dedup_key": dedup_key,
+            "root": True,
+            # Born DEFINED and flagged a container in the same breath: a
+            # READY container would be claimable, and an IN_PROGRESS one is
+            # exactly what §7 settlement completes when it has no children.
+            "_initial_status": TaskStatus.DEFINED.value,
+            # Control-plane bookkeeping, like ``ensure_task``'s own creations:
+            # the standing parent is not work anybody routes or reviews.
+            "_suppress_created_event": True,
+        })
+        container_id = created.get("created")
+        if created.get("error") or not container_id:
+            # Hand back the creation path's own refusal (an unknown project,
+            # an invalid project default, a hierarchy error) rather than
+            # flattening every one of them into a code that says nothing.
+            refusal = dict(created)
+            refusal["success"] = False
+            if not refusal.get("code") and not refusal.get("error"):
+                refusal["code"] = "hierarchy.parent_key_unavailable"
+                refusal["error"] = (
+                    f"the standing parent for '{parent_key}' could not be created"
+                )
+            return None, refusal
+
+        async with self.db.immediate() as conn:
+            await self.db.mark_container(container_id, conn=conn)
+        return container_id, None
+
     async def _cmd_create_task(self, args: dict) -> dict:
+        """Create one task, optionally inside a keyed standing parent.
+
+        ``parent_key`` is the automated creator's alternative to naming a
+        parent id it cannot know: it resolves-or-creates one standing
+        container per ``(project, key)`` and files the task inside it, so
+        playbook, supervisor and sentinel work stops accumulating in the
+        project root.  Everything else is :meth:`_create_task`.
+        """
+        raw_key = args.get("parent_key")
+        parent_key = str(raw_key).strip() if raw_key is not None else ""
+        if not parent_key:
+            args.pop("parent_key", None)
+            args.pop("parent_title", None)
+            return await self._create_task(args)
+
+        # A worker already files under the task it holds (swarm-work-model
+        # §12), so a standing parent would only lift its findings out of
+        # their own subtree.  Checked before the conflict below because it
+        # refuses the argument outright, whatever else was passed with it.
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {
+                "success": False,
+                "code": "hierarchy.parent_key_not_for_sessions",
+                "error": (
+                    "parent_key is for automated creators; a worker files under the "
+                    "task it holds by default, or names a parent with parent_id"
+                ),
+            }
+        if args.get("root") or args.get("parent_id"):
+            return {
+                "success": False,
+                "code": "hierarchy.parent_conflict",
+                "error": (
+                    "parent_key selects the parent, so it cannot be combined with "
+                    "parent_id or root; pass exactly one of them"
+                ),
+            }
+
+        project_id = args.get("project_id") or self._active_project_id
+        if not project_id:
+            return {"error": "project_id is required (no active project set)"}
+        parent_title = str(args.get("parent_title") or "").strip() or parent_key.title()
+
+        child_args = {
+            key: value
+            for key, value in args.items()
+            if key not in ("parent_key", "parent_title", "root")
+        }
+        child_args["project_id"] = project_id
+        async with self._standing_parent_lock(str(project_id), parent_key):
+            container_id, refusal = await self._resolve_standing_parent(
+                str(project_id), parent_key, parent_title
+            )
+            if refusal is not None:
+                return refusal
+            child_args["parent_id"] = container_id
+            return await self._create_task(child_args)
+
+    async def _create_task(self, args: dict) -> dict:
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
         # choice as CLI ``--root``.  Presence, rather than truthiness, is
@@ -4739,7 +4902,12 @@ class TaskCommandsMixin:
         # callers need omitted, selected, and explicit-null parent choices to
         # reach ``_cmd_create_task`` unchanged.  A dedup replay returns above
         # and therefore never reparents an existing task.
-        for key in ("parent_id", "root", "reason", "discovered_from"):
+        # ``parent_key``/``parent_title`` ride along with the rest of the
+        # placement arguments: the standing parent is resolved once, by the
+        # call that actually creates the task, so a dedup replay above never
+        # touches (or revives) a container.
+        for key in ("parent_id", "root", "reason", "discovered_from", "parent_key",
+                    "parent_title"):
             if key in args:
                 create_args[key] = args[key]
         # Presentation tasks such as playbook-run roots must be born in their
@@ -4771,11 +4939,21 @@ class TaskCommandsMixin:
             create_args["intelligence_class"] = intelligence_class
         result = await self._cmd_create_task(create_args)
         if "error" in result:
-            return {"success": False, "error": result["error"]}
+            refusal = {"success": False, "error": result["error"]}
+            # A placement refusal (``hierarchy.parent_conflict``,
+            # ``hierarchy.parent_key_not_for_sessions``, a container error)
+            # names what to do next only through its code; flattening it to
+            # bare prose would leave the ensuring node nothing to branch on.
+            if result.get("code"):
+                refusal["code"] = result["code"]
+            return refusal
         created_task = await self.db.get_task(result["created"])
         if created_task is not None:
             await self._emit_task_graph_change("task.updated", created_task)
-        return {"success": True, "task_id": result["created"], "created": True}
+        ensured = {"success": True, "task_id": result["created"], "created": True}
+        if result.get("parent_id"):
+            ensured["parent_id"] = result["parent_id"]
+        return ensured
 
     async def _cmd_get_downstream_tasks(self, args: dict) -> dict:
         """Return transitive dependents over blocking edge types.

@@ -1265,6 +1265,23 @@ _ALL_TOOL_DEFINITIONS = [
                         "beside the held task. Mutually exclusive with parent_id."
                     ),
                 },
+                "parent_key": {
+                    "type": "string",
+                    "description": (
+                        "File under the standing container keyed by this name, creating it "
+                        "if none is open (e.g. 'maintenance'), so automated work does not "
+                        "accumulate in the project root. Mutually exclusive with parent_id "
+                        "and root, and refused for worker sessions, which already file "
+                        "under the task they hold."
+                    ),
+                },
+                "parent_title": {
+                    "type": "string",
+                    "description": (
+                        "Title for the standing container when parent_key has to create "
+                        "one. Defaults to the key, title-cased."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {
@@ -1358,6 +1375,22 @@ _ALL_TOOL_DEFINITIONS = [
                         "explicit class the task waits for the assignment "
                         "playbook to choose one. Both apply only when this "
                         "call creates the task."
+                    ),
+                },
+                "parent_key": {
+                    "type": "string",
+                    "description": (
+                        "File the task under the standing container keyed by this name, "
+                        "creating it if none is open (e.g. 'maintenance'). Applies only "
+                        "when this call creates the task; a dedup replay returns the "
+                        "existing task untouched."
+                    ),
+                },
+                "parent_title": {
+                    "type": "string",
+                    "description": (
+                        "Title for the standing container when parent_key has to create "
+                        "one. Defaults to the key, title-cased."
                     ),
                 },
             },

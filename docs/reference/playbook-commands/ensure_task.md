@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:52852589dd1329aa5fa6eceb0406b9d7e5aa14c50eba09814a68687cf07463bb` |
+| Contract fingerprint | `sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4` |
 
 ## Parameters
 
@@ -30,6 +30,8 @@
 | `initial_status` | `string \| null` | no | `null` | Initial status |
 | `parent_id` | `string \| null` | no | `null` | — |
 | `root` | `boolean \| null` | no | `null` | — |
+| `parent_key` | `string \| null` | no | `null` | — |
+| `parent_title` | `string \| null` | no | `null` | — |
 | `reason` | `string \| null` | no | `null` | — |
 | `discovered_from` | `string \| null` | no | `null` | — |
 
@@ -39,6 +41,7 @@
 |---|---|---|
 | `task_id` | `string` | Task |
 | `created` | `boolean` | Was created |
+| `parent_id` | `string \| null` | — |
 
 ## Outcomes
 
@@ -136,8 +139,13 @@ to retry it.
      re-trigger the pipeline against itself and attach a routing gate only the
      triage agent could resolve), forwards `parent_id` / `root` / `reason` /
      `discovered_from` by *presence* rather than truthiness so an explicit
-     `parent_id: null` still means "file at the root", and delegates to
-     `_cmd_create_task` (`task_commands.py:1695`).
+     `parent_id: null` still means "file at the root", forwards
+     `parent_key` / `parent_title` the same way, and delegates to
+     `_cmd_create_task`.  A `parent_key` resolves-or-creates one standing
+     container per `(project, key)` and files the task inside it, so a
+     recurring automated creator stops accumulating work in the project root;
+     a container that has settled (`COMPLETED`/`FAILED`) is replaced rather
+     than reopened.
    - `initial_status` is reserved for `playbook-run:*` presentation tasks and
      restricted to `IN_PROGRESS` / `PAUSED` / `COMPLETED` / `FAILED`, so a
      playbook-run root is born in its projected state instead of spending a
@@ -192,7 +200,7 @@ compiles to
   "type": "command",
   "rule": "keep-main-green",
   "title": "ensure_repair_task",
-  "source": {"path": "ci-main-sentinel.md", "start_line": 34, "end_line": 41},
+  "source": {"path": "ci-main-sentinel.md", "start_line": 41, "end_line": 41},
   "command": "ensure_task",
   "inputs": {
     "project_id": {"type": "literal", "value": "agent-queue"},
@@ -200,7 +208,9 @@ compiles to
     "title": {"type": "binding_ref", "binding": "baseline", "path": "title"},
     "description": {"type": "binding_ref", "binding": "baseline", "path": "description"},
     "priority": {"type": "literal", "value": 5},
-    "intelligence_class": {"type": "literal", "value": "deep-high"}
+    "intelligence_class": {"type": "literal", "value": "deep-high"},
+    "parent_key": {"type": "literal", "value": "maintenance"},
+    "parent_title": {"type": "literal", "value": "Maintenance"}
   },
   "save_result_as": "repair",
   "transitions": {

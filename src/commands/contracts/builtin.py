@@ -46,6 +46,11 @@ class CreateTaskArgs(CommandArgs):
     depends_on: str | list[Any] | None = None
     parent_id: str | None = None
     root: bool | None = None
+    # A keyed standing parent: resolve-or-create one container per
+    # (project, parent_key) and file the task inside it.  Mutually exclusive
+    # with ``parent_id``/``root`` and refused for worker sessions.
+    parent_key: str | None = None
+    parent_title: str | None = None
     labels: list[str] | None = None
     reason: str | None = None
     discovered_from: str | None = None
@@ -91,6 +96,8 @@ class EnsureTaskArgs(CommandArgs):
     # null (or ``root``) deliberately files at the project root.
     parent_id: str | None = None
     root: bool | None = None
+    parent_key: str | None = None
+    parent_title: str | None = None
     reason: str | None = None
     discovered_from: str | None = None
 
@@ -98,6 +105,7 @@ class EnsureTaskArgs(CommandArgs):
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
+    parent_id: str | None = None
 
 
 class EditTaskArgs(CommandArgs):
