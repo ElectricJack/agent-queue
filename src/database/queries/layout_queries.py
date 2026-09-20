@@ -250,6 +250,45 @@ class LayoutQueryMixin:
                 .values(status="failed" if error else "done", finished_at=time.time(), error=error)
             )
 
+    async def layout_job_exists(self, project_id: str, variant: str, kind: str) -> bool:
+        """True when a job of this (project, variant, kind) exists and did not fail.
+
+        ``layout_jobs`` rows are never trimmed, so a job of kind
+        ``rules:<ENGINE_RULES_VERSION>`` doubles as the engine-rules
+        convergence ledger (reorganisation design §3.3). A ``failed`` row is
+        deliberately not convergence — the rebuild never happened, so the pair
+        must be retried on a later sweep.
+        """
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(layout_jobs.c.id)
+                    .where(
+                        layout_jobs.c.project_id == project_id,
+                        layout_jobs.c.variant == variant,
+                        layout_jobs.c.kind == kind,
+                        layout_jobs.c.status != "failed",
+                    )
+                    .limit(1)
+                )
+            ).first()
+        return row is not None
+
+    async def layout_job_in_flight(self, kind: str) -> bool:
+        """True when any project/variant has a queued or running job of *kind*."""
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(layout_jobs.c.id)
+                    .where(
+                        layout_jobs.c.kind == kind,
+                        layout_jobs.c.status.in_(("queued", "running")),
+                    )
+                    .limit(1)
+                )
+            ).first()
+        return row is not None
+
     async def get_layout_job(self, job_id: str) -> dict | None:
         async with self._engine.begin() as conn:
             row = (

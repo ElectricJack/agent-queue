@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 
+from src.task_graph.layout.constants import ENGINE_RULES_VERSION
 from src.task_graph.layout.driver import LayoutDriver
 
 logger = logging.getLogger(__name__)
@@ -137,10 +138,63 @@ class LayoutStepMixin:
         if not sweep_due:
             return
         cutoff = time.time() - cfg.reconcile_interval_seconds
-        for project in await self.db.list_projects():
+        projects = await self.db.list_projects()
+        for project in projects:
             meta = await self.db.get_layout_meta(project.id, "all")
             if meta and (meta.get("reconciled_at") or 0) < cutoff:
                 try:
                     await driver.reconcile(project.id)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("layout reconcile for %s failed: %s", project.id, exc)
+        await self._converge_engine_rules(projects)
+
+    async def _converge_engine_rules(self, projects) -> None:
+        """Queue one re-tidy for a scope still laid out under older rules.
+
+        ``reconcile`` compares presence, ``container_id`` and ``kind`` — it
+        deliberately does not chase *geometry* drift — so a change to the flow
+        rules or to ordinal assignment would never reach an install whose
+        layout is already published. ``layout_jobs`` rows are never trimmed and
+        ``kind`` is free text, so a job of kind ``rules:<version>`` doubles as
+        the convergence ledger: its presence means "this pair has been laid out
+        under these rules". Bumping ``ENGINE_RULES_VERSION`` is therefore the
+        only action a rules change needs — no schema, no operator step
+        (reorganisation design §3.3).
+
+        At most **one** pair per sweep, and none at all while a rules job is
+        still queued or running anywhere: the layout step claims one job per
+        5 s cycle and ``full_layout`` is a CPU-bound thread with a 60 s budget,
+        so a fan-out of every project x variant would put a long tail of full
+        rebuilds in front of every project's ordinary incremental work.
+
+        Cost, on the ``reconcile_interval_seconds`` sweep only and never on the
+        5 s cycle: one in-flight probe, then at most two statements per
+        ``(project, variant)`` pair — a meta read and a ledger read — and the
+        walk stops at the first pair it enqueues.
+        """
+        kind = f"rules:{ENGINE_RULES_VERSION}"
+        if await self.db.layout_job_in_flight(kind):
+            return  # the previous sweep's rebuild has not been consumed yet
+        for project in sorted(projects, key=lambda p: p.id):
+            for variant in ("active", "all"):  # active first: the default canvas
+                if await self.db.get_layout_meta(project.id, variant) is None:
+                    # Nothing published; this scope's first full layout will
+                    # already use the current rules.
+                    continue
+                if await self.db.layout_job_exists(project.id, variant, kind):
+                    continue
+                job = await self.db.enqueue_layout_job(project.id, variant, kind)
+                if job["kind"] != kind:
+                    # ``enqueue_layout_job`` de-dupes on (project, variant,
+                    # status) whatever the kind and handed back somebody else's
+                    # tidy. Leave the pair stale rather than record it as
+                    # converged; a later sweep retries it.
+                    continue
+                logger.info(
+                    "queued %s rebuild for %s/%s (engine rules v%d)",
+                    kind,
+                    project.id,
+                    variant,
+                    ENGINE_RULES_VERSION,
+                )
+                return

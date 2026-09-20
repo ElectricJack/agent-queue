@@ -327,3 +327,66 @@ async def test_snapshot_reads_metadata_in_one_statement(db):
     assert len(meta_reads) == 1, meta_reads
     selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
     assert len(selects) == 3, selects
+
+
+async def test_layout_job_exists_ignores_failed_and_other_kinds(db):
+    """The ledger read answers "converged", not "a job once existed".
+
+    A ``failed`` job is not convergence (the rebuild never happened), and a
+    job of a different kind — an operator tidy, a backfill, an older rules
+    version — says nothing about the current engine rules.
+    """
+    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+
+    tidy = await db.enqueue_layout_job("p1", "all", "tidy")
+    await db.finish_layout_job(tidy["id"], error=None)
+    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+
+    older = await db.enqueue_layout_job("p1", "all", "rules:0")
+    await db.finish_layout_job(older["id"], error=None)
+    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+
+    failed = await db.enqueue_layout_job("p1", "all", "rules:1")
+    await db.finish_layout_job(failed["id"], error="boom")
+    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+
+    queued = await db.enqueue_layout_job("p1", "all", "rules:1")
+    assert await db.layout_job_exists("p1", "all", "rules:1") is True
+    # Other pairs are unaffected: the ledger is per (project, variant).
+    assert await db.layout_job_exists("p1", "active", "rules:1") is False
+    assert await db.layout_job_exists("p2", "all", "rules:1") is False
+
+    await db.finish_layout_job(queued["id"], error=None)
+    assert await db.layout_job_exists("p1", "all", "rules:1") is True
+
+
+async def test_layout_job_in_flight_sees_any_project_and_variant(db):
+    assert await db.layout_job_in_flight("rules:1") is False
+    job = await db.enqueue_layout_job("p1", "active", "rules:1")
+    assert await db.layout_job_in_flight("rules:1") is True
+    assert await db.layout_job_in_flight("tidy") is False
+    await db.finish_layout_job(job["id"], error=None)
+    assert await db.layout_job_in_flight("rules:1") is False
+
+
+async def test_a_rules_job_runs_a_full_layout(db):
+    """``kind`` is a ledger label only: the job path never looks at it."""
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    await db.create_task(Task(id="b", project_id="p1", title="b", description=""))
+    drv = LayoutDriver(db)
+    first = await drv.full_layout("p1", "all")
+    assert (await db.get_layout_meta("p1", "all"))["layout_version"] == first
+
+    job = await db.enqueue_layout_job("p1", "all", "rules:1")
+    claimed = await db.next_layout_job()
+    assert claimed["id"] == job["id"] and claimed["kind"] == "rules:1"
+    await drv.full_layout(claimed["project_id"], claimed["variant"])
+    await db.finish_layout_job(claimed["id"], error=None)
+
+    meta = await db.get_layout_meta("p1", "all")
+    assert meta["layout_version"] == first + 1
+    rows = await db.load_layout_rows("p1", "all", ["a", "b"])
+    assert set(rows) == {"a", "b"}
+    assert await db.layout_job_exists("p1", "all", "rules:1") is True

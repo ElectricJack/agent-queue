@@ -22,6 +22,20 @@ ROW_ASPECT = 1.3
 GROWTH_BANDS = (1.5, 3.0, 6.0, 12.0, 24.0, 48.0)
 CELL_SIZE = 8.0
 
+ENGINE_RULES_VERSION = 1
+"""The generation of the engine's *geometry and ordering* rules.
+
+Bump this by hand in any change to ``flow.py``, to ordinal assignment in
+``engine.py``, or to the geometry constants above. Bumping it is the **only**
+action a developer takes to roll the change out: geometry is persisted per
+project and ``LayoutDriver.reconcile`` deliberately chases presence rather than
+geometry, so an install already laid out would otherwise keep the old rules
+forever. The orchestrator's sweep re-tidies every ``(project, variant)`` whose
+convergence ledger — a ``layout_jobs`` row of kind ``f"rules:{...}"`` — does not
+name this version (reorganisation design §3.3).
+"""
+
+
 W_CROSS = 10.0
 W_SPAN = 1.0
 W_WRAP = 2.0
