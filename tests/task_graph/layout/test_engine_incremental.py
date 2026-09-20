@@ -177,3 +177,49 @@ def test_wallclock_stub_does_not_change_result(monkeypatch):
 
     assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in baseline.rows.items()} == \
            {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in stubbed.rows.items()}
+
+
+def test_target_is_computed_once_per_container_pass(monkeypatch):
+    """``_tidy_sweep`` calls ``_evaluate`` thousands of times. The row target
+    depends only on the children's sizes, so recomputing it inside the hot
+    loop would be a pure regression (reorganisation design §3.1)."""
+    from src.task_graph.layout import flow as flow_module
+
+    calls = {"n": 0, "evals": 0}
+    real_row_target = flow_module.row_target
+    real_flow_container = flow_module.flow_container
+
+    def counting_row_target(*a, **kw):
+        calls["n"] += 1
+        return real_row_target(*a, **kw)
+
+    def counting_flow_container(*a, **kw):
+        calls["evals"] += 1
+        return real_flow_container(*a, **kw)
+
+    monkeypatch.setattr(flow_module, "row_target", counting_row_target)
+    monkeypatch.setattr(engine_module, "row_target", counting_row_target)
+    monkeypatch.setattr(engine_module, "flow_container", counting_flow_container)
+
+    ids = [f"t{i}" for i in range(20)]
+    kids = [task(i, created=k) for k, i in enumerate(ids)]
+    edges = [(ids[i], ids[i - 4]) for i in range(4, 20)]
+    layout_container(scope(kids, edges=edges), mode="tidy")
+
+    assert calls["evals"] > 1  # the sweep really did run
+    assert calls["n"] == 1
+
+
+def test_deterministic_under_shuffled_size_dicts():
+    """Dict insertion order is not a layout input: the row target sums an
+    unordered area and the flow reads sizes by id."""
+    ids = [f"t{i}" for i in range(12)]
+    kids = [task(i, created=k, container=True) for k, i in enumerate(ids)]
+    sizes = {i: (1.0 + (k % 5), 1.0 + (k % 3)) for k, i in enumerate(ids)}
+    forward = layout_container(scope(kids, sizes=dict(sizes)), mode="tidy")
+    reverse = layout_container(
+        scope(kids, sizes={k: sizes[k] for k in reversed(ids)}), mode="tidy"
+    )
+    assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in forward.rows.items()} == \
+           {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in reverse.rows.items()}
+    assert forward.allocated == reverse.allocated
