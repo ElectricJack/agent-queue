@@ -5,23 +5,22 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import Counter
+from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.task_references import (
-    INTEGRATION_TASK_REFERENCES,
-    assert_no_integration_task_references,
-)
+from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     archived_tasks,
     integration_repair_operations,
     integration_repair_stages,
-    metadata,
     sessions,
     task_comments,
     task_completion_records,
+    task_metadata,
     task_subtasks,
     tasks,
 )
@@ -30,13 +29,78 @@ from src.models import TaskStatus
 logger = logging.getLogger(__name__)
 
 
+#: ``task_metadata`` key holding why the sweep last refused to archive a root.
+#: ``{"code", "detail", "at"}``.  Written by the sweep itself, from the refusal
+#: it actually hit, so no reader has to re-derive the archive path's rules.
+ARCHIVE_REFUSAL_KEY = "archive_refusal"
+
+#: Longest one-line detail kept in a log line or a refusal record.
+MAX_REFUSAL_DETAIL = 200
+
+
+def _one_line(text: str, limit: int = MAX_REFUSAL_DETAIL) -> str:
+    """First line of *text*, truncated — a refusal detail is never multi-line.
+
+    A driver message carries the failing SQL and its parameters on later
+    lines; at WARNING, once an hour, per root, that is a wall of text for one
+    fact.
+    """
+    first = (text or "").strip().splitlines()
+    head = first[0].strip() if first else ""
+    return head if len(head) <= limit else head[: limit - 1] + "…"
+
+
+def _constraint_name(exc: BaseException) -> str | None:
+    """The constraint asyncpg reports, wherever SQLAlchemy has buried it.
+
+    SQLAlchemy wraps the driver error twice: ``IntegrityError.orig`` is the
+    asyncpg *adapter*'s exception, and only its ``__cause__`` is the real
+    ``asyncpg.exceptions.ForeignKeyViolationError`` that carries
+    ``constraint_name``.  Reading ``exc.orig.constraint_name`` therefore
+    always returned ``None``, which is why the log line fell back to the full
+    message.  Walk the whole wrapping chain instead.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        name = getattr(current, "constraint_name", None)
+        if name:
+            return str(name)
+        for link in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(link, BaseException):
+                pending.append(link)
+    return None
+
+
 def _failure_signature(exc: BaseException) -> str:
     """``IntegrityError(fk_…)`` — the exception class plus, where the driver
-    gives one, the constraint that refused.  Short enough for one log line
-    and specific enough to name the offending table in a bug report."""
+    gives one, the constraint that refused.  One line always: specific enough
+    to name the offending table in a bug report, short enough to log."""
     name = type(exc).__name__
-    constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
-    return f"{name}({constraint})" if constraint else f"{name}: {exc}"
+    constraint = _constraint_name(exc)
+    return f"{name}({constraint})" if constraint else _one_line(f"{name}: {exc}")
+
+
+@dataclass(frozen=True)
+class ArchiveBlockedRoots:
+    """Roots the sweep could not archive: the true count, and a capped page.
+
+    ``total`` is every still-eligible root carrying a refusal record, not
+    ``len(roots)`` — the list is capped so a surface can render it, and a
+    count that saturated at the cap would understate the backlog it exists to
+    report.
+    """
+
+    total: int
+    roots: list[dict]
 
 
 class ArchiveQueryMixin:
@@ -304,10 +368,20 @@ class ArchiveQueryMixin:
         ``HierarchyError`` was caught here, so the first root an
         ``IntegrityError`` escaped from aborted the whole hourly pass — on
         the operator's install that happened 225 times in a row and nothing
-        was ever archived.  Every exception is now per root: logged once at
-        WARNING with the task id and the failure's signature, and the loop
-        continues.  ``list_archive_blocked_roots`` is the read-only view of
-        what keeps getting skipped.
+        was ever archived.  Every exception is now per root: recorded, logged,
+        and the loop continues.
+
+        **What it skipped is recorded where a reader can find it.**  Each
+        skipped root gets the refusal the sweep *actually* hit — code, a
+        one-line detail and a timestamp — in ``task_metadata`` under
+        ``archive_refusal``.  Nothing else derives those conditions a second
+        time: ``sealed`` and ``delivery_target_fixed`` come from deep inside
+        ``guard_integration_mutation`` and a report that re-implemented the
+        rules would keep missing them.  The record is written only when the
+        *code* changes, so an unarchivable root costs no write an hour, and it
+        never touches ``tasks.updated_at`` — that column is the eligibility
+        cutoff, and moving it would make a blocked root flicker in and out of
+        the sweep's own candidate set.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -320,18 +394,81 @@ class ArchiveQueryMixin:
             task_ids = [r[0] for r in result.fetchall()]
 
         archived: list[str] = []
+        # A whole sweep failing the same way is one fact, not N log lines.
+        unexpected: Counter[str] = Counter()
+        unexpected_ids: dict[str, list[str]] = {}
         for tid in task_ids:
             try:
                 await self.archive_task(tid)
-                archived.append(tid)
             except HierarchyError as exc:
+                await self._record_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
                 logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
+                continue
             except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
-                logger.warning(
-                    "archive_old_terminal_tasks: skipping %s, %s", tid, _failure_signature(exc)
-                )
+                signature = _failure_signature(exc)
+                await self._record_archive_refusal(tid, "unexpected", signature)
+                unexpected[signature] += 1
+                unexpected_ids.setdefault(signature, []).append(tid)
+                continue
+            archived.append(tid)
+            # The archive took the task's metadata with it; clear explicitly
+            # so the record's lifetime does not depend on that coincidence.
+            await self._clear_archive_refusal(tid)
 
+        for signature, count in unexpected.most_common():
+            shown = unexpected_ids[signature][:5]
+            logger.warning(
+                "archive_old_terminal_tasks: skipped %d root(s) on %s: %s%s",
+                count,
+                signature,
+                ", ".join(shown),
+                "..." if count > len(shown) else "",
+            )
         return archived
+
+    async def _record_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
+        """Remember why the sweep last refused *task_id*, if that has changed.
+
+        Writes only ``task_metadata`` — never ``tasks`` — so the eligibility
+        cutoff (``tasks.updated_at``) is untouched, and only when the *code*
+        differs from what is stored, so a permanently blocked root does not
+        generate an hourly write.
+        """
+        async with self._engine.begin() as conn:
+            stored = (
+                await conn.execute(
+                    select(task_metadata.c.value).where(
+                        and_(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key == ARCHIVE_REFUSAL_KEY,
+                        )
+                    )
+                )
+            ).scalar_one_or_none()
+            if stored is not None:
+                try:
+                    if json.loads(stored).get("code") == code:
+                        return
+                except (TypeError, ValueError):
+                    pass
+            await self._upsert_meta(
+                task_id,
+                ARCHIVE_REFUSAL_KEY,
+                {"code": code, "detail": detail, "at": time.time()},
+                conn=conn,
+            )
+
+    async def _clear_archive_refusal(self, task_id: str) -> None:
+        """Drop *task_id*'s refusal record — it is no longer refused."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    and_(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == ARCHIVE_REFUSAL_KEY,
+                    )
+                )
+            )
 
     @staticmethod
     def _eligible_archive_roots_stmt(statuses: list[str], cutoff: float):
@@ -369,122 +506,56 @@ class ArchiveQueryMixin:
         statuses: list[str],
         older_than_seconds: float,
         limit: int = 50,
-    ) -> list[dict]:
-        """Eligible roots the sweep cannot archive, and why.  Read-only.
+    ) -> ArchiveBlockedRoots:
+        """Eligible roots the sweep could not archive, and why.  Read-only.
 
-        Mirrors ``archive_task``'s refusal conditions with plain SELECTs —
-        no archive is attempted — so ``aq doctor --check
-        tasks.archive_blocked`` and ``archive_settings`` can report the
-        backlog cheaply.  Returns ``[{"task_id", "reason", "detail"}]``, at
-        most *limit* rows.  A root blocked several ways reports the first
-        reason found, integration bookkeeping first — that is the one an
-        operator cannot resolve by waiting.
+        Reports what ``archive_old_terminal_tasks`` *recorded* — it does not
+        re-derive a single refusal condition.  That matters: ``sealed`` and
+        ``delivery_target_fixed`` are raised several layers down inside
+        ``guard_integration_mutation``, and the earlier version of this
+        method, which reimplemented the checks it knew about, silently
+        omitted both.  Now every code the archive path can raise shows up,
+        including ``unexpected``, with no second copy of the rules to drift.
+
+        Restricted to roots that are *still* eligible, so a record left on a
+        task that has since been reopened or edited is never reported.
+        ``total`` is the true count; ``roots`` is capped at *limit*.
         """
-        from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
-
         if not statuses:
-            return []
+            return ArchiveBlockedRoots(total=0, roots=[])
         cutoff = time.time() - older_than_seconds
+        eligible = self._eligible_archive_roots_stmt(statuses, cutoff).subquery()
+        recorded = (
+            select(task_metadata.c.task_id, task_metadata.c.value)
+            .select_from(
+                task_metadata.join(eligible, task_metadata.c.task_id == eligible.c.id)
+            )
+            .where(task_metadata.c.key == ARCHIVE_REFUSAL_KEY)
+        )
         async with self._engine.begin() as conn:
-            roots = [
-                r[0]
-                for r in (
-                    await conn.execute(self._eligible_archive_roots_stmt(statuses, cutoff))
-                ).fetchall()
-            ]
-            if not roots:
-                return []
-            # One recursive walk maps every descendant back to its root, so
-            # the reason queries below are one statement each regardless of
-            # how many roots are eligible.
-            seed = select(tasks.c.id.label("root"), tasks.c.id.label("id")).where(
-                tasks.c.id.in_(roots)
+            total = (
+                await conn.execute(select(func.count()).select_from(recorded.subquery()))
+            ).scalar_one()
+            if not total:
+                return ArchiveBlockedRoots(total=0, roots=[])
+            rows = (
+                await conn.execute(recorded.order_by(task_metadata.c.task_id).limit(limit))
+            ).fetchall()
+        roots = []
+        for task_id, value in rows:
+            try:
+                record = json.loads(value)
+            except (TypeError, ValueError):
+                record = {}
+            roots.append(
+                {
+                    "task_id": task_id,
+                    "reason": record.get("code") or "unexpected",
+                    "detail": record.get("detail") or "",
+                    "since": record.get("at") or 0.0,
+                }
             )
-            subtree = seed.cte("archive_blocked_subtree", recursive=True)
-            descendant = tasks.alias("archive_blocked_descendant")
-            subtree = subtree.union_all(
-                select(subtree.c.root, descendant.c.id).join(
-                    subtree, descendant.c.parent_task_id == subtree.c.id
-                )
-            )
-            reasons: dict[str, tuple[str, str]] = {}
-
-            def note(task_id: str, reason: str, detail: str) -> None:
-                reasons.setdefault(task_id, (reason, detail))
-
-            for ref in INTEGRATION_TASK_REFERENCES:
-                table = metadata.tables[ref.table]
-                column = table.c[ref.column]
-                rows = (
-                    await conn.execute(
-                        select(subtree.c.root, column)
-                        .select_from(subtree.join(table, column == subtree.c.id))
-                        .distinct()
-                    )
-                ).fetchall()
-                for root, task_id in rows:
-                    note(
-                        root,
-                        "integration_owned",
-                        f"{ref.table} still names {task_id} ({ref.written_by})",
-                    )
-            open_rows = (
-                await conn.execute(
-                    select(subtree.c.root, tasks.c.id)
-                    .select_from(subtree.join(tasks, tasks.c.id == subtree.c.id))
-                    .where(
-                        tasks.c.status.notin_(
-                            (
-                                TaskStatus.COMPLETED.value,
-                                TaskStatus.FAILED.value,
-                                TaskStatus.BLOCKED.value,
-                            )
-                        )
-                    )
-                    .distinct()
-                )
-            ).fetchall()
-            for root, task_id in open_rows:
-                note(root, "open_descendants", f"{task_id} is not terminal")
-            live_rows = (
-                await conn.execute(
-                    select(subtree.c.root, sessions.c.task_id)
-                    .select_from(subtree.join(sessions, sessions.c.task_id == subtree.c.id))
-                    .where(sessions.c.state.in_(LIVE_SESSION_STATES))
-                    .distinct()
-                )
-            ).fetchall()
-            for root, task_id in live_rows:
-                note(root, "live_descendants", f"{task_id} still has a live session")
-            repair_rows = (
-                await conn.execute(
-                    select(subtree.c.root, integration_repair_stages.c.repair_task_id)
-                    .select_from(
-                        subtree.join(
-                            integration_repair_stages,
-                            integration_repair_stages.c.repair_task_id == subtree.c.id,
-                        ).join(
-                            integration_repair_operations,
-                            integration_repair_operations.c.id
-                            == integration_repair_stages.c.operation_id,
-                        )
-                    )
-                    .where(
-                        integration_repair_operations.c.state.in_(
-                            ("active", "escalated", "human_required")
-                        )
-                    )
-                    .distinct()
-                )
-            ).fetchall()
-            for root, task_id in repair_rows:
-                note(root, "integration_owned", f"{task_id} is in an active repair operation")
-
-        ordered = [tid for tid in roots if tid in reasons]
-        return [
-            {"task_id": tid, "reason": reasons[tid][0], "detail": reasons[tid][1]}
-            for tid in sorted(ordered)[:limit]
-        ]
+        return ArchiveBlockedRoots(total=int(total), roots=roots)
 
     async def list_archived_tasks(
         self,

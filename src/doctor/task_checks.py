@@ -44,11 +44,12 @@ async def _check_stale_attention(ctx: DoctorContext) -> CheckResult:
 async def _check_archive_blocked(ctx: DoctorContext) -> CheckResult:
     """Report terminal roots the auto-archive sweep keeps skipping.
 
-    Report-only and read-only: it mirrors ``archive_task``'s refusal
-    conditions with SELECTs rather than attempting an archive, so running
-    doctor never moves a task.  There is no ``--fix`` — every reason here
-    (integration bookkeeping, an open descendant, a live session) is
-    resolved by the subsystem that owns it, not by doctor.
+    Report-only and read-only: it reads the refusal each root's last sweep
+    attempt actually recorded, so it never attempts an archive and never
+    re-derives the archive path's rules.  There is no ``--fix`` — every
+    reason here (integration bookkeeping, a sealed batch, an open
+    descendant, a live session) is resolved by the subsystem that owns it,
+    not by doctor.
     """
     check_id = "tasks.archive_blocked"
     if ctx.db is None:
@@ -59,19 +60,19 @@ async def _check_archive_blocked(ctx: DoctorContext) -> CheckResult:
     blocked = await ctx.db.list_archive_blocked_roots(
         statuses=list(cfg.statuses), older_than_seconds=cfg.after_hours * 3600
     )
-    if not blocked:
+    if not blocked.total:
         return CheckResult(
             id=check_id, severity=Severity.OK, detail="no eligible root is blocked from archiving"
         )
-    reasons = sorted({row["reason"] for row in blocked})
+    reasons = sorted({row["reason"] for row in blocked.roots})
     return CheckResult(
         id=check_id,
         severity=Severity.WARN,
         detail=(
-            f"{len(blocked)} terminal root(s) eligible for auto-archive cannot be "
+            f"{blocked.total} terminal root(s) eligible for auto-archive cannot be "
             f"archived ({', '.join(reasons)})"
         ),
-        data={"count": len(blocked), "roots": blocked[:50]},
+        data={"count": blocked.total, "roots": blocked.roots},
     )
 
 

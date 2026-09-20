@@ -4272,17 +4272,20 @@ class TaskCommandsMixin:
 
         cutoff = _time.time() - older_than_seconds
         eligible = 0
+        blocked_total = 0
         blocked: list[dict] = []
         if cfg.enabled and cfg.statuses:
             for status in cfg.statuses:
                 tasks = await self.db.list_tasks(status=TaskStatus(status))
                 eligible += sum(1 for t in tasks if t.updated_at and t.updated_at <= cutoff)
-            # Eligible roots the sweep keeps skipping.  Read-only — the same
-            # refusal conditions ``archive_task`` applies, evaluated as
-            # SELECTs, so asking about the settings never archives anything.
-            blocked = await self.db.list_archive_blocked_roots(
-                statuses=list(cfg.statuses), older_than_seconds=older_than_seconds
+            # Eligible roots the sweep keeps skipping, as the sweep itself
+            # recorded them.  Read-only — asking about the settings never
+            # archives anything.  The count is the true total; the list is a
+            # capped page of it.
+            report = await self.db.list_archive_blocked_roots(
+                statuses=list(cfg.statuses), older_than_seconds=older_than_seconds, limit=20
             )
+            blocked_total, blocked = report.total, report.roots
 
         return {
             "enabled": cfg.enabled,
@@ -4290,8 +4293,8 @@ class TaskCommandsMixin:
             "statuses": cfg.statuses,
             "archived_count": archived_count,
             "eligible_count": eligible,
-            "blocked_count": len(blocked),
-            "blocked": blocked[:20],
+            "blocked_count": blocked_total,
+            "blocked": blocked,
         }
 
     async def _cmd_provide_input(self, args: dict) -> dict:

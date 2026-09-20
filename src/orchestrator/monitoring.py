@@ -638,16 +638,17 @@ class MonitoringMixin:
             blocked = await self.db.list_archive_blocked_roots(
                 statuses=archive_cfg.statuses,
                 older_than_seconds=older_than_seconds,
+                limit=10,
             )
         except Exception as e:  # noqa: BLE001 — reporting must not break the sweep
             logger.debug("Auto-archive blocked-root report failed: %s", e)
-            blocked = []
-        if blocked:
+            blocked = None
+        if blocked and blocked.total:
             logger.warning(
                 "Auto-archive skipped %d eligible root(s): %s%s",
-                len(blocked),
-                ", ".join(f"{b['task_id']} ({b['reason']})" for b in blocked[:10]),
-                "..." if len(blocked) > 10 else "",
+                blocked.total,
+                ", ".join(f"{b['task_id']} ({b['reason']})" for b in blocked.roots),
+                "..." if blocked.total > len(blocked.roots) else "",
             )
 
         if archived_ids:
