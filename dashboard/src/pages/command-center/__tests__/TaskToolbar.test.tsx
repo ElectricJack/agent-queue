@@ -63,23 +63,28 @@ beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = fa
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
-  it("shows completed work by default on the graph route", () => {
+  it("hides completed work by default, on the graph route same as anywhere else", () => {
     mount("/projects/alpha/graph");
-    expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
   });
 
-  it("preserves the graph completed opt-out when another filter changes", async () => {
+  it("treats a stale completed=0 from the old graph default as harmless, same as no param", () => {
+    mount("/projects/alpha/graph?completed=0");
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
+  });
+
+  it("preserves an explicit completed opt-in when another filter changes", async () => {
     mount("/projects/alpha/graph");
     await userEvent.click(screen.getByRole("checkbox", { name: "Show completed" }));
     await userEvent.type(screen.getByRole("searchbox", { name: "Search tasks" }), "open");
 
-    expect(screen.getByRole("checkbox", { name: "Show completed" })).not.toBeChecked();
-    expect(screen.getByTestId("query")).toHaveTextContent("completed=0");
-    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "active", "open", "", []));
+    expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
+    expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", "", []));
   });
 
-  it("re-enables completed work when a finished status is selected after opting out", async () => {
-    mount("/projects/alpha/graph?completed=0");
+  it("re-enables completed work when a finished status is selected", async () => {
+    mount("/projects/alpha/graph");
     await userEvent.selectOptions(screen.getByRole("combobox", { name: "Task status" }), "COMPLETED");
 
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
@@ -177,7 +182,7 @@ describe("layout-aware task controls", () => {
   it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "all", "check", "", []);
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));
