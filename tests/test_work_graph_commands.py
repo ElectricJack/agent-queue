@@ -789,17 +789,19 @@ class TestParentKey:
         assert len(await standing(db, "sentinel")) == 1
 
 
-class TestParentKeyUnderHierarchyFiling:
-    """A hierarchy/train project routes creation through ``HierarchyIntegration``.
+class TestParentKeyUnderHierarchyMode:
+    """A standing parent must not own delivery (final review C1).
 
-    Both halves of the resolve-or-create — the standing container itself
-    (``file_root_on``) and the work filed inside it
-    (``file_prepared_child_on``) — go through that writer, so the flag, the
-    dedup key and the edge have to survive it.
+    In a hierarchy/train project the child is filed through
+    ``file_prepared_child_on``, which bases it on the standing container's
+    checkpoint and delivers it to the container's branch — so work that has
+    to reach main (the CI main sentinel's repair, say) reaches it only when
+    the container settles, which one FAILED sibling prevents forever.  The
+    mechanism is therefore refused outright in those projects, before any
+    write.
     """
 
-    async def _enable(self, handler, db, tmp_path):
-        from src.integration.hierarchy import HierarchyIntegration
+    async def _enable(self, db, tmp_path, mode="hierarchy"):
         from src.models import RepoConfig, RepoSourceType
 
         await db.create_repo(
@@ -812,34 +814,96 @@ class TestParentKeyUnderHierarchyFiling:
         )
         await db.update_project(
             PROJECT_ID,
-            hierarchical_integration_mode="hierarchy",
+            hierarchical_integration_mode=mode,
             integration_repository_id="repo",
         )
-        handler.orchestrator.hierarchy_integration = HierarchyIntegration(
-            db,
-            default_head_resolver=lambda _repo, _branch: "a" * 40,
-            checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+
+    @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+    async def test_create_task_is_refused(self, handler, db, tmp_path, mode):
+        await self._enable(db, tmp_path, mode)
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "CI repair", "parent_key": "maintenance"}
         )
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_key_unsupported_mode"
+        assert "parent_id" in res["error"]
+        # Nothing written: no container, no child.
+        assert await standing(db) == []
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
 
-    async def test_container_and_child_are_filed_through_the_integration_writer(
-        self, handler, db, tmp_path
-    ):
-        await self._enable(handler, db, tmp_path)
+    @pytest.mark.parametrize("mode", ["hierarchy", "train"])
+    async def test_ensure_task_is_refused(self, handler, db, tmp_path, mode):
+        await self._enable(db, tmp_path, mode)
+        res = await handler._cmd_ensure_task({
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:abc:1",
+            "title": "CI repair",
+            "parent_key": "maintenance",
+        })
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_key_unsupported_mode"
+        assert await standing(db) == []
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
 
-        first = await handler._cmd_create_task(
+    async def test_a_disabled_project_still_accepts_it(self, handler, db):
+        res = await handler._cmd_create_task(
             {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
         )
-        assert first.get("success") is True, first
-        container_id = first["parent_id"]
-        container = await db.get_task(container_id)
-        assert container is not None
-        assert container.parent_task_id is None
-        assert container.status == TaskStatus.DEFINED
-        assert await db.get_task_meta(container_id, "container") is True
-        assert (await db.get_task(first["created"])).parent_task_id == container_id
+        assert res.get("success") is True, res
+        assert len(await standing(db)) == 1
 
-        second = await handler._cmd_create_task(
-            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+
+class TestParentKeyValidation:
+    """``parent_key`` is a durable dedup key, so it is bounded like one."""
+
+    @pytest.mark.parametrize(
+        "key", ["Maintenance", "-lead", "_lead", "has space", "a" * 65, "sentinel!"]
+    )
+    async def test_a_malformed_key_is_refused(self, handler, db, key):
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "x", "parent_key": key}
         )
-        assert second["parent_id"] == container_id
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.parent_key_invalid"
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
+    @pytest.mark.parametrize("key", ["a", "maintenance", "ci-main-2", "a" * 64])
+    async def test_a_well_formed_key_is_accepted(self, handler, db, key):
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "x", "parent_key": key}
+        )
+        assert res.get("success") is True, res
+
+
+class TestReservedDedupKey:
+    """Nothing but the standing-parent path may write a ``parent:`` key.
+
+    A caller that could supply one would adopt (or pre-empt) a standing
+    container, which is control-plane state the mechanism owns.
+    """
+
+    async def test_create_task_refuses_a_reserved_dedup_key(self, handler, db):
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "x", "dedup_key": "parent:maintenance"}
+        )
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.reserved_dedup_key"
+        assert "parent_key" in res["error"]
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
+    async def test_ensure_task_refuses_a_reserved_dedup_key(self, handler, db):
+        res = await handler._cmd_ensure_task({
+            "project_id": PROJECT_ID,
+            "dedup_key": "parent:maintenance",
+            "title": "x",
+        })
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.reserved_dedup_key"
+        assert await db.list_tasks(project_id=PROJECT_ID) == []
+
+    async def test_the_mechanism_itself_still_writes_one(self, handler, db):
+        res = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "x", "parent_key": "maintenance"}
+        )
+        assert res.get("success") is True, res
         assert len(await standing(db)) == 1

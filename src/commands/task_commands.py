@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -84,9 +85,50 @@ class _StandingParentBusy(Exception):
         super().__init__(parent_key)
 
 
+#: The ``tasks.dedup_key`` prefix the standing-parent mechanism owns.  A
+#: caller-supplied key starting with it would adopt — or pre-empt — a standing
+#: container, which is control-plane state no command argument may name.
+STANDING_PARENT_DEDUP_PREFIX = "parent:"
+
+#: ``parent_key`` becomes half of a durable dedup key and of an advisory-lock
+#: name, so it is bounded like one: lowercase, 1–64 characters, no leading
+#: separator.
+_PARENT_KEY_MAX = 64
+_PARENT_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
 def standing_parent_dedup_key(parent_key: str) -> str:
     """The ``tasks.dedup_key`` a standing container for *parent_key* carries."""
-    return f"parent:{parent_key}"
+    return f"{STANDING_PARENT_DEDUP_PREFIX}{parent_key}"
+
+
+def reserved_dedup_key_refusal(dedup_key) -> dict | None:
+    """Refuse a caller-supplied ``parent:`` dedup key, or ``None``."""
+    if not str(dedup_key or "").startswith(STANDING_PARENT_DEDUP_PREFIX):
+        return None
+    return {
+        "success": False,
+        "code": "hierarchy.reserved_dedup_key",
+        "error": (
+            f"dedup keys starting with '{STANDING_PARENT_DEDUP_PREFIX}' belong to the "
+            "standing-parent mechanism; pass parent_key to file under one, or choose "
+            "another dedup_key"
+        ),
+    }
+
+
+def parent_key_format_refusal(parent_key: str) -> dict | None:
+    """Refuse a ``parent_key`` outside the bounded key alphabet, or ``None``."""
+    if len(parent_key) <= _PARENT_KEY_MAX and _PARENT_KEY_PATTERN.match(parent_key):
+        return None
+    return {
+        "success": False,
+        "code": "hierarchy.parent_key_invalid",
+        "error": (
+            f"parent_key '{parent_key[:80]}' is not a valid key: 1 to {_PARENT_KEY_MAX} "
+            "characters matching [a-z0-9][a-z0-9_-]*"
+        ),
+    }
 
 
 def _fmt_epoch(ts: float) -> str:
@@ -1837,6 +1879,35 @@ class TaskCommandsMixin:
         await self._mark_standing_parent(container_id, parent_key)
         return container_id, None
 
+    async def _parent_key_mode_refusal(self, project_id: str) -> dict | None:
+        """Refuse ``parent_key`` in a hierarchy/train project, or ``None``.
+
+        A standing parent must not own delivery.  In those modes a child is
+        filed through ``file_prepared_child_on``: it is based on the
+        container's checkpoint (main as of the container's *creation*, so
+        already stale) and it delivers to the container's ``aq/<id>``
+        branch, reaching the default branch only when the container settles
+        — which one FAILED or BLOCKED sibling prevents indefinitely.  Work
+        that must reach main (the CI main sentinel's repair of main's own red
+        head is the shipped example) would therefore never land.  The grouping
+        is cosmetic; the delivery breakage is not, so the argument is refused
+        rather than quietly downgraded.
+        """
+        from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+        mode = ProjectIntegrationMode.of(await self.db.get_project(project_id))
+        if mode is None or not mode.hierarchical:
+            return None
+        return {
+            "success": False,
+            "code": "hierarchy.parent_key_unsupported_mode",
+            "error": (
+                f"project '{project_id}' delivers hierarchically, where a standing parent "
+                "would own its children's delivery and hold their work off the default "
+                "branch; name a parent with parent_id, or create the task at the root"
+            ),
+        }
+
     async def _mark_standing_parent(self, container_id: str, parent_key: str) -> None:
         """Flag *container_id* a container **and** a standing parent, atomically.
 
@@ -1861,6 +1932,10 @@ class TaskCommandsMixin:
         playbook, supervisor and sentinel work stops accumulating in the
         project root.  Everything else is :meth:`_create_task`.
         """
+        reserved = reserved_dedup_key_refusal(args.get("dedup_key"))
+        if reserved is not None:
+            return reserved
+
         raw_key = args.get("parent_key")
         parent_key = str(raw_key).strip() if raw_key is not None else ""
         if not parent_key:
@@ -1873,6 +1948,10 @@ class TaskCommandsMixin:
                     if key not in ("parent_key", "parent_title")
                 }
             return await self._create_task(args)
+
+        malformed = parent_key_format_refusal(parent_key)
+        if malformed is not None:
+            return malformed
 
         # A worker already files under the task it holds (swarm-work-model
         # §12), so a standing parent would only lift its findings out of
@@ -1901,6 +1980,9 @@ class TaskCommandsMixin:
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
+        unsupported = await self._parent_key_mode_refusal(str(project_id))
+        if unsupported is not None:
+            return unsupported
         parent_title = str(args.get("parent_title") or "").strip() or parent_key.title()
 
         child_args = {
@@ -4894,6 +4976,22 @@ class TaskCommandsMixin:
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}
+
+        # Placement refusals are re-stated here rather than left to
+        # ``_cmd_create_task`` at the bottom: the triage branch below writes,
+        # and both of these must be answered before any write.
+        reserved = reserved_dedup_key_refusal(dedup_key)
+        if reserved is not None:
+            return reserved
+        raw_key = args.get("parent_key")
+        parent_key = str(raw_key).strip() if raw_key is not None else ""
+        if parent_key:
+            malformed = parent_key_format_refusal(parent_key)
+            if malformed is not None:
+                return malformed
+            unsupported = await self._parent_key_mode_refusal(str(project_id))
+            if unsupported is not None:
+                return unsupported
 
         # Explicit route intent (routing design §2): a task's class comes from
         # explicit intent or a fresh assignment-playbook decision, never from a

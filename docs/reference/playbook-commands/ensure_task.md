@@ -145,7 +145,10 @@ to retry it.
      container per `(project, key)` and files the task inside it, so a
      recurring automated creator stops accumulating work in the project root;
      a container that has settled (`COMPLETED`/`FAILED`) is replaced rather
-     than reopened.
+     than reopened.  It is refused before any write in a project that
+     delivers hierarchically (`hierarchy.parent_key_unsupported_mode`), where
+     the container would own its children's delivery and hold their work off
+     the default branch.
    - `initial_status` is reserved for `playbook-run:*` presentation tasks and
      restricted to `IN_PROGRESS` / `PAUSED` / `COMPLETED` / `FAILED`, so a
      playbook-run root is born in its projected state instead of spending a
@@ -208,9 +211,7 @@ compiles to
     "title": {"type": "binding_ref", "binding": "baseline", "path": "title"},
     "description": {"type": "binding_ref", "binding": "baseline", "path": "description"},
     "priority": {"type": "literal", "value": 5},
-    "intelligence_class": {"type": "literal", "value": "deep-high"},
-    "parent_key": {"type": "literal", "value": "maintenance"},
-    "parent_title": {"type": "literal", "value": "Maintenance"}
+    "intelligence_class": {"type": "literal", "value": "deep-high"}
   },
   "save_result_as": "repair",
   "transitions": {
