@@ -297,3 +297,33 @@ async def test_snapshot_carries_phase_order(db):
     tasks, _ = await db.load_project_snapshot("p1")
     assert tasks["p1a"].phase_order == 2
     assert tasks["loose"].phase_order is None
+
+
+async def test_snapshot_reads_metadata_in_one_statement(db):
+    """The snapshot load is on the 5-second dirty path, not just the full
+    layout: container flags and phase orders share ONE ``task_metadata``
+    read, and the whole load stays at three statements."""
+    from sqlalchemy import event
+
+    await db.create_task(Task(id="ph", project_id="p1", title="Phase", description=""))
+    await db.create_task(Task(id="c", project_id="p1", title="Child", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("c", "ph", conn=conn)
+    await db.set_task_meta("ph", "phase", {"order": 1, "label": "Build"})
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        tasks, _ = await db.load_project_snapshot("p1")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert tasks["ph"].is_container and tasks["ph"].phase_order == 1
+    meta_reads = [s for s in statements if "task_metadata" in s]
+    assert len(meta_reads) == 1, meta_reads
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 3, selects

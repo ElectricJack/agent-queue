@@ -36,14 +36,32 @@ def activity_class(task: SnapTask, agg: Mapping[str, int] | None = None) -> int:
     classed by its own status against ``RUNNING_STATUSES`` /
     ``FINISHED_STATUSES`` — the driver hands the engine an aggregate for
     every child, and a leaf's is all zeros, which would otherwise read as
-    "finished". A container with nothing under it yet (an empty phase, a
-    freshly created standing parent) has nothing to roll up and is classed
-    by its own status for the same reason.
+    "finished".
+
+    **Only a leaf's own ``ASSIGNED``/``IN_PROGRESS``, or a container's
+    ``agg["running"] > 0``, earns class 0.** A container with nothing to
+    roll up — an empty phase, a freshly created standing parent, an epic
+    emptied by reparenting, or any container when no aggregate was supplied
+    — is class 1, or class 2 if its own status is finished. A container's
+    own ``IN_PROGRESS`` is not evidence of running work: containers are
+    forced straight to ``IN_PROGRESS`` on release
+    (``_release_ready_containers``), so classing one 0 would put an empty
+    phase ahead of genuinely running siblings.
+
+    Note the deliberate disagreement with ``_visible`` (``driver.py``,
+    "An UNFINISHED container whose descendants have all finished is still
+    live work and keeps its stub"): that rule decides *presence* in the
+    ``active`` variant and errs toward keeping context on the canvas, while
+    this one decides *order* and sinks a container with no unfinished work
+    left in it. Both are intended; changing one to match the other is not a
+    fix.
     """
-    if task.is_container and agg is not None and agg.get("descendants", 0) > 0:
-        if agg.get("running", 0) > 0:
-            return RUNNING
-        return UNFINISHED if agg.get("active", 0) > 0 else FINISHED
+    if task.is_container:
+        if agg is not None and agg.get("descendants", 0) > 0:
+            if agg.get("running", 0) > 0:
+                return RUNNING
+            return UNFINISHED if agg.get("active", 0) > 0 else FINISHED
+        return FINISHED if task.status in FINISHED_STATUSES else UNFINISHED
     if task.status in RUNNING_STATUSES:
         return RUNNING
     if task.status in FINISHED_STATUSES:

@@ -36,6 +36,23 @@ def test_a_container_is_classed_by_its_subtree_not_its_own_status():
     assert activity_class(task("e", status="DEFINED", container=True), done) == 2
 
 
+def test_a_childless_container_never_classes_as_running_from_its_own_status():
+    """Containers are forced straight to IN_PROGRESS on release
+    (``_release_ready_containers``), so IN_PROGRESS on a container says
+    nothing about work running — and an empty phase, an empty standing
+    parent or an epic emptied by reparenting is exactly that state. Only a
+    LEAF's ASSIGNED/IN_PROGRESS, or a container's ``agg["running"] > 0``,
+    earns class 0."""
+    for status in sorted(RUNNING_STATUSES):
+        assert activity_class(task("e", status=status, container=True)) == 1, status
+        empty = {"descendants": 0, "running": 0, "active": 0}
+        assert activity_class(task("e", status=status, container=True), empty) == 1, status
+        # The same status on a LEAF still leads its rank.
+        assert activity_class(task("c", status=status)) == 0, status
+    # A childless container that is itself finished still sinks.
+    assert activity_class(task("e", status="COMPLETED", container=True)) == 2
+
+
 def test_a_leaf_is_never_classed_by_the_aggregate_row_handed_to_it():
     """The driver hands the engine an aggregate for EVERY child, and a leaf's
     is all zeros. Classing a leaf by that row would make every READY card

@@ -296,33 +296,31 @@ class LayoutQueryMixin:
                 )
             ).fetchall()
             ids = [r[0] for r in trows]
-            containers = set()
-            if ids:
-                containers = {
-                    r[0]
-                    for r in (
-                        await conn.execute(
-                            select(task_metadata.c.task_id).where(
-                                task_metadata.c.task_id.in_(ids),
-                                task_metadata.c.key == CONTAINER_KEY,
-                                task_metadata.c.value == CONTAINER_VALUE,
-                            )
-                        )
-                    ).fetchall()
-                }
-            # One extra statement on the full-layout path, the same shape as
-            # the container read above: the tidy seed orders declared phases
-            # by their order (§3.2).
+            # Container flags and phase orders come from ONE read: this
+            # snapshot is loaded on the 5-second dirty path as well as by
+            # ``full_layout``, so the metadata it needs is a single pass over
+            # both keys rather than a statement each.
+            containers: set[str] = set()
             phase_orders: dict[str, int] = {}
             if ids:
-                for tid, raw in (
+                for tid, key, raw in (
                     await conn.execute(
-                        select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        select(
+                            task_metadata.c.task_id,
+                            task_metadata.c.key,
+                            task_metadata.c.value,
+                        ).where(
                             task_metadata.c.task_id.in_(ids),
-                            task_metadata.c.key == PHASE_KEY,
+                            task_metadata.c.key.in_((CONTAINER_KEY, PHASE_KEY)),
                         )
                     )
                 ).fetchall():
+                    if key == CONTAINER_KEY:
+                        if raw == CONTAINER_VALUE:
+                            containers.add(tid)
+                        continue
+                    # PHASE_KEY: the tidy seed orders declared phases by
+                    # their order (§3.2).
                     try:
                         order = json.loads(raw).get("order")
                     except (ValueError, AttributeError):
