@@ -121,6 +121,7 @@ class PrimeRenderer:
                 integration_delivery=await _sections.build_integration_delivery_summary(
                     self.db, task
                 ),
+                subtasks_block=await _sections.build_task_subtasks_summary(self.db, task),
             ),
             await _sections.build_task_context_section(self.db, self.config, task),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),

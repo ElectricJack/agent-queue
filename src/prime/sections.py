@@ -126,7 +126,11 @@ async def build_project_role_section(
 
 
 def build_task_section(
-    task: Any, *, review_deliverables: str = "", integration_delivery: str = ""
+    task: Any,
+    *,
+    review_deliverables: str = "",
+    integration_delivery: str = "",
+    subtasks_block: str = "",
 ) -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
@@ -158,7 +162,38 @@ def build_task_section(
         lines.extend(["", review_deliverables])
     if integration_delivery:
         lines.extend(["", integration_delivery])
+    if subtasks_block:
+        lines.extend(["", subtasks_block])
     return PrimeSection(key="task", title=SECTION_TITLES["task"], body="\n".join(lines).strip())
+
+
+#: Checklist glyph per subtask status (C3: workers see their subtasks).
+_SUBTASK_GLYPHS: dict[str, str] = {
+    "done": "[x]",
+    "skipped": "[-]",
+    "in_progress": "[~]",
+    "pending": "[ ]",
+}
+
+
+async def build_task_subtasks_summary(db: Any, task: Any) -> str:
+    """Render the ``## Subtasks`` block, or ``""`` when the task has none.
+
+    Titles only — never ``context`` (the full per-subtask brief a worker
+    fetches on demand with ``aq task subtask-show N``).
+    """
+    subtasks = await db.list_task_subtasks(task.id)
+    if not subtasks:
+        return ""
+    lines = ["## Subtasks"]
+    for item in subtasks:
+        glyph = _SUBTASK_GLYPHS.get(item["status"], "[ ]")
+        lines.append(f"- {glyph} {item['ordinal']}. {item['title']}")
+    lines.append(
+        "Report progress as you go: `aq task subtask-done N`. Full context for one: "
+        "`aq task subtask-show N`. Work them in order unless the task says otherwise."
+    )
+    return "\n".join(lines)
 
 
 async def build_integration_delivery_summary(db: Any, task: Any) -> str:

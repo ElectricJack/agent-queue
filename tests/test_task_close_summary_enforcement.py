@@ -510,3 +510,77 @@ async def test_close_accepts_test_and_command_deliverables_declared_as_shell_com
         ("focused-suite", True),
         ("ruff", True),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Subtasks: a close refusal for open checklist rows (C3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_refuses_a_completing_outcome_with_open_subtasks_no_side_effects(
+    handler, db
+):
+    """The task carries no side effect from a refused close: it can retry."""
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}, {"title": "Second"}])
+    await db.update_task_subtask("t1", 1, status="done")
+
+    result = await handler.execute("task_close", {"task_id": "t1", "outcome": "pass"})
+
+    assert result["success"] is False
+    assert result["code"] == "subtasks.open"
+    assert result["open_subtasks"] == [2]
+    assert "aq task subtask-done N" in result["error"]
+    assert "aq task subtask-skip N --note" in result["error"]
+    assert "--skip-open-subtasks" in result["error"]
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert await db.get_task_completion("t1") is None
+    subtasks = await db.list_task_subtasks("t1")
+    assert subtasks[1]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_close_with_skip_open_subtasks_flag_settles_and_succeeds(handler, db):
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}, {"title": "Second"}])
+
+    result = await handler.execute(
+        "task_close", {"task_id": "t1", "outcome": "pass", "skip_open_subtasks": True}
+    )
+
+    assert result["success"] is True, result
+    subtasks = await db.list_task_subtasks("t1")
+    assert [item["status"] for item in subtasks] == ["skipped", "skipped"]
+    assert all(item["note"] == "skipped at close" for item in subtasks)
+
+
+@pytest.mark.asyncio
+async def test_close_with_no_open_subtasks_needs_no_flag(handler, db):
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}])
+    await db.update_task_subtask("t1", 1, status="done")
+
+    result = await handler.execute("task_close", {"task_id": "t1", "outcome": "pass"})
+
+    assert result["success"] is True, result
+
+
+@pytest.mark.asyncio
+async def test_failing_close_is_never_refused_for_open_subtasks(handler, db):
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}])
+
+    result = await handler.execute("task_close", {"task_id": "t1", "outcome": "fail"})
+
+    assert result["success"] is True, result
+    subtasks = await db.list_task_subtasks("t1")
+    assert subtasks[0]["status"] == "pending"

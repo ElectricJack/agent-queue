@@ -4779,6 +4779,14 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
                 "abandon_children": {"type": "boolean", "default": False},
+                "skip_open_subtasks": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Flip any still-open subtasks (pending/in_progress) to skipped "
+                        "(note 'skipped at close') instead of refusing the close."
+                    ),
+                },
                 "claim_epoch": {
                     "type": "integer",
                     "description": (

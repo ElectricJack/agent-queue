@@ -29,6 +29,7 @@ from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
+from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
@@ -858,6 +859,31 @@ class SessionCommandsMixin:
                     "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
                 ),
             }
+
+        # A worker's own subtasks are a checklist contract, not the deliverables
+        # gate: refuse before any side effect (same reasoning as the deliverables
+        # check above) so the same claim can settle them and retry. Only outcomes
+        # that complete the task (``pass``) are gated — a failing close must never
+        # be blocked on housekeeping.
+        if outcome == "pass":
+            subtasks = await self.db.list_task_subtasks(task_id)
+            open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
+            if open_subtasks:
+                if args.get("skip_open_subtasks"):
+                    await self.db.skip_open_task_subtasks(task_id, "skipped at close")
+                else:
+                    listed = ", ".join(str(item["ordinal"]) for item in open_subtasks)
+                    return {
+                        "success": False,
+                        "code": "subtasks.open",
+                        "error": (
+                            f"{len(open_subtasks)} subtask(s) are still open: {listed}. "
+                            "Mark each with `aq task subtask-done N` / "
+                            "`aq task subtask-skip N --note …`, or close with "
+                            "--skip-open-subtasks."
+                        ),
+                        "open_subtasks": [item["ordinal"] for item in open_subtasks],
+                    }
 
         # Container-close semantics (swarm-work-model §7).
         open_children = await self.db.open_children(task_id)

@@ -116,6 +116,32 @@ Rules the daemon enforces:
   `--deliverable-unmet 'id: reason'` (repeatable) — a pass with an
   undeclared gap is refused and keeps the task claimed.
 
+## Subtasks
+
+A subtask is a durable checklist row local to the task you hold — never
+scheduled, claimed or assigned on its own, unlike a hierarchy child. When
+your task carries subtasks, prime shows them in a `## Subtasks` block
+(`[x]` done, `[-]` skipped, `[~]` in progress, `[ ]` pending) with titles
+only; fetch one's full context on demand:
+
+```bash
+aq task subtasks [<task_id>]                       # list, ordinal-ordered
+aq task subtask-add [<task_id>] --title "..." [--context "..."]  # repeatable --title
+aq task subtask-show <ordinal> [--task <task_id>]   # title, status, note, context
+aq task subtask-start <ordinal> [--task <task_id>]  # -> in_progress
+aq task subtask-done <ordinal> [--task <task_id>]   # -> done
+aq task subtask-skip <ordinal> [--task <task_id>] --note "..."  # -> skipped, note required
+```
+
+Add your own with `subtask-add` when a task has several distinct steps worth
+tracking individually — it beats losing the breakdown in prose.
+
+**The close rule:** `aq task close --outcome pass` is refused with
+`subtasks.open` while any subtask is still `pending`/`in_progress`. Settle
+each with `subtask-done` / `subtask-skip --note ...` as you go, or pass
+`--skip-open-subtasks` to flip the remainder to `skipped` (note "skipped at
+close") and proceed. `--outcome fail` is never gated on subtasks.
+
 ## The pool worker loop (swarm-work-model §10)
 
 A `lifecycle: pool` session never gets a task pushed to it — it pulls work

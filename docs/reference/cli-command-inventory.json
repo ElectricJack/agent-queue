@@ -10042,6 +10042,7 @@
           "--command",
           "--deliverable-unmet",
           "--abandon-children",
+          "--skip-open-subtasks",
           "--claim-next",
           "--wait",
           "--claim-epoch",
