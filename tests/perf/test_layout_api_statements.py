@@ -62,7 +62,22 @@ pytestmark = [
 ]
 
 PROJECT = "perf"
+#: The reference project for the rect budget: the same shape at 1/25 the
+#: size, in the same database and the same process.  It replaces the old
+#: "same request over epic1 instead of epic0" reference, which stopped being
+#: a request at all once the geometry a rect is culled against became the
+#: *compacted* one: ``_rect_around`` reads a node's PERSISTED box from
+#: ``/graph/node``, and with every container collapsed nothing is drawn
+#: there any more.  Measured on this fixture, that reference returned zero
+#: nodes -- so the budget it anchored was "median < 8 x the cost of an empty
+#: response", i.e. the flat wall-clock number the module docstring says this
+#: file stopped asserting.
+REFERENCE_PROJECT = "perfref"
 TILES = f"/api/projects/{PROJECT}/graph/tiles"
+
+
+def _tiles(project: str) -> str:
+    return f"/api/projects/{project}/graph/tiles"
 
 #: Samples in a timed loop, and in each of the two reference loops that
 #: bracket it.  The reference gets fewer because it is only ever read at
@@ -133,21 +148,34 @@ FOCUS_MEDIAN_SLACK = 6.0
 FOCUS_TAIL_SLACK = 9.0
 
 
-async def _seed(db, *, cross_edge: tuple[str, str] | None = None, **shape) -> None:
-    await seed_project(db, PROJECT, **shape)
+async def _seed(
+    db, project: str = PROJECT, *, cross_edge: tuple[str, str] | None = None, **shape
+) -> None:
+    await seed_project(db, project, **shape)
     if cross_edge is not None:
         await db.add_dependency(*cross_edge)
     drv = LayoutDriver(db)
-    await drv.full_layout(PROJECT, "all")
-    await drv.full_layout(PROJECT, "active")
+    await drv.full_layout(project, "all")
+    await drv.full_layout(project, "active")
 
 
 @pytest.fixture
 async def pg(any_db):
-    """The §9 reference project: 5,151 tasks, one 1,000-task epic."""
+    """The §9 reference project (5,151 tasks) plus its 1/25 reference twin."""
     if any_db._engine.dialect.name != "postgresql":
         pytest.skip("postgres only")
     await _seed(any_db, epics=100, per_epic=40, big_epic=1000, hub_dependents=50)
+    # ``tasks.id`` is unique across projects, so the twin gets its own
+    # id namespace rather than colliding with ``epic0`` / ``hub``.
+    await _seed(
+        any_db,
+        REFERENCE_PROJECT,
+        epics=4,
+        per_epic=40,
+        big_epic=40,
+        hub_dependents=2,
+        id_prefix="ref-",
+    )
     yield any_db
 
 
@@ -219,13 +247,53 @@ def _count_round_trips(db):
         event.remove(sync_engine.pool, "checkout", _checkout)
 
 
+#: Reads whose result size is what a tiles request pays for in rows.
+_ROW_READS = (
+    "load_layout_rows",
+    "load_rows_for_containers",
+    "load_rows_with_tasks",
+    "load_paths_by_prefixes",
+    "load_paths_by_ids",
+    "load_edges_touching",
+)
+
+
+@contextmanager
+def _count_rows_loaded(db):
+    """Rows each tiles read returns, per adapter method.
+
+    The companion to :func:`_count_round_trips`: that one sees a request
+    grow a *statement*, this one sees it grow a *result set*.  Both are
+    deterministic on a fixed seed, which is what makes them budgets rather
+    than weather reports.
+    """
+    counts: dict[str, int] = dict.fromkeys(_ROW_READS, 0)
+    originals = {name: getattr(db, name) for name in _ROW_READS}
+
+    def instrument(name, original):
+        async def wrapper(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            counts[name] += len(result)
+            return result
+
+        return wrapper
+
+    for name, original in originals.items():
+        setattr(db, name, instrument(name, original))
+    try:
+        yield counts
+    finally:
+        for name, original in originals.items():
+            setattr(db, name, original)
+
+
 async def _node(ac, task_id: str) -> dict:
     r = await ac.get(f"/api/projects/{PROJECT}/graph/node/{task_id}?variant=all")
     assert r.status_code == 200, r.text
     return r.json()["node"]
 
 
-async def _times(ac, payload, samples: int) -> list[float]:
+async def _times(ac, request: tuple[str, dict], samples: int) -> list[float]:
     """Sorted timings for ``samples`` tiles requests after a warm-up.
 
     The warm-up primes the connection pool, the query-plan caches and the
@@ -259,7 +327,8 @@ async def _times(ac, payload, samples: int) -> list[float]:
     note that the unfrozen medians (49.8 / 73.2 / 72.7) sit as close to
     the frozen ones as they do.  The endpoint was never the problem.
     """
-    r = await ac.post(TILES, json=payload)
+    url, payload = request
+    r = await ac.post(url, json=payload)
     assert r.status_code == 200, r.text
     times: list[float] = []
     gc.collect()
@@ -267,7 +336,7 @@ async def _times(ac, payload, samples: int) -> list[float]:
     try:
         for _ in range(samples):
             started = time.perf_counter()
-            r = await ac.post(TILES, json=payload)
+            r = await ac.post(url, json=payload)
             times.append(time.perf_counter() - started)
             assert r.status_code == 200
     finally:
@@ -287,11 +356,17 @@ async def _assert_within_reference(
     shared.  Both are printed, so a run whose two readings disagree says
     so rather than quietly averaging a moving box into a budget.
     """
+    subject_nodes = len((await ac.post(payload[0], json=payload[1])).json()["nodes"])
+    reference_nodes = len((await ac.post(reference[0], json=reference[1])).json()["nodes"])
     before = statistics.median(await _times(ac, reference, REFERENCE_SAMPLES))
     times = await _times(ac, payload, SAMPLES)
     after = statistics.median(await _times(ac, reference, REFERENCE_SAMPLES))
     floor = (before + after) / 2
     median = statistics.median(times)
+    # A reference that draws nothing is not a reference: it measures the
+    # endpoint's fixed round trips and turns the ratio below into a flat
+    # millisecond budget wearing a normalisation's clothes.
+    assert reference_nodes > 0, f"{label}: the reference request returned no nodes"
     # The third-slowest of 50 rather than an interpolated p95: at this
     # sample count the two differ by a sample or two of the tail and the
     # order statistic is at least a number that was actually measured.
@@ -301,7 +376,10 @@ async def _assert_within_reference(
         f"({median / floor:.2f}x, budget {median_slack}x), "
         f"tail {tail * 1000:.1f}ms ({tail / floor:.2f}x, budget {tail_slack}x), "
         f"max {times[-1] * 1000:.1f}ms over {SAMPLES} samples; "
-        f"reference {floor * 1000:.1f}ms ({before * 1000:.1f} then {after * 1000:.1f})"
+        f"reference {floor * 1000:.1f}ms ({before * 1000:.1f} then {after * 1000:.1f}); "
+        f"nodes {subject_nodes} vs {reference_nodes}, "
+        f"{median * 1000 / max(subject_nodes, 1):.3f}ms/node vs "
+        f"{floor * 1000 / max(reference_nodes, 1):.3f}ms/node"
     )
     assert median < median_slack * floor, (
         f"{label}: median {median * 1000:.1f}ms is {median / floor:.2f}x the "
@@ -317,6 +395,30 @@ async def _assert_within_reference(
 def _rect_around(node: dict) -> dict:
     """A 16x16-unit window centred on ``node`` -- inside ``RECT_CAP``."""
     return {"x0": node["x"] - 1, "y0": node["y"] - 1, "x1": node["x"] + 15, "y1": node["y"] + 15}
+
+
+async def _drawn_rect(ac, project: str, size: float = 16.0) -> dict:
+    """A ``size``x``size`` window anchored where the collapsed view is DRAWN.
+
+    ``_rect_around`` below takes a node's persisted box from ``/graph/node``,
+    which is where the engine published it with every container expanded. A
+    tiles request culls against the *compacted* geometry instead (design
+    §3.5), and under ``expanded: []`` every container shrinks to one tile and
+    the whole root scope packs back towards its origin -- so a rect built
+    from persisted coordinates can easily frame a region nothing is drawn in.
+    The ``list`` endpoint reports the same compacted boxes the canvas gets,
+    so the window is anchored on those.
+    """
+    r = await ac.post(
+        f"/api/projects/{project}/graph/list",
+        json={"variant": "all", "expanded": [], "limit": 200},
+    )
+    assert r.status_code == 200, r.text
+    nodes = r.json()["nodes"]
+    assert nodes, f"{project}: nothing is drawn in the collapsed view"
+    x0 = min(n["x"] for n in nodes) - 1
+    y0 = min(n["y"] for n in nodes) - 1
+    return {"x0": x0, "y0": y0, "x1": x0 + size, "y1": y0 + size}
 
 
 def _own_box(node: dict) -> dict:
@@ -395,20 +497,83 @@ async def test_tiles_round_trip_budget(pg_small):
             )
 
 
+#: Rows a steady-state collapsed tiles request may load, per node it draws,
+#: and edge rows it may load per edge it draws.
+#:
+#: The second number is the one with teeth.  A collapsed container owns every
+#: dependency inside its subtree and can draw none of them, so an endpoint
+#: that reads "every edge touching every hidden task" reads the whole project
+#: to draw a handful of arrows: measured on the §9 fixture before this budget
+#: existed, a fully collapsed root view loaded 9,490 edge rows and drew 22.
+#: Both budgets are per *drawn* unit on purpose -- a view that legitimately
+#: frames more nodes (a wider row target packs more collapsed tiles into the
+#: same window) moves the denominator too, so this catches work that grows
+#: without the picture growing, which is the only kind that is a regression.
+ROWS_PER_NODE = 30.0
+EDGE_ROWS_PER_EDGE = 4.0
+
+
+async def test_tiles_row_budget_for_a_collapsed_view(pg_small):
+    """Rows loaded, per node and per edge the response actually draws."""
+    async with _client(pg_small) as ac:
+        payload = {"variant": "all", "rect": await _drawn_rect(ac, PROJECT), "expanded": []}
+        for _ in range(2):
+            assert (await ac.post(TILES, json=payload)).status_code == 200
+        with _count_rows_loaded(pg_small) as rows:
+            r = await ac.post(TILES, json=payload)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        nodes, edges = len(body["nodes"]), len(body["edges"])
+        assert nodes and edges, "the budget needs a response that draws something"
+        total = sum(rows.values())
+        print(
+            f"\n[rows] collapsed view: {total} rows for {nodes} nodes "
+            f"({total / nodes:.1f}/node, budget {ROWS_PER_NODE}); "
+            f"{rows['load_edges_touching']} edge rows for {edges} edges "
+            f"({rows['load_edges_touching'] / edges:.1f}/edge, "
+            f"budget {EDGE_ROWS_PER_EDGE}); {rows}"
+        )
+        assert total <= ROWS_PER_NODE * nodes, (
+            f"{total} rows loaded for {nodes} drawn nodes "
+            f"({total / nodes:.1f}/node, budget {ROWS_PER_NODE})"
+        )
+        assert rows["load_edges_touching"] <= EDGE_ROWS_PER_EDGE * edges, (
+            f"{rows['load_edges_touching']} edge rows loaded for {edges} drawn edges "
+            f"({rows['load_edges_touching'] / edges:.1f}/edge, "
+            f"budget {EDGE_ROWS_PER_EDGE}) -- an edge whose endpoints share a "
+            "collapsed container can never be drawn and must not cross the wire"
+        )
+
+
 async def test_tiles_latency_with_big_collapsed_epic_visible(perf_strict, pg):
-    """A collapsed 1,000-task epic in the rect, against a collapsed 40-task one.
+    """A window full of collapsed epics, against the same window 25x smaller.
 
     A collapsed container owns every edge into its subtree, so the request
-    reads all of its descendants' paths and every edge touching them: the
-    cost is the subtree, not the one tile that is drawn.  epic1 is the
-    same request over a subtree 25x smaller, which is what makes the ratio
-    a statement about how that cost scales rather than about the box.
+    reads all of its descendants' paths and every edge that leaves them: the
+    cost is the subtrees behind the window, not the tiles that are drawn.
+    The reference is the identical request over a project of the same shape
+    at 1/25 the size, which is what makes the ratio a statement about how
+    that cost scales rather than about the box.
+
+    The window is anchored on the drawn geometry rather than on epic0's
+    persisted box -- see :func:`_drawn_rect`.  Under ``expanded: []`` the
+    root's children all collapse to one tile each and pack back to the
+    origin, so this window frames the collapsed view rather than the hole
+    the fully expanded epic0 used to occupy.
     """
     async with _client(pg) as ac:
-        big = await _node(ac, "epic0")
-        small = await _node(ac, "epic1")
-        payload = {"variant": "all", "rect": _rect_around(big), "expanded": []}
-        reference = {"variant": "all", "rect": _rect_around(small), "expanded": []}
+        payload = (
+            _tiles(PROJECT),
+            {"variant": "all", "rect": await _drawn_rect(ac, PROJECT), "expanded": []},
+        )
+        reference = (
+            _tiles(REFERENCE_PROJECT),
+            {
+                "variant": "all",
+                "rect": await _drawn_rect(ac, REFERENCE_PROJECT),
+                "expanded": [],
+            },
+        )
         await _assert_within_reference(
             ac,
             payload,
@@ -434,20 +599,26 @@ async def test_tiles_focus_root_latency(perf_strict, pg):
     async with _client(pg) as ac:
         big = await _node(ac, "epic0")
         small = await _node(ac, "epic1")
-        reference = {
-            "variant": "all",
-            "rect": _own_box(small),
-            "root": "epic1",
-            "expanded": [],
-        }
-        for expanded in ([], ["epic0-pkg0"]):
-            payload = {
+        reference = (
+            _tiles(PROJECT),
+            {
                 "variant": "all",
-                "rect": _own_box(big),
-                "root": "epic0",
-                "expanded": expanded,
-            }
-            warm = await ac.post(TILES, json=payload)
+                "rect": _own_box(small),
+                "root": "epic1",
+                "expanded": [],
+            },
+        )
+        for expanded in ([], ["epic0-pkg0"]):
+            payload = (
+                _tiles(PROJECT),
+                {
+                    "variant": "all",
+                    "rect": _own_box(big),
+                    "root": "epic0",
+                    "expanded": expanded,
+                },
+            )
+            warm = await ac.post(payload[0], json=payload[1])
             assert warm.status_code == 200, warm.text
             ids = {n["id"] for n in warm.json()["nodes"]}
             assert "epic0" in ids

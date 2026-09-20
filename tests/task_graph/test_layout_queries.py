@@ -232,6 +232,30 @@ async def test_edges_touching_and_matching(db):
     assert await db.load_matching_ids("p1", "all", q="", status="DEFINED") == {"a", "b", "c"}
 
 
+async def test_edges_touching_drops_rows_that_share_an_owner(db):
+    """With an owner map the database returns only edges that get drawn.
+
+    ``a``/``b`` sit inside collapsed container ``box``; ``far`` is outside it.
+    The a->b edge is drawn nowhere (both endpoints dock at ``box``), so it
+    must not cross the wire at all, while the edge leaving the container and
+    the edge to an endpoint with no owner row both survive.
+    """
+    for t in ("box", "a", "b", "far", "outside"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    await db.add_dependency("b", "a")  # inside the collapsed container
+    await db.add_dependency("far", "b")  # leaves it
+    await db.add_dependency("outside", "a")  # leaves it, to an unowned endpoint
+    ids = ["box", "a", "b", "far"]
+    owners = {"box": "box", "a": "box", "b": "box", "far": "far"}
+    assert await db.load_edges_touching(ids, owners=owners) == [
+        ("far", "b", "blocks", None),
+        ("outside", "a", "blocks", None),
+    ]
+    # Without the map the caller still gets every touching row, the b->a one
+    # included -- that is the arm `remap_edges` then has to discard.
+    assert len(await db.load_edges_touching(ids)) == 3
+
+
 async def test_matching_ids_treats_like_metacharacters_literally(db):
     await db.create_task(Task(id="pct", project_id="p1", title="Done 50% of it", description=""))
     await db.create_task(Task(id="und", project_id="p1", title="Done 50x of it", description=""))

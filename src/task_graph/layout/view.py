@@ -113,12 +113,23 @@ def owner_map(
 
     `paths_in_collapsed` is task_id -> path (not full `LayoutRow`s): the
     caller only needs paths for this, and hidden subtrees can be large.
+
+    A path's components *are* the ancestors' ids, so the owner is looked up
+    by walking the chain (deepest first, which is the longest prefix) rather
+    than by testing every collapsed path against every hidden task. The
+    difference is the whole cost of this function on a wide view: the §9
+    reference project's fully collapsed root has ~100 collapsed containers
+    over ~5,300 hidden tasks, which is half a million `startswith` calls
+    against three dictionary probes per task.
     """
-    by_len = sorted(collapsed_paths.items(), key=lambda kv: -len(kv[1]))
+    collapsed = set(collapsed_paths)
     out: dict[str, str] = {}
     for tid, path in paths_in_collapsed.items():
-        for cid, p in by_len:
-            if path.startswith(p):
+        if tid in collapsed:
+            out[tid] = tid
+            continue
+        for cid in reversed(ancestors_of(path)):
+            if cid in collapsed:
                 out[tid] = cid
                 break
     return out
