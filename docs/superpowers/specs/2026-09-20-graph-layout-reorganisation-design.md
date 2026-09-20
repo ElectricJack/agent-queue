@@ -1,7 +1,10 @@
 # Task-graph layout that reorganises itself
 
-**Status:** design, no code. Companion to `docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md`
-(the engine spec; section numbers below in the form "§4.4" refer to it) and to
+**Status:** design, no code. Revised 2026-09-20 after adversarial review
+(`.superpowers/sdd/2026-09-19-graph-visibility-markers-subtasks-implementation/t20-review.md`,
+verdict *approve with changes*) and the controller's rulings. Companion to
+`docs/superpowers/specs/2026-09-01-task-graph-spatial-layout-design.md` (the engine spec;
+"§4.4" below refers to it) and to
 `docs/superpowers/specs/2026-09-19-graph-visibility-markers-subtasks-implementation.md`
 (phases, standing parents, `active_expansion`, progress bars).
 
@@ -17,6 +20,12 @@ Finished subtrees that are context for nothing are already dropped from the `act
 variant (§4.8, shipped 2026-09-20). This document is about what is left: **how the
 remaining nodes are arranged**.
 
+**Scope of the first slice.** Three changes, no schema change, no new engine mode:
+a row target that balances a scope's aspect ratio; convergence of existing installs
+through the `layout_jobs` ledger; and activity-aware ordering at the **tidy seed** only.
+Everything else the first draft proposed is recorded in §6 as deferred, with the reason it
+does not work as written.
+
 ---
 
 ## 1. How placement works today, from the code
@@ -30,7 +39,7 @@ task_id)`:
 |---|---|---|
 | `rank` | the node's **layer** inside its container: `rank(dependent) >= rank(blocker) + 1`, longest-path over sibling `blocks`/`waits-for`/`conditional-blocks` edges | `layering.py:72-95` (`minimal_ranks_acyclic`) |
 | `order_key` | a fractional string key ordering siblings **within one rank**, left to right | `order_key.py:16` (`between`) |
-| `depth` | depth of the node below the project root; a level-of-detail input only (`view.py:83-91`), never a placement input | `engine.py:153` |
+| `depth` | depth below the project root; a level-of-detail input only (`view.py:83-91`), never a placement input | `engine.py:153` |
 | `path` | `/a/b/<id>/`, the subtree prefix used for translations and deletes | `engine.py:152` |
 
 `ordinal` is `(rank, order_key)` (`model.py:40-42`). Everything else — `rel_x/rel_y`,
@@ -41,10 +50,16 @@ recomputed each time.**
 ### 1.2 Rank assignment, and why the root is one flat rank
 
 `minimal_ranks_acyclic` (`layering.py:72-95`) gives every node with no sibling blocker
-`rank = 0`. Root-level tasks rarely block each other — phases do (`phase_create` adds a
-`blocks` edge onto every earlier unfinished sibling phase), but ordinary epics do not. So
-in a typical project **every root epic and every loose root task sits in rank 0**, i.e. in
-one single layer that the flow step then wraps into lines.
+`rank = 0`. Root-level tasks rarely block each other, so in a typical project **every root
+epic and every loose root task sits in rank 0** — one layer that the flow step then wraps
+into lines.
+
+Phases are a partial exception and a smaller one than it looks. `phase_create` adds a
+`blocks` edge onto every earlier sibling phase **that has not COMPLETED**
+(`src/commands/phase_commands.py:160-168`: `task.id for task, _ in siblings if
+task.status is not TaskStatus.COMPLETED`). So phase 3, created after phases 1 and 2 have
+completed, receives **no** gate edge and lands at rank 0 beside them. Phases therefore do
+*not* reliably rank themselves; see §6.4.
 
 ### 1.3 Ordering inside a rank: creation order, always
 
@@ -61,12 +76,19 @@ one single layer that the flow step then wraps into lines.
   (`engine.py:353-360`): `sorted(..., key=lambda c: (scope.children[c].created_at, c))`.
 
 A node with blockers is placed at the barycentre of those blockers (`_barycenter_gap`,
-`engine.py:194-227`), which is a *horizontal* choice within the dependent's rank.
+`engine.py:194-227`) — a horizontal choice inside the dependent's own rank.
 
-**No code path anywhere consults `status`, `is_blocked`, aggregates, or
-`task_metadata.phase.order` when choosing a rank or an order key.** The only status input
-to the engine is `_visible` (`driver.py:94-171`), which decides *presence*, and `_sizes`
-(`engine.py:89-96`), which makes a stub card-sized.
+**No code path consults `status`, `is_blocked`, aggregates or `task_metadata.phase.order`
+when choosing a rank or an order key.** The engine's only status inputs are `_visible`
+(`driver.py:94-171`), which decides *presence*, and `_sizes` (`engine.py:89-96`), which
+makes a stub card-sized.
+
+Stronger still: **a task starting work does not even wake the layout engine.** A dirty
+mark is written only when finished-ness flips
+(`src/database/queries/task_queries.py:1130-1148`: `if was_finished != now_finished`,
+reason `status.finished` / `status.reopened`). `READY → IN_PROGRESS` writes no mark at
+all, so no pass runs and nothing could re-key even if it wanted to. This is the fact that
+kills the first draft's "float running work" trigger (§6.1).
 
 ### 1.4 Flow: what makes a row wide, and what makes it wrap
 
@@ -90,12 +112,17 @@ with `TARGET_ROW_WIDTH = 4.5`, `TARGET_ROW_WIDTH_ROOT = 7.0`, `CARD_W = CARD_H =
    wider than the target overhangs it rather than being clipped or shrunk.
 3. **A container's allocated size is its content rounded up to a growth band** — `band_up`
    over `GROWTH_BANDS = (1.5, 3.0, 6.0, 12.0, 24.0, 48.0)` then doubling
-   (`constants.py:17,47-55`; `flow.py:94-100`). So an epic is 6 or 12 or 24 units wide
-   whatever it actually contains.
+   (`constants.py:17,47-55`; `flow.py:94-100`). The **allocated** size is what the canvas
+   draws, so an epic renders 6 or 12 or 24 units wide whatever it contains. The root is
+   never banded (`flow.py:97-98`).
 
 A run of consecutive singleton ranks linked blocker→dependent is exempted and folded into
 a serpentine (`_serial_chains` `engine.py:99-133`, `_flow_serpentine_chain`
 `flow.py:126-175`) — the one place today's flow already re-shapes rather than stacks.
+Both halves of that mechanism are keyed to the same `target`: `_chain_overflows`
+(`flow.py:104-106`) decides *whether* to fold by comparing the chain's width to it, and
+the fold right-aligns its reverse lines at `x = target` (`flow.py:165`) so the turn
+connector is short. §3.1 has to keep that carve-out honest.
 
 ### 1.5 Reproducing the operator's two screenshots from the constants
 
@@ -112,8 +139,8 @@ The epic is 12.2 wide; its line-mates cannot join it because `0 + 12 > 7`, so th
 underneath and pack **six to a line** at the root target. That is precisely "a finished
 epic on the top row and, beneath it, a single very wide row of five-plus completed sibling
 cards": six cards is the widest run the root target allows, and the scope's content is
-12.2 units wide while that card line is 6.75, so the row reads as running off the right
-edge of everything else.
+12.2 wide while that card line is 6.75, so the row reads as running off the right edge of
+everything else.
 
 ```
 # six finished epics, each banded to 6.0 x 4.0, at the root
@@ -125,18 +152,19 @@ Every epic is 6 units wide and the root target is 7, so **two epics never fit on
 Six epics become a 25.65-unit-tall single-file column in `created_at` order. That is the
 second screenshot.
 
-And inside an epic:
+And inside an epic (content size, and the allocated box the canvas actually draws):
 
-| children | today: content w × h | lines |
-|---|---|---|
-| 12 cards | 4.65 × 3.99 | 3 |
-| 40 cards | 4.65 × 12.53 | 10 |
-| 60 cards | 4.65 × 18.63 | 15 |
-| 120 cards | 4.65 × 36.93 | 30 |
+| children | content w × h | lines | allocated | allocated area |
+|---|---|---|---|---|
+| 12 cards | 4.65 × 3.99 | 3 | 6 × 6 | 36 u² |
+| 20 cards | 4.65 × 6.43 | 5 | 6 × 12 | 72 u² |
+| 40 cards | 4.65 × 12.53 | 10 | 6 × 24 | 144 u² |
+| 60 cards | 4.65 × 18.63 | 15 | 6 × 24 | 144 u² |
+| 120 cards | 4.65 × 36.93 | 30 | 6 × 48 | 288 u² |
 
 Width is pinned at 4.65 forever; height is linear in the child count. **That is the
-"grows downward" the operator is describing** — it is not the root stacking alone, it is
-every scope in the project having a fixed width and an unbounded height.
+"grows downward" the operator is describing** — not the root stacking alone, but every
+scope in the project having a fixed width and an unbounded height.
 
 ### 1.6 What Tidy does that incremental does not
 
@@ -155,6 +183,12 @@ in the new write set** (`driver.py:328-330`). Job budget `TIDY_JOB_SECONDS = 60`
 deadline the remaining containers silently fall back to barycentre-only placement
 (`driver.py:252-261`).
 
+One property matters for §3.2: `build_full_write_set` computes the whole project's
+aggregates at `driver.py:238`, **before** the first `lay()` call. On the tidy path,
+per-child aggregates are therefore available and fresh at seeding time. (On the
+incremental path they are not — `_refresh_aggregates` runs after `_drain`,
+`driver.py:837-849` — which is why §6.1 is deferred and this is not.)
+
 Tidy runs only when: the operator asks (`graph_tidy`,
 `src/commands/graph_commands.py:25`; toolbar in
 `dashboard/src/pages/command-center/TaskToolbar.tsx`), a variant has no meta row
@@ -167,6 +201,7 @@ Tidy runs only when: the operator asks (`graph_tidy`,
 |---|---|---|
 | Task **deleted / archived** | Yes | `_seed_queue` dirties the holding container (`driver.py:619-629`) and the flow closes the gap without changing any key (`test_removed_node_closes_gap_without_changing_keys`) |
 | Task **reparented** | Yes, both scopes | `driver.py:630-642` |
+| Task **starts running** | No pass runs at all | no dirty mark is written (`task_queries.py:1130-1148`) |
 | Leaf **finishes**, `all` variant | No, by design | `_aggregates_only` returns `True` (`driver.py:589-591`): the node is still present, only ancestor counters change |
 | Leaf **finishes**, `active` variant | **No — a permanent hole** | `_aggregates_only` (`driver.py:568-602`) returns `True`, so `run()` deletes the row (`driver.py:842-847`) **without re-laying the parent**. The comment is explicit: re-flowing a 5,000-child root costs 1.4 s, so "the next ordinary pass over that container — a created, moved or reopened sibling, or a tidy job — closes the gap" |
 | Container **finishes** and becomes a stub / is dropped | Yes | excluded from `_aggregates_only` (`driver.py:594-602`), so the parent is re-laid |
@@ -175,12 +210,9 @@ Tidy runs only when: the operator asks (`graph_tidy`,
 
 Compaction deserves its own line. `_pack` (`compaction.py:140-177`) groups children into
 lines by their **persisted `rel_y`** (`compaction.py:152-154`) and slides each child left
-by what its earlier line-mates gave up. It never re-wraps — §3.5 says so outright ("What
-compaction deliberately does **not** do is re-wrap … a rank of wide epics collapses into a
-narrow column rather than repacking into a grid"), and
+by what its earlier line-mates gave up. It never re-wraps — §3.5 says so outright, and
 `test_lines_are_inherited_not_re_wrapped` pins it. So collapsing the six-epic column above
-turns it into a column of six 1×1 cards: 25.65 units of height come back, and the width
-stays 1.
+turns it into a column of six 1×1 cards: 25.65 units of height come back, the width stays 1.
 
 ### 1.8 The stability guarantees, and the tests that pin them
 
@@ -211,11 +243,11 @@ others are held to.
 **Symptom 2 — "active work is not near the top".** Two mechanisms compound. (i) Every
 edge-free root child is `rank = 0` (`layering.py:86-93`), so the root is one layer that
 wraps by width; a finished epic banded to 6 or 12 units consumes a whole root line, so N
-epics become N lines. (ii) Order within that layer is `order_key` (`engine.py:85`), which
-is pure creation order — appended at the end for new nodes (`engine.py:246-250`,
-`:391-404`) and re-seeded from `created_at` even by Tidy (`engine.py:353-360`). The
-newest work is therefore always **last**, and since each epic owns a line, "last" means
-"furthest down". Nothing in the engine reads status.
+epics become N lines. (ii) Order within that layer is `order_key` (`engine.py:85`), pure
+creation order — appended at the end for new nodes (`engine.py:246-250`, `:391-404`) and
+re-seeded from `created_at` even by Tidy (`engine.py:353-360`). The newest work is
+therefore always **last**, and since each epic owns a line, "last" means "furthest down".
+Nothing in the engine reads status, and nothing even wakes it when work starts (§1.3).
 
 **Symptom 3 — "space is not reclaimed / it does not reorganise".** Three separate
 non-reclaims, in ascending order of importance: (i) in `active`, a finished leaf's row is
@@ -227,403 +259,613 @@ every scope's aspect ratio degrades linearly with its child count** (4.65 × 18.
 children, 4.65 × 36.93 at 120). Even a perfectly reclaimed canvas grows downward, because
 the flow has no notion of "this container should be roughly as wide as it is tall".
 
----
-
-## 3. Proposed design
-
-Four changes, each independently shippable. (a) and (c) address symptoms 1 and 3; (b)
-addresses symptom 2; (d) is the perf and stability envelope.
-
-### 3.1 (a) An aspect-balanced, banded row target
-
-**Recommendation — A1.** Replace the constant in `flow.py:44` with a target computed once
-per container pass from the children's sizes, then snapped to a band:
-
-```
-ROW_TARGET_BANDS = (4.5, 7.0, 10.0, 14.0, 20.0, 28.0)   # then doubling, like GROWTH_BANDS
-ROW_ASPECT = 1.3                                        # landscape viewports
-
-ideal(sizes)  = sqrt(Σ_i (w_i + SIBLING_GAP) · (h_i + LINE_GAP)) · ROW_ASPECT
-floor         = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
-target(scope) = band_row(max(floor, ideal(sizes), max_i w_i))
-```
-
-- `sqrt(area) · aspect` targets a **square-ish scope** instead of a fixed-width strip.
-- `max_i w_i` in the max is symptom 1's fix: the target is never narrower than the widest
-  child, so a 12-unit epic no longer leaves its line-mates packed into 7.
-- `band_row` is the stability device. The target changes only when the scope crosses a
-  band — **O(log n) times over a container's life**, exactly like `band_up` already bounds
-  allocation changes (G4). Between crossings the target is a constant and G3 holds
-  verbatim.
-- The floor keeps small scopes byte-identical to today: `ideal ≤ 4.5` for any scope up to
-  ~8 unit cards, so the overwhelming majority of containers are unchanged.
-
-Measured (calling `flow_container` with the banded target):
-
-| children | today w × h (lines) | proposed w × h (lines) |
-|---|---|---|
-| 12 cards | 4.65 × 3.99 (3) | 6.95 × 2.77 (2) |
-| 40 cards | 4.65 × 12.53 (10) | 9.25 × 6.43 (5) |
-| 60 cards | 4.65 × 18.63 (15) | 13.85 × 6.43 (5) |
-| 120 cards | 4.65 × 36.93 (30) | 19.60 × 10.09 (8) |
-
-The 120-card epic stops being four screens tall.
-
-**Alternative A2 — derive the target from `GROWTH_BANDS` instead** (`target = b - 2·PADDING`
-for the smallest growth band `b` that fits the ideal). This wastes *zero* allocation width
-— content lands just under the band — but the ladder doubles, so 60 cards snaps to a
-23.05 × 3.99 three-line strip: too flat. Rejected for shape.
-
-**Alternative A3 — a viewport-derived target.** Rejected: the persisted layout is shared
-and must not depend on who is looking (§3.5).
-
-**Known cost, stated.** With A1 the content width tracks the row band while the allocation
-still snaps to `GROWTH_BANDS`, so a 13.85-wide scope is allocated 24.0. That is the
-pre-existing §12 limitation ("a box can look roughly twice as large as its contents"),
-made more visible. The fix is a finer growth ladder (×1.4 above 12 rather than ×2), which
-costs ~2.4× more band crossings and therefore more translations — offered as an **open
-question**, not bundled here.
-
-**Complexity.** `ideal` is one pass over the children, O(k). It must be computed **once
-per `layout_container` call** and passed into `flow_container` as an argument, not
-recomputed inside `_evaluate` — `_tidy_sweep` calls `_evaluate` thousands of times
-(`engine.py:309-331`). It depends only on `sizes`, never on the candidate ordering, so the
-cost landscape stays continuous and G5 is untouched. Net asymptotic change: none.
-
-### 3.2 (b) Ordering that surfaces active work
-
-Two orthogonal axes: **phases** (structural, vertical) and **activity** (a tie-break
-within a rank).
-
-**Phases: keep them top-to-bottom, and make it explicit.** `phase_create` already adds a
-`blocks` edge from phase *N+1* onto every earlier unfinished sibling phase, and those edges
-survive the phase completing. So `minimal_ranks_acyclic` already gives phase *N* rank *N*
-and stacks them vertically with no new code. Rank **is** the engine's time axis, and a
-phase is a temporal gate; laying phases left-to-right would mean either fighting
-`minimal_ranks` or widening every root row to hold six phases side by side. **Decision:
-phases stay vertical.** The one addition is a defensive tie-break: siblings inside a rank
-sort by `phase.order` before anything else, so a phase whose gate edge was removed (an
-abandoned middle phase deleted, per the `phase_create` semantics) still sorts with its
-peers rather than by creation time.
-
-**Activity: a three-class tie-break inside a rank.**
-
-```
-activity_class(task, blocked) -> int
-  0  status in RUNNING_STATUSES                      (constants.py:37)
-  1  status not in FINISHED_STATUSES                 (constants.py:36)   # ready or blocked
-  2  otherwise                                                           # finished
-```
-
-For a **container**, use the aggregate instead of its own status —
-`agg_running > 0 → 0`, `agg_active > 0 → 1`, else `2` — so an epic with running work
-floats even while the epic row itself is `DEFINED`. Those aggregates are already computed
-per pass (`driver.py:174-201`) and already persisted on the row.
-
-The sort key becomes `(phase_order, activity_class, existing order_key)` — a **stable**
-sort, so same-class siblings keep the order they already had and nothing jumps within a
-class.
-
-**When it is applied — the crux.** Three options:
-
-- **B1 continuous:** re-key on every pass. Cheap (`O(k log k)`), and it is what the
-  operator literally asked for, but it destroys G1 outright: a task moving
-  `READY → IN_PROGRESS` would slide sideways under a viewer several times a minute.
-  Rejected.
-- **B2 tidy-only:** re-key only in `mode="tidy"` (change the seed at `engine.py:353-360`).
-  Keeps every guarantee, needs no new mode, but requires the operator to press Tidy, which
-  is exactly the manual reorganisation they are complaining about. Insufficient alone.
-- **B3 explicit events (recommended):** a new engine mode `reorder`, identical to
-  `incremental` except that it re-keys each rank by the sort key above before flowing. The
-  driver requests it for **one container** on exactly three triggers:
-  1. a **Tidy job** (always — B2 is subsumed);
-  2. a child's **own status crossing into `FINISHED_STATUSES`** when that child is a
-     container or a phase — i.e. an epic settling. This is once per container per lifetime,
-     and it is the moment a finished epic should sink past its live siblings. Implemented
-     by adding a `reorder` queue entry in `_seed_queue` (`driver.py:605-654`) when
-     `reason == "status.finished"` and `snapshot[tid].is_container`;
-  3. a **container being dropped or stubbed** in `active` (`driver.py:131-138`), which
-     already re-lays the parent — it just gets `reorder` instead of `incremental`.
-
-  A **leaf** finishing never triggers a reorder. That is the frequent event, and it is the
-  one that would make the canvas twitch.
-
-**Guarantees: kept, relaxed, scoped.**
-
-| | Effect |
-|---|---|
-| G1 (ordinals immutable incrementally) | **Scoped.** Still holds for `mode="incremental"`. Relaxed for the new `mode="reorder"`, which the driver requests only on the three triggers above — never on a leaf status change, never on a create. `ContainerResult.changed_ordinals` reports exactly which keys moved, so the existing assertions stay meaningful. |
-| G2 (forced rank repair) | Unchanged — `reorder` re-keys within a rank, never across ranks. |
-| G3 (nothing changes lines) | **Relaxed, bounded.** A row-target band crossing re-wraps one scope, at most O(log n) times over its life. Between crossings, identical to today. |
-| G4 (growth bands) | Unchanged; the row-target band is a second ladder with the same O(log n) property. |
-| G5 (determinism) | Unchanged. Both the target and the sort key are pure functions of the snapshot; ties break on `order_key` then id. |
-| G6 (compaction identity) | Unchanged — compaction reads persisted rows and is untouched by all of this. |
-| G7 (tidy breaks spatial memory) | Unchanged, and `reorder` is deliberately the weaker cousin: one scope, one re-key, no rank changes, no sweep. |
-
-**Manual positions must be honoured, and the disagreement flagged.** §11 lists "manual
-drag-and-drop positioning or pinned nodes" as out of scope, but the shipped canvas does it:
-`LayoutCanvas.tsx:446` prefers `manualPositions[projectId][node.id]` over the server
-position for any non-stub task node (`:72-79`), persisted in the `command_center_project_view`
-dashboard-state document (`src/api/models/dashboard.py:119`,
-`useGraphHierarchy.ts:247-252`). A pin is an **absolute** world position, so any reorg
-strands it. The design **keeps honouring pins** — silently discarding an operator's
-deliberate placement is worse than a stale one — and adds one affordance: after a Tidy or a
-rules-version rebuild (§4), the canvas shows a single "N pinned cards may be out of place —
-reset?" banner wired to the existing `clearGraphPositions` (`useGraphHierarchy.ts:251`).
-
-### 3.3 (c) Reclaiming the `active` variant's holes
-
-Keep the fast path in `_aggregates_only` (`driver.py:568-602`) — it exists for a measured
-1.4 s reason — but stop the hole being permanent. When that path fires in `active`, write
-a **deferred** dirty mark on the parent with reason `reflow`. The 5 s incremental pass
-ignores `reflow` marks; the reconcile sweep (`layout_step.py:137-146`, every
-`reconcile_interval_seconds = 900`) consumes them and re-lays those containers in
-`reorder` mode.
-
-Net effect: a hole lives seconds-to-minutes instead of forever, at the cost of one extra
-`layout_dirty` row per finished leaf and one container re-flow per sweep per affected
-container — both already bounded by `MAX_LAYOUT_PROJECTS_PER_CYCLE = 10`
-(`layout_step.py:13`) and by `pop_layout_dirty`'s 1,000-mark cap.
-
-Rejected alternative: teach `reconcile` to diff geometry. It would have to re-run the
-whole engine per project per sweep to know what "correct" geometry is — that is a Tidy,
-priced as a sweep.
-
-### 3.4 (d) Cost
-
-| Change | Complexity | Bounded by |
-|---|---|---|
-| Aspect-balanced target | O(k) once per container pass (hoisted out of `_evaluate`); no change to per-eval cost | `tests/perf/test_layout_statements.py::test_full_layout_under_budget` (60 s at 5,000 tasks) |
-| Row-target band crossing | one scope re-flow + one translation per later sibling subtree — identical in kind to a growth-band crossing, O(log n) per container | `::test_root_band_crossing_publish_under_1s`, `::test_incremental_batch_of_ten_under_550ms` |
-| `reorder` mode | one stable sort per rank, O(k log k), plus one `_evaluate`; equals a single tidy evaluation | `::test_incremental_batch_of_ten_under_550ms` — and the trigger is once per container lifetime, so the steady-state batch is unaffected |
-| Deferred `reflow` marks | one extra row per finished leaf; one container re-flow per sweep | `layout_step.py:13` fan-out cap; `::test_full_layout_under_budget` |
-| Read path | **unchanged** — no new query, no new column on the hot path | `tests/perf/test_layout_api_statements.py::test_tiles_round_trip_budget` (9 statements / 9 checkouts, deterministic), `::test_tiles_latency_with_big_collapsed_epic_visible`, `::test_tiles_focus_root_latency` |
-
-The one real regression risk is that a wider scope covers more 8×8 cells
-(`flow.py:178-184`), so `task_layout_cells` grows. A 24 × 12 epic is 6 cells versus a
-6 × 24 epic's 3–6: same order, and `test_tiles_round_trip_budget` pins the statement count
-regardless.
-
-### 3.5 Before / after
-
-```
-BEFORE (active variant, the operator's project)          AFTER
-=============================================            ================================================
-+---------------------------------------------+          +------------------+ +---------------------+
-| Epic: Playbook V2            [COMPLETED stub]|          | Phase 2  RUNNING | | Epic: Graph vis.    |
-+---------------------------------------------+          | +------+ +------+ | | [##--] 2 running    |
-[t1][t2][t3][t4][t5][t6]     <- 6 wide, ragged            | | run  | | run  | | +---------------------+
-[t7][t8]                                                  | +------+ +------+ |
-+-------------------------+                               | +------+ +------+ |   (rank 0: phase 2 and
-| Epic: Integration       |  <- 12 x 6 banded             | | rdy  | | blk  | |    the live epic, side
-| ... 40 finished cards   |                               | +------+ +------+ |    by side; target is
-| 4.65 wide x 12.5 tall   |                               +------------------+    now >= widest child)
-+-------------------------+
-+-------------------------+                               +----------------------------------------+
-| Epic: Swarm [COMPLETED] |                               | Phase 1  COMPLETED  [########] 60/60    |
-+-------------------------+                               | [e1][e2][e3][e4]   <- stubs, sunk last  |
-+-------------------------+                               +----------------------------------------+
-| Epic: Graph visibility  |  <- the only live work,
-| 2 RUNNING               |     four screens down          content 4.65 x 18.63  ->  13.85 x 6.43
-+-------------------------+                                creation order        ->  running first
-```
+Only (iii) is addressed in the first slice. (i) and (ii) are §6.2 and remain as they are.
 
 ---
 
-## 4. Migration of existing installs
+## 3. The first slice
 
-**`reconcile` is not enough.** It compares presence, `container_id` and `kind`
-(`driver.py:368-382`) and says so in its own docstring: "It deliberately does not chase
+### 3.1 An aspect-balanced row target, aligned to the growth ladder
+
+Replace the constant at `flow.py:44` with a target computed once per container pass from
+the children's sizes:
+
+```
+ROW_ASPECT = 1.3                           # landscape-ish scopes
+
+def row_target(sizes, *, is_root) -> float:
+    floor = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH     # 7.0 / 4.5
+    area  = Σ_i (w_i + SIBLING_GAP) · (h_i + LINE_GAP)
+    want  = max(sqrt(area) · ROW_ASPECT, max_i w_i)
+    if want <= floor:
+        return floor                       # today's geometry, byte for byte
+    b = smallest band in GROWTH_BANDS (then doubling) with b - 2·PADDING >= want
+    return b - 2·PADDING
+```
+
+Four properties, each answering a specific finding:
+
+- **`sqrt(area) · aspect` targets a square-ish scope** instead of a fixed-width strip.
+  That is the fix for symptom 3(iii).
+- **`max_i w_i`** is symptom 1's fix: the target is never narrower than the widest child,
+  so a 12-unit epic no longer leaves its line-mates packed into 7.
+- **The floor is returned unchanged when the ideal is below it**, so every small scope
+  (≲8 unit cards, and every scope in the existing engine tests) keeps today's coordinates
+  exactly. 4.5 and 7.0 remain the first rungs of the ladder.
+- **Bands are aligned to the growth ladder** (`b − 2·PADDING`), so a scope's content lands
+  *just under* the growth band it will be allocated at, and `band_up(content_w) == b`
+  exactly. This is the fix for the review's S5: without it a wider content box snaps up a
+  growth band and the drawn box doubles in area.
+
+Measured (`flow_container` with the banded target; content, lines, and the **allocated**
+box the canvas draws):
+
+| children | today content → allocated (area) | target | new content → allocated (area) |
+|---|---|---|---|
+| 12 cards | 4.65 × 3.99 → 6 × 6 (36 u²) | 5.8 | 5.80 × 3.99 → 6 × 6 (**36 u²**) |
+| 20 cards | 4.65 × 6.43 → 6 × 12 (72 u²) | 11.8 | 11.55 × 2.77 → 12 × 3 (**36 u²**) |
+| 40 cards | 4.65 × 12.53 → 6 × 24 (144 u²) | 11.8 | 11.55 × 5.21 → 12 × 6 (**72 u²**) |
+| 60 cards | 4.65 × 18.63 → 6 × 24 (144 u²) | 23.8 | 23.05 × 3.99 → 24 × 6 (**144 u²**) |
+| 120 cards | 4.65 × 36.93 → 6 × 48 (288 u²) | 23.8 | 23.05 × 7.65 → 24 × 12 (**288 u²**) |
+| 500 cards | 4.65 × 152.83 → 6 × 192 (1152 u²) | 47.8 | 47.20 × 16.19 → 48 × 24 (**1152 u²**) |
+
+**The allocated area never grows; at 20 and 40 children it halves.** S5 is answered rather
+than argued away.
+
+And the operator's first screenshot, re-flowed: the 12-unit epic plus 8 cards becomes a
+single line, `epic (0, 0)`, `c0..c7` at `x = 12.15 … 20.20, y = 0` — content 21.40 × 6.55
+in one line instead of 12.20 × 8.99 in three ragged ones.
+
+**The serpentine carve-out (review S3).** Because `max_i w_i` can widen the target far
+past the floor, the chain machinery must not follow it: an 8-card chain that folds at 4.5
+would stop folding at 11.8 and become an 8-rank vertical stack, and a fold that
+right-aligned at 23.8 would draw a long diagonal instead of a short turn. So
+`flow_container` takes **two** targets — `target` for rank wrapping, `chain_target` for
+`_chain_overflows` and the reverse-line right-align — and `chain_target` is always the
+floor constant. Serpentine behaviour is then bit-identical to today at every scope size,
+which `test_engine_incremental.py:36` and `test_compaction.py:279` already pin.
+
+**Alternative rejected: a dedicated `ROW_TARGET_BANDS` ladder** (4.5, 7.0, 10.0, 14.0, …).
+It gives a nicer aspect ratio (60 cards → 13.85 × 6.43 rather than 23.05 × 3.99) but the
+content no longer lands under a growth band, so the 60-card epic's drawn box goes from
+144 u² to 288 u². Rejected per S5. The residual cost of the adopted rule is that the
+ladder doubles, so aspect snaps coarsely — a 60-card scope is 5.8:1 landscape rather than
+~2:1. A finer growth ladder is the remedy and is an open question (§7.3), not bundled here.
+
+**Alternative rejected: a viewport-derived target.** The persisted layout is shared and
+must not depend on who is looking (§3.5).
+
+**Complexity.** `row_target` is one pass over the children, O(k). It is computed **once
+per `layout_container` call** and threaded through `_evaluate`, never recomputed inside it
+— `_tidy_sweep` calls `_evaluate` thousands of times (`engine.py:309-331`). It depends
+only on `sizes`, never on the candidate ordering, so the cost landscape stays continuous
+and G5 is untouched. Net asymptotic change: none.
+
+**Guarantees.** G1, G2, G5, G6, G7 unchanged. **G3 is relaxed, bounded**: crossing a
+row-target band re-wraps one scope. Because the ladder is the growth ladder, a row-target
+crossing can only happen at a growth-band crossing, so it is the *same* O(log n) event
+G4 already bounds — no new class of propagation. Between crossings the target is constant
+and G3 holds verbatim.
+
+**Cost, priced by the publish (review S1).** The engine evaluation is not the expensive
+half; the publish is. A row-target crossing at the root emits one
+`UPDATE task_layouts … WHERE path LIKE :prefix` per translated sibling subtree, re-selects
+those subtrees and rewrites their `task_layout_cells` rows (`publish_layout`,
+`src/database/queries/layout_queries.py:484`). That is exactly the cost
+`test_root_band_crossing_publish_under_1s` already pins, and §5 Task 1 adds a sibling test
+for the row-target case at the same seed scale. A wider scope also covers more 8×8 cells
+(`flow.py:178-184`) — but the totals above show the allocated box never grows, so the cell
+count cannot grow either.
+
+### 3.2 Ordering that surfaces active work — at the tidy seed only
+
+**What changes.** One sort key, at one site: `engine.py:353-360`, the tidy seeding loop.
+
+```
+(phase_order, activity_class, created_at, id)      # replaces (created_at, id)
+```
+
+- `phase_order` = `task_metadata["phase"]["order"]` when present, else a sentinel that
+  sorts **after** every real phase order (a non-phase sibling never jumps ahead of phase 1).
+- `activity_class(child, agg)`:
+  - `0` — a leaf whose `status` is in `RUNNING_STATUSES` (`constants.py:37`), or a
+    container whose `agg["running"] > 0`;
+  - `1` — otherwise not in `FINISHED_STATUSES` (`constants.py:36`), or a container whose
+    `agg["active"] > 0`;
+  - `2` — otherwise (finished, including a finished-but-context stub).
+- `created_at, id` remain as the final tie-breaks, so **a scope whose siblings are all one
+  class produces byte-identical output to today** — which is why all three existing tidy
+  tests pass unmodified (every task in them is `READY`).
+
+**Why the aggregates are safe here and nowhere else.** `build_full_write_set` computes the
+project's aggregates at `driver.py:238`, before the first `lay()` (§1.6). The tidy path
+can hand each scope its children's fresh aggregates. The incremental path cannot — it
+refreshes them after `_drain` (`driver.py:837-849`) — which is review finding B5, and is
+why §6.1 is deferred rather than shipped alongside.
+
+**Phases stay top-to-bottom.** Where a gate edge exists, `minimal_ranks_acyclic` already
+puts phase *N+1* below phase *N*, and rank **is** the engine's time axis; laying phases
+left-to-right would mean fighting the layering or widening every root row to hold six
+phases side by side. Where the gate edge is *absent* — phase 3 created after phases 1–2
+completed (§1.2) — the phases share rank 0 and the new `phase_order` term at least keeps
+them in phase order left to right. Making the rank itself respect phase order is §6.4.
+
+**What this does and does not deliver.** It delivers the operator's ordering on every
+Tidy — including the automatic one §3.3 triggers on every existing install, which is how
+the change reaches them with no operator action. It does **not** re-order between tidies:
+new work still appends to the end of its rank (`engine.py:246-250`). Accepted for the
+first slice; the operator looks at the result before §6.1 is re-scoped.
+
+**Guarantees.** G1–G6 untouched: this changes only `mode="tidy"`, which G7 already exempts.
+
+### 3.3 Convergence of existing installs, with no schema change
+
+The problem: `reconcile` compares presence, `container_id` and `kind`
+(`driver.py:368-382`) and says so in its own docstring — "It deliberately does not chase
 *geometry* drift". The 2026-09-20 `_visible` change reached installs for free precisely
-because it changed **presence**. Everything proposed here changes **geometry and ordinals
-only**, which `reconcile` is blind to by construction. Without a new mechanism, an existing
-project would keep its 4.65-wide columns until every container happened to be re-laid for
-an unrelated reason — i.e. indefinitely.
+because it changed **presence**. §3.1 and §3.2 change geometry and ordinals only, which
+`reconcile` is blind to by construction. Without a new mechanism an existing project keeps
+its 4.65-wide columns indefinitely.
 
-**Therefore: a persisted engine-rules version is now warranted.**
+**Rejected: a `project_layout_meta.engine_rules_version` column.** `publish_layout`
+(`layout_queries.py:484`) runs on every 5 s incremental publish and would stamp the
+current version within seconds of the upgrade, so the 900 s sweep would never see a stale
+pair. Only a *full* layout may record convergence — and once that is true, the column buys
+nothing a ledger row does not. Dropped, with the Alembic revision. **No schema change.**
 
-- `src/task_graph/layout/constants.py`: `ENGINE_RULES_VERSION = 1` — bumped by hand in any
-  change to `flow.py`, `engine.py` ordinal assignment, or the constants above.
-- `project_layout_meta` (`src/database/tables.py:393-404`) gains
-  `Column("engine_rules_version", Integer, nullable=False, server_default="0")`. One
-  Alembic revision, inspector-guarded so it is a no-op on a fresh database (the squashed
-  baseline builds from live metadata).
-- `publish_layout` stamps the current constant on every write.
-- `_layout_step_body` (`layout_step.py:111-135`), inside the existing `sweep_due` branch so
-  it costs one read per project per 900 s: any `(project, variant)` whose stored version is
-  below `ENGINE_RULES_VERSION` gets **one** `enqueue_layout_job(pid, variant, "tidy")`.
-  `enqueue_layout_job` already de-duplicates against a `queued`/`running` row
-  (`layout_queries.py:188-198`), and `full_layout` republishes with the new stamp, so the
-  migration is self-terminating and idempotent.
+**Adopted: the `layout_jobs` ledger.** `layout_jobs` rows are never trimmed and `kind` is
+free-text `Text` with no constraint (`src/database/tables.py`, the `layout_jobs` table).
+So the ledger *is* the convergence record:
 
-A rules bump is a deliberate one-off break of spatial memory, on the same footing as a Tidy
-the operator pressed — which is what §3.4 already says Tidy is for. It also gives every
-future geometry change a migration path for one integer.
+- `ENGINE_RULES_VERSION = 1` in `constants.py`, bumped by hand in any change to `flow.py`,
+  to ordinal assignment in `engine.py`, or to the geometry constants.
+- The job kind is the literal string `f"rules:{ENGINE_RULES_VERSION}"` — `"rules:1"` for
+  this slice. `next_layout_job` / `full_layout` ignore `kind`
+  (`layout_step.py:113-120` passes only `project_id` and `variant`), so a rules job *is* a
+  tidy, with a label.
+- In the existing `sweep_due` branch of `_layout_step_body` (`layout_step.py:137-146`),
+  after the reconcile loop: for each project, for `variant in ("active", "all")` —
+  **`active` first**, because it is the variant the canvas shows by default — skip the
+  pair if it has no meta row (nothing published yet; its first full layout will use the
+  new rules anyway), skip it if the ledger already holds a non-`failed` job of that kind,
+  otherwise enqueue one and **return** — at most **one** `(project, variant)` per sweep
+  (review S2: `next_layout_job` claims one job per 5 s step and `full_layout` is a
+  CPU-bound thread with a 60 s budget, so a fan-out of 10 projects × 2 variants would put
+  a long tail of full rebuilds in front of every project's ordinary incremental work).
+- `enqueue_layout_job` de-duplicates on `(project_id, variant, status in
+  ('queued','running'))` **regardless of kind** and returns the existing row. So the
+  caller must check `job["kind"] == kind`; if an unrelated tidy is in flight the pair is
+  left stale and retried on a later sweep. Self-limiting and idempotent.
+- A `failed` rules job is not treated as convergence, so it is retried on a later sweep.
 
-`server_default="0"` means an install laid out before this ships is behind and re-tidies
-once. Nothing else is needed: layout rows are derived data (§4.10).
+**Blast radius, stated plainly (review S4).** `row_target` depends on the children's
+allocated sizes, so **any container holding a container child changes** — i.e. essentially
+every project with epics re-lays, and the rebuild is a Tidy, which §3.4 already defines as
+a deliberate break of spatial memory. At one pair per 900 s sweep a ten-project install
+converges over about five hours of daemon uptime, invisibly. Manual pins
+(`LayoutCanvas.tsx:446`) are **left exactly as they are** in this slice; see §6.3.
 
----
-
-## 5. Task breakdown
-
-Style follows `2026-09-19-graph-visibility-markers-subtasks-implementation.md`. TDD
-throughout: failing test, watch it fail, implement, watch it pass, commit. `aq test <files>`
-only; never bare `pytest tests/`; `ruff check` the changed paths.
-
-### Task 1 — Aspect-balanced banded row target
-
-**Files:** `src/task_graph/layout/constants.py` (`ROW_TARGET_BANDS`, `ROW_ASPECT`,
-`band_row`), `flow.py` (`flow_container` takes `target: float`; `_chain_overflows` /
-`_flow_serpentine_chain` take the same value), `engine.py` (compute once in
-`layout_container`, pass through `_evaluate`).
-**Tests:** `tests/task_graph/layout/test_flow.py`, `test_engine_incremental.py`,
-`test_engine_tidy.py`.
-
-- Failing: `band_row` ladder; `ideal` is `max(floor, sqrt(area)·aspect, widest child)`; a
-  scope of ≤8 unit cards reproduces today's coordinates **exactly**; 60 unit cards produce
-  ≤6 lines and a content width ≥13; a scope containing one 12-wide child puts the next
-  child beside it, not below.
-- Implement. Assert in a test that `_evaluate` does **not** recompute the target (pass a
-  counting stub) — this is the perf-critical bit.
-- Failing: determinism (`test_deterministic`, `test_wallclock_stub_does_not_change_result`)
-  still passes; serpentine folding still triggers at the new target.
-- `aq test tests/task_graph/layout/` → commit `feat(layout): aspect-balanced banded row target`.
-
-### Task 2 — `activity_class` and the `reorder` engine mode
-
-**Files:** new `src/task_graph/layout/ordering.py` (`activity_class`, `sibling_sort_key`),
-`engine.py` (`Mode` gains `"reorder"`; re-key each rank by the stable sort key before
-flowing; `changed_ordinals` = keys that actually moved), `model.py`
-(`ContainerScope` gains `blocked: frozenset[str]` and `phase_order: dict[str, int]`).
-**Tests:** new `tests/task_graph/layout/test_ordering.py`, `test_engine_incremental.py`.
-
-- Failing pure tests: running < unfinished < finished; a container classes by
-  `agg_running`/`agg_active`, not its own status; `phase_order` outranks activity; equal
-  class preserves the existing `order_key` order (stability); ties break on id.
-- Failing engine tests: `mode="reorder"` moves finished siblings to the end of their rank
-  and nothing across ranks; `mode="incremental"` is unchanged (`changed_ordinals` still
-  `{"new"}` for the 1,000-child insert).
-- `aq test tests/task_graph/layout/` → commit `feat(layout): activity-ordered siblings behind a reorder mode`.
-
-### Task 3 — Driver triggers for `reorder`
-
-**Files:** `src/task_graph/layout/driver.py` (`_seed_queue` emits `("reorder")` for a
-container whose own `status.finished` mark arrived and for a container entering
-`stubs`/`dropped`; `build_full_write_set` passes `mode="tidy"` unchanged; plumb `blocked`
-and the phase metadata into `ContainerScope`), `src/database/queries/layout_queries.py`
-(`load_project_snapshot` also reads `task_metadata` key `phase`).
-**Tests:** `tests/task_graph/test_layout_driver.py`.
-
-- Failing: an epic settling `COMPLETED` re-keys its **parent** scope and the epic ends up
-  after its unfinished siblings; a **leaf** finishing does **not** re-key anything
-  (`changed_ordinals` empty, no ordinal in the DB moved); a reopened epic floats back;
-  `load_project_snapshot` gains no extra round trip beyond the one metadata read.
-- `aq test tests/task_graph/test_layout_driver.py tests/task_graph/test_layout_queries.py`
-  → commit `feat(layout): reorder a scope when a container settles`.
-
-### Task 4 — Deferred `reflow` marks close the `active` holes
-
-**Files:** `driver.py` (`_aggregates_only` records the parent; `run()` writes a `reflow`
-mark), `process_dirty` (skip `reflow` marks), `src/orchestrator/layout_step.py` (the sweep
-drains them in `reorder` mode).
-**Tests:** `tests/task_graph/test_layout_dirty_marks.py`, `tests/task_graph/test_layout_step.py`.
-
-- Failing: a finished leaf in `active` leaves the parent's geometry alone in the 5 s pass
-  **and** writes one `reflow` mark; the sweep re-lays that container and the hole closes;
-  marks de-duplicate per container per sweep.
-- Commit `feat(layout): reclaim finished-leaf holes on the reconcile sweep`.
-
-### Task 5 — `engine_rules_version` and the no-action migration
-
-**Files:** `constants.py` (`ENGINE_RULES_VERSION`), `src/database/tables.py`, one Alembic
-revision (inspector-guarded `add_column`, chained off the current head — check
-`get_heads()` first, sibling branches collide on `a0000000000N`),
-`src/database/queries/layout_queries.py` (`publish_layout` stamps it; `get_layout_meta`
-returns it), `layout_step.py` (enqueue one tidy per stale `(project, variant)` inside
-`sweep_due`).
-**Tests:** `tests/task_graph/test_layout_queries.py`, `tests/task_graph/test_layout_step.py`,
-`tests/alembic_revisions.py`.
-
-- Failing: a meta row at version 0 with `ENGINE_RULES_VERSION = 1` enqueues exactly one
-  tidy job per variant and none on the next sweep; a project already at the current version
-  enqueues nothing; the migration is a no-op on a fresh database.
-- Commit `feat(layout): persist the engine rules version and self-migrate geometry`.
-
-### Task 6 — Phase tie-break end to end
-
-**Files:** `ordering.py` (already), `driver.py` (phase metadata), optional
-`src/api/graph_layout.py` if `phase_order` is not already on the row it needs.
-**Tests:** `tests/task_graph/test_layout_driver.py`, `tests/test_api_graph_layout.py`.
-
-- Failing: three phases with the `phase_create` gate edges land at ranks 0/1/2; deleting the
-  middle phase leaves the remaining two in phase order rather than creation order; a phase
-  never sorts by activity ahead of an earlier phase.
-- Commit `feat(layout): phases order the canvas top to bottom`.
-
-### Task 7 — Dashboard: pinned-position reconciliation
-
-**Files:** `dashboard/src/pages/command-center/layout-v2/LayoutCanvas.tsx`,
-`TaskToolbar.tsx`, `useGraphHierarchy.ts` (expose a pinned count).
-**Tests:** `dashboard/src/pages/command-center/layout-v2/__tests__/LayoutCanvas.test.tsx`.
-
-- Failing: after `layout_version` advances via a tidy job while pins exist, one dismissible
-  banner appears with the pin count and a reset action calling `clearGraphPositions`; with
-  no pins, nothing renders; the banner never appears twice for one version.
-- `npx vitest run src/pages/command-center` → commit `feat(graph): offer to reset pinned cards after a rebuild`.
-
-### Task 8 — Acceptance scenario and perf envelope
-
-**Files:** `scripts/seed_layout_perf.py` (a `phases=` shape),
-`tests/perf/test_layout_statements.py` (no new budget — prove the existing ones hold).
-**Tests:** a new `tests/task_graph/layout/test_reorganisation_acceptance.py` (no `perf`
-marker; pure engine + in-memory driver).
-
-**The scenario.** 3 phases; 6 epics distributed across them; 80 leaf tasks of which 60 are
-finished, 2 running, 18 open. Assert, on the `active` variant after a full layout:
-
-1. **No scope is more than 2.5× taller than it is wide.** (Today the 40-task epic is
-   4.65 × 12.53 — a 2.7 ratio — and the 60-task one is 4.0.)
-2. **Every running task is inside the top 40% of the canvas extent** (`extent_h` from the
-   meta row).
-3. **Phase 1 (COMPLETED) sorts above phase 2 above phase 3** by `rank`, and within the root
-   rank holding live work, the epic with `agg_running > 0` has a lower `order_key` than
-   every `agg_active == 0` sibling.
-4. **The `active` canvas holds at most 22 rows** (18 open + 2 running + the context
-   containers), i.e. the §4.8 drop and the reclaim are both doing their job.
-5. **Idempotence:** running `full_layout` twice yields identical rows (G5).
-6. **`all` is readable too:** the same project in `all` is at most 3× wider than it is tall.
-
-Then `AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf/test_layout_statements.py
-tests/perf/test_layout_api_statements.py` on a quiet box and record the numbers in the
-commit body. Commit `test(layout): acceptance scenario for a canvas you can read on landing`.
-
-**Order and parallelism.** Task 1 and Task 2 are independent. Task 3 depends on 2; Task 6
-depends on 3. Task 4 is independent of all of them. Task 5 should land **after** 1 and 2,
-because the version bump is what ships their geometry to existing installs. Task 7 depends
-on 5. Task 8 is last.
+One accepted inefficiency: a project first laid out *after* the upgrade has no ledger row
+either, so the next sweep enqueues one redundant rebuild for it. Once per project per
+rules version, on a project that is by definition small.
 
 ---
 
-## 6. Open questions for the operator
+## 4. What is explicitly unchanged in the first slice
 
-1. **Should a finished-but-still-context stub sink, or stay put?** The design sinks it (it
-   is class 2). The counter-argument is spatial memory: an epic the operator has learned the
-   position of moves once, at the moment it settles. Sink, or freeze finished containers
-   where they are and only let live work float?
-2. **Aspect ratio.** `ROW_ASPECT = 1.3` targets a mildly landscape scope. On an ultrawide
-   monitor 2.0 would be better; on a laptop 1.0. It is a persisted, shared value — it cannot
-   be per-viewer. What number?
-3. **Growth-band waste.** With A1, a 13.85-wide scope is allocated 24.0 units. Adding a
-   finer ladder (×1.4 above 12) fixes the visual waste and costs ~2.4× more band crossings,
-   i.e. more translations per publish. Worth it, or live with the existing §12 limitation?
-4. **Does the rules-version bump auto-tidy every project unprompted?** The design says yes
-   (one deliberate break of spatial memory, then never again). The alternative is a
-   `layout_stale: true` flag on `extent` and a "Rebuild layout" button — more control, and
-   an operator who never presses it never gets the fix.
-5. **Manual pins.** §11 says pinned nodes are out of scope; the canvas implements them. Keep
-   and reconcile (this design), or retire them now that the server owns geometry?
-6. **Continuous activity ordering.** B3 reorders only when a container settles. If the
-   operator would rather have running work float the instant it starts — and accept cards
-   sliding sideways under the pointer — that is B1, a one-line change to the same trigger
-   set. Which trade do they want?
+- `compaction.py` — no change; it still never re-wraps.
+- `_aggregates_only` and the `active` finished-leaf hole — no change.
+- `reconcile` — no change; it still chases presence only.
+- The incremental path's ordinal assignment — no change; new work still appends.
+- `manual_positions` and the dashboard — no change at all.
+- The API surface and the generated clients — no change. No `src/api/models/` edit, so no
+  `regenerate-api-client.sh` step in any of the three tasks.
+
+---
+
+## 5. Task breakdown — three tasks
+
+TDD throughout: write the failing test, watch it fail, implement, watch it pass, commit.
+`aq test <files>` only; never bare `pytest tests/`; never raise `-n`; exit code 75 means
+no slot, retry. `ruff check <changed paths>`, line length 100. Commit only the paths the
+task owns, explicit paths, never `git add -A`.
+
+---
+
+### Task 1 — Aspect-balanced row target, aligned to the growth ladder
+
+**Files**
+
+- Modify `src/task_graph/layout/constants.py`: add `ROW_ASPECT = 1.3`. `TARGET_ROW_WIDTH`
+  (4.5) and `TARGET_ROW_WIDTH_ROOT` (7.0) keep their values and become the **floors**.
+- Modify `src/task_graph/layout/flow.py`: add `row_target`; give `flow_container` the two
+  new keyword arguments; thread `chain_target` into `_chain_overflows` and
+  `_flow_serpentine_chain`.
+- Modify `src/task_graph/layout/engine.py`: compute both targets once in
+  `layout_container` (before any `_evaluate`) and pass them through `_evaluate` into
+  `flow_container`.
+
+**Interfaces — produces**
+
+```python
+# constants.py
+ROW_ASPECT: float = 1.3
+
+# flow.py
+def row_target(
+    sizes: Mapping[str, tuple[float, float]], *, is_root: bool
+) -> float: ...
+#   floor = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
+#   area  = sum((w + SIBLING_GAP) * (h + LINE_GAP) for w, h in sizes.values())
+#   want  = max(sqrt(area) * ROW_ASPECT, max(w for w, _ in sizes.values()))
+#   if want <= floor: return floor
+#   b = smallest value of GROWTH_BANDS (then repeated doubling) with b - 2*PADDING >= want
+#   return b - 2 * PADDING
+#   Empty `sizes` returns the floor.
+
+def flow_container(
+    ordered: list[list[str]],
+    sizes: dict[str, tuple[float, float]],
+    *,
+    is_root: bool,
+    serpentine_chains: tuple[tuple[str, ...], ...] = (),
+    target: float | None = None,        # None -> the floor constant (today's behaviour)
+    chain_target: float | None = None,  # None -> the floor constant, ALWAYS
+) -> FlowResult: ...
+```
+
+`target` governs the rank-wrap test at `flow.py:78` and nothing else. `chain_target`
+governs `_chain_overflows` and the reverse-line right-align at `flow.py:165`, and callers
+never pass anything but the floor — it is a parameter only so the tests can assert the
+separation. Defaulting both to `None` keeps every existing direct caller and test working
+unchanged.
+
+**Tests — `tests/task_graph/layout/test_flow.py`**
+
+- `test_row_target_returns_the_floor_for_a_small_scope` — 4 and 8 unit cards, root and
+  non-root, return exactly 4.5 / 7.0.
+- `test_row_target_balances_the_aspect_ratio` — the six rows of §3.1's table: for
+  12/20/40/60/120/500 unit cards assert the target, the content size to 2 dp, the line
+  count, **and the allocated size**, and assert the allocated area is `<=` today's value
+  from §1.5's table. This is the test that pins S5.
+- `test_row_target_is_never_narrower_than_the_widest_child` — one 12-wide child plus 8
+  cards at the root flows on a single line, `epic` at `(0, 0)` and `c7` at `(20.20, 0.0)`.
+- `test_content_lands_under_its_growth_band` — for each of the six sizes,
+  `band_up(content_w) == content_w rounded up`, i.e. `content_w <= band_up(content_w)` and
+  `band_up(content_w) - content_w < 2 * PADDING + CARD_W`.
+- `test_serpentine_threshold_uses_the_floor_not_the_widened_target` — an 8-card chain in a
+  scope whose `row_target` is 11.8 still folds at 4.5: assert the fold happened
+  (`len({y for …}) > 1`) and that the reverse line right-aligns at
+  `TARGET_ROW_WIDTH - CARD_W`, not at the widened target. **This is the S3 regression test.**
+
+**Tests — `tests/task_graph/layout/test_engine_incremental.py`**
+
+- `test_target_is_computed_once_per_container_pass` — monkeypatch `flow.row_target` with a
+  counting wrapper and run `layout_container(..., mode="tidy")` over a 20-node fixture with
+  edges; assert the counter is 1 although `_evaluate` ran many times. **This is the perf
+  guard**; without it the change is a hot-loop regression.
+- `test_incremental_trajectory_is_stable` (review's incremental-trajectory item) — drive
+  `_IncrementalBatch` over a real DB through **create → start → finish → create-next** for
+  both variants, and assert at each step: the start transition writes **no** `layout_dirty`
+  row at all (`task_queries.py:1130-1148`); every leaf status change yields
+  `changed_ordinals == set()`; the new sibling changes no existing ordinal. Belongs in
+  `tests/task_graph/test_layout_driver.py` if a DB fixture is easier there.
+- `test_published_positions_move_only_on_a_band_crossing` (review's stability metric) —
+  after each published version in that trajectory, compute
+  `Σ |Δabs_x| + |Δabs_y|` over all rows against the previous version and assert it is
+  `0.0` except on versions where the scope's `row_target` or `band_up` output changed;
+  on those, assert the moved set is confined to the crossing scope and its later siblings.
+- `test_deterministic_under_shuffled_size_dicts` — build `child_sizes` in two different
+  insertion orders; assert identical ordinals **and** identical coordinates.
+
+**Existing tests that pin today's constants — the expected verdict for each**
+
+| Test | Verdict |
+|---|---|
+| `test_flow.py:12` `test_comfortable_spacing_constants_are_dense_but_positive` | **Passes unmodified** — `TARGET_ROW_WIDTH` is still 4.5. Add one assertion for `ROW_ASPECT == 1.3`. |
+| `test_flow.py:30` `test_long_serial_chain_wraps_back_and_forth_with_short_turn` | **Must pass unmodified** — it is the S3 guard; it calls `flow_container` with default targets. |
+| `test_engine_incremental.py:36` `test_long_serial_dependencies_fold_into_serpentine_rows…` | **Must pass unmodified.** Verified: 8 root unit cards give `want = 4.35 <= 7.0`, so the target is the floor, and the chain path uses `chain_target` anyway. If this test needs editing, the carve-out is wrong. |
+| `tests/task_graph/layout/test_compaction.py:278` (`assert len({rows[f"c{i}"].rel_y …}) > 1  # rank wrapped`) | **Expected to fail and to need widening.** Verified by reproducing the fixture's geometry: epic `e` holds 7 unit cards plus `pkg` allocated `(6.0, 3.0)`, so `want = max(5.44·1.3, 6.0) = 7.07 → target 11.8`, and all 7 cards land on one line (`rel_y` distinct count 1) with `pkg` wrapping below. Re-seed the fixture with enough cards to wrap at the new target (≈12), or assert on a scope whose target is the floor. Line `:279` (`# chain folded`) passes unmodified — the chain is inside `pkg`, whose own target is the floor. |
+
+Also re-run `tests/task_graph/test_layout_driver.py` (it asserts `rel_x` at
+`:461,:479,:503,:523` on two- and three-child scopes, all below the floor, so they should
+pass) and `tests/test_api_graph_layout.py`.
+
+**Perf (review S1)** — add to `tests/perf/test_layout_statements.py`, modelled line for
+line on `test_root_band_crossing_publish_under_1s`:
+`test_row_target_band_crossing_publish_under_1s` — grow one epic across a row-target band
+at the committed `seed_layout_perf` scale and assert the publish transaction is under 1 s.
+Run deliberately: `AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s
+tests/perf/test_layout_statements.py`, and record the measured numbers in the commit body.
+
+**Run** `aq test tests/task_graph/layout/ tests/task_graph/test_layout_driver.py
+tests/test_api_graph_layout.py` →
+commit `feat(layout): aspect-balanced row target aligned to the growth ladder`.
+
+---
+
+### Task 2 — Convergence through the `layout_jobs` ledger
+
+No schema change, no Alembic revision, no API change.
+
+**Files**
+
+- Modify `src/task_graph/layout/constants.py`: `ENGINE_RULES_VERSION = 1`.
+- Modify `src/database/queries/layout_queries.py`: add `layout_job_exists`.
+- Modify `src/orchestrator/layout_step.py`: the convergence step inside `sweep_due`.
+
+**Interfaces — produces**
+
+```python
+# constants.py
+ENGINE_RULES_VERSION: int = 1
+#: Bump by hand in any change to flow.py, to ordinal assignment in engine.py,
+#: or to the geometry constants above. The job kind is f"rules:{ENGINE_RULES_VERSION}".
+
+# layout_queries.py (LayoutQueriesMixin)
+async def layout_job_exists(self, project_id: str, variant: str, kind: str) -> bool:
+    """True when a job of this (project, variant, kind) exists and did not fail."""
+    # SELECT 1 FROM layout_jobs
+    #  WHERE project_id=:p AND variant=:v AND kind=:k AND status != 'failed' LIMIT 1
+```
+
+```python
+# layout_step.py, at the end of the existing `if sweep_due:` block,
+# inside the loop that already walks `await self.db.list_projects()`:
+kind = f"rules:{ENGINE_RULES_VERSION}"
+for project in projects:
+    for variant in ("active", "all"):            # active first: the default canvas
+        if await self.db.get_layout_meta(project.id, variant) is None:
+            continue                             # nothing published; its first layout
+                                                 # will already use the new rules
+        if await self.db.layout_job_exists(project.id, variant, kind):
+            continue
+        job = await self.db.enqueue_layout_job(project.id, variant, kind)
+        if job["kind"] != kind:
+            continue    # an unrelated tidy is in flight; retry on a later sweep
+        return          # at most ONE stale pair per sweep (review S2)
+```
+
+`enqueue_layout_job` already de-duplicates on `(project_id, variant, status in
+('queued','running'))` **regardless of kind** and returns the pre-existing row — hence the
+`job["kind"]` check. `next_layout_job` and `full_layout` are untouched; `kind` is a ledger
+label only.
+
+**Tests — `tests/task_graph/test_layout_step.py`**
+
+- `test_the_sweep_enqueues_one_stale_pair_per_sweep_active_first` — three projects, each
+  with both variants published and no `rules:1` row; one sweep enqueues exactly one job,
+  and it is `variant="active"` of the first project. **This is the one-job-per-sweep test.**
+- `test_successive_sweeps_walk_every_stale_pair` — six sweeps converge all three projects,
+  each job appearing exactly once.
+- `test_a_converged_pair_is_never_re_enqueued` — a `done` `rules:1` job for a pair means
+  the next sweep skips it and moves to the next pair.
+- `test_a_failed_rules_job_is_retried` — `status="failed"` is not convergence.
+- `test_an_unrelated_tidy_in_flight_defers_the_pair` — pre-queue a plain `"tidy"` job for
+  the pair; the sweep writes no `rules:1` row and the pair is still stale next sweep.
+- `test_a_project_with_no_meta_row_is_skipped`.
+- `test_the_sweep_is_bounded_when_nothing_is_stale` — with every pair converged, the
+  convergence step issues at most one `layout_job_exists` read per pair and enqueues
+  nothing.
+
+**Tests — `tests/task_graph/test_layout_queries.py`**
+
+- `test_layout_job_exists_ignores_failed_and_other_kinds`.
+- `test_a_rules_job_runs_a_full_layout` — `next_layout_job` returns the `rules:1` row and
+  `full_layout` republishes the variant; assert `layout_version` advanced and the rows
+  carry the new geometry.
+
+**Run** `aq test tests/task_graph/test_layout_step.py
+tests/task_graph/test_layout_queries.py tests/task_graph/test_layout_driver.py` →
+commit `feat(layout): converge existing installs through the layout_jobs ledger`.
+
+---
+
+### Task 3 — Activity-aware tidy seed
+
+Depends on Task 1 landing first (they touch adjacent lines in `engine.py`); independent of
+Task 2, but Task 2 is what delivers it to existing installs.
+
+**Files**
+
+- Create `src/task_graph/layout/ordering.py`.
+- Modify `src/task_graph/layout/model.py`: `SnapTask` gains
+  `phase_order: int | None = None` (appended after `title`, so positional construction in
+  existing tests is unaffected); `ContainerScope` gains
+  `child_aggregates: dict[str, dict[str, int]] = field(default_factory=dict)`.
+- Modify `src/task_graph/layout/engine.py:353-360`: the tidy seed key.
+- Modify `src/task_graph/layout/driver.py`: `build_full_write_set` passes
+  `child_aggregates={k: aggs[k] for k in kids if k in aggs}` into each `ContainerScope`
+  (the aggregates computed at `driver.py:238`, i.e. before any `lay()` call).
+- Modify `src/database/queries/layout_queries.py:load_project_snapshot`: one additional
+  `task_metadata` read for `key == "phase"`, populating `SnapTask.phase_order`. It is the
+  same shape as the existing `CONTAINER_KEY` read directly above it and adds one statement
+  to the full-layout path only.
+
+**Interfaces — produces**
+
+```python
+# ordering.py
+NO_PHASE: int = 1 << 30   #: sorts after every real phase order
+
+def activity_class(
+    task: SnapTask, agg: Mapping[str, int] | None = None
+) -> int:
+    """0 = running, 1 = unfinished, 2 = finished. Lower sorts first.
+
+    A container is classed by its subtree rollup when `agg` is given:
+    agg["running"] > 0 -> 0; agg["active"] > 0 -> 1; else 2.
+    A leaf (or a container with no aggregate) is classed by its own status
+    against RUNNING_STATUSES / FINISHED_STATUSES.
+    """
+
+def tidy_seed_key(
+    task: SnapTask, agg: Mapping[str, int] | None = None
+) -> tuple[int, int, float, str]:
+    """(phase_order or NO_PHASE, activity_class, created_at, id)."""
+```
+
+`engine.py:353-360` becomes
+`key=lambda c: tidy_seed_key(scope.children[c], scope.child_aggregates.get(c))`.
+
+**Tests — new `tests/task_graph/layout/test_ordering.py`**
+
+- `test_activity_class_orders_running_before_open_before_finished` — every status in
+  `RUNNING_STATUSES` and `FINISHED_STATUSES` plus `READY`/`BLOCKED`/`DEFINED`.
+- `test_a_container_is_classed_by_its_subtree_not_its_own_status` — a `DEFINED` container
+  with `running > 0` classes 0; a `COMPLETED` container with `active > 0` classes 1.
+- `test_phase_order_outranks_activity` — phase 1 (finished) sorts before phase 2 (running).
+- `test_a_non_phase_sibling_never_precedes_a_phase`.
+- `test_equal_class_falls_back_to_created_at_then_id` — the key reduces exactly to today's
+  `(created_at, id)`.
+- `test_key_is_deterministic_under_shuffled_aggregate_dicts`.
+
+**Tests — `tests/task_graph/layout/test_engine_tidy.py`**
+
+- `test_tidy_puts_running_work_first_and_finished_last` — one rank of 6 siblings
+  (2 finished, 3 ready, 1 running, interleaved `created_at`); after `mode="tidy"` the
+  `rel_x` order is running, then the three ready in `created_at` order, then the two
+  finished in `created_at` order.
+- `test_tidy_output_is_unchanged_when_every_sibling_is_one_class` — the existing
+  `test_tidy_untangles_a_reversed_ladder`, `test_tidy_pinned_bound_on_fixture` and
+  `test_tidy_is_deterministic` **must pass unmodified**: every task in them is `READY`, so
+  the key reduces to `(created_at, id)`. Add an explicit assertion that a 12-node all-READY
+  fixture produces ordinals identical to those from the pre-change seed.
+
+**Tests — `tests/task_graph/test_layout_driver.py`**
+
+- `test_full_layout_seeds_containers_with_fresh_aggregates` — a project where an epic's
+  aggregates were stale in the DB; the tidy classes it from the snapshot, not the stored row.
+- `test_a_finished_epic_sorts_after_a_running_sibling_after_a_full_layout` — the end-to-end
+  assertion, in both variants.
+- `test_incremental_work_still_appends_between_tidies` — after the tidy, create a new
+  sibling; it appends at the end of the rank and changes no existing ordinal (the
+  first-slice limitation, pinned so it is a decision and not a surprise).
+
+**Run** `aq test tests/task_graph/layout/ tests/task_graph/test_layout_driver.py
+tests/task_graph/test_layout_queries.py` →
+commit `feat(layout): tidy seeds siblings by phase then activity`.
+
+---
+
+### Acceptance scenario (run after all three)
+
+3 phases; 6 epics across them; 80 leaf tasks of which 60 finished, 2 running, 18 open. In a
+new `tests/task_graph/layout/test_reorganisation_acceptance.py` (no `perf` marker), after a
+full layout of both variants assert:
+
+1. **No scope's content is more than 6:1 in either direction** (today's 40-task epic is
+   1:2.7, the 60-task one 1:4.0, the 120-task one 1:7.9).
+2. **Every scope's allocated area is ≤ what today's engine allocates** for the same
+   children.
+3. **Phase order holds**: where gate edges exist, by `rank`; where they do not, by
+   `order_key` within rank 0.
+4. **In each rank, every `agg_running > 0` sibling has a lower `order_key` than every
+   `agg_active == 0` sibling.**
+5. **Idempotence**: two consecutive `full_layout` calls produce identical rows (G5).
+6. **`active` holds at most 22 rows** (18 open + 2 running + context containers) — the
+   §4.8 drop still doing its job.
+
+### Order and parallelism
+
+Task 1 → Task 3 (adjacent lines in `engine.py`). Task 2 is independent of both and can run
+in parallel, but should land **last** so the auto-tidy it triggers rebuilds installs with
+both changes present rather than only one. Acceptance last.
+
+---
+
+## 6. Second slice (deferred), with the reason each is not shippable as drafted
+
+Each item below was in the first draft and is deferred by controller ruling, to be
+re-scoped after the operator has looked at the result of the first slice. The corrections
+are recorded so the second slice starts from an accurate account.
+
+### 6.1 A `reorder` engine mode and its triggers
+
+Drafted as: a new mode that re-keys one scope by activity, triggered when a container's
+status enters the finished set, when a container is stubbed or dropped, and on Tidy.
+
+Why it does not work as drafted:
+
+- **It does not serve the goal.** "See what is being worked on" needs work to float when it
+  **starts**. No dirty mark is written on `READY → IN_PROGRESS`
+  (`task_queries.py:1130-1148`), so no pass runs and no trigger could fire.
+- **In `active` the trigger is largely a no-op.** A container that settles with no
+  unfinished descendant is *dropped* from the variant by `_visible` in the very same pass
+  (`driver.py:131-138`), so there is nothing left to sink. It would only have an effect in
+  `all`.
+- **Two of the three triggers are the same mark.** "Container status finished" and
+  "container entering `stubs`/`dropped`" are both driven by the one `status.finished` mark.
+- **It would sort on stale aggregates.** `ContainerScope` carries none, and the
+  incremental path refreshes them only after `_drain` (`driver.py:837-849`). The tidy path
+  does not have this problem (§1.6), which is why §3.2 ships and this does not.
+- If a third mode is ever added, the queue's mode precedence in `_drain`
+  (`driver.py:740-757`, deepest-first, `incremental` short-circuits on `processed`) must be
+  specified explicitly rather than inherited (review S7).
+
+### 6.2 Deferred `reflow` marks for the `active` finished-leaf hole
+
+Drafted as: write a low-priority `reflow` mark that the 900 s sweep drains.
+
+Why it does not work as drafted: `clear_layout_dirty`
+(`src/database/queries/layout_queries.py:163-168`) deletes **by `seq`**, with no reason
+filter, so the very next incremental batch would delete the deferred marks before the
+sweep ever saw them. It would also keep the project permanently listed by
+`dirty_layout_projects()`, paying a snapshot load every 5 s cycle for work that never runs.
+A second slice needs either a reason-aware clear or a separate table.
+
+### 6.3 The pinned-position reset banner
+
+Drafted as: after a Tidy or a rules rebuild, offer to clear `manual_positions`.
+
+Why it does not work as drafted: the client cannot tell a rebuild from any other publish —
+`layout_version` is bumped by `publish_layout` on every incremental pass
+(`layout_queries.py:484`), which is several times a minute on an active project. The banner
+would either never fire or fire constantly. A second slice needs a distinguishable signal
+(for example the `layout_jobs` row surfaced through `extent`).
+
+Until then, manual pins keep working exactly as they do today
+(`LayoutCanvas.tsx:446`, `useGraphHierarchy.ts:247-252`) and are simply stale after a
+rebuild. Note that §11 of the engine spec lists pinned nodes as out of scope while the
+shipped canvas implements them; that disagreement is §7.5.
+
+### 6.4 A phase rank floor
+
+Drafted as: phases rank themselves through their gate edges.
+
+That claim was **wrong** and is removed from §1.2 and §3.2. `phase_create` adds a `blocks`
+edge only onto siblings that have **not** COMPLETED
+(`src/commands/phase_commands.py:160-168`), so a phase created after its predecessors have
+completed gets no edge and lands at rank 0 beside them. §3.2's `phase_order` term keeps
+such phases in order *within* a rank; giving them a rank floor (`rank >= phase_order`) is a
+layering change and belongs to the second slice.
+
+### 6.5 A finer growth ladder
+
+Not in the first draft; raised by the S5 analysis. See §7.3.
+
+---
+
+## 7. Open questions for the operator
+
+1. **Should a finished-but-still-context stub sink, or stay put?** §3.2 sinks it (activity
+   class 2) — carried from the previous ruling. The counter-argument is spatial memory: an
+   epic whose position the operator has learned moves once, on the next Tidy.
+2. **`ROW_ASPECT = 1.3`** targets a mildly landscape scope. On an ultrawide monitor 2.0
+   would be better; on a laptop 1.0. It is a persisted, shared value — it cannot be
+   per-viewer. Confirm 1.3, or name a number.
+3. **A finer growth ladder.** Because `GROWTH_BANDS` doubles, the aspect ratio snaps
+   coarsely: the 60-card epic lands at 23.05 × 3.99 rather than the ~2:1 a finer ladder
+   would give. A ×1.4 step above 12 fixes the shape and costs roughly 2.4× more band
+   crossings — i.e. more translation publishes, the cost `test_root_band_crossing_publish_under_1s`
+   measures. Worth it?
+4. **Is a five-hour silent convergence acceptable?** One `(project, variant)` per 900 s
+   sweep. The alternative is an explicit `aq graph tidy --all` the operator runs once and
+   watches.
+5. **Manual pins.** The engine spec says out of scope; the canvas implements them; after a
+   rebuild they are stale. Keep them as they are (this slice), build §6.3's banner, or
+   retire pins now that the server owns geometry?
+6. **Ordering between tidies.** The first slice reorders only when a Tidy runs. If the
+   operator wants running work to float the moment it starts, that needs a layout dirty
+   mark on the start transition plus §6.1 — a bigger change, and one that moves cards under
+   the pointer. Confirm that Tidy-time ordering is enough to judge by.
