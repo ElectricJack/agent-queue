@@ -1110,6 +1110,54 @@ async def test_tiles_omit_a_finished_epic_nothing_needs_from_the_active_view(db,
     assert {node["id"] for node in all_response.json()["nodes"]} == {"done", "child", "live"}
 
 
+async def test_locate_does_not_find_a_dropped_finished_epic_in_the_active_view(
+    db, client_factory
+):
+    """The second affordance the drop rule costs, pinned deliberately.
+
+    With "Show completed" off the client searches the ``active`` variant's
+    rows, and a dropped epic has none — so a text search stops matching it
+    there. Ticking "Show completed" (variant ``all``) still finds it.
+    """
+    await _finished_epic_project(db, anchored=False)
+
+    async with client_factory() as client:
+        active = await client.post(
+            "/api/projects/p1/graph/locate", json={"variant": "active", "q": "done"}
+        )
+        every = await client.post(
+            "/api/projects/p1/graph/locate", json={"variant": "all", "q": "done"}
+        )
+
+    assert active.status_code == 200
+    assert [hit["id"] for hit in active.json()["hits"]] == []
+    assert every.status_code == 200
+    assert [hit["id"] for hit in every.json()["hits"]] == ["done"]
+
+
+async def test_stale_expanded_id_for_a_dropped_epic_is_simply_ignored(db, client_factory):
+    """A viewer whose persisted expansion still names the dropped epic.
+
+    It has no row in ``active``, so ``_variant_for_expanded`` finds no stub to
+    promote on, the request stays on ``active``, and the response is the same
+    one an empty ``expanded`` would get — no error, no promotion, no rows.
+    """
+    await _finished_epic_project(db, anchored=False)
+
+    async with client_factory() as client:
+        response = await client.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
+                "expanded": ["done"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert {node["id"] for node in response.json()["nodes"]} == {"live"}
+
+
 async def test_tiles_expand_a_finished_epic_from_the_active_view(db, client_factory):
     await _finished_epic_project(db, anchored=True)
 

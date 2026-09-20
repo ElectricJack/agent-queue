@@ -94,9 +94,14 @@ def _edge_anchored(
 def _visible(
     snapshot: dict[str, SnapTask],
     variant: str,
-    edges: Iterable[tuple[str, str, str]] = (),
+    edges: Iterable[tuple[str, str, str]],
 ) -> tuple[set[str], set[str]]:
-    """Return (ids present in the variant, container ids rendered as stubs)."""
+    """Return (ids present in the variant, container ids rendered as stubs).
+
+    *edges* is required, not defaulted: the ``active`` variant decides what to
+    drop partly from them, so a caller that forgot would silently drop a
+    finished container unfinished work still points at.
+    """
     if variant == "all":
         return set(snapshot), set()
     children_of: dict[str | None, list[str]] = defaultdict(list)

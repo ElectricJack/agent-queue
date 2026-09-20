@@ -122,7 +122,8 @@ Two layouts exist per project and are maintained independently by the same engin
 - **`all`**: every non-archived task.
 - **`active`**: every task whose status is not in the finished set (`COMPLETED`,
   `CANCELED`, `CANCELLED`, `SKIPPED`). A container whose children are all finished is
-  present as a single card-sized **stub** so the epic remains findable.
+  present as a single card-sized **stub**, *unless* nothing unfinished needs it — see
+  4.8.
 
 **Show completed** switches the variant the client queries. Each variant is stable on its
 own. Neither is derived from the other at read time.
@@ -334,6 +335,16 @@ projection** of task state:
   task set, parent links, container flags, and dependency edges against the layout rows
   and enqueues dirty marks for any discrepancy. This catches marks lost to bugs; it is
   bounded by project size but rare.
+
+  The diff runs **per variant** (2026-09-20), against what the visibility rules would
+  publish for that variant today: a task the variant should not hold but still has a row
+  for is drift just as much as a missing row, and a `kind` is checked against the
+  variant's own expectation (a stub is not a container). That is also the upgrade path
+  for a *rules* change — there is no engine-version column and none is wanted, so when
+  4.8's drop rule changed, the sweep is what retired the rows an already-laid-out install
+  had published under the old rule, with no operator action and no migration. It
+  deliberately chases presence, parentage and kind only, never geometry: the finished-leaf
+  fold above leaves an empty slot behind on purpose.
 - **Serialization with Tidy.** Tidy is a job (5.4) that takes the same meta lock. Dirty
   marks that arrive while Tidy runs are processed after it publishes, against the new
   layout.
@@ -341,7 +352,7 @@ projection** of task state:
   without re-laying its container: in `all` only the ancestors' aggregates are rewritten;
   in `active` a `status.finished` leaf's row is deleted and its slot left empty until the
   next ordinary pass over that container — a created, moved or reopened sibling, or a
-  tidy job (the reconcile sweep only diffs the `all` variant and never heals this gap).
+  tidy job (the sweep chases presence, not geometry, so it never heals this gap).
   If the finished leaf was the container's last active child, the container itself must
   flip to a stub, so that case takes the ordinary path instead of the fold. Re-flowing on
   every completion measured 1.4 s for a 5,000-child root and ran inside the orchestrator
@@ -359,10 +370,38 @@ project has no meta row for a variant, including the backfill for existing proje
 
 ### 4.8 Stubs
 
-In the `active` variant, a container whose children are all finished becomes a stub: a
+In the `active` variant, a container with no unfinished descendant becomes a stub: a
 1.0 by 1.0 record with `kind = stub` and no child records. When a child reopens, the
 container is rebuilt from its active children and its size change propagates as in 4.4
 step 6.
+
+**A stub is context, and only context (2026-09-20).** It exists so an epic stays findable
+and so a drawn edge from unfinished work still has a far endpoint to land on — 5.2's
+`cap_stubs` drops an edge whose far end has no row in the variant. A container that is
+context for nothing is therefore *dropped from the variant entirely*, with its subtree,
+rather than left tiling the canvas with work the viewer asked to hide. It is dropped when
+all three hold:
+
+- it is **itself** in the finished set (an unfinished container whose descendants have
+  all finished is live work and keeps its stub);
+- it has no unfinished descendant;
+- no unfinished task anywhere has a drawn edge (5.2's `DRAWN_TYPES`) into it or into its
+  subtree.
+
+The anchor from such an edge is charged to the *nearest* enclosing droppable container,
+so an edge into a child keeps that child's epic as the stub and the chain above it is
+restored as real containers by the ancestor closure. A finished ancestor of unfinished
+work is unaffected — it has an unfinished descendant. The `all` variant is untouched.
+
+Two affordances are deliberately given up for a dropped container, both restored by
+**Show completed** (which switches the query to `all`):
+
+- it cannot be **expanded** from the active view, because there is no tile to click — 5.2
+  promotes an `expanded` id to `all` only when that id resolves to a stub, and a dropped
+  container resolves to nothing. A stale persisted `expanded` naming one is ignored: no
+  rows, no error, no promotion;
+- it cannot be **found by search** in the active view, because `locate` and the `q`/
+  `status` filters read that variant's rows.
 
 ### 4.9 Cross-container edges
 
