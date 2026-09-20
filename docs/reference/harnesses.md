@@ -79,6 +79,7 @@ aq vault reset-harness --dry-run
 | `args` | list of strings | `[]` | Operator-supplied arguments, kept in their declared position. |
 | `env` | object | `{}` | Environment entries for this harness. Merged as *explicit* values, so they survive scrubbing. |
 | `base` | string | — | Inherit from another harness. **Single level only** — a chain is rejected, so cycles are impossible by construction. |
+| `provider` | string | — | The key this harness's model is looked up under in an intelligence class's per-provider mapping. Omit it for `claude`, `codex` and `gemini`, whose provider is inferred from the id (`anthropic`, `openai`, `google`). **Any other harness must declare it**: an unrecognised id infers `""`, and the launch then resolves no model at all and says so once in the log. Inherits through `base`. |
 
 ### Prompt delivery
 
