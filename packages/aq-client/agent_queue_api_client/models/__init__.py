@@ -825,6 +825,7 @@ from .profile_drift_row import ProfileDriftRow
 from .profile_reseed_request import ProfileReseedRequest
 from .profile_reseed_response import ProfileReseedResponse
 from .profile_reseed_response_422 import ProfileReseedResponse422
+from .profile_reseed_response_added_type_0 import ProfileReseedResponseAddedType0
 from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
@@ -2025,6 +2026,7 @@ __all__ = (
     "ProfileReseedRequest",
     "ProfileReseedResponse",
     "ProfileReseedResponse422",
+    "ProfileReseedResponseAddedType0",
     "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",

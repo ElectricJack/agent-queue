@@ -1248,25 +1248,48 @@ class ProfileCommandsMixin:
         }
 
     async def _cmd_profile_reseed(self, args: dict) -> dict:
-        """Restore one vault system profile from its shipped default.
+        """Restore or repair one vault system profile from its shipped default.
 
-        The explicit, opt-in counterpart to startup seeding, which never
-        overwrites.  The existing file is copied to ``profile.md.bak-<epoch>``
-        before being replaced unless ``backup=False``, and the new text is
-        synced straight to the DB so the change takes effect without waiting
-        for the vault watcher.
+        Two modes:
+
+        - Full reseed (default): overwrites the whole vault file with the
+          shipped default — the explicit, opt-in counterpart to startup
+          seeding, which never overwrites.  The existing file is copied to
+          ``profile.md.bak-<epoch>`` before being replaced unless
+          ``backup=False``.
+        - ``grants_only=True``: additive repair — appends only the
+          ``## Capabilities`` grant names the shipped default has that the
+          vault copy lacks (:func:`src.profiles.drift.merge_profile_grants`),
+          leaving everything else — including operator edits like
+          ``"harness": "codex"`` — untouched.  Refuses if the vault copy has
+          no ``## Capabilities`` section (that case needs a full reseed or a
+          hand edit).
+
+        Either way the new text is synced straight to the DB so the change
+        takes effect without waiting for the vault watcher.
 
         Args:
             profile_id (str): Required — the system profile to reseed.
-            backup (bool): Keep a ``.bak-<epoch>`` copy (default True).
+            backup (bool): Full reseed only — keep a ``.bak-<epoch>`` copy
+                (default True). ``grants_only`` always keeps a backup when it
+                changes anything.
+            grants_only (bool): Additive repair instead of a full overwrite
+                (default False).
 
         Returns:
-            ``{"success": True, "profile_id", "path", "backup_path",
-            "created"}``.
+            Full reseed: ``{"success": True, "profile_id", "path",
+            "backup_path", "created"}``.
+            ``grants_only``: ``{"success": True, "profile_id",
+            "mode": "grants_only", "added", "backup_path", "changed"}``.
         """
         from pathlib import Path
 
-        from src.profiles.drift import reseed_profile, system_profile_ids
+        from src.profiles.drift import (
+            merge_profile_grants,
+            reseed_profile,
+            system_profile_ids,
+            vault_profile_path,
+        )
         from src.profiles.retired_defaults import unretire_default
         from src.profiles.sync import sync_profile_text_to_db
 
@@ -1280,6 +1303,27 @@ class ProfileCommandsMixin:
                     f"(one of: {', '.join(system_profile_ids())})"
                 )
             }
+
+        if bool(args.get("grants_only")):
+            try:
+                result = await asyncio.to_thread(
+                    merge_profile_grants, self.config.data_dir, profile_id
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                return {"error": str(exc)}
+            result["success"] = True
+            result["mode"] = "grants_only"
+            if result["changed"]:
+                path = vault_profile_path(self.config.data_dir, profile_id)
+                markdown = Path(path).read_text(encoding="utf-8")
+                sync_result = await sync_profile_text_to_db(
+                    markdown, self.db, source_path=path, fallback_id=profile_id
+                )
+                if sync_result.warnings:
+                    result["warnings"] = sync_result.warnings
+                if not sync_result.success:
+                    result["sync_errors"] = sync_result.errors
+            return result
 
         backup = args.get("backup")
         result = await asyncio.to_thread(

@@ -722,6 +722,7 @@
         ],
         "optional": [
           "--backup",
+          "--grants-only",
           "--json",
           "--brief",
           "--api-url"

@@ -68,14 +68,16 @@ def sync_detailed(
     """Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
      Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
     Args:
         body (ProfileDriftRequest):
@@ -107,14 +109,16 @@ def sync(
     """Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
      Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
     Args:
         body (ProfileDriftRequest):
@@ -141,14 +145,16 @@ async def asyncio_detailed(
     """Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
      Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
     Args:
         body (ProfileDriftRequest):
@@ -178,14 +184,16 @@ async def asyncio(
     """Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
      Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/.
     Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a
     stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config
-    fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only —
-    repair with profile_reseed.
+    fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and
+    missing_grants — Capabilities grant names the shipped default has that the vault copy lacks. Read-
+    only — repair with profile_reseed (grants_only=true when missing_grants is the only finding).
 
     Args:
         body (ProfileDriftRequest):

@@ -18,11 +18,13 @@ path and it always leaves a backup behind.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from src.profiles.capabilities import NAMESPACES
 from src.profiles.retired_defaults import is_retired
 
 #: ``## Config`` keys whose value changes behaviour rather than presentation.
@@ -117,6 +119,13 @@ class ProfileDrift:
     #: Section headings only the vault copy has.  Reported for context —
     #: an operator adding a section is legitimate and is not drift on its own.
     extra_sections: list[str] = field(default_factory=list)
+    #: Per capability namespace (``harness_tools``, ``aq_commands``,
+    #: ``plugin_tools``), the grant names the shipped default has that the
+    #: vault copy lacks.  Extra vault grants are never reported here — an
+    #: operator adding a grant is legitimate.  Empty when either side has no
+    #: ``## Capabilities`` block (nothing to diff against; see
+    #: :attr:`missing_sections` instead).
+    missing_grants: dict[str, list[str]] = field(default_factory=dict)
     #: Parse errors from either file; a non-empty list means ``unreadable``.
     errors: list[str] = field(default_factory=list)
 
@@ -143,6 +152,10 @@ class ProfileDrift:
         if self.missing_sections:
             renamed = ", ".join(sorted(self.missing_sections))
             parts.append(f"missing section(s): {renamed}")
+        for ns in NAMESPACES:
+            names = self.missing_grants.get(ns)
+            if names:
+                parts.append(f"missing {len(names)} {ns} grant(s): {', '.join(names)}")
         return f"{self.profile_id}: " + ", ".join(parts)
 
     def to_dict(self) -> dict[str, Any]:
@@ -152,22 +165,51 @@ class ProfileDrift:
             "config": [d.to_dict() for d in self.config],
             "missing_sections": list(self.missing_sections),
             "extra_sections": list(self.extra_sections),
+            "missing_grants": {ns: list(names) for ns, names in self.missing_grants.items()},
             "errors": list(self.errors),
             "summary": self.summary(),
         }
 
 
-def _parse(path: str) -> tuple[dict, set[str], list[str]]:
-    """Parse ``path`` into (config, section-name set, errors)."""
+def _parse(path: str) -> tuple[dict, set[str], list[str], dict[str, list[str]] | None]:
+    """Parse ``path`` into (config, section-name set, errors, capabilities)."""
     from src.profiles.parser import parse_profile
 
     try:
         with open(path, encoding="utf-8") as handle:
             text = handle.read()
     except OSError as exc:
-        return {}, set(), [f"cannot read {path}: {exc}"]
+        return {}, set(), [f"cannot read {path}: {exc}"], None
     parsed = parse_profile(text)
-    return dict(parsed.config or {}), set(parsed.sections), list(parsed.errors)
+    return (
+        dict(parsed.config or {}),
+        set(parsed.sections),
+        list(parsed.errors),
+        parsed.capabilities,
+    )
+
+
+def _missing_grants(
+    shipped_capabilities: dict[str, list[str]] | None,
+    vault_capabilities: dict[str, list[str]] | None,
+) -> dict[str, list[str]]:
+    """Per-namespace grant names ``shipped`` has that ``vault`` lacks.
+
+    ``None`` on either side means there is no ``## Capabilities`` block to
+    diff against (a legacy vault copy still on ``## Tools``, or — in
+    principle — a malformed shipped default), and yields an empty result;
+    that case is reported as ``missing_sections`` instead.
+    """
+    if shipped_capabilities is None or vault_capabilities is None:
+        return {}
+    missing: dict[str, list[str]] = {}
+    for ns in NAMESPACES:
+        shipped_names = shipped_capabilities.get(ns, [])
+        vault_names = set(vault_capabilities.get(ns, []))
+        names = [name for name in shipped_names if name not in vault_names]
+        if names:
+            missing[ns] = names
+    return missing
 
 
 def diff_profile(
@@ -191,8 +233,10 @@ def diff_profile(
         )
         return drift
 
-    shipped_config, shipped_sections, shipped_errors = _parse(shipped_path)
-    vault_config, vault_sections, vault_errors = _parse(vault_path)
+    shipped_config, shipped_sections, shipped_errors, shipped_capabilities = _parse(
+        shipped_path
+    )
+    vault_config, vault_sections, vault_errors, vault_capabilities = _parse(vault_path)
 
     # A shipped default that does not parse is a packaging bug, not operator
     # drift, but the operator still needs to see it.
@@ -210,8 +254,9 @@ def diff_profile(
 
     drift.missing_sections = sorted(shipped_sections - vault_sections)
     drift.extra_sections = sorted(vault_sections - shipped_sections)
+    drift.missing_grants = _missing_grants(shipped_capabilities, vault_capabilities)
 
-    if drift.config or drift.missing_sections:
+    if drift.config or drift.missing_sections or drift.missing_grants:
         drift.status = STATUS_DRIFTED
     return drift
 
@@ -260,4 +305,201 @@ def reseed_profile(
         "path": dst,
         "backup_path": backup_path,
         "created": not existed,
+    }
+
+
+# --- additive grant repair ---------------------------------------------------
+#
+# ``reseed_profile`` overwrites the whole file, which is exactly right for a
+# profile predating ``## Capabilities`` and exactly wrong for an operator who
+# only wants the grants a shipped release added — a full reseed silently
+# discards edits like ``"harness": "codex"``.  ``merge_profile_grants``
+# operates on the vault file's ``## Capabilities`` fenced JSON block
+# textually, so every other byte of the file (``## Config`` including
+# ``harness``, other sections, existing/extra grants, their order) survives
+# untouched.  The only formatting choice it makes: an array that is still
+# written compact (all on one line, e.g. a freshly-seeded ``[]``) is
+# rewritten one-per-line once something is appended to it, matching the
+# style the shipped defaults use; an array already one-per-line keeps that
+# style and only gains lines at the end.
+
+_CAPABILITIES_HEADING_RE = re.compile(r"^## Capabilities[ \t]*\r?\n", re.MULTILINE | re.IGNORECASE)
+_NEXT_HEADING_RE = re.compile(r"^## ", re.MULTILINE)
+_JSON_FENCE_RE = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
+_ARRAY_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+
+def _capabilities_json_span(text: str) -> tuple[int, int]:
+    """Offsets of the raw JSON inside the vault file's ``## Capabilities`` fence."""
+    heading = _CAPABILITIES_HEADING_RE.search(text)
+    if heading is None:
+        raise ValueError("could not locate a '## Capabilities' heading")
+    body_start = heading.end()
+    next_heading = _NEXT_HEADING_RE.search(text, body_start)
+    body_end = next_heading.start() if next_heading else len(text)
+    fence = _JSON_FENCE_RE.search(text, body_start, body_end)
+    if fence is None:
+        raise ValueError("'## Capabilities' has no fenced ```json block")
+    return fence.start(1), fence.end(1)
+
+
+def _key_line_indent(block_text: str, key_start: int) -> str:
+    """Leading whitespace of the line ``key_start`` sits on, or ``""``.
+
+    Empty when the key shares its line with other content (a fully compact
+    block such as ``{"harness_tools": [], ...}`` all on one line) — there is
+    no indentation to imitate, so callers fall back to a plain two spaces.
+    """
+    line_start = block_text.rfind("\n", 0, key_start) + 1
+    candidate = block_text[line_start:key_start]
+    return candidate if candidate.strip() == "" else ""
+
+
+def _rewrite_capabilities_array(block_text: str, ns: str, new_names: list[str]) -> str:
+    """Append ``new_names`` to the ``ns`` array inside a Capabilities JSON block.
+
+    Only this one array is touched; everything else in ``block_text`` —
+    including the rest of this array's existing entries, their order and
+    any other namespace — is preserved verbatim.
+    """
+    pattern = re.compile(r'("' + re.escape(ns) + r'"\s*:\s*)\[(.*?)\]', re.DOTALL)
+    match = pattern.search(block_text)
+    if match is None:
+        raise ValueError(f"could not locate '{ns}' inside the ## Capabilities JSON block")
+
+    prefix, body = match.group(1), match.group(2)
+    key_indent = _key_line_indent(block_text, match.start())
+
+    if "\n" in body:
+        # Already one-per-line — append after the existing entries, matching
+        # their indentation and the shipped-file convention that only the
+        # last entry has no trailing comma.
+        lines = body.split("\n")
+        if lines and lines[-1].strip() == "":
+            closing_indent = lines[-1]
+            content_lines = lines[:-1]
+        else:
+            closing_indent = ""
+            content_lines = lines
+
+        item_indent = key_indent + "  "
+        for line in content_lines:
+            if line.strip():
+                item_indent = line[: len(line) - len(line.lstrip())]
+                break
+
+        last = content_lines[-1] if content_lines else ""
+        if last.strip() and not last.rstrip().endswith(","):
+            content_lines[-1] = last.rstrip() + ","
+
+        new_item_lines = [f'{item_indent}"{name}",' for name in new_names[:-1]]
+        new_item_lines.append(f'{item_indent}"{new_names[-1]}"')
+
+        merged_before = "\n".join(content_lines)
+        appended = "\n".join(new_item_lines)
+        new_array = "[" + merged_before + "\n" + appended + "\n" + closing_indent + "]"
+    else:
+        # Compact single-line array (including "[]") — rewritten one-per-line
+        # so the appended names are readable; existing entries and their
+        # order are preserved verbatim, just reformatted.
+        existing = _ARRAY_ITEM_RE.findall(body)
+        all_names = [*existing, *new_names]
+        item_indent = key_indent + "  "
+        item_lines = [f'{item_indent}"{name}",' for name in all_names[:-1]]
+        item_lines.append(f'{item_indent}"{all_names[-1]}"')
+        new_array = "[\n" + "\n".join(item_lines) + "\n" + key_indent + "]"
+
+    return block_text[: match.start()] + prefix + new_array + block_text[match.end() :]
+
+
+def _add_capability_grants(text: str, ns: str, names: list[str]) -> str:
+    start, end = _capabilities_json_span(text)
+    new_block = _rewrite_capabilities_array(text[start:end], ns, names)
+    return text[:start] + new_block + text[end:]
+
+
+def merge_profile_grants(
+    data_dir: str,
+    profile_id: str,
+    *,
+    root: str | None = None,
+) -> dict[str, Any]:
+    """Additively repair missing ``## Capabilities`` grants in a vault profile.
+
+    Unlike :func:`reseed_profile`, this never replaces the file: it appends
+    only the grant names the shipped default has that the vault copy lacks
+    to each namespace's list inside the vault's own ``## Capabilities`` JSON
+    block.  Everything else — ``## Config`` (including operator edits like
+    ``"harness": "codex"``), every other section, existing and
+    operator-added grants and their order — is preserved.
+
+    A ``.bak-<epoch>`` copy is written first, and the merged text is
+    validated with :func:`src.profiles.parser.parse_profile` *before* the
+    file is replaced; if it does not parse cleanly, nothing is written and
+    no backup is left behind.
+
+    Returns ``{"profile_id", "added": {namespace: [names]}, "backup_path",
+    "changed"}``.  When nothing is missing this is a no-op: ``added`` is
+    empty, ``changed`` is False, ``backup_path`` is None and nothing is
+    written.
+
+    Raises
+    ------
+    FileNotFoundError
+        ``profile_id`` is not a shipped system profile, or has no vault copy
+        to merge into.
+    ValueError
+        The vault copy has no ``## Capabilities`` section (it needs a full
+        reseed or a hand edit instead), or the merged text failed to parse.
+    """
+    from src.profiles.parser import parse_profile
+
+    shipped_path = shipped_profile_path(profile_id, root)
+    if not os.path.isfile(shipped_path):
+        raise FileNotFoundError(f"'{profile_id}' is not a shipped system profile")
+
+    vault_path = vault_profile_path(data_dir, profile_id)
+    if not os.path.isfile(vault_path):
+        raise FileNotFoundError(f"no vault copy of '{profile_id}' at {vault_path}")
+
+    with open(shipped_path, encoding="utf-8") as handle:
+        shipped_text = handle.read()
+    with open(vault_path, encoding="utf-8") as handle:
+        vault_text = handle.read()
+
+    shipped_parsed = parse_profile(shipped_text)
+    vault_parsed = parse_profile(vault_text)
+
+    if vault_parsed.capabilities is None:
+        raise ValueError(
+            f"'{profile_id}' vault copy has no '## Capabilities' section to merge "
+            "grants into — use a full reseed (`aq agent profile-reseed "
+            f"--profile-id {profile_id}`) or a hand edit"
+        )
+
+    added = _missing_grants(shipped_parsed.capabilities, vault_parsed.capabilities)
+    if not added:
+        return {"profile_id": profile_id, "added": {}, "backup_path": None, "changed": False}
+
+    merged_text = vault_text
+    for ns, names in added.items():
+        merged_text = _add_capability_grants(merged_text, ns, names)
+
+    revalidated = parse_profile(merged_text)
+    if revalidated.errors:
+        raise ValueError(
+            f"merged '## Capabilities' for '{profile_id}' would not parse cleanly: "
+            f"{'; '.join(revalidated.errors)}"
+        )
+
+    backup_path = f"{vault_path}.bak-{int(time.time())}"
+    shutil.copy2(vault_path, backup_path)
+    with open(vault_path, "w", encoding="utf-8") as handle:
+        handle.write(merged_text)
+
+    return {
+        "profile_id": profile_id,
+        "added": added,
+        "backup_path": backup_path,
+        "changed": True,
     }

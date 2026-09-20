@@ -288,7 +288,8 @@ worker holds the task.
 | `aq agent list-profiles` / `get-profile` | Read the parsed profile rows. |
 | `aq agent create-profile` / `edit-profile` / `delete-profile` | Manage profiles; deleting a shipped id writes a tombstone. |
 | `aq agent import-profile` / `export-profile` | YAML round-trip. |
-| `aq agent profile-drift` | Which vault system profiles diverge from `src/profiles/defaults/`, on the semantic fields only (`read_only`, `harness`, `lifecycle`, `needs_workspace`). |
+| `aq agent profile-drift` | Which vault system profiles diverge from `src/profiles/defaults/`, on the semantic fields (`read_only`, `harness`, `lifecycle`, `needs_workspace`), missing/extra sections, and `missing_grants` (per-namespace `## Capabilities` grant names the shipped default has that the vault copy lacks). |
+| `aq agent profile-reseed --profile-id <id> --grants-only` | Additive repair: merge only the missing `## Capabilities` grants into the vault copy, keeping `.bak-<epoch>`; every other edit (e.g. `harness`) survives untouched. Refuses if the vault copy has no `## Capabilities` section. |
 | `aq agent profile-reseed --profile-id <id>` | Overwrite one vault profile with the shipped version, keeping `.bak-<epoch>`; also clears its tombstone. |
 | `aq agent profile-audit --legacy-only` | Profiles still deriving capabilities from `allowed_tools`. |
 | `aq agent check-profile` / `install-profile` | Validate and install a profile's `## Install` dependencies. |

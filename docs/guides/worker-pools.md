@@ -961,19 +961,30 @@ run `aq task subtask-done N` gets `capability_denied`, and then a
 "report progress" line for a profile that lacks `task_subtask_update`, so the
 symptom is a checklist the worker can read but not tick, not a denial loop.)
 
-Two commands close the gap:
+`profiles.system_drift` now sees this directly — it diffs each vault copy's
+`## Capabilities` block against the shipped default and reports
+`missing_grants` per namespace (`harness_tools` / `aq_commands` /
+`plugin_tools`), naming the exact commands a profile is missing. The repair
+that keeps your edits is `--grants-only`:
 
 ```bash
-aq doctor --check profiles.system_drift        # which vault copies diverge, and how
-aq agent profile-reseed --profile-id <id>      # rewrite one from the shipped default
+aq doctor --check profiles.system_drift                          # which vault copies diverge, and how
+aq agent profile-reseed --profile-id <id> --grants-only           # merge in only the missing grants
 ```
 
 `profiles.system_drift` is report-only by design — overwriting a vault copy
-would discard operator edits silently. `aq agent profile-reseed` writes a
-`.bak-<epoch>` beside the file first, so a profile you *had* edited can be
-reconciled by hand afterwards. Reseed the profiles you have not customised,
-and for the ones you have, add the missing commands to their
-`## Config.aq_commands` list yourself.
+would discard operator edits silently. `--grants-only` appends only the
+grant names the shipped default has that your vault copy lacks to its own
+`## Capabilities` JSON, writing a `.bak-<epoch>` first; everything else —
+`## Config` (including a `harness` you changed), other sections, and any
+grant you added yourself — is left exactly as it was. It refuses (no write,
+no backup) if the vault copy predates `## Capabilities` entirely (still on
+the legacy `## Tools` block) or if the merge would not parse cleanly.
+
+A full `aq agent profile-reseed --profile-id <id>` (no `--grants-only`)
+remains for that legacy-`## Tools` case, or for any other divergence you'd
+rather just take the shipped version of — it overwrites the whole file (also
+behind a `.bak-<epoch>`), so reconcile edits from the backup afterwards.
 
 ### Retiring a shipped default
 

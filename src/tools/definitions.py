@@ -2988,8 +2988,10 @@ _ALL_TOOL_DEFINITIONS = [
             "an existing vault profile.md, so an old copy keeps old semantics: a "
             "stale read_only re-arms the require-a-PR close gate. Reports "
             "divergence on the semantic Config fields (read_only, harness, "
-            "lifecycle, needs_workspace) and missing/renamed sections. Read-only "
-            "— repair with profile_reseed."
+            "lifecycle, needs_workspace), missing/renamed sections, and "
+            "missing_grants — Capabilities grant names the shipped default has "
+            "that the vault copy lacks. Read-only — repair with profile_reseed "
+            "(grants_only=true when missing_grants is the only finding)."
         ),
         "input_schema": {
             "type": "object",
@@ -3012,7 +3014,11 @@ _ALL_TOOL_DEFINITIONS = [
             "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
             "The explicit repair for profile_drift findings — startup seeding is "
             "write-if-absent and will never do this for you. Also clears any "
-            "delete-time retirement tombstone for the profile."
+            "delete-time retirement tombstone for the profile. Pass grants_only "
+            "to instead additively merge only the missing ## Capabilities grant "
+            "names into the vault copy, preserving operator edits such as "
+            "harness — use this when profile_drift's only finding is "
+            "missing_grants."
         ),
         "input_schema": {
             "type": "object",
@@ -3023,7 +3029,19 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "backup": {
                     "type": "boolean",
-                    "description": "Keep a .bak-<epoch> copy of the replaced file (default true)",
+                    "description": (
+                        "Full reseed only: keep a .bak-<epoch> copy of the replaced "
+                        "file (default true)"
+                    ),
+                },
+                "grants_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Additive repair instead of a full overwrite: merge only "
+                        "the missing ## Capabilities grant names into the vault "
+                        "copy, keeping every other edit (default false). Refuses "
+                        "if the vault copy has no ## Capabilities section."
+                    ),
                 },
             },
             "required": ["profile_id"],

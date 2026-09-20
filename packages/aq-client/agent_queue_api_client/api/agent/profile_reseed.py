@@ -68,12 +68,16 @@ def sync_detailed(
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
     Args:
         body (ProfileReseedRequest):
@@ -105,12 +109,16 @@ def sync(
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
     Args:
         body (ProfileReseedRequest):
@@ -137,12 +145,16 @@ async def asyncio_detailed(
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
     Args:
         body (ProfileReseedRequest):
@@ -172,12 +184,16 @@ async def asyncio(
     """Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
      Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a
     .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings — startup seeding
     is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone
-    for the profile.
+    for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant
+    names into the vault copy, preserving operator edits such as harness — use this when profile_drift's
+    only finding is missing_grants.
 
     Args:
         body (ProfileReseedRequest):

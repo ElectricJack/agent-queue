@@ -308,7 +308,9 @@ load-bearing rather than cosmetic:
 
 Section renames drift the same way — a copy predating the `## Tools` →
 `## Capabilities` rename routes through the legacy `allowed_tools` adapter
-forever.
+forever. So does a `## Capabilities` grant list: a release that adds a
+command to a shipped profile's `aq_commands` (or `harness_tools` /
+`plugin_tools`) never reaches an existing vault copy either.
 
 **Detection** is `src/profiles/drift.py`, surfaced two ways:
 
@@ -316,24 +318,38 @@ forever.
 - `aq agent profile-drift [--profile-id <id>] [--drifted-only]` — the same
   comparison as a command, one row per system profile with its status
   (`ok` / `not_seeded` / `drifted` / `unreadable`), the diverging semantic
-  fields, and missing/extra section headings.
+  fields, missing/extra section headings, and `missing_grants` — per
+  capability namespace, the grant names the shipped default has that the
+  vault copy lacks.
 
-Only the four fields above and *missing* sections count as drift. A changed
-`description`, `default_class` or `harness`, and sections the operator added,
-are the operator's business and are reported for context but never flagged.
+Only the four fields above, *missing* sections, and `missing_grants` count as
+drift. A changed `description`, `default_class` or `harness`, sections the
+operator added, and grants the operator added beyond what ships are the
+operator's business and are reported for context but never flagged.
 
-**Repair** is explicit and per-profile:
+**Repair** is explicit and per-profile, and comes in two shapes:
 
 ```bash
-aq agent profile-drift --drifted-only     # what diverged, and how
-aq agent profile-reseed reviewer          # restore the shipped version
+aq agent profile-drift --drifted-only                    # what diverged, and how
+aq agent profile-reseed --profile-id reviewer --grants-only   # merge in only the missing grants
+aq agent profile-reseed --profile-id reviewer                 # or: restore the whole shipped version
 ```
 
-`profile-reseed` copies the old file to `profile.md.bak-<epoch>` (pass
-`--backup false` to skip) before writing the shipped default, then syncs the
-new text straight to the DB. There is deliberately no `aq doctor --fix` for
-this: overwriting an operator-owned vault file automatically would violate the
-`--fix` safety rules (trust-and-ops §5.4).
+`--grants-only` (`merge_profile_grants`) is additive: it edits the vault
+file's `## Capabilities` JSON block in place, appending only the missing
+grant names, and leaves `## Config` (including an operator's `harness`
+edit), every other section, and any grant the operator added themselves
+untouched. It refuses — writing nothing, leaving no backup — when the vault
+copy has no `## Capabilities` block at all (it predates the rename and needs
+the full reseed below) or when the merged text would not parse.
+
+Without `--grants-only`, `profile-reseed` copies the old file to
+`profile.md.bak-<epoch>` (pass `--no-backup` to skip) before overwriting it
+wholesale with the shipped default, then syncs the new text straight to the
+DB. There is deliberately no `aq doctor --fix` for either shape: overwriting
+or merging into an operator-owned vault file automatically would violate the
+`--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
+repair explicitly.
 
 ---
 

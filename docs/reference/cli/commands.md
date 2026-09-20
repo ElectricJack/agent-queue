@@ -83,7 +83,7 @@ a *live* worker and reports the delivery status.
 | `aq agent message` | `agent_message` | hand | Send BODY to a live task, agent, or session. |
 | `aq agent profile-audit` | `profile_audit` | gen | Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. |
 | `aq agent profile-drift` | `profile_drift` | gen | Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. |
-| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. |
+| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. Pass `--grants-only` to instead merge in just the missing `## Capabilities` grants, keeping every other edit. |
 | `aq agent show-effective-profile` | `show_effective_profile` | gen | Run the orchestrator's profile resolution cascade for a (project_id, agent_type) pair and return the merged profile the next task launch would use. |
 | `aq agent start-terminal` | `start_agent_terminal` | gen | Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. |
 

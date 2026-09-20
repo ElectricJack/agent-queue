@@ -2518,8 +2518,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
-        "description": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
+        "summary": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and missing_grants \u2014 Capabilities grant names the shipped default has that the vault copy lacks. Read-only \u2014 repair with profile_reseed (grants_only=true when missing_grants is the only finding).",
+        "description": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and missing_grants \u2014 Capabilities grant names the shipped default has that the vault copy lacks. Read-only \u2014 repair with profile_reseed (grants_only=true when missing_grants is the only finding).",
         "operationId": "profile_drift",
         "requestBody": {
           "content": {
@@ -2565,8 +2565,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
-        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
+        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant names into the vault copy, preserving operator edits such as harness \u2014 use this when profile_drift's only finding is missing_grants.",
+        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant names into the vault copy, preserving operator edits such as harness \u2014 use this when profile_drift's only finding is missing_grants.",
         "operationId": "profile_reseed",
         "requestBody": {
           "content": {
@@ -36172,7 +36172,19 @@
               }
             ],
             "title": "Backup",
-            "description": "Keep a .bak-<epoch> copy of the replaced file (default true)"
+            "description": "Full reseed only: keep a .bak-<epoch> copy of the replaced file (default true)"
+          },
+          "grants_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grants Only",
+            "description": "Additive repair instead of a full overwrite: merge only the missing ## Capabilities grant names into the vault copy, keeping every other edit (default false). Refuses if the vault copy has no ## Capabilities section."
           }
         },
         "type": "object",
@@ -36212,6 +36224,45 @@
             "type": "boolean",
             "title": "Unretired",
             "default": false
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "added": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Added"
+          },
+          "changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed"
           },
           "warnings": {
             "anyOf": [
