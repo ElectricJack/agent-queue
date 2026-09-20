@@ -525,3 +525,63 @@ class TestShippedDialogRulesMatchTheirScreens:
         harness = self._shipped(harness_id)
         unflagged = [r.name for r in harness.dialogs if "|" in r.pattern and not r.is_regex]
         assert unflagged == []
+
+
+class TestProviderField:
+    """A harness declares the provider key that indexes an intelligence class.
+
+    ``SessionSpecBuilder`` reads ``harness.provider`` before falling back to
+    ``_infer_provider_from_harness``, whose mapping only knows the three
+    shipped CLIs. Without a parsed field the declaration is silently dropped
+    and a non-shipped harness resolves no model at all.
+    """
+
+    def test_declared_provider_is_kept(self):
+        parsed = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\nname: OpenCode\n",
+            )
+        )
+        assert parsed.is_valid, parsed.errors
+        assert parsed.harness.provider == "ollama"
+
+    def test_provider_is_a_recognised_key(self):
+        """Declared support, not mere tolerance.
+
+        Unknown keys warn so a file authored against a newer daemon still
+        loads. A shipped key that warns on every parse would make that
+        signal useless noise for the operator reading ``aq doctor``.
+        """
+        parsed = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\nname: OpenCode\n",
+            )
+        )
+        assert not [w for w in parsed.warnings if "provider" in w]
+
+    def test_provider_defaults_to_empty(self):
+        parsed = parse_harness_markdown(_md('{"command": "claude"}'))
+        assert parsed.is_valid, parsed.errors
+        assert parsed.harness.provider == ""
+
+    def test_child_inherits_provider_from_base(self):
+        """``provider`` inherits like every other launch-flag string.
+
+        A variant declared with ``base: opencode`` that silently lost the
+        provider would resolve no model, and the only symptom would be a log
+        line -- the same silent-drop this field exists to remove.
+        """
+        parent = parse_harness_markdown(
+            _md(
+                '{"command": "opencode", "provider": "ollama"}',
+                frontmatter="id: opencode\n",
+            )
+        ).harness
+        child = parse_harness_markdown(
+            _md('{"base": "opencode"}', frontmatter="id: opencode-mini\n")
+        ).harness
+        resolved, errors = resolve_base(child, lambda n: parent if n == "opencode" else None)
+        assert errors == []
+        assert resolved.provider == "ollama"

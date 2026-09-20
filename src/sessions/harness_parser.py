@@ -69,6 +69,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "permission_flag",
         "model_flag",
         "effort_flag",
+        "provider",
         "session_id_flag",
         "settings_flag",
         "tools_flag",
@@ -126,6 +127,12 @@ class Harness:
     permission_flag: str = ""
     model_flag: str = ""
     effort_flag: str = ""
+    #: Provider key that indexes an intelligence class's per-provider
+    #: mapping. ``SessionSpecBuilder`` reads this before falling back to
+    #: ``_infer_provider_from_harness``, whose mapping only knows the three
+    #: shipped CLIs -- so any other harness must declare it here or resolve
+    #: no class-driven model at all.
+    provider: str = ""
     session_id_flag: str = ""
     #: Flag that points the harness at a settings/hooks file, e.g. Claude's
     #: ``--settings``.  Emitted only when ``hook_files`` actually rendered —
@@ -370,6 +377,7 @@ def parse_harness_markdown(
         prompt_flag=prompt_flag,
         permission_flag=str(config.get("permission_flag") or ""),
         model_flag=str(config.get("model_flag") or ""),
+        provider=str(config.get("provider") or ""),
         effort_flag=str(config.get("effort_flag") or ""),
         session_id_flag=str(config.get("session_id_flag") or ""),
         settings_flag=str(config.get("settings_flag") or ""),
@@ -408,6 +416,7 @@ _INHERITABLE = (
     "permission_flag",
     "model_flag",
     "effort_flag",
+    "provider",
     "session_id_flag",
     "settings_flag",
     "ready_delay_ms",

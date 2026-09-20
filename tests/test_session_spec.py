@@ -1047,3 +1047,48 @@ class TestSpecShape:
             instance_token="t",
         )
         assert spec.env["AQ_API_URL"] == "http://127.0.0.1:9000"
+
+
+class TestDeclaredProvider:
+    """A harness outside the shipped three resolves a model by declaring one.
+
+    ``_infer_provider_from_harness`` maps only claude/codex/gemini. Every
+    other harness returns ``""`` there, and resolution then logs and leaves
+    the launch model unset -- so the declaration on the harness file is the
+    only way an OpenCode/Ollama session gets a class-driven model.
+    """
+
+    @staticmethod
+    def _builder():
+        return SessionSpecBuilder(
+            _Cfg(),
+            intelligence_classes={
+                "deep-high": IntelligenceClass(
+                    id="deep-high",
+                    name="Deep High",
+                    description="",
+                    mapping={"ollama": {"model": "ollama/qwen3.8:27b"}},
+                )
+            },
+        )
+
+    def test_declared_provider_resolves_the_class_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+            provider="ollama",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == "ollama/qwen3.8:27b"
+
+    def test_undeclared_provider_resolves_no_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == ""
