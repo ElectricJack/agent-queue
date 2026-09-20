@@ -25,11 +25,10 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 /**
- * Terminal statuses. A card in one of these with nothing running or blocked
- * beneath it has no live state left to show, so it renders the cheap variant:
- * a static completion line instead of a progress bar, and none of the live
- * counters. On a project view where most of the graph is finished work this is
- * most of the cards.
+ * Terminal statuses. Toggling a card in one of these expands it as a
+ * "finished" subtree (`onToggleChildren`'s second argument), which the
+ * active-variant server rules use to decide whether the subtree still needs
+ * a real tiles request or can stay collapsed.
  */
 const SETTLED = new Set(["COMPLETED", "CANCELLED", "CANCELED"]);
 
@@ -56,7 +55,6 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
       ? "All children are hidden by the current filters."
       : undefined;
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
-  const settled = SETTLED.has(task.status) && hierarchy.runningCount === 0 && hierarchy.blockedCount === 0;
 
   return (
     <div
@@ -120,15 +118,13 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
             {hierarchy.descendantCount > 0 && (
               <span className="block">
                 <span>{hierarchy.completedCount}/{hierarchy.descendantCount} descendants completed</span>
-                {!settled && (
-                  <ProgressBar
-                    className="mt-0.5"
-                    done={hierarchy.completedCount}
-                    total={hierarchy.descendantCount}
-                    running={hierarchy.runningCount}
-                    blocked={hierarchy.blockedCount}
-                  />
-                )}
+                <ProgressBar
+                  className="mt-0.5"
+                  done={hierarchy.completedCount}
+                  total={hierarchy.descendantCount}
+                  running={hierarchy.runningCount}
+                  blocked={hierarchy.blockedCount}
+                />
               </span>
             )}
             {(subtasks?.total ?? 0) > 0 && (

@@ -29,11 +29,10 @@ describe("finished cards", () => {
     expect(screen.getByRole("button", { name: "Open task Ship it" })).not.toHaveClass("nodrag");
   });
 
-  it("drops the progress ring once a card is settled", () => {
+  it("still shows a (full) progress bar once a card is settled", () => {
     render(<TaskCard data={card("COMPLETED")} />);
-    // The number stays — it is the card's only completion signal now.
     expect(screen.getByText("3/4 descendants completed")).toBeInTheDocument();
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
   });
 
   it("keeps the live variant while work is still running underneath", () => {
