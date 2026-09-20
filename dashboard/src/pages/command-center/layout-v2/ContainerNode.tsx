@@ -13,20 +13,37 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   const { node, onFocus, onToggleChildren, onOpenTask } = data;
   const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
   const isPhase = node.phase_order != null;
+  const phaseText = isPhase
+    ? `Phase ${node.phase_order}${node.phase_label ? ` · ${node.phase_label}` : ""}`
+    : "";
+  const hasBar = (node.agg_descendants ?? 0) > 0;
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="in-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="in-top" type="target" position={Position.Top} isConnectable={false} />
-      {isPhase && (
-        <div className="flex items-center gap-1 border-b border-white/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-200">
-          {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
-          <span className="truncate">
-            {`Phase ${node.phase_order}`}{node.phase_label ? ` · ${node.phase_label}` : ""}
+      {/*
+       * Everything below lives in this ONE fixed-height row: the engine only
+       * reserves `headerPx` (0.35 * UNIT_H, mirroring `HEADER_H` in
+       * src/task_graph/layout/constants.py) before a container's first child
+       * row, so a sibling stacked above/below this div -- a second header
+       * line, a banner, a progress bar div -- pushes that reserved space and
+       * overlaps the first row of children on the real canvas. The phase
+       * chip is an inline element inside the row; the progress bar is
+       * absolutely positioned along the row's own bottom edge so it never
+       * adds height.
+       */}
+      <div className="relative flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: headerPx }}>
+        {isPhase && (
+          <span
+            title={phaseText}
+            className="flex shrink-0 items-center gap-0.5 truncate rounded bg-indigo-500/20 px-1 text-[9px] font-semibold text-indigo-200"
+            style={{ maxWidth: "5rem" }}
+          >
+            {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-2.5 w-2.5 shrink-0" />}
+            <span className="truncate">{phaseText}</span>
           </span>
-        </div>
-      )}
-      <div className="flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: headerPx }}>
+        )}
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
           onClick={(e) => { e.stopPropagation(); onOpenTask?.(node.id, { id: node.id, playbook_run_id: node.playbook_run_id }); }}>{node.title}</button>
@@ -38,17 +55,17 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
           onClick={(e) => { e.stopPropagation(); onFocus?.(node.id); }}><MagnifyingGlassPlusIcon className="h-3.5 w-3.5" /></button>
         <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id, FINISHED.has(node.status)); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
+        {hasBar && (
+          <div className="absolute inset-x-2 bottom-0">
+            <ProgressBar
+              done={node.agg_completed ?? 0}
+              total={node.agg_descendants ?? 0}
+              running={node.agg_running ?? 0}
+              blocked={node.agg_blocked ?? 0}
+            />
+          </div>
+        )}
       </div>
-      {(node.agg_descendants ?? 0) > 0 && (
-        <div className="px-2 pb-0.5">
-          <ProgressBar
-            done={node.agg_completed ?? 0}
-            total={node.agg_descendants ?? 0}
-            running={node.agg_running ?? 0}
-            blocked={node.agg_blocked ?? 0}
-          />
-        </div>
-      )}
       <Handle id="out-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />
       <Handle id="out-bottom" type="source" position={Position.Bottom} isConnectable={false} />
