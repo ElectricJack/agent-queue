@@ -286,10 +286,26 @@ def _check_keys(graph: TaskGraph) -> list[GraphError]:
 def _check_phases(graph: TaskGraph) -> list[GraphError]:
     """The ``phases:``/``phase:`` rules (planning-emits-phases §7.3).
 
-    Two errors — a duplicate phase key and a node naming a phase that was
-    never declared — and two warnings.  The warnings are warnings on purpose:
-    an empty phase and a belt-and-braces edge are both *legal*, and whether
-    they are wanted is the planner's judgement, not the validator's (§3.5).
+    Three errors — a duplicate phase key, a node naming a phase that was
+    never declared, and a **phase-inverted** blocking edge — and two
+    warnings.  The warnings are warnings on purpose: an empty phase and a
+    belt-and-braces backward edge are both *legal*, and whether they are
+    wanted is the planner's judgement, not the validator's (§3.5).
+
+    The cross-phase edge rule, in full.  Only a *gating* edge
+    (:data:`BLOCKING_DEP_TYPES`) is considered, and only between two nodes
+    that both name a declared phase:
+
+    - needing an **earlier** phase → ``redundant_phase_edge`` (warning): the
+      phase gate already orders them;
+    - needing a **later** phase → ``inverted_phase_edge`` (error): a
+      permanent deadlock;
+    - needing the **same** phase → nothing: that is ordinary ordering inside
+      a stage, and the whole point of putting them in one phase.
+
+    An edge with an **unphased** end, either direction, is fine and reported
+    as nothing: an unphased node is a direct child of the epic, which no
+    phase withholds, so it runs no matter which phase is waiting.
     """
     findings: list[GraphError] = []
     order: dict[str, int] = {}
@@ -331,10 +347,19 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
     node_phase = {node.key: node.phase for node in graph.nodes}
     for node in graph.nodes:
         if node.phase not in order:
+            # An UNPHASED node is a direct child of the epic, and no phase
+            # gates the epic — it runs whatever any phase is waiting for, so
+            # an edge from it can never close the loop below.
             continue
         for need in node.needs:
+            if need.dep_type not in BLOCKING_DEP_TYPES:
+                # A non-gating edge (``related``, ``discovered-from``, …)
+                # neither deadlocks nor is covered by the phase gate.
+                continue
             target = node_phase.get(need.on)
             if target is None or target not in order:
+                # The other end is unphased (see above) or is an id naming a
+                # task outside this document, which no phase here withholds.
                 continue
             if order[target] < order[node.phase]:
                 findings.append(
@@ -344,6 +369,24 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
                         f"phase '{target}' — the phase gate already covers it",
                         node.key,
                         severity="warning",
+                    )
+                )
+            elif order[target] > order[node.phase]:
+                # Deadlock, and one no cycle check can see: phase B is
+                # blocked until phase A is COMPLETED, phase A settles only
+                # when every child including *node* completes, and *node*
+                # waits on a task withheld under blocked phase B.  The cycle
+                # runs through the phase containers, which are not edges in
+                # this document at all.
+                findings.append(
+                    _error(
+                        "inverted_phase_edge",
+                        f"node '{node.key}' in phase '{node.phase}' needs '{need.on}' in the "
+                        f"later phase '{target}' — that deadlocks: phase '{target}' cannot "
+                        f"start until phase '{node.phase}' completes, which waits on "
+                        f"'{node.key}'. Move one of them, or drop the phases and order the "
+                        "tasks with needs/blocks edges",
+                        node.key,
                     )
                 )
     return findings

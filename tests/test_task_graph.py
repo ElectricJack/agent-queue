@@ -505,6 +505,102 @@ class TestPhaseValidation:
         assert len(matched) == 1
         assert (matched[0].severity, matched[0].node) == ("warning", "b")
 
+    async def test_an_edge_onto_a_later_phase_is_an_error(self, vault):
+        """A phase-inverted need is a permanent deadlock no cycle check sees."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+        # Nothing else fires: the cycle check cannot see this at all.
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
+    async def test_every_blocking_dep_type_inverts(self, vault, dep_type):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": dep_type}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_non_blocking_edge_across_phases_is_neither(self, vault):
+        """``related`` does not gate, so it can neither deadlock nor be redundant."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "related"}],
+                    },
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a", "dep_type": "related"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
+    @pytest.mark.parametrize("phased_needs_unphased", [True, False])
+    async def test_an_edge_between_a_phased_and_an_unphased_node_is_fine(
+        self, vault, phased_needs_unphased
+    ):
+        """Neither direction can deadlock: an unphased node hangs off the epic,
+        which nothing gates, so it runs whatever any phase is waiting for."""
+        phased = {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}
+        unphased = {"key": "u", "title": "U", "acceptance": ["x"]}
+        if phased_needs_unphased:
+            phased["needs"] = [{"on": "u"}]
+        else:
+            unphased["needs"] = [{"on": "a"}]
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [phased, unphased],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
     async def test_an_edge_within_one_phase_is_not_redundant(self, vault):
         findings = await self._findings(
             {

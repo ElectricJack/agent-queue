@@ -23,7 +23,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -577,7 +577,10 @@ def merge_documents(chain: list[Formula]) -> dict:
     - ``parent``: merged field-wise, child keys override, missing keys
       inherited from the parent formula(s).
     - ``phases``: merged by ``key``, exactly like ``nodes`` — a child
-      formula amends a phase it names and appends any it introduces.
+      formula amends a phase it names and appends any it introduces. A
+      child's new phases land at the END, and document order *is* the gate
+      order, so a child can only add later phases: it can never reorder the
+      chain's stages or insert one before them.
     - ``nodes``: merged by ``key``. A child node replaces the fields it
       authors on the same-keyed parent node (field-wise, child wins);
       ``needs`` (a list of strings and/or dicts, either shape), ``labels``,
@@ -591,6 +594,12 @@ def merge_documents(chain: list[Formula]) -> dict:
     doc: dict = {"version": 1, "defaults": {}, "parent": {}, "phases": [], "nodes": []}
     index: dict[str, int] = {}
     phase_index: dict[str, int] = {}
+    #: A non-list ``phases`` from any hop.  Kept aside rather than written
+    #: into ``doc`` mid-loop, so a later hop's merge still has a list to
+    #: append to; it replaces the merged value at the end and reaches the
+    #: parser as a ``bad_phase`` finding, which is where malformed input
+    #: belongs.
+    malformed_phases: Any = None
     for formula in chain:
         src = copy.deepcopy(formula.graph_doc)
         if src.get("spec"):
@@ -613,7 +622,7 @@ def merge_documents(chain: list[Formula]) -> dict:
                     phase_index[key] = len(doc["phases"])
                     doc["phases"].append(_drop_null(phase))
         elif raw_phases is not None:
-            doc["phases"] = raw_phases
+            malformed_phases = raw_phases
         for node in src.get("nodes") or []:
             key = node["key"]
             clean = _drop_null(node)
@@ -624,7 +633,9 @@ def merge_documents(chain: list[Formula]) -> dict:
                 doc["nodes"].append(clean)
     if not doc["parent"]:
         doc.pop("parent")
-    if not doc["phases"]:
+    if malformed_phases is not None:
+        doc["phases"] = malformed_phases
+    elif not doc["phases"]:
         doc.pop("phases")
     return doc
 

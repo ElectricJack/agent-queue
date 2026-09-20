@@ -2970,9 +2970,13 @@ class TaskCommandsMixin:
         A phased graph is three levels — epic → phase → task — which is the
         whole ``MAX_STRUCTURAL_DEPTH`` budget, so it has to start at the
         project root.  Shared by ``create_task_graph`` and ``formula_cook``,
-        which share the grammar and ``_validate_graph_parent`` with it.
+        which share the grammar and ``_validate_graph_parent`` with it, and
+        answered by both **before** validation — where a graph may go is
+        structural, and a finding list for a document that could never be
+        created there teaches the author the wrong lesson.  *graph* may be
+        ``None`` when the document never parsed.
         """
-        if not graph.phases or not parent_id:
+        if graph is None or not graph.phases or not parent_id:
             return None
         return {
             "success": False,

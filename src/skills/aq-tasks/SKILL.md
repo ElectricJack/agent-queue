@@ -374,6 +374,10 @@ nodes:
 
 That creates `<epic>.1`/`<epic>.2` for the phases and `<epic>.1.1…` for
 their work; a node that names no phase stays a direct child of the epic.
+Never point a `needs` at a node in a *later* phase — that deadlocks (the
+later phase waits for this one to finish, and this one waits for that task),
+and it is refused as `inverted_phase_edge`. If the work really runs in that
+order, the two are in the wrong phases.
 Because epic → phase → task is the whole depth budget, such a document must
 be created at the project root — `phases:` with `--parent` is refused with
 `graph.phases_need_root`. Filing phases one `phase-create` call at a time is

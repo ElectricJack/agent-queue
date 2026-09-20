@@ -239,7 +239,9 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
 
     phase = raw.get("phase", defaults.get("phase"))
     if phase is not None and (not isinstance(phase, str) or not phase.strip()):
-        errors.append(_err("bad_field_type", f"'phase' must be a nonempty string, got {phase!r}", key))
+        errors.append(
+            _err("bad_field_type", f"'phase' must be a nonempty string, got {phase!r}", key)
+        )
     elif isinstance(phase, str):
         node.phase = phase.strip()
 

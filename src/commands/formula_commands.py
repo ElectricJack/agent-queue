@@ -31,6 +31,7 @@ import json
 import logging
 from typing import Any
 
+from src.database.queries.hierarchy_queries import HierarchyError
 from src.task_graph import (
     GraphParseError,
     create_graph,
@@ -284,6 +285,13 @@ class FormulaCommandsMixin:
         except FormulaError as exc:
             return {"success": False, "error": str(exc)}
 
+        # Before the findings envelope, as ``create_task_graph`` does: where
+        # the graph goes is structural, and a planner given a finding list for
+        # a document that could never be created there learns the wrong thing.
+        phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+        if phases_refusal is not None:
+            return phases_refusal
+
         if errors:
             return {
                 "success": False,
@@ -293,10 +301,6 @@ class FormulaCommandsMixin:
                 "errors": [e.to_dict() for e in errors],
                 "warnings": [w.to_dict() for w in warnings],
             }
-
-        phases_refusal = self._phases_need_root_refusal(graph, parent_id)
-        if phases_refusal is not None:
-            return phases_refusal
 
         parent_error, _parent = await self._validate_graph_parent(project_id, parent_id)
         if parent_error is not None:
@@ -311,14 +315,26 @@ class FormulaCommandsMixin:
             snapshot=graph.to_dict(),
         )
 
-        report = await create_graph(
-            self,
-            graph,
-            project_id=project_id,
-            dry_run=dry_run,
-            parent_id=parent_id,
-            provenance=provenance,
-        )
+        try:
+            report = await create_graph(
+                self,
+                graph,
+                project_id=project_id,
+                dry_run=dry_run,
+                parent_id=parent_id,
+                provenance=provenance,
+            )
+        except HierarchyError as exc:
+            # The same envelope ``create_task_graph`` returns: the creator
+            # raises for a project it cannot file into (no designated
+            # repository, a parent bound elsewhere, phases in a hierarchy
+            # project), and ``write_plan`` is one transaction, so nothing was
+            # created.  A dry run performs the same checks and fails alike.
+            return {
+                "success": False,
+                "code": f"hierarchy.{exc.code}",
+                "error": f"hierarchy.{exc.code}: {exc.detail} — nothing was created",
+            }
 
         if not dry_run:
             container = await self.db.get_task(report["parent_id"])

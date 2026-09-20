@@ -606,11 +606,15 @@ class TestGraphPhases:
                 raise RuntimeError("boom")
             await real_insert(conn, row)
 
+        # The node that *does* get inserted declares a checklist, so the
+        # `task_subtasks` count below can actually fail: a writer that seeded
+        # a node's rows next to its own insert would leave them behind.
+        doc = _phased_graph()
+        doc["nodes"][0]["subtasks"] = ["first", "second"]
+
         monkeypatch.setattr(creator_module, "_insert_task", failing)
         with pytest.raises(RuntimeError):
-            await handler._cmd_create_task_graph(
-                {"project_id": "p1", "graph": _phased_graph()}
-            )
+            await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
 
         assert await db.list_tasks(project_id="p1") == []
         async with db._engine.connect() as conn:
