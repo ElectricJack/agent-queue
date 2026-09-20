@@ -15,7 +15,9 @@ Id assignment goes through :func:`assign_child_ids`: a new container's
 children get dotted ids ``<container>.1..N`` known at plan time; a graph
 created under an existing container gets provisional ``<parent>.?``
 placeholders, reserved atomically and rewritten inside ``write_plan``'s
-transaction (spec §6).
+transaction (spec §6).  A document that declares ``phases:`` is two levels
+deep instead and goes through :func:`assign_phased_ids`; it is always
+created at the project root, so it is never provisional.
 """
 
 from __future__ import annotations
@@ -125,9 +127,6 @@ class GraphPlan:
     routing_task_ids: list[str] = field(default_factory=list)
     #: graph key → assigned (or provisional) task id
     ids: dict[str, str] = field(default_factory=dict)
-    #: phase key → assigned container id.  Kept apart from :attr:`ids`
-    #: because a phase key and a node key may legitimately be the same word.
-    phase_ids_by_key: dict[str, str] = field(default_factory=dict)
     #: True when the container already existed and node ids are provisional
     #: (``<parent>.?``) until ``write_plan`` reserves ordinals.
     provisional: bool = False
@@ -316,7 +315,6 @@ async def build_plan(
     plan = GraphPlan(
         parent_id=container_id, parent_row=parent_row, ids=ids, provisional=provisional
     )
-    plan.phase_ids_by_key = dict(phase_ids)
 
     if parent_row is not None and parent:
         for label in parent.labels:
