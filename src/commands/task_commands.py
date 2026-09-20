@@ -20,7 +20,7 @@ from src.commands.helpers import (
     format_dependency_list,
 )
 from src.commands.principal import matches_session_instance
-from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY, HierarchyError
 from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
@@ -70,6 +70,18 @@ _PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "ra
 #: take the hierarchy lock on their *own* connections, so reusing that
 #: namespace here would have every keyed creation deadlock against itself.
 STANDING_PARENT_LOCK_NAMESPACE = 0x4151504B
+#: How long a keyed creator keeps trying for the lock before refusing.
+_STANDING_PARENT_LOCK_BUDGET_SECONDS = 10.0
+#: Upper bound of the jittered sleep between attempts.
+_STANDING_PARENT_LOCK_POLL_SECONDS = 0.05
+
+
+class _StandingParentBusy(Exception):
+    """The standing-parent lock stayed held for the whole retry budget."""
+
+    def __init__(self, parent_key: str) -> None:
+        self.parent_key = parent_key
+        super().__init__(parent_key)
 
 
 def standing_parent_dedup_key(parent_key: str) -> str:
@@ -1718,28 +1730,51 @@ class TaskCommandsMixin:
 
         A transaction-scoped advisory lock on a connection of its own, held
         across *both* halves of the critical section — resolving the
-        container and filing the first child into it.  That is what makes
-        the container never observable as childless: a second creator waits
-        here until the first has committed a child, rather than reading an
-        empty container (or, worse, missing it entirely and creating a
-        second one).
+        container and filing the first child into it — so two concurrent
+        creators cannot produce two containers for one key.
+
+        The lock is taken with ``pg_try_advisory_xact_lock`` in a bounded
+        retry loop that **closes the connection between attempts**.  Blocking
+        inside ``pg_advisory_xact_lock`` would hold a pooled connection for
+        the whole wait, so as many concurrent keyed creators as the pool has
+        slots would occupy every one of them and then time out together
+        (`pool_size` and `max_overflow` are both ``pool_max``).  Polling
+        costs a round trip per attempt and holds nothing while it sleeps.
+
+        Raises :class:`_StandingParentBusy` when the budget is spent; the
+        caller turns that into ``hierarchy.parent_key_busy``.
 
         The nested ``create_task`` calls run on their own pooled connections
-        and commit as they go, so the reader behind this lock sees the
+        and commit as they go, so the creator that wins the lock sees the
         committed container the moment it is granted.
         """
+        import random
+
         from sqlalchemy import func, select
 
-        async with self.db._engine.begin() as conn:
-            await conn.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        STANDING_PARENT_LOCK_NAMESPACE,
-                        func.hashtext(f"{project_id}:{parent_key}"),
-                    )
+        key = func.hashtext(f"{project_id}:{parent_key}")
+        deadline = time.monotonic() + _STANDING_PARENT_LOCK_BUDGET_SECONDS
+        while True:
+            async with self.db._engine.begin() as conn:
+                held = bool(
+                    (
+                        await conn.execute(
+                            select(
+                                func.pg_try_advisory_xact_lock(
+                                    STANDING_PARENT_LOCK_NAMESPACE, key
+                                )
+                            )
+                        )
+                    ).scalar()
                 )
-            )
-            yield
+                if held:
+                    yield
+                    return
+            # Connection returned to the pool before sleeping.  Jitter keeps a
+            # crowd of creators that arrived together from retrying in step.
+            if time.monotonic() >= deadline:
+                raise _StandingParentBusy(parent_key)
+            await asyncio.sleep(random.uniform(0.01, _STANDING_PARENT_LOCK_POLL_SECONDS))
 
     async def _resolve_standing_parent(
         self, project_id: str, parent_key: str, parent_title: str
@@ -1757,6 +1792,11 @@ class TaskCommandsMixin:
         dedup_key = standing_parent_dedup_key(parent_key)
         existing = await self.db.find_task_by_dedup_key(project_id, dedup_key)
         if existing is not None:
+            # Self-heal before a child is filed: a container orphaned between
+            # its row and its marks (a crash in the window below) would
+            # otherwise be an unflagged, unheld-open claimable task that
+            # settlement can reach.  Both writes are idempotent.
+            await self._mark_standing_parent(existing.id, parent_key)
             return existing.id, None
 
         created = await self._create_task({
@@ -1769,9 +1809,12 @@ class TaskCommandsMixin:
             "task_type": "chore",
             "dedup_key": dedup_key,
             "root": True,
-            # Born DEFINED and flagged a container in the same breath: a
-            # READY container would be claimable, and an IN_PROGRESS one is
-            # exactly what §7 settlement completes when it has no children.
+            # Born DEFINED: a READY container would be claimable before the
+            # marks below land.  DEFINED is only the *narrow* guard, though —
+            # the container commits on its own connection, and the 5-second
+            # promotion cascade can release and settle it before the child
+            # exists.  What actually holds it open is the standing-parent
+            # metadata key (``childless_held_open_container``).
             "_initial_status": TaskStatus.DEFINED.value,
             # Control-plane bookkeeping, like ``ensure_task``'s own creations:
             # the standing parent is not work anybody routes or reviews.
@@ -1791,9 +1834,23 @@ class TaskCommandsMixin:
                 )
             return None, refusal
 
+        await self._mark_standing_parent(container_id, parent_key)
+        return container_id, None
+
+    async def _mark_standing_parent(self, container_id: str, parent_key: str) -> None:
+        """Flag *container_id* a container **and** a standing parent, atomically.
+
+        One transaction, because the two marks answer different questions and
+        a crash between them leaves a container that is wrong either way: the
+        container flag alone is a childless container the §7 sweep completes,
+        and the standing-parent key alone is a claimable task.  Both writes
+        are idempotent, so the reuse path re-asserts them for free.
+        """
         async with self.db.immediate() as conn:
             await self.db.mark_container(container_id, conn=conn)
-        return container_id, None
+            await self.db._upsert_meta(
+                container_id, STANDING_PARENT_KEY, {"key": parent_key}, conn=conn
+            )
 
     async def _cmd_create_task(self, args: dict) -> dict:
         """Create one task, optionally inside a keyed standing parent.
@@ -1807,8 +1864,14 @@ class TaskCommandsMixin:
         raw_key = args.get("parent_key")
         parent_key = str(raw_key).strip() if raw_key is not None else ""
         if not parent_key:
-            args.pop("parent_key", None)
-            args.pop("parent_title", None)
+            if "parent_key" in args or "parent_title" in args:
+                # Never mutate the caller's dict — a playbook step's resolved
+                # inputs and a retry's arguments are the same object.
+                args = {
+                    key: value
+                    for key, value in args.items()
+                    if key not in ("parent_key", "parent_title")
+                }
             return await self._create_task(args)
 
         # A worker already files under the task it holds (swarm-work-model
@@ -1846,14 +1909,24 @@ class TaskCommandsMixin:
             if key not in ("parent_key", "parent_title", "root")
         }
         child_args["project_id"] = project_id
-        async with self._standing_parent_lock(str(project_id), parent_key):
-            container_id, refusal = await self._resolve_standing_parent(
-                str(project_id), parent_key, parent_title
-            )
-            if refusal is not None:
-                return refusal
-            child_args["parent_id"] = container_id
-            return await self._create_task(child_args)
+        try:
+            async with self._standing_parent_lock(str(project_id), parent_key):
+                container_id, refusal = await self._resolve_standing_parent(
+                    str(project_id), parent_key, parent_title
+                )
+                if refusal is not None:
+                    return refusal
+                child_args["parent_id"] = container_id
+                return await self._create_task(child_args)
+        except _StandingParentBusy:
+            return {
+                "success": False,
+                "code": "hierarchy.parent_key_busy",
+                "error": (
+                    f"the standing parent for '{parent_key}' is being resolved by another "
+                    "creator and did not free up; retry the call"
+                ),
+            }
 
     async def _create_task(self, args: dict) -> dict:
         parent_was_supplied = "parent_id" in args

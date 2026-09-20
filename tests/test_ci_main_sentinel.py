@@ -78,6 +78,10 @@ def test_artifact_observes_then_repairs_or_escalates() -> None:
     assert inputs["project_id"] == {"type": "literal", "value": "agent-queue"}
     assert inputs["intelligence_class"] == {"type": "literal", "value": "deep-high"}
     assert inputs["priority"] == {"type": "literal", "value": 5}
+    # Every repair lands inside one standing "Maintenance" container rather
+    # than in the project root (graph-visibility A2).
+    assert inputs["parent_key"] == {"type": "literal", "value": "maintenance"}
+    assert inputs["parent_title"] == {"type": "literal", "value": "Maintenance"}
     for field in ("dedup_key", "title", "description"):
         assert inputs[field] == {"type": "binding_ref", "binding": "baseline", "path": field}
     assert repair.transitions == {

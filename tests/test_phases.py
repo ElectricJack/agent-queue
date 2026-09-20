@@ -339,7 +339,7 @@ class TestChildlessPhase:
         """A phase is created *before* its work, so it must survive empty.
 
         The §7 predicate's "no un-COMPLETED child" clause is vacuously true of
-        zero children; without ``childless_phase`` the cascade would release
+        zero children; without ``childless_held_open_container`` the cascade would release
         the phase to IN_PROGRESS and settle it COMPLETED in the same pass,
         after which ``container_closed`` refuses the work it was created for.
         """
@@ -632,7 +632,7 @@ class TestAbandonedPhaseRecovery:
     ):
         """An empty phase never settles, so deletion is the only way out.
 
-        Documented on ``childless_phase()``: because the phase holds its
+        Documented on ``childless_held_open_container()``: because the phase holds its
         ``blocks`` edge shut indefinitely, an operator who abandons one must
         delete it rather than leave it in place.
         """

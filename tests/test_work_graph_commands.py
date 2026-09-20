@@ -590,11 +590,148 @@ class TestParentKey:
         assert len(await db.get_children(container_ids[0])) == 5
         assert await db.settle_candidates() == []
 
-    async def test_an_empty_standing_container_is_never_a_settle_candidate(self, handler, db):
+    async def test_a_refused_child_leaves_one_reusable_empty_container(self, handler, db):
+        """The container commits before the child, so the child can still be
+        refused (a bad profile, an unknown class, a crash) — and the cascade
+        runs every five seconds in that window.  The orphan must survive it
+        and be reused, not settled and not duplicated."""
+        refused = await handler._cmd_create_task({
+            "project_id": PROJECT_ID,
+            "title": "one",
+            "parent_key": "maintenance",
+            "profile_id": "no-such-profile",
+        })
+        assert refused.get("success") is not True
+        assert "no-such-profile" in refused["error"]
+
+        container_ids = await standing(db)
+        assert len(container_ids) == 1, container_ids
+        container_id = container_ids[0]
+        assert await db.get_children(container_id) == []
+
+        # The real promotion cascade: DEFINED -> READY -> IN_PROGRESS for a
+        # flagged container, then settlement seeds off it.
+        for _ in range(3):
+            await handler.orchestrator._check_defined_tasks()
+        await handler.orchestrator._sweep_container_completion()
+
+        container = await db.get_task(container_id)
+        assert container.status != TaskStatus.COMPLETED, container.status
+        assert container_id not in await db.settle_candidates()
+
+        # And the next call reuses it rather than creating a second one.
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] == container_id
+        assert len(await standing(db)) == 1
+
+    async def test_a_childless_standing_container_is_not_settled(self, handler, db):
+        """Straight at the §7 predicate, with a hand-made IN_PROGRESS
+        container: neither the backstop sweep nor the event path may
+        complete it while it has no children."""
+        from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY
+
+        await mktask(db, "standing", status=TaskStatus.IN_PROGRESS)
+        async with db.immediate() as conn:
+            await db.mark_container("standing", conn=conn)
+            await db._upsert_meta("standing", STANDING_PARENT_KEY, {"key": "maintenance"},
+                                  conn=conn)
+
+        assert "standing" not in await db.settle_candidates()
+        async with db._engine.begin() as conn:
+            await db.settle_containers({"standing"}, conn=conn)
+        assert (await db.get_task("standing")).status == TaskStatus.IN_PROGRESS
+
+        # It settles as soon as it has held work and that work completed —
+        # the standing parent is held open, not immortal.
         await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "child", "parent_id": "standing"}
+        )
+        child = (await db.get_children("standing"))[0]
+        await db.transition_task(child.id, TaskStatus.COMPLETED, force=True)
+        assert (await db.get_task("standing")).status == TaskStatus.COMPLETED
+
+    async def test_a_waiter_holds_no_pooled_connection(self, config, tmp_path):
+        """The lock is polled, not blocked on.
+
+        A creator that parks inside ``pg_advisory_xact_lock`` keeps its
+        pooled connection for the whole wait, so as many concurrent keyed
+        creators as the pool has slots occupy every slot and then time out
+        together.  With a pool of two, four concurrent creators on one key
+        would be that deadlock; they must all succeed instead.
+        """
+        from unittest.mock import MagicMock
+
+        from src.commands.handler import CommandHandler
+        from src.database import Database
+        from src.models import Project
+        from src.orchestrator import Orchestrator
+        from tests.db_fixtures import lease_dsn
+
+        tiny = Database(lease_dsn("tinypool.db"), 1, 1)
+        await tiny.initialize()
+        try:
+            await tiny.create_project(Project(id=PROJECT_ID, name="Tiny pool"))
+            orchestrator = Orchestrator(config)
+            orchestrator.db = tiny
+            orchestrator.git = MagicMock()
+            handler = CommandHandler(orchestrator, config)
+
+            import asyncio
+
+            results = await asyncio.gather(*[
+                handler._cmd_create_task(
+                    {"project_id": PROJECT_ID, "title": f"t{n}", "parent_key": "maintenance"}
+                )
+                for n in range(4)
+            ])
+            assert all(r.get("success") is True for r in results), results
+            assert len({r["parent_id"] for r in results}) == 1
+        finally:
+            await tiny.close()
+
+    async def test_the_container_is_flagged_and_marked_standing(self, handler, db):
+        from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY
+
+        created = await handler._cmd_create_task(
             {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
         )
-        assert await db.settle_candidates() == []
+        container_id = created["parent_id"]
+        assert await db.get_task_meta(container_id, "container") is True
+        assert await db.get_task_meta(container_id, STANDING_PARENT_KEY) == {
+            "key": "maintenance"
+        }
+
+    async def test_reuse_re_asserts_the_marks_on_an_orphaned_container(self, handler, db):
+        """A crash between the container row and its marks leaves a bare
+        task; the next keyed call must heal it before filing a child."""
+        from src.database.tables import task_metadata
+
+        from sqlalchemy import delete
+
+        first = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance"}
+        )
+        container_id = first["parent_id"]
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(task_metadata.c.task_id == container_id)
+            )
+        assert await db.get_task_meta(container_id, "container") is None
+
+        second = await handler._cmd_create_task(
+            {"project_id": PROJECT_ID, "title": "two", "parent_key": "maintenance"}
+        )
+        assert second["parent_id"] == container_id
+        assert await db.get_task_meta(container_id, "container") is True
+
+    async def test_the_callers_args_dict_is_not_mutated(self, handler, db):
+        args = {"project_id": PROJECT_ID, "title": "one", "parent_key": "maintenance",
+                "parent_title": "Maintenance"}
+        before = dict(args)
+        await handler._cmd_create_task(args)
+        assert args == before
 
     async def test_parent_key_conflicts_with_parent_id(self, handler, db):
         await mktask(db, "other")
