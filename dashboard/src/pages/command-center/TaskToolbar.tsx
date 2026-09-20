@@ -8,6 +8,7 @@ import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useGraphState } from "./useGraphHierarchy";
+import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
@@ -19,7 +20,7 @@ export default function TaskToolbar() {
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters);
-  const { clearGraphPositions, requestActiveExpansion } = useGraphState();
+  const { clearGraphPositions, requestActiveExpansion, density, setDensity } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -62,6 +63,15 @@ export default function TaskToolbar() {
       </button>}
       {hasFilters && <button type="button" aria-label="Clear task filters" title="Clear filters" onClick={clearFilters}
         className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100"><XMarkIcon className="h-4 w-4" /></button>}
+      {onGraph && <label className="flex h-9 items-center rounded-md border border-gray-700 px-3 text-xs text-gray-200">
+        Density
+        <select aria-label="Graph density" value={density} onChange={(e) => setDensity(e.target.value as LayoutDensity)}
+          className="ml-2 bg-transparent text-xs text-white outline-none">
+          <option value="compact">Compact</option>
+          <option value={DEFAULT_DENSITY}>Comfortable</option>
+          <option value="spacious">Spacious</option>
+        </select>
+      </label>}
       {onGraph && <button type="button" onClick={() => requestActiveExpansion()}
         title="Re-open the active containers: anything running, or with open work if nothing is"
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">

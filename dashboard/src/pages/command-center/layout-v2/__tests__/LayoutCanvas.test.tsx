@@ -165,6 +165,17 @@ function FocusActiveProbe({ projectIds }: { projectIds?: string[] }) {
   return <button type="button" onClick={() => requestActiveExpansion(projectIds)}>Focus active (toolbar)</button>;
 }
 
+/** Density lives in the task toolbar too, immediately left of "Focus active"
+ * (it floated over the canvas and covered the card underneath it). These
+ * tests still own the canvas half of the behaviour -- that a density change
+ * re-scales card positions -- driven through the same `setDensity` call the
+ * toolbar control makes. The control itself is covered by
+ * `command-center/__tests__/TaskToolbar.test.tsx`. */
+function DensityProbe() {
+  const { setDensity } = useGraphState();
+  return <button type="button" onClick={() => setDensity("compact")}>Density: compact (toolbar)</button>;
+}
+
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
   container_id: null, kind, context_only: false, agg_children: 1, agg_descendants: 1,
@@ -251,10 +262,15 @@ describe("LayoutCanvas", () => {
     expect(tiles.params).toMatchObject({ variant: "active", expanded: [] });
   });
 
-  it("uses server-default density while no server document has loaded", () => {
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    const density = screen.getByRole("combobox", { name: "Graph density" });
-    expect(density).toHaveValue("comfortable");
+  it("uses server-default (comfortable) density until the toolbar changes it", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /><DensityProbe /></MemoryRouter>);
+    const before = flow.current!.nodes.find((node) => node.id === "z")!.position;
+    expect(before).toEqual(toPx(2, 0));
+
+    fireEvent.click(screen.getByRole("button", { name: "Density: compact (toolbar)" }));
+
+    const after = flow.current!.nodes.find((node) => node.id === "z")!.position;
+    expect(after).toEqual(toPx(2, 0, "compact"));
   });
 
   it("re-renders only the cards a live refetch actually changed", () => {
@@ -538,11 +554,10 @@ describe("LayoutCanvas", () => {
       expect((tiles.params as { autoExpand?: boolean }).autoExpand).toBe(true);
     });
 
-    it("no longer floats Focus active over the canvas, where it covered a card", () => {
+    it("no longer floats Focus active or Density over the canvas, where they covered a card", () => {
       render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
       expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
-      // The Density control stays in the overlay (out of scope).
-      expect(screen.getByRole("combobox", { name: "Graph density" })).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: "Graph density" })).not.toBeInTheDocument();
     });
   });
 

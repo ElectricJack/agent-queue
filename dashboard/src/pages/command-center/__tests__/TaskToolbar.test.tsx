@@ -46,10 +46,11 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
 function Probe() {
   const workspace = useTaskWorkspace();
   const location = useLocation();
-  const { hasStoredExpansion } = useGraphState();
+  const { hasStoredExpansion, density } = useGraphState();
   return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
     <output data-testid="query">{location.search}</output>
-    <output data-testid="expansion">{hasStoredExpansion("alpha") ? "stored" : "unset"}</output></>;
+    <output data-testid="expansion">{hasStoredExpansion("alpha") ? "stored" : "unset"}</output>
+    <output data-testid="density">{density}</output></>;
 }
 function mount(path = "/projects/alpha/graph") {
   return render(<MemoryRouter initialEntries={[path]}><ShortcutsProvider><Routes>
@@ -213,6 +214,28 @@ describe("layout-aware task controls", () => {
   it("keeps Focus active off the Tasks tab, which draws no graph", () => {
     mount("/projects/alpha/tasks");
     expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
+  });
+
+  it("puts Density in the toolbar, immediately left of Focus active", () => {
+    mount("/projects/alpha/graph");
+    const density = screen.getByRole("combobox", { name: "Graph density" });
+    const focus = screen.getByRole("button", { name: "Focus active" });
+    expect(density.parentElement?.parentElement).toBe(focus.parentElement);
+    expect(density.parentElement?.nextElementSibling).toBe(focus);
+  });
+
+  it("changing Density updates it", async () => {
+    mount("/projects/alpha/graph");
+    expect(screen.getByTestId("density")).toHaveTextContent("comfortable");
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Graph density" }), "compact");
+
+    expect(screen.getByTestId("density")).toHaveTextContent("compact");
+  });
+
+  it("keeps Density off the Tasks tab, which draws no graph", () => {
+    mount("/projects/alpha/tasks");
+    expect(screen.queryByRole("combobox", { name: "Graph density" })).not.toBeInTheDocument();
   });
 
   it("disables Show completed while a container is focused", () => {

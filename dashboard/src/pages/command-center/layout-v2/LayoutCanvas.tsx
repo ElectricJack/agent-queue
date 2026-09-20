@@ -16,7 +16,7 @@ import { useLayoutTiles } from "./useLayoutTiles";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
 import { CELL, fromPx, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
-import { DEFAULT_DENSITY, type LayoutDensity } from "./density";
+import type { LayoutDensity } from "./density";
 import { PLAYBOOK_POSITION_SCOPE } from "./manualPositions";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
@@ -247,7 +247,7 @@ function Inner(props: LayoutCanvasProps) {
   const {
     expandedTaskIds, expandedFinishedIds, toggleExpanded, hasStoredExpansion, expandedForProject,
     applyExpandedResult,
-    density, setDensity, manualPositions, saveGraphPosition,
+    density, manualPositions, saveGraphPosition,
   } = useGraphState();
   const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
   const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
@@ -666,17 +666,6 @@ function Inner(props: LayoutCanvasProps) {
         >
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
-          <Panel position="top-right">
-            <label className="rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300">
-              Density
-              <select aria-label="Graph density" value={density} onChange={(event) => setDensity(event.target.value as LayoutDensity)}
-                className="ml-2 bg-transparent text-xs text-white outline-none">
-                <option value="compact">Compact</option>
-                <option value={DEFAULT_DENSITY}>Comfortable</option>
-                <option value="spacious">Spacious</option>
-              </select>
-            </label>
-          </Panel>
           <AgentAvatarLayer agents={workers} />
           {relationTypes.length > 0 && (
             <Panel position="bottom-left">
