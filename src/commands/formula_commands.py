@@ -19,10 +19,15 @@ Three commands:
   ``create_graph`` in one transaction with a :class:`FormulaProvenance`
   attached, emitting ``formula.cooked`` after a real (non-dry-run) commit.
 
-Resolution order for both ``_cmd_formula_show`` and ``_cmd_formula_cook``:
-``resolve_formula`` → var findings are errors → ``parse_graph`` →
-``validate_graph`` → errors → (cook only) ``_validate_graph_parent`` →
-``create_graph``.
+Resolution order.  Both commands start the same way: ``resolve_formula`` →
+var findings are errors → ``parse_graph`` → ``validate_graph``.
+``_cmd_formula_show`` stops there and reports.  ``_cmd_formula_cook`` then
+answers the *structural* refusals before the findings envelope, in the order
+``create_task_graph`` asks them — ``_validate_graph_parent``, then
+``graph.phases_need_root`` — so the same input earns the same refusal at
+either door; only then does it report validation errors, and only then does
+it call ``create_graph`` (whose own ``HierarchyError``, e.g. phases in a
+hierarchy-mode project, comes back as a refusal dict).
 """
 
 from __future__ import annotations

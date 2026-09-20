@@ -376,8 +376,8 @@ That creates `<epic>.1`/`<epic>.2` for the phases and `<epic>.1.1…` for
 their work; a node that names no phase stays a direct child of the epic.
 Never make a node depend on work in a *later* phase — that deadlocks (the
 later phase waits for this one to finish, and this one waits for that task),
-and it is refused as `inverted_phase_edge`. That includes reaching it
-through an unphased node: a node with no `phase` is not held back by any
+and it is refused as `inverted_phase_edge` — whatever the `dep_type`,
+`waits-for` included. That includes reaching it through an unphased node: a node with no `phase` is not held back by any
 phase, but it is still held back by its own `needs`, so it passes the
 deadlock along. If the work really runs in that order, the two are in the
 wrong phases.

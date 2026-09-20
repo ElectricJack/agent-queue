@@ -531,8 +531,10 @@ class TestPhaseValidation:
         # Nothing else fires: the cycle check cannot see this at all.
         assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
 
-    @pytest.mark.parametrize("dep_type", ["blocks", "conditional-blocks", "parent-child"])
-    async def test_every_hard_gating_dep_type_inverts(self, vault, dep_type):
+    @pytest.mark.parametrize(
+        "dep_type", ["blocks", "conditional-blocks", "parent-child", "waits-for"]
+    )
+    async def test_every_gating_dep_type_inverts(self, vault, dep_type):
         findings = await self._findings(
             {
                 "version": 1,
@@ -579,10 +581,50 @@ class TestPhaseValidation:
         )
         assert [f.rule for f in findings] == []
 
-    async def test_waits_for_onto_a_later_phase_is_only_a_warning(self, vault):
-        """``_waits_for_unsat`` is vacuously satisfied for a node with no
-        children, and a graph document cannot give a node children — so this
-        one deadlocks only if the target later gains some."""
+    async def test_a_farther_reach_never_masks_a_nearer_inversion(self, vault):
+        """Regression (F9): ``a`` inverts onto both phase two and phase three.
+
+        While ``waits-for`` was a *soft* class, the farther soft reach won the
+        ranking and the whole node was reported as a warning — so the hard
+        ``a -> b`` deadlock went unreported and the graph was created.  Every
+        gating type is an error now, so the ranking can only pick between
+        errors.
+        """
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [
+                    {"key": "one", "title": "One"},
+                    {"key": "two", "title": "Two"},
+                    {"key": "three", "title": "Three"},
+                ],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [
+                            {"on": "b", "dep_type": "blocks"},
+                            {"on": "c", "dep_type": "waits-for"},
+                        ],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {"key": "c", "title": "C", "acceptance": ["x"], "phase": "three"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_waits_for_target_can_be_given_children_by_the_document(self, vault):
+        """Regression (F10): the 'a document cannot give a node children'
+        premise was false — a node may declare a ``parent-child`` need, the
+        creator writes that row, and ``_waits_for_unsat`` counts it.  So this
+        is a real deadlock and must be an error."""
         findings = await self._findings(
             {
                 "version": 1,
@@ -596,15 +638,52 @@ class TestPhaseValidation:
                         "needs": [{"on": "b", "dep_type": "waits-for"}],
                     },
                     {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {
+                        "key": "c",
+                        "title": "C",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "b", "dep_type": "parent-child"}],
+                    },
                 ],
             },
             vault,
         )
         matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [(f.node, f.is_error) for f in matched] == [("a", True)]
+
+    async def test_a_very_long_gating_chain_does_not_blow_the_stack(self, vault):
+        """Regression (F11): the traversal was recursive, and the 2,000,000
+        character document cap leaves room for a chain far past Python's
+        recursion limit."""
+        size = 5000
+        nodes = [
+            {
+                "key": f"n{i}",
+                "title": f"N{i}",
+                "acceptance": ["x"],
+                "needs": [{"on": f"n{i + 1}"}],
+            }
+            for i in range(size - 1)
+        ]
+        nodes.append({"key": f"n{size - 1}", "title": "last", "acceptance": ["x"]})
+        nodes[0]["phase"] = "one"
+        nodes[-1]["phase"] = "two"
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": nodes,
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
         assert len(matched) == 1
-        assert matched[0].severity == "warning"
-        assert "children" in matched[0].detail
-        assert [f.rule for f in findings if f.is_error] == []
+        assert matched[0].node == "n0"
+        # The route is folded rather than printed in full: 5,000 keys is not a
+        # message a human reads.
+        assert len(matched[0].detail) < 500
+        assert f"n{size - 1}" in matched[0].detail
 
     @staticmethod
     def _chain(*hops: tuple[str, str | None]) -> dict:

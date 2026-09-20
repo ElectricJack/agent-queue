@@ -323,12 +323,19 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
     :func:`_check_cycles` already errors on a gating cycle, so nothing is
     created either way.
 
-    **Severity follows the weakest edge on the path.** A ``waits-for`` edge
-    is vacuously satisfied while its target has no ``parent-child`` children
-    (``_waits_for_unsat``, ``src/database/queries/blocked_state.py``) and a
-    graph document cannot give a node children — so a path through one is
-    reported as a **warning**: it becomes a deadlock only if the target later
-    gains children.  Every other gating type is an error.
+    **Every gating type is an error — there is no soft class.** A
+    ``waits-for`` looks like one: ``_waits_for_unsat``
+    (``src/database/queries/blocked_state.py``) is vacuously satisfied while
+    its target has no ``parent-child`` children.  But a document *can* give a
+    node children — ``needs: [{on: X, dep_type: "parent-child"}]`` is legal
+    and the creator writes that row verbatim — so an in-document
+    ``waits-for`` into a later phase is a real deadlock as soon as any node
+    declares such a need.  Ranking it below the hard types was also unsound
+    in its own right: one finding is emitted per node, so a farther soft
+    reach masked a nearer hard one and the deadlocked graph was created.
+    Refusing the occasional plan that would have run (drop the edge — the
+    phase gate already orders it) is strictly better than creating a graph
+    nothing can recover.
     """
     findings: list[GraphError] = []
     order: dict[str, int] = {}
@@ -392,32 +399,40 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
     return findings
 
 
-#: The one gating dep type a graph document cannot make bite: ``_waits_for_unsat``
-#: is vacuously satisfied while the target has no ``parent-child`` children, and
-#: a document cannot give a node children.
-_SOFT_GATING_DEP_TYPE = "waits-for"
+#: How many node keys a reported route prints in full before it is folded.
+#: A chain can be thousands of nodes long; nobody reads that as a message.
+_MAX_ROUTE_KEYS = 8
 
 
 class _Reach(NamedTuple):
     """The worst later phase reachable from a node over gating edges.
 
-    ``order`` is that phase's index, ``path`` the node keys walked to get
-    there (excluding the node itself) and ``soft`` says the walk crossed a
-    ``waits-for`` edge, which downgrades the finding to a warning.
+    ``order`` is that phase's index and ``path`` the node keys walked to get
+    there, excluding the node itself.  There is deliberately no severity
+    dimension: **every** gating dep type that reaches a later phase is an
+    error (see :func:`_check_phases`).
     """
 
     order: int
     path: tuple[str, ...]
-    soft: bool
 
 
 def _worse(a: _Reach | None, b: _Reach | None) -> _Reach | None:
-    """The more serious of two reaches: later phase first, then hard over soft."""
+    """The more serious of two reaches — the one landing in the later phase."""
     if a is None:
         return b
     if b is None:
         return a
-    return b if (b.order, not b.soft) > (a.order, not a.soft) else a
+    return b if b.order > a.order else a
+
+
+def _render_route(keys: tuple[str, ...]) -> str:
+    """``a -> b -> c``, folded in the middle once it stops being readable."""
+    if len(keys) <= _MAX_ROUTE_KEYS:
+        return " -> ".join(keys)
+    head = " -> ".join(keys[:3])
+    tail = " -> ".join(keys[-3:])
+    return f"{head} -> … ({len(keys) - 6} more) … -> {tail}"
 
 
 def _check_inverted_phase_paths(
@@ -426,40 +441,57 @@ def _check_inverted_phase_paths(
     """One ``inverted_phase_edge`` per phased node that reaches a later phase.
 
     See :func:`_check_phases` for why this is transitive and where it stops.
+
+    The traversal is **iterative** — a document may declare a gating chain
+    thousands of nodes long (the size cap is 2,000,000 characters) and a
+    recursive walk raised ``RecursionError`` out of validation.  Nodes are
+    settled in reverse topological order of the gating ``needs`` graph
+    (Kahn's algorithm over the reversed edges, the same shape
+    :func:`_check_cycles` uses), so each node is merged into its predecessors
+    exactly once and the whole pass is linear in nodes + gating edges.
+
+    A node inside a gating **cycle** never reaches out-degree zero and keeps
+    whatever partial reach its settled targets gave it.  That is the same
+    "cut the back edge" behaviour the recursive version had, and it is
+    harmless: :func:`_check_cycles` errors on the cycle, so nothing is
+    created either way.
     """
     nodes = {node.key: node for node in graph.nodes}
-    memo: dict[str, _Reach | None] = {}
-    walking: set[str] = set()
-
-    def reach(key: str) -> _Reach | None:
-        """Worst later-phase reach from *key*'s own outgoing gating edges."""
-        if key in memo:
-            return memo[key]
-        if key in walking:
-            # A gating cycle; ``_check_cycles`` reports it and blocks
-            # creation, so cutting the back edge here is safe.
-            return None
-        walking.add(key)
-        best: _Reach | None = None
-        for need in nodes[key].needs:
+    predecessors: dict[str, list[str]] = {key: [] for key in nodes}
+    unsettled: dict[str, int] = {}
+    for node in graph.nodes:
+        out = 0
+        for need in node.needs:
             if need.dep_type not in BLOCKING_DEP_TYPES or need.on not in nodes:
                 # Non-gating, or an id naming a task outside this document —
                 # which no phase declared here withholds.
                 continue
-            soft = need.dep_type == _SOFT_GATING_DEP_TYPE
-            target_phase = node_phase.get(need.on)
-            if target_phase in order:
-                # Stop here: a phased node answers for its own edges.
-                best = _worse(best, _Reach(order[target_phase], (need.on,), soft))
+            if need.on == node.key:
+                # ``_check_self_edges`` reports this; counting it would leave
+                # the node permanently unsettled.
                 continue
-            onward = reach(need.on)
-            if onward is not None:
-                best = _worse(
-                    best, _Reach(onward.order, (need.on, *onward.path), soft or onward.soft)
-                )
-        walking.discard(key)
-        memo[key] = best
-        return best
+            predecessors[need.on].append(node.key)
+            out += 1
+        unsettled[node.key] = out
+
+    best: dict[str, _Reach | None] = dict.fromkeys(nodes, None)
+    queue = deque(key for key in nodes if unsettled[key] == 0)
+    while queue:
+        key = queue.popleft()
+        target_phase = node_phase.get(key)
+        for parent in predecessors[key]:
+            if target_phase in order:
+                # Stop here: a phased node answers for its own edges, so its
+                # own reach is not carried past it.
+                candidate = _Reach(order[target_phase], (key,))
+            elif best[key] is not None:
+                candidate = _Reach(best[key].order, (key, *best[key].path))
+            else:
+                candidate = None
+            best[parent] = _worse(best[parent], candidate)
+            unsettled[parent] -= 1
+            if unsettled[parent] == 0:
+                queue.append(parent)
 
     findings: list[GraphError] = []
     for node in graph.nodes:
@@ -467,26 +499,12 @@ def _check_inverted_phase_paths(
             # An unphased node's own start is gated by nothing, so it is only
             # ever the *carrier* of someone else's deadlock, never its owner.
             continue
-        worst = reach(node.key)
+        worst = best[node.key]
         if worst is None or worst.order <= order[node.phase]:
             continue
         target_key = worst.path[-1]
         target_phase = node_phase[target_key]
-        route = " -> ".join((node.key, *worst.path))
-        if worst.soft:
-            findings.append(
-                _error(
-                    "inverted_phase_edge",
-                    f"node '{node.key}' in phase '{node.phase}' waits for '{target_key}' in "
-                    f"the later phase '{target_phase}' ({route}). A 'waits-for' is satisfied "
-                    "while its target has no children, so this runs today — but it deadlocks "
-                    f"the moment '{target_key}' gains any, because phase '{target_phase}' "
-                    f"cannot start until phase '{node.phase}' completes",
-                    node.key,
-                    severity="warning",
-                )
-            )
-            continue
+        route = _render_route((node.key, *worst.path))
         findings.append(
             _error(
                 "inverted_phase_edge",
