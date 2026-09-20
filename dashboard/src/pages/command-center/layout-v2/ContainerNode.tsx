@@ -1,7 +1,8 @@
 import { memo } from "react";
-import { ChevronDownIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
+import { ProgressBar } from "../ProgressBar";
 import { UNIT_H } from "./units";
 
 const FINISHED = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
@@ -11,11 +12,20 @@ export interface ContainerNodeProps { id: string; data: ContainerNodeData; selec
 function ContainerNode({ data, selected }: ContainerNodeProps) {
   const { node, onFocus, onToggleChildren, onOpenTask } = data;
   const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
+  const isPhase = node.phase_order != null;
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
       <Handle id="in-left" type="target" position={Position.Left} isConnectable={false} />
       <Handle id="in-right" type="target" position={Position.Right} isConnectable={false} />
       <Handle id="in-top" type="target" position={Position.Top} isConnectable={false} />
+      {isPhase && (
+        <div className="flex items-center gap-1 border-b border-white/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-200">
+          {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
+          <span className="truncate">
+            {`Phase ${node.phase_order}`}{node.phase_label ? ` · ${node.phase_label}` : ""}
+          </span>
+        </div>
+      )}
       <div className="flex items-center gap-2 px-2 text-[11px] text-gray-200" style={{ height: headerPx }}>
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}
           className="nodrag nopan min-w-0 flex-1 truncate text-left font-medium hover:underline"
@@ -29,6 +39,16 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
           onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id, FINISHED.has(node.status)); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
       </div>
+      {(node.agg_descendants ?? 0) > 0 && (
+        <div className="px-2 pb-0.5">
+          <ProgressBar
+            done={node.agg_completed ?? 0}
+            total={node.agg_descendants ?? 0}
+            running={node.agg_running ?? 0}
+            blocked={node.agg_blocked ?? 0}
+          />
+        </div>
+      )}
       <Handle id="out-left" type="source" position={Position.Left} isConnectable={false} />
       <Handle id="out-right" type="source" position={Position.Right} isConnectable={false} />
       <Handle id="out-bottom" type="source" position={Position.Bottom} isConnectable={false} />

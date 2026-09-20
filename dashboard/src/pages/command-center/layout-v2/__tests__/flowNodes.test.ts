@@ -206,6 +206,32 @@ describe("toFlowElements", () => {
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
+  it("carries phase order/label in the card payload, null when absent", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { phase_order: 2, phase_label: "Build" }), n("z", "card", 1, 0)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const e = nodes.find((x) => x.id === "e")!;
+    const z = nodes.find((x) => x.id === "z")!;
+    expect((e.data as { node: { phase_order: number | null } }).node.phase_order).toBe(2);
+    expect((z.data as { phase: { order: number; label: string } | null }).phase).toBeNull();
+  });
+
+  it("rebuilds a card when only its phase fields change", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0, { phase_order: 1, phase_label: "Foundation" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = () => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(tiles)) as never);
+    const first = toFlowElements(wire(), ctx);
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { phase_order: 1, phase_label: "Renamed" })] };
+    const second = toFlowElements(
+      mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
+  });
+
   it("drops to straight unlabelled edges at far zoom", () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],

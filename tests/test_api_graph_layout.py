@@ -12,6 +12,7 @@ from sqlalchemy import event, insert, update
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
 from src.database import Database
+from src.database.queries.hierarchy_queries import PHASE_KEY
 from src.database.tables import task_session_attempts
 from src.database.tables import tasks as tasks_table
 from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
@@ -1213,6 +1214,85 @@ async def test_node_reports_subtask_counts(db, client_factory):
     node = r.json()["node"]
     assert node["subtasks_total"] == 2
     assert node["subtasks_settled"] == 1
+
+
+async def test_tiles_reports_phase_fields_and_none_for_non_phase(db, client_factory):
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, {"order": 2, "label": "Build"})
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert nodes["e"]["phase_order"] == 2
+    assert nodes["e"]["phase_label"] == "Build"
+    # A task with no phase metadata carries None, not zero.
+    assert nodes["z"]["phase_order"] is None
+    assert nodes["z"]["phase_label"] is None
+
+
+async def test_tiles_malformed_phase_metadata_does_not_raise(db, client_factory):
+    """A hand-edited or stale ``phase`` value must never 500 the response."""
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, "not-a-dict")
+    await db.set_task_meta("z", PHASE_KEY, {"label": "no order"})
+    await db.set_task_meta("hub", PHASE_KEY, {"order": "two"})
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    for tid in ("e", "z", "hub"):
+        assert nodes[tid]["phase_order"] is None
+        assert nodes[tid]["phase_label"] is None
+
+
+async def test_tiles_phase_lookup_is_one_statement_regardless_of_visible_count(
+    db, client_factory
+):
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, {"order": 1, "label": "Foundation"})
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    phase_reads = [s for s in statements if "task_metadata" in s]
+    assert len(phase_reads) == 1, phase_reads
+
+
+async def test_list_reports_phase_fields(db, client_factory):
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, {"order": 1, "label": "Foundation"})
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert nodes["e"]["phase_order"] == 1
+    assert nodes["e"]["phase_label"] == "Foundation"
+    assert nodes["z"]["phase_order"] is None
+
+
+async def test_node_reports_phase_fields(db, client_factory):
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, {"order": 1, "label": "Foundation"})
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/e?variant=all")
+    assert r.status_code == 200
+    node = r.json()["node"]
+    assert node["phase_order"] == 1
+    assert node["phase_label"] == "Foundation"
 
 
 async def test_tiles_auto_expand_with_empty_expanded_returns_and_applies_active_set(

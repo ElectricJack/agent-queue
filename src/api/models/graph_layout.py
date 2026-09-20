@@ -119,6 +119,8 @@ class LayoutNode(GraphTaskNode):
     agg_active: int = 0
     subtasks_total: int = 0
     subtasks_settled: int = 0
+    phase_order: int | None = None
+    phase_label: str | None = None
 
 
 class LayoutEdge(BaseModel):

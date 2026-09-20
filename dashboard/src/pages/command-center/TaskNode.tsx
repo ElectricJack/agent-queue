@@ -1,7 +1,8 @@
 import { memo } from "react";
-import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
+import { ProgressBar } from "./ProgressBar";
 import { NODE_HEIGHT, NODE_WIDTH, type TaskNodeData } from "./types";
 import { isTaskBlocked } from "./hierarchy";
 
@@ -43,7 +44,7 @@ interface CardProps {
  *  level. The card's open action is a `role="button"` div (not a `<button>`)
  *  so the copy-id button in its header can nest inside it validly. */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
-  const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus } = data;
+  const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus, subtasks, phase } = data;
   const blocked = isTaskBlocked(task);
   const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
   const priority = task.priority ?? 100;
@@ -63,6 +64,14 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
       className={`relative flex flex-col rounded-md border text-xs shadow ${tone} ${urgent} ${hierarchy.contextOnly ? "border-dashed" : ""} ${selected ? "outline outline-2 outline-white" : ""}`}
       style={{ width: fluid ? "100%" : NODE_WIDTH * layoutScale, height: NODE_HEIGHT * layoutScale }}
     >
+      {phase && (
+        <div className="flex items-center gap-1 border-b border-white/10 px-2 py-0.5 text-[10px] font-semibold text-indigo-200">
+          {task.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-3 w-3 shrink-0" />}
+          <span className="truncate">
+            {`Phase ${phase.order}`}{phase.label ? ` · ${phase.label}` : ""}
+          </span>
+        </div>
+      )}
       <div
         role="button"
         tabIndex={0}
@@ -106,19 +115,26 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
           {task.intelligence_class && <span className="truncate rounded bg-white/5 px-1" title={task.intelligence_class}>{task.intelligence_class}</span>}
           {openGates.length > 0 && <span className="shrink-0" title={openGates.map((gate) => gate.gate_type).join(", ")}>{openGates.length} gate{openGates.length === 1 ? "" : "s"}</span>}
         </span>
-        {hierarchy.descendantCount > 0 && (
-          <span className="mt-auto block w-full pt-1 text-[10px]">
-            <span>{hierarchy.completedCount}/{hierarchy.descendantCount} descendants completed</span>
-            {!settled && (
-              <span
-                role="progressbar"
-                aria-label={`Child completion for ${task.title}`}
-                aria-valuemin={0}
-                aria-valuemax={hierarchy.descendantCount}
-                aria-valuenow={hierarchy.completedCount}
-                className="mt-0.5 block h-1 overflow-hidden rounded bg-white/10"
-              >
-                <span className="block h-full bg-emerald-400" style={{ width: `${hierarchy.completedCount / hierarchy.descendantCount * 100}%` }} />
+        {(hierarchy.descendantCount > 0 || (subtasks?.total ?? 0) > 0) && (
+          <span className="mt-auto block w-full space-y-1 pt-1 text-[10px]">
+            {hierarchy.descendantCount > 0 && (
+              <span className="block">
+                <span>{hierarchy.completedCount}/{hierarchy.descendantCount} descendants completed</span>
+                {!settled && (
+                  <ProgressBar
+                    className="mt-0.5"
+                    done={hierarchy.completedCount}
+                    total={hierarchy.descendantCount}
+                    running={hierarchy.runningCount}
+                    blocked={hierarchy.blockedCount}
+                  />
+                )}
+              </span>
+            )}
+            {(subtasks?.total ?? 0) > 0 && (
+              <span className="block">
+                <span>{subtasks!.settled}/{subtasks!.total} subtasks</span>
+                <ProgressBar className="mt-0.5" done={subtasks!.settled} total={subtasks!.total} />
               </span>
             )}
           </span>

@@ -50,6 +50,24 @@ describe("MobileLayoutList", () => {
     expect(list).toHaveBeenLastCalledWith("p1", expect.objectContaining({ q: "z", cursor: null }));
   });
 
+  it("shows the same progress bars and phase header as the canvas cards", async () => {
+    list.mockResolvedValueOnce({
+      nodes: [
+        { ...n("a"), agg_descendants: 4, agg_completed: 2, agg_running: 1, agg_blocked: 0 },
+        { ...n("b"), subtasks_total: 3, subtasks_settled: 1 },
+        { ...n("c"), phase_order: 2, phase_label: "Build" },
+      ],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
+
+    expect(await screen.findByText("2/4 descendants completed")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "2 of 4 done" })).toBeInTheDocument();
+    expect(screen.getByText("1/3 subtasks")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "1 of 3 done" })).toBeInTheDocument();
+    expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
+  });
+
   it("waits for a building layout instead of claiming the project is empty", async () => {
     vi.useFakeTimers();
     list

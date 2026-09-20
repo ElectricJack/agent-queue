@@ -54,6 +54,7 @@ from src.api.models.graph_layout import (
     TilesResponse,
 )
 from src.api.scope import check_request_scope
+from src.database.queries.hierarchy_queries import PHASE_KEY
 from src.task_graph.layout.compaction import Box, compact_layout
 from src.task_graph.layout.constants import CELL_SIZE, FINISHED_STATUSES, VARIANTS
 from src.task_graph.layout.view import (
@@ -135,9 +136,28 @@ def _persisted_box(row) -> Box:
     return Box(row.abs_x, row.abs_y, row.w, row.h)
 
 
-def _node(row, task, kind, context_only=False, box=None, subtask_counts=None) -> LayoutNode:
+def _phase_fields(meta) -> tuple[int | None, str | None]:
+    """Best-effort ``(order, label)`` from a ``phase`` metadata value.
+
+    A malformed value (not a dict, or an ``order`` that is not an int — a
+    hand-edited vault or a stale writer) is treated as "not a phase" rather
+    than raising: it must never break a tiles/list/node response.
+    """
+    if not isinstance(meta, dict):
+        return None, None
+    order = meta.get("order")
+    if not isinstance(order, int) or isinstance(order, bool):
+        return None, None
+    label = meta.get("label")
+    return order, label if isinstance(label, str) else None
+
+
+def _node(
+    row, task, kind, context_only=False, box=None, subtask_counts=None, phase_meta=None
+) -> LayoutNode:
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
+    phase_order, phase_label = _phase_fields((phase_meta or {}).get(task["id"]))
     return LayoutNode(
         **task,
         x=box.x,
@@ -156,6 +176,8 @@ def _node(row, task, kind, context_only=False, box=None, subtask_counts=None) ->
         agg_active=row.agg_active,
         subtasks_total=total,
         subtasks_settled=settled,
+        phase_order=phase_order,
+        phase_label=phase_label,
     )
 
 
@@ -521,6 +543,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         subtask_counts = (
             await db.count_task_subtasks(list(with_tasks)) if with_tasks else {}
         )
+        phase_meta = (
+            await db.get_task_meta_bulk(list(with_tasks), PHASE_KEY) if with_tasks else {}
+        )
         nodes = [
             _node(
                 with_tasks[t][0],
@@ -529,6 +554,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 t in context_only,
                 boxes.get(t),
                 subtask_counts,
+                phase_meta,
             )
             for t, kind in visible.items()
             if t in with_tasks
@@ -631,6 +657,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         page = ordered[offset : offset + req.limit]
         # One extra statement for the page, skipped entirely when it is empty.
         subtask_counts = await db.count_task_subtasks(page) if page else {}
+        phase_meta = await db.get_task_meta_bulk(page, PHASE_KEY) if page else {}
         nodes = [
             _node(
                 rows[t],
@@ -639,6 +666,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 matches is not None and t not in matches,
                 boxes.get(t),
                 subtask_counts,
+                phase_meta,
             )
             for t in page
         ]
@@ -683,8 +711,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # No viewport state here, so the stored kind is reported as-is: a
         # container is a container, never "collapsed".
         subtask_counts = await db.count_task_subtasks([task_id])
+        phase_meta = await db.get_task_meta_bulk([task_id], PHASE_KEY)
         return NodeResponse(
-            node=_node(row, task, row.kind, subtask_counts=subtask_counts),
+            node=_node(
+                row, task, row.kind, subtask_counts=subtask_counts, phase_meta=phase_meta
+            ),
             ancestors=ancestors,
             layout_version=meta["layout_version"],
         )

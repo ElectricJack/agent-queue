@@ -28174,6 +28174,28 @@
             "type": "integer",
             "title": "Subtasks Settled",
             "default": 0
+          },
+          "phase_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Order"
+          },
+          "phase_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Label"
           }
         },
         "type": "object",

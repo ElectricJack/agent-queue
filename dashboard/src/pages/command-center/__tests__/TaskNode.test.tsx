@@ -11,7 +11,7 @@ import type { TaskNodeData } from "../types";
 
 afterEach(cleanup);
 
-const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}): TaskNodeData => ({
+const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}, extra: Partial<TaskNodeData> = {}): TaskNodeData => ({
   task: { id: "task-one", title: "Ship it", status, priority: 100 },
   gates: [],
   projectId: "p1",
@@ -20,6 +20,7 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}): Ta
     descendantCount: 4, completedCount: 3, runningCount: 0, blockedCount: 0,
     expanded: true, autoExpanded: false, contextOnly: false, ...over,
   },
+  ...extra,
 });
 
 describe("finished cards", () => {
@@ -37,12 +38,46 @@ describe("finished cards", () => {
 
   it("keeps the live variant while work is still running underneath", () => {
     render(<TaskCard data={card("COMPLETED", { runningCount: 1 })} />);
-    expect(screen.getByRole("progressbar", { name: "Child completion for Ship it" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
     expect(screen.getByText("1 running")).toBeInTheDocument();
   });
 
   it("keeps the live variant for a card that has not finished", () => {
     render(<TaskCard data={card("IN_PROGRESS")} />);
-    expect(screen.getByRole("progressbar", { name: "Child completion for Ship it" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "3 of 4 done" })).toBeInTheDocument();
+  });
+});
+
+describe("subtask progress", () => {
+  it("renders a bar for a card with subtasks", () => {
+    render(<TaskCard data={card("READY", {}, { subtasks: { total: 3, settled: 1 } })} />);
+    expect(screen.getByText("1/3 subtasks")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "1 of 3 done" })).toBeInTheDocument();
+  });
+
+  it("renders no subtask bar for a card without subtasks", () => {
+    render(<TaskCard data={card("READY", { descendantCount: 0 }, { subtasks: { total: 0, settled: 0 } })} />);
+    expect(screen.queryByText(/subtasks/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});
+
+describe("phase header", () => {
+  it("shows the phase order and label", () => {
+    render(<TaskCard data={card("DEFINED", {}, { phase: { order: 2, label: "Build" } })} />);
+    expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
+  });
+
+  it("shows a lock glyph while the phase is gated", () => {
+    render(<TaskCard data={card("DEFINED", {}, {
+      task: { id: "task-one", title: "Ship it", status: "DEFINED", priority: 100, is_blocked: true },
+      phase: { order: 1, label: "Foundation" },
+    })} />);
+    expect(screen.getByLabelText("Phase gated")).toBeInTheDocument();
+  });
+
+  it("omits the header for a non-phase task", () => {
+    render(<TaskCard data={card("READY")} />);
+    expect(screen.queryByText(/^Phase /)).not.toBeInTheDocument();
   });
 });

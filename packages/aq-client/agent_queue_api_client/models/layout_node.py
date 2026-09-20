@@ -42,6 +42,8 @@ class LayoutNode:
         agg_active (int | Unset):  Default: 0.
         subtasks_total (int | Unset):  Default: 0.
         subtasks_settled (int | Unset):  Default: 0.
+        phase_order (int | None | Unset):
+        phase_label (None | str | Unset):
     """
 
     id: str
@@ -71,6 +73,8 @@ class LayoutNode:
     agg_active: int | Unset = 0
     subtasks_total: int | Unset = 0
     subtasks_settled: int | Unset = 0
+    phase_order: int | None | Unset = UNSET
+    phase_label: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -156,6 +160,18 @@ class LayoutNode:
 
         subtasks_settled = self.subtasks_settled
 
+        phase_order: int | None | Unset
+        if isinstance(self.phase_order, Unset):
+            phase_order = UNSET
+        else:
+            phase_order = self.phase_order
+
+        phase_label: None | str | Unset
+        if isinstance(self.phase_label, Unset):
+            phase_label = UNSET
+        else:
+            phase_label = self.phase_label
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -207,6 +223,10 @@ class LayoutNode:
             field_dict["subtasks_total"] = subtasks_total
         if subtasks_settled is not UNSET:
             field_dict["subtasks_settled"] = subtasks_settled
+        if phase_order is not UNSET:
+            field_dict["phase_order"] = phase_order
+        if phase_label is not UNSET:
+            field_dict["phase_label"] = phase_label
 
         return field_dict
 
@@ -316,6 +336,24 @@ class LayoutNode:
 
         subtasks_settled = d.pop("subtasks_settled", UNSET)
 
+        def _parse_phase_order(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        phase_order = _parse_phase_order(d.pop("phase_order", UNSET))
+
+        def _parse_phase_label(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        phase_label = _parse_phase_label(d.pop("phase_label", UNSET))
+
         layout_node = cls(
             id=id,
             title=title,
@@ -344,6 +382,8 @@ class LayoutNode:
             agg_active=agg_active,
             subtasks_total=subtasks_total,
             subtasks_settled=subtasks_settled,
+            phase_order=phase_order,
+            phase_label=phase_label,
         )
 
         layout_node.additional_properties = d

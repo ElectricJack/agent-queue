@@ -36,4 +36,36 @@ describe("ContainerNode", () => {
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: "run-1" });
   });
+
+  it("renders a progress bar from the aggregates", () => {
+    render(<ContainerNode id="e" data={{ node, projectId: "p1" }} /> as never);
+    expect(screen.getByRole("progressbar", { name: "2 of 5 done" })).toBeInTheDocument();
+  });
+
+  it("shows nothing for a phase-less container", () => {
+    render(<ContainerNode id="e" data={{ node, projectId: "p1" }} /> as never);
+    expect(screen.queryByText(/^Phase /)).not.toBeInTheDocument();
+  });
+
+  it("shows the phase order and label, and a lock glyph while gated", () => {
+    render(
+      <ContainerNode
+        id="e"
+        data={{ node: { ...node, phase_order: 2, phase_label: "Build", is_blocked: true }, projectId: "p1" }}
+      /> as never,
+    );
+    expect(screen.getByText("Phase 2 · Build")).toBeInTheDocument();
+    expect(screen.getByLabelText("Phase gated")).toBeInTheDocument();
+  });
+
+  it("omits the lock glyph when a phase container is not gated", () => {
+    render(
+      <ContainerNode
+        id="e"
+        data={{ node: { ...node, phase_order: 1, phase_label: "Foundation", is_blocked: false }, projectId: "p1" }}
+      /> as never,
+    );
+    expect(screen.getByText("Phase 1 · Foundation")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Phase gated")).not.toBeInTheDocument();
+  });
 });

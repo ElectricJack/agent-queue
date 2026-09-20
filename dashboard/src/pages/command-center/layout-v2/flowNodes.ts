@@ -64,6 +64,7 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     onOpenTask: ctx.handlers.onOpenTask, onToggleChildren: ctx.handlers.onToggleChildren, onFocus: ctx.handlers.onFocus,
     layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"],
     subtasks: { total: n.subtasks_total ?? 0, settled: n.subtasks_settled ?? 0 },
+    phase: n.phase_order != null ? { order: n.phase_order, label: n.phase_label ?? "" } : null,
   };
 }
 
@@ -80,6 +81,7 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
     n.container_id, n.context_only, n.agg_children, n.agg_descendants, n.agg_completed,
     n.agg_running, n.agg_blocked, n.profile_id, n.intelligence_class, n.assigned_agent_id,
     n.branch_name, n.pr_url, n.playbook_run_id, n.subtasks_total, n.subtasks_settled,
+    n.phase_order, n.phase_label,
     gates.map((g) => `${g.id}:${g.status}:${g.gate_type}`).join(","),
   ].join(SEP);
 }

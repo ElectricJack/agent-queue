@@ -1710,6 +1710,29 @@ class TaskQueryMixin:
             ).fetchall()
         return {r[0] for r in rows}
 
+    async def get_task_meta_bulk(self, task_ids: list[str], key: str) -> dict[str, object]:
+        """``{task_id: decoded_value}`` for *task_ids* carrying metadata *key*.
+
+        One query for a whole candidate set, mirroring ``count_task_subtasks``
+        — a per-task ``get_task_meta`` would be one round-trip each on the
+        graph layout endpoints, which ask this for every visible id.  Task
+        ids with no *key* metadata are absent from the result.
+        """
+        if not task_ids:
+            return {}
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        and_(
+                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            task_metadata.c.key == key,
+                        )
+                    )
+                )
+            ).fetchall()
+        return {r[0]: json.loads(r[1]) for r in rows}
+
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 
     async def add_task_label(self, task_id: str, label: str, *, conn=None) -> None:

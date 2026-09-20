@@ -60,6 +60,8 @@ export interface TaskNodeData extends Record<string, unknown> {
   layoutScale?: number;
   /** This task's own durable subtask checklist counts, when it has any. */
   subtasks?: { total: number; settled: number };
+  /** Set when this node is a phase container (graph-visibility A1). */
+  phase?: { order: number; label: string } | null;
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {
