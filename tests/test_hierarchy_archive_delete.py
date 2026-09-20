@@ -171,3 +171,154 @@ class TestArchiveCompletedBulk:
         assert await db.get_task("root") is not None
         assert await db.get_task("grandchild") is not None
         assert await db.get_archived_task("lone") is not None
+
+
+class TestTaskReferenceDispositions:
+    """Every foreign key onto ``tasks`` has a declared disposition.
+
+    ``_delete_one`` removes the ``tasks`` row, so a table it does not know
+    about surfaces as a raw ``IntegrityError`` — which is how the hourly
+    auto-archive sweep came to fail 225 times in a row on
+    ``integration_parent_episodes``.  These tests walk the live metadata so a
+    *new* table with a foreign key onto ``tasks`` fails here rather than
+    silently breaking the sweep again.
+    """
+
+    @staticmethod
+    def _task_foreign_keys() -> dict[tuple[str, str], tuple[str | None, bool]]:
+        from src.database.tables import metadata
+
+        found: dict[tuple[str, str], tuple[str | None, bool]] = {}
+        for table in metadata.sorted_tables:
+            for fk in table.foreign_key_constraints:
+                for element in fk.elements:
+                    if element.column.table.name != "tasks":
+                        continue
+                    column = table.c[element.parent.name]
+                    found[(table.name, column.name)] = (fk.ondelete, column.nullable)
+        return found
+
+    def test_every_foreign_key_onto_tasks_is_classified(self):
+        from src.database.queries.task_references import TASK_REFERENCE_DISPOSITIONS
+
+        found = set(self._task_foreign_keys())
+        declared = set(TASK_REFERENCE_DISPOSITIONS)
+        assert found - declared == set(), (
+            "new foreign key(s) onto tasks with no declared disposition — either teach "
+            "_delete_one to clean them up or declare them 'refused' in "
+            "src/database/queries/task_references.py"
+        )
+        assert declared - found == set(), "TASK_REFERENCE_DISPOSITIONS names a dead foreign key"
+
+    def test_dispositions_agree_with_the_constraints_they_describe(self):
+        from src.database.queries.task_references import TASK_REFERENCE_DISPOSITIONS
+
+        for key, (ondelete, nullable) in self._task_foreign_keys().items():
+            disposition = TASK_REFERENCE_DISPOSITIONS[key]
+            if disposition == "db_cascade":
+                assert ondelete == "CASCADE", f"{key} is not ON DELETE CASCADE"
+            if disposition in ("nulled", "released"):
+                assert nullable, f"{key} cannot be nulled — the column is NOT NULL"
+
+    def test_refused_dispositions_are_the_ones_the_guard_checks(self):
+        from src.database.queries.task_references import (
+            INTEGRATION_TASK_REFERENCES,
+            TASK_REFERENCE_DISPOSITIONS,
+        )
+
+        refused = {k for k, v in TASK_REFERENCE_DISPOSITIONS.items() if v == "refused"}
+        checked = {(ref.table, ref.column) for ref in INTEGRATION_TASK_REFERENCES}
+        assert refused == checked
+
+    @pytest.mark.parametrize(
+        "table,extra",
+        [
+            ("integration_parent_episodes", {}),
+            ("integration_parent_verifications", {}),
+            ("integration_repair_operations", {}),
+        ],
+    )
+    async def test_archive_and_delete_refuse_each_referencing_table(self, db, table, extra):
+        """Not just the episode table — every ``refused`` reference refuses."""
+        await _seed_integration_reference(db, table, "t-ref")
+
+        for call in (
+            db.archive_task("t-ref"),
+            db.delete_task("t-ref", branch_policy="keep"),
+        ):
+            with pytest.raises(HierarchyError) as exc:
+                await call
+            assert exc.value.code == "integration_owned"
+            assert table in str(exc.value)
+        assert await db.get_task("t-ref") is not None
+
+
+async def _seed_integration_reference(db, table: str, task_id: str) -> None:
+    """Create *task_id* plus one row in *table* that names it.
+
+    ``integration_parent_verifications`` is keyed to its episode by
+    ``(parent_task_id, episode_id)``, so it can only ever name a task that
+    already has an episode — its case seeds both.
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import (
+        integration_parent_episodes,
+        integration_parent_verifications,
+        integration_repair_operations,
+    )
+    from src.models import RepoConfig, RepoSourceType
+
+    await db.create_repo(
+        RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+    )
+    await mktask(db, task_id, status=TaskStatus.COMPLETED)
+    # The verifier case must not also carry an episode of its own, or the
+    # test could not tell which table produced the refusal.
+    episode_owner = "t-owner" if table == "integration_repair_operations" else task_id
+    if episode_owner != task_id:
+        await mktask(db, episode_owner, status=TaskStatus.COMPLETED)
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="ep",
+                parent_task_id=episode_owner,
+                repository_id="repo",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+        if table == "integration_parent_episodes":
+            return
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="op",
+                target_kind="parent",
+                parent_task_id=episode_owner,
+                episode_id="ep",
+                active_stage=0,
+                state="completed",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                verifier_task_id=(
+                    task_id if table == "integration_repair_operations" else None
+                ),
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        if table == "integration_parent_verifications":
+            await conn.execute(
+                insert(integration_parent_verifications).values(
+                    id="ver",
+                    operation_id="op",
+                    parent_task_id=task_id,
+                    episode_id="ep",
+                    generation=0,
+                    head_sha="b" * 40,
+                    required_check_version="v1",
+                    created_at=1.0,
+                )
+            )

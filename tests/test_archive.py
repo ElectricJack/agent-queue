@@ -1229,6 +1229,26 @@ class TestArchiveWithIntegrationBookkeeping:
         assert await db.get_task("root") is not None
         assert await db.get_task("kid") is not None
 
+    async def test_archive_task_refuses_instead_of_raising_integrityerror(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("root")
+        assert exc.value.code == "integration_owned"
+        assert "integration_parent_episodes" in str(exc.value)
+
+    async def test_delete_task_refuses_instead_of_raising_integrityerror(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("root", cascade=True, branch_policy="keep")
+        assert exc.value.code == "integration_owned"
+        assert await db.get_task("root") is not None
+
     async def test_blocked_roots_are_reported_read_only(self, db):
         await self._seed(db)
 

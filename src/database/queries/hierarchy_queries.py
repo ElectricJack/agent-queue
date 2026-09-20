@@ -31,6 +31,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_queries import TransitionResult
+from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -805,6 +806,15 @@ class HierarchyQueryMixin:
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
+        if retire_pending:
+            # Removal paths only (``archive`` / ``delete``): the ``tasks`` row
+            # is about to go, and the integration subsystem's append-only
+            # bookkeeping holds RESTRICT foreign keys onto it that nothing may
+            # delete.  Refuse here — before the origins below are retired — so
+            # the caller never sees a raw ``IntegrityError`` from the final
+            # ``DELETE FROM tasks``.  ``reopen``/``disposition`` keep the row
+            # and are deliberately untouched.
+            await assert_no_integration_task_references(conn, ids, mutation)
         origins = (
             (
                 await conn.execute(

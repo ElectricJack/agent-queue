@@ -1411,13 +1411,19 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
-        await self.guard_integration_mutation(
+        from src.database.queries.task_references import assert_no_integration_task_references
+
+        hierarchical = await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
         ).scalar()
         ids = await self.subtree_ids(task_id, conn=conn)
+        if not hierarchical:
+            # See ``archive_task``: a project no longer in hierarchy/train mode
+            # can still hold integration audit rows the guard skipped.
+            await assert_no_integration_task_references(conn, ids, "delete")
         if len(ids) > 1 and not cascade:
             raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
         affected = await self._collect_affected(set(ids), conn)

@@ -17,8 +17,9 @@ instead of silently breaking the sweep again.
 The ``"refused"`` disposition is the integration subsystem's append-only
 bookkeeping: rows the archive path must not delete (a database trigger
 forbids it) and must not orphan (the foreign key is RESTRICT and the column
-is the audit row's own identity).  A task those rows still name cannot leave
-the ``tasks`` table at all.
+is the audit row's own identity).  Those tasks are refused up front with a
+:class:`~src.database.queries.hierarchy_queries.HierarchyError`
+``integration_owned`` rather than being allowed to reach the ``DELETE``.
 """
 
 from __future__ import annotations
@@ -134,3 +135,23 @@ def describe_integration_references(found: Sequence[dict]) -> str:
     """One line naming the tables (and tasks) that hold a subtree back."""
     parts = [f"{row['table']}({row['task_id']})" for row in found]
     return ", ".join(parts)
+
+
+async def assert_no_integration_task_references(conn, ids: Sequence[str], mutation: str) -> None:
+    """Refuse *mutation* while integration bookkeeping still names the subtree.
+
+    Raised before anything is written, so the caller's transaction has not
+    touched a row when the refusal lands.  ``integration_owned`` is the same
+    code ``archive_task`` already uses for an active repair operation.
+    """
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    found = await find_integration_task_references(conn, ids)
+    if not found:
+        return
+    raise HierarchyError(
+        "integration_owned",
+        f"{mutation} would orphan {len(found)} integration record(s): "
+        f"{describe_integration_references(found)}",
+        {"references": found},
+    )

@@ -9,7 +9,10 @@ import time
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.task_references import INTEGRATION_TASK_REFERENCES
+from src.database.queries.task_references import (
+    INTEGRATION_TASK_REFERENCES,
+    assert_no_integration_task_references,
+)
 from src.database.tables import (
     agents,
     archived_tasks,
@@ -53,12 +56,19 @@ class ArchiveQueryMixin:
             # work, so the branch always stays on the remote.  Retiring the
             # origin is what lets a task whose branch was materialized leave the
             # queue at all (deletion-with-materialized-branches §2 decision 2).
-            await self.guard_integration_mutation(
+            hierarchical = await self.guard_integration_mutation(
                 task_id, "archive", conn=conn, retire_pending=True, branch_policy="keep"
             )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
+            if not hierarchical:
+                # The guard checks integration bookkeeping only for a project
+                # that is *currently* in hierarchy/train mode; a project that
+                # has since been switched back still holds those rows, and
+                # they still RESTRICT the delete.  Nothing has been written
+                # yet at this point, so the refusal is clean either way.
+                await assert_no_integration_task_references(conn, ids, "archive")
             repair = (await conn.execute(
                 select(integration_repair_operations.c.id)
                 .join(integration_repair_stages,
