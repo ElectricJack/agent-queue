@@ -968,6 +968,7 @@ def task_subtasks(ctx: click.Context, task_id: str | None) -> None:
     default=None,
     help="JSON file containing a list of {\"title\", \"context\"?} objects.",
 )
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
 def task_subtask_add(
@@ -976,6 +977,7 @@ def task_subtask_add(
     titles: tuple[str, ...],
     context: str | None,
     from_file: str | None,
+    claim_epoch: int | None,
 ) -> None:
     """Append one or more subtasks to a task."""
     api_url = ctx.obj.get("api_url") if ctx.obj else None
@@ -996,6 +998,9 @@ def task_subtask_add(
     args: dict[str, Any] = {"subtasks": items}
     if resolved is not None:
         args["task_id"] = resolved
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        args["claim_epoch"] = epoch
 
     async def _add():
         async with _get_client(api_url) as client:

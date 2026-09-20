@@ -98,6 +98,37 @@ def test_subtask_add_requires_title_or_file():
     assert result.exit_code != 0
 
 
+def test_subtask_add_uses_claim_file_epoch(tmp_path):
+    (tmp_path / ".aq").mkdir()
+    (tmp_path / ".aq" / "claim.json").write_text('{"claim_epoch": 9}')
+    client = client_for({"task_id": "t-1", "subtasks": [{"id": "s1"}]})
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["task", "subtask-add", "t-1", "--title", "Held"]
+        )
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "task_subtask_add",
+        {"task_id": "t-1", "subtasks": [{"title": "Held"}], "claim_epoch": 9},
+    )
+
+
+def test_subtask_add_explicit_claim_epoch_wins_over_claim_file(tmp_path):
+    (tmp_path / ".aq").mkdir()
+    (tmp_path / ".aq" / "claim.json").write_text('{"claim_epoch": 9}')
+    client = client_for({"task_id": "t-1", "subtasks": [{"id": "s1"}]})
+    with patch("src.cli.tasks._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli,
+            ["task", "subtask-add", "t-1", "--title", "Held", "--claim-epoch", "42"],
+        )
+    assert result.exit_code == 0, result.output
+    client.execute.assert_awaited_once_with(
+        "task_subtask_add",
+        {"task_id": "t-1", "subtasks": [{"title": "Held"}], "claim_epoch": 42},
+    )
+
+
 def test_subtask_show_uses_task_option():
     client = client_for(
         {
