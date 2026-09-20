@@ -5,8 +5,10 @@ from sqlalchemy import event
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
+from src.task_graph.layout import driver as driver_module
 from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
 from src.task_graph.layout.driver import LayoutDriver
+from src.task_graph.layout.flow import row_target
 from tests.db_fixtures import lease_dsn
 
 
@@ -795,3 +797,139 @@ async def test_reconcile_heals_an_active_variant_stub_the_rules_no_longer_keep(d
     assert await drv.reconcile("p1") == 1
     await drv.process_dirty("p1", min_age_seconds=0)
     assert set(await db.load_layout_rows("p1", "active", ["done", *kids])) == set()
+
+
+async def _drain(db, drv):
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+
+def _record_ordinals(records):
+    """Patch the driver's engine entry point so a batch's per-container
+    ``changed_ordinals`` can be inspected from the outside."""
+    real = driver_module.layout_container
+
+    def wrapper(scope, **kw):
+        res = real(scope, **kw)
+        records.append((scope.container_id, set(res.changed_ordinals)))
+        return res
+
+    return patch.object(driver_module, "layout_container", wrapper)
+
+
+async def _positions(db, variant):
+    rows = await db.load_subtree_rows("p1", variant)
+    return {tid: (r.abs_x, r.abs_y) for tid, r in rows.items()}
+
+
+def _total_movement(before, after):
+    return sum(
+        abs(after[t][0] - before[t][0]) + abs(after[t][1] - before[t][1])
+        for t in before.keys() & after.keys()
+    )
+
+
+async def test_incremental_trajectory_is_stable(db):
+    """create → start → finish → create-next, on both variants.
+
+    Starting work writes no dirty mark at all, a leaf's status change never
+    re-keys anything, and a new sibling moves no existing ordinal. The
+    aspect-balanced row target must not have loosened any of that.
+    """
+    kids = await seed_epic(db, n=3)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await _drain(db, drv)
+
+    # ── create ────────────────────────────────────────────────────────
+    before = {v: await db.load_subtree_rows("p1", v) for v in ("all", "active")}
+    await db.create_task(Task(id="e-n1", project_id="p1", title="n1", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("e-n1", "e", conn=conn)
+        await db.mark_layout_dirty("p1", ["e-n1"], "task.created", conn=conn)
+    records: list[tuple[str | None, set[str]]] = []
+    with _record_ordinals(records):
+        await _drain(db, drv)
+    assert records and all(changed <= {"e-n1"} for _, changed in records)
+    for variant, rows in before.items():
+        after = await db.load_subtree_rows("p1", variant)
+        for tid, r in rows.items():
+            assert after[tid].ordinal == r.ordinal, (variant, tid)
+
+    # ── start ─────────────────────────────────────────────────────────
+    await db.transition_task("e-n1", TaskStatus.ASSIGNED, force=True)
+    await db.transition_task("e-n1", TaskStatus.IN_PROGRESS, force=True)
+    _, marks = await db.pop_layout_dirty("p1", min_age_seconds=0)
+    assert marks == []
+
+    # ── finish ────────────────────────────────────────────────────────
+    await _finish(db, "e-n1")
+    records.clear()
+    with _record_ordinals(records):
+        await _drain(db, drv)
+    assert all(changed == set() for _, changed in records), records
+
+    # ── create-next ───────────────────────────────────────────────────
+    before = {v: await db.load_subtree_rows("p1", v) for v in ("all", "active")}
+    await db.create_task(Task(id="e-n2", project_id="p1", title="n2", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("e-n2", "e", conn=conn)
+        await db.mark_layout_dirty("p1", ["e-n2"], "task.created", conn=conn)
+    records.clear()
+    with _record_ordinals(records):
+        await _drain(db, drv)
+    assert records and all(changed <= {"e-n2"} for _, changed in records)
+    for variant, rows in before.items():
+        after = await db.load_subtree_rows("p1", variant)
+        for tid, r in rows.items():
+            assert after[tid].ordinal == r.ordinal, (variant, tid)
+    assert set(kids) <= set(await db.load_subtree_rows("p1", "all"))
+
+
+async def test_published_positions_move_only_on_a_band_crossing(db):
+    """Σ|Δabs_x| + |Δabs_y| over the whole canvas is 0 unless the scope's
+    row target or growth band actually changed, and then only the crossing
+    scope and its later siblings move."""
+    await seed_epic(db, n=3)
+    await db.create_task(Task(id="z", project_id="p1", title="z", description=""))
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await _drain(db, drv)
+
+    def scope_shape(rows):
+        return (
+            row_target({k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"},
+                       is_root=False),
+            (rows["e"].w, rows["e"].h),
+        )
+
+    rows = await db.load_subtree_rows("p1", "all")
+    shape = scope_shape(rows)
+    before = {tid: (r.abs_x, r.abs_y) for tid, r in rows.items()}
+
+    crossings = 0
+    for i in range(14):
+        cid = f"e-x{i}"
+        await db.create_task(Task(id=cid, project_id="p1", title=cid, description=""))
+        async with db._engine.begin() as conn:
+            await db.set_parent(cid, "e", conn=conn)
+            await db.mark_layout_dirty("p1", [cid], "task.created", conn=conn)
+        await _drain(db, drv)
+
+        rows = await db.load_subtree_rows("p1", "all")
+        after = {tid: (r.abs_x, r.abs_y) for tid, r in rows.items()}
+        new_shape = scope_shape(rows)
+        moved = {
+            tid for tid in before.keys() & after.keys() if before[tid] != after[tid]
+        }
+        if new_shape == shape:
+            assert _total_movement(before, after) == 0.0, (i, sorted(moved))
+        else:
+            crossings += 1
+            # Confined to the crossing scope (``e`` and its children) and
+            # ``z``, the later root sibling that the wider epic pushes.
+            assert moved <= {"e", "z", *(t for t in rows if rows[t].container_id == "e")}
+        before, shape = after, new_shape
+
+    # The fixture must exercise BOTH branches, or one of them is vacuous.
+    assert 1 <= crossings < 14
