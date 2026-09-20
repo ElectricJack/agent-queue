@@ -133,8 +133,15 @@ aq task subtask-done <ordinal> [--task <task_id>]   # -> done
 aq task subtask-skip <ordinal> [--task <task_id>] --note "..."  # -> skipped, note required
 ```
 
-Add your own with `subtask-add` when a task has several distinct steps worth
-tracking individually — it beats losing the breakdown in prose.
+Most tasks have no subtasks. Add them with `subtask-add` when the task is
+more than one work session and a reader would otherwise have to read your
+transcript to know where you got to; stop at fifteen. If the task arrived
+with a checklist, work that one — do not re-decompose it — and add rows for
+steps you discover as you go, settling each as you finish it.
+
+A subtask is not a place to put work that belongs to someone else. Something
+outside this task's scope is still emergent work: file it as a task
+(`aq task create --reason "..."`), not as a checklist row.
 
 **The close rule:** `aq task close --outcome pass` is refused with
 `subtasks.open` while any subtask is still `pending`/`in_progress`. Settle
@@ -334,6 +341,15 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 
 ## Phases (planner)
 
+Most projects and most epics have no phases. Create one only when you can
+name what must finish before the next stage may begin: phase *N+1* stays
+blocked until every task in phase *N* is COMPLETED. That is the whole
+semantic — a phase is a container with a `blocks` edge onto every earlier
+open sibling phase, and a blocked container withholds its children, so one
+edge gates a whole stage. Stop at five per level. If two groups could
+overlap, they are not phases; use `needs`/`blocks` edges between the
+individual tasks.
+
 A phase is an ordered container that gates implicitly: phase *N+1* stays
 blocked until every child of phase *N* is COMPLETED, with no extra edges to
 manage per task. Available if your profile lists `phase_create`/`phase_list`
@@ -344,7 +360,12 @@ aq task phase-create --project-id <pid> --title "..." [--label "..."] [--parent-
 aq task phase-list --project-id <pid> [--parent-id <id>]
 ```
 
-File tasks into a phase the ordinary way, `aq task create --parent <phase-id>`.
+File tasks into a phase with `aq task create --parent <phase-id>` — from the
+loopback CLI or a supervisor session. A **worker or planner session cannot**:
+a non-elevated filing's parent must be the task it holds, one of that task's
+descendants, or that task's own parent, and a root-level phase is none of
+those (`hierarchy.parent_out_of_scope`). From a session, create the phase's
+children through a graph (`--from-spec` / `--graph`) instead.
 A phase settles like any container — all children COMPLETED — so a failed
 child holds the gate on purpose. A childless phase is never claimable and is
 held open (never auto-settled); if it turns out to be unneeded, delete it
