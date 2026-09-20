@@ -326,6 +326,12 @@ class ArchiveQueryMixin:
         refuses those with ``hierarchy.open_descendants``; like
         ``archive_old_terminal_tasks``, the bulk path skips them rather than
         aborting the whole sweep — and reports only what it actually archived.
+
+        This is the explicit bulk command, not the hourly sweep, so it writes
+        no ``archive_refusal`` record: the report is about what the *automatic*
+        pass keeps failing to do.  Anything added here that does record must go
+        through ``_note_archive_refusal`` / ``_forget_archive_refusal``, never
+        the raw helpers — a failed bookkeeping write may not end the loop.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -401,19 +407,19 @@ class ArchiveQueryMixin:
             try:
                 await self.archive_task(tid)
             except HierarchyError as exc:
-                await self._record_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
+                await self._note_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
                 logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
                 continue
             except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
                 signature = _failure_signature(exc)
-                await self._record_archive_refusal(tid, "unexpected", signature)
+                await self._note_archive_refusal(tid, "unexpected", signature)
                 unexpected[signature] += 1
                 unexpected_ids.setdefault(signature, []).append(tid)
                 continue
             archived.append(tid)
             # The archive took the task's metadata with it; clear explicitly
             # so the record's lifetime does not depend on that coincidence.
-            await self._clear_archive_refusal(tid)
+            await self._forget_archive_refusal(tid)
 
         for signature, count in unexpected.most_common():
             shown = unexpected_ids[signature][:5]
@@ -425,6 +431,41 @@ class ArchiveQueryMixin:
                 "..." if count > len(shown) else "",
             )
         return archived
+
+    async def _note_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
+        """:meth:`_record_archive_refusal`, but it can never stop the sweep.
+
+        Bookkeeping about a skipped root is strictly less important than
+        archiving the roots that are fine.  An exception escaping here would
+        abandon every remaining root in the hourly pass — the very failure
+        mode this sweep exists to have removed, arriving through the code that
+        reports it.  One WARNING and carry on; the root's archive outcome was
+        decided above and is unaffected.
+        """
+        try:
+            await self._record_archive_refusal(task_id, code, detail)
+        except Exception as exc:  # noqa: BLE001 — reporting may not break the sweep
+            logger.warning(
+                "archive_old_terminal_tasks: could not record why %s was skipped, %s",
+                task_id,
+                _failure_signature(exc),
+            )
+
+    async def _forget_archive_refusal(self, task_id: str) -> None:
+        """:meth:`_clear_archive_refusal`, but it can never stop the sweep.
+
+        The task has already been archived when this runs; a failed tidy-up
+        leaves a stale record that the eligibility filter in
+        :meth:`list_archive_blocked_roots` hides anyway.
+        """
+        try:
+            await self._clear_archive_refusal(task_id)
+        except Exception as exc:  # noqa: BLE001 — reporting may not break the sweep
+            logger.warning(
+                "archive_old_terminal_tasks: could not clear the refusal record for %s, %s",
+                task_id,
+                _failure_signature(exc),
+            )
 
     async def _record_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
         """Remember why the sweep last refused *task_id*, if that has changed.

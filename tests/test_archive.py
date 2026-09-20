@@ -1458,6 +1458,60 @@ class TestArchiveRefusalRecord:
         )
         assert blocked.total == 0
 
+    async def test_a_failed_record_write_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        """The reporting write is not allowed to reintroduce the bug it reports."""
+        import logging
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root", "solo")
+
+        async def boom(task_id, code, detail):
+            raise RuntimeError("metadata write failed")
+
+        monkeypatch.setattr(db, "_record_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # The unrelated root still leaves the graph and the call returns.
+        assert archived == ["solo"]
+        assert await db.get_task("root") is not None
+        warnings = [r for r in caplog.records if "root" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "RuntimeError" in warnings[0].getMessage()
+
+    async def test_a_failed_clear_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        import logging
+
+        await _seed_project(db)
+        await _seed_task(db, "first", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "second", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "first", "second")
+
+        async def boom(task_id):
+            raise RuntimeError("metadata clear failed")
+
+        monkeypatch.setattr(db, "_clear_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # Both really archived, and the failed tidy did not unmake either.
+        assert sorted(archived) == ["first", "second"]
+        assert await db.get_archived_task("first") is not None
+        assert await db.get_archived_task("second") is not None
+        assert len([r for r in caplog.records if "RuntimeError" in r.getMessage()]) == 2
+
     async def test_blocked_count_is_the_true_total_not_the_page_size(self, db):
         await _seed_hierarchy_project(db)
         for n in range(4):
