@@ -911,9 +911,11 @@ async def _tiles(ac, **over):
 async def test_collapsing_a_container_reclaims_its_space_for_the_rows_below(db, client_factory):
     """The operator's complaint: siblings below a collapsed epic must move up.
 
-    ``z`` and ``hub`` sit below ``e`` in the root flow. Collapsing ``e``
-    shrinks it to one tile, and everything after it in reading order climbs
-    by exactly that delta.
+    ``hub`` and ``z`` are the epic's line-mates — the root's aspect-balanced
+    row target is wide enough to hold the epic and its loose cards on one
+    line (reorganisation design §3.1) — so they reclaim WIDTH. The ``d*``
+    dependents on the rank below reclaim HEIGHT: collapsing ``e`` shrinks it
+    to one tile and they climb by exactly that delta.
     """
     await seed(db)
     async with client_factory() as ac:
@@ -922,9 +924,14 @@ async def test_collapsing_a_container_reclaims_its_space_for_the_rows_below(db, 
 
     delta = opened["e"]["h"] - closed["e"]["h"]
     assert delta > 0 and (closed["e"]["w"], closed["e"]["h"]) == (1.0, 1.0)
-    for tid in ("z", "hub"):
+    for tid in ("d0", "d9"):
         assert closed[tid]["y"] == pytest.approx(opened[tid]["y"] - delta)
         assert closed[tid]["x"] == pytest.approx(opened[tid]["x"])
+    shrink = opened["e"]["w"] - closed["e"]["w"]
+    assert shrink > 0
+    for tid in ("hub", "z"):
+        assert closed[tid]["y"] == pytest.approx(opened[tid]["y"])
+        assert closed[tid]["x"] == pytest.approx(opened[tid]["x"] - shrink)
     assert closed["e"]["y"] == pytest.approx(opened["e"]["y"])
 
 
