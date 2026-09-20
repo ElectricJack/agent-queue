@@ -58,6 +58,8 @@ export interface TaskNodeData extends Record<string, unknown> {
   onFocus?: (taskId: string) => void;
   /** Presentation-only scale selected in the tiled graph. */
   layoutScale?: number;
+  /** This task's own durable subtask checklist counts, when it has any. */
+  subtasks?: { total: number; settled: number };
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {

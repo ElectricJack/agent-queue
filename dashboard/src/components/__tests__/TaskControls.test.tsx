@@ -13,7 +13,7 @@ const data = vi.hoisted(() => ({ task: {
 } }));
 const api = vi.hoisted(() => ({
   pauseTask: vi.fn(), resumeTask: vi.fn(), taskSet: vi.fn(), editTask: vi.fn(),
-  taskComments: vi.fn(), taskComment: vi.fn(),
+  taskComments: vi.fn(), taskComment: vi.fn(), taskSubtasks: vi.fn(),
 }));
 vi.mock("../../api/client", async (load) => ({
   ...await load<typeof import("../../api/client")>(), ...api,
@@ -37,6 +37,7 @@ beforeEach(() => {
   api.taskSet.mockResolvedValue({ data: { id: "t", fields_changed: ["description"] } });
   api.editTask.mockResolvedValue({ data: { updated: "t", fields: ["title"] } });
   api.taskComments.mockResolvedValue({ data: { comments: [], total: 0, limit: 50, offset: 0 } });
+  api.taskSubtasks.mockResolvedValue({ data: { success: true, task_id: "t", subtasks: [], total: 0, settled: 0 } });
 });
 afterEach(() => { cleanup(); client.clear(); });
 const noop = () => {};

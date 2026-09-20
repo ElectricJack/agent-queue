@@ -28164,6 +28164,16 @@
             "type": "integer",
             "title": "Agg Active",
             "default": 0
+          },
+          "subtasks_total": {
+            "type": "integer",
+            "title": "Subtasks Total",
+            "default": 0
+          },
+          "subtasks_settled": {
+            "type": "integer",
+            "title": "Subtasks Settled",
+            "default": 0
           }
         },
         "type": "object",

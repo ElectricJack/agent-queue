@@ -5,6 +5,7 @@ import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
 import TaskComments from "../components/TaskComments";
+import TaskSubtaskList from "../components/TaskSubtaskList";
 import TaskSessions from "../components/TaskSessions";
 import TaskAttention from "../components/TaskAttention";
 import TaskDescription from "../components/TaskDescription";
@@ -103,6 +104,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       <TaskDescription key={task.id} task={task} />
 
       <TaskSessions taskId={task.id} />
+
+      <TaskSubtaskList taskId={task.id} />
 
       <TaskComments taskId={task.id} />
 

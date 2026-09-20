@@ -40,6 +40,8 @@ class LayoutNode:
         agg_running (int | Unset):  Default: 0.
         agg_blocked (int | Unset):  Default: 0.
         agg_active (int | Unset):  Default: 0.
+        subtasks_total (int | Unset):  Default: 0.
+        subtasks_settled (int | Unset):  Default: 0.
     """
 
     id: str
@@ -67,6 +69,8 @@ class LayoutNode:
     agg_running: int | Unset = 0
     agg_blocked: int | Unset = 0
     agg_active: int | Unset = 0
+    subtasks_total: int | Unset = 0
+    subtasks_settled: int | Unset = 0
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -148,6 +152,10 @@ class LayoutNode:
 
         agg_active = self.agg_active
 
+        subtasks_total = self.subtasks_total
+
+        subtasks_settled = self.subtasks_settled
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -195,6 +203,10 @@ class LayoutNode:
             field_dict["agg_blocked"] = agg_blocked
         if agg_active is not UNSET:
             field_dict["agg_active"] = agg_active
+        if subtasks_total is not UNSET:
+            field_dict["subtasks_total"] = subtasks_total
+        if subtasks_settled is not UNSET:
+            field_dict["subtasks_settled"] = subtasks_settled
 
         return field_dict
 
@@ -300,6 +312,10 @@ class LayoutNode:
 
         agg_active = d.pop("agg_active", UNSET)
 
+        subtasks_total = d.pop("subtasks_total", UNSET)
+
+        subtasks_settled = d.pop("subtasks_settled", UNSET)
+
         layout_node = cls(
             id=id,
             title=title,
@@ -326,6 +342,8 @@ class LayoutNode:
             agg_running=agg_running,
             agg_blocked=agg_blocked,
             agg_active=agg_active,
+            subtasks_total=subtasks_total,
+            subtasks_settled=subtasks_settled,
         )
 
         layout_node.additional_properties = d

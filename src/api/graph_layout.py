@@ -135,8 +135,9 @@ def _persisted_box(row) -> Box:
     return Box(row.abs_x, row.abs_y, row.w, row.h)
 
 
-def _node(row, task, kind, context_only=False, box=None) -> LayoutNode:
+def _node(row, task, kind, context_only=False, box=None, subtask_counts=None) -> LayoutNode:
     box = box or _persisted_box(row)
+    total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
     return LayoutNode(
         **task,
         x=box.x,
@@ -153,6 +154,8 @@ def _node(row, task, kind, context_only=False, box=None) -> LayoutNode:
         agg_running=row.agg_running,
         agg_blocked=row.agg_blocked,
         agg_active=row.agg_active,
+        subtasks_total=total,
+        subtasks_settled=settled,
     )
 
 
@@ -513,8 +516,20 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                     )
 
         with_tasks = await db.load_rows_with_tasks(project_id, variant, list(visible))
+        # One extra statement for the whole response, skipped entirely when
+        # nothing is visible -- never one lookup per node.
+        subtask_counts = (
+            await db.count_task_subtasks(list(with_tasks)) if with_tasks else {}
+        )
         nodes = [
-            _node(with_tasks[t][0], with_tasks[t][1], kind, t in context_only, boxes.get(t))
+            _node(
+                with_tasks[t][0],
+                with_tasks[t][1],
+                kind,
+                t in context_only,
+                boxes.get(t),
+                subtask_counts,
+            )
             for t, kind in visible.items()
             if t in with_tasks
         ]
@@ -614,6 +629,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             if matches is None or t in matches or t in forced
         ]
         page = ordered[offset : offset + req.limit]
+        # One extra statement for the page, skipped entirely when it is empty.
+        subtask_counts = await db.count_task_subtasks(page) if page else {}
         nodes = [
             _node(
                 rows[t],
@@ -621,6 +638,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 vis.visible[t],
                 matches is not None and t not in matches,
                 boxes.get(t),
+                subtask_counts,
             )
             for t in page
         ]
@@ -664,8 +682,9 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         ]
         # No viewport state here, so the stored kind is reported as-is: a
         # container is a container, never "collapsed".
+        subtask_counts = await db.count_task_subtasks([task_id])
         return NodeResponse(
-            node=_node(row, task, row.kind),
+            node=_node(row, task, row.kind, subtask_counts=subtask_counts),
             ancestors=ancestors,
             layout_version=meta["layout_version"],
         )

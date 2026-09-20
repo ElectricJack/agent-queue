@@ -10,7 +10,7 @@ const data = vi.hoisted(() => ({ task: {
   priority: 100, task_type: "feature", integration_mode: null, intelligence_class: "standard-medium",
   profile_id: null, max_retries: 3, retry_count: 0, skip_verification: false, assigned_agent: null,
 } as Record<string, unknown> }));
-const api = vi.hoisted(() => ({ editTask: vi.fn(), taskSet: vi.fn(), taskComments: vi.fn(), taskComment: vi.fn() }));
+const api = vi.hoisted(() => ({ editTask: vi.fn(), taskSet: vi.fn(), taskComments: vi.fn(), taskComment: vi.fn(), taskSubtasks: vi.fn() }));
 vi.mock("../../api/client", async (load) => ({
   ...await load<typeof import("../../api/client")>(), ...api,
 }));
@@ -37,6 +37,7 @@ beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
   api.editTask.mockResolvedValue({ data: { updated: "t", fields: ["priority"] } });
   api.taskComments.mockResolvedValue({ data: { comments: [], total: 0, limit: 50, offset: 0 } });
+  api.taskSubtasks.mockResolvedValue({ data: { success: true, task_id: "t", subtasks: [], total: 0, settled: 0 } });
   data.task = { ...data.task, status: "READY", assigned_agent: null };
 });
 afterEach(() => { cleanup(); client.clear(); });

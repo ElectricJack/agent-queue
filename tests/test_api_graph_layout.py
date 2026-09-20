@@ -1133,6 +1133,88 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     assert len(gate_reads) <= 2, gate_reads
 
 
+async def test_tiles_reports_subtask_counts_and_zero_for_none(db, client_factory):
+    await seed(db)
+    await db.add_task_subtasks(
+        "z", "p1", [{"title": "one"}, {"title": "two"}, {"title": "three"}]
+    )
+    await db.update_task_subtask("z", 1, status="done")
+    await db.update_task_subtask("z", 2, status="skipped")
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert nodes["z"]["subtasks_total"] == 3
+    assert nodes["z"]["subtasks_settled"] == 2
+    # A task with no subtasks carries zeros, not an absent field.
+    assert nodes["hub"]["subtasks_total"] == 0
+    assert nodes["hub"]["subtasks_settled"] == 0
+
+
+async def test_tiles_container_node_reports_only_its_own_subtasks(db, client_factory):
+    """Subtask counts do not roll up the hierarchy -- ``e`` has none of its own."""
+    await seed(db)
+    await db.add_task_subtasks("c0", "p1", [{"title": "child subtask"}])
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert nodes["e"]["subtasks_total"] == 0
+    assert nodes["e"]["subtasks_settled"] == 0
+
+
+async def test_tiles_subtask_lookup_is_one_statement_regardless_of_visible_count(
+    db, client_factory
+):
+    await seed(db)
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}])
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        async with client_factory() as ac:
+            r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert r.status_code == 200
+    subtask_reads = [s for s in statements if "task_subtasks" in s]
+    assert len(subtask_reads) == 1, subtask_reads
+
+
+async def test_list_reports_subtask_counts(db, client_factory):
+    await seed(db)
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}])
+    await db.update_task_subtask("z", 1, status="done")
+
+    async with client_factory() as ac:
+        r = await ac.post("/api/projects/p1/graph/list", json=ALL)
+    assert r.status_code == 200
+    nodes = {n["id"]: n for n in r.json()["nodes"]}
+    assert nodes["z"]["subtasks_total"] == 1
+    assert nodes["z"]["subtasks_settled"] == 1
+    assert nodes["hub"]["subtasks_total"] == 0
+
+
+async def test_node_reports_subtask_counts(db, client_factory):
+    await seed(db)
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}, {"title": "two"}])
+    await db.update_task_subtask("z", 1, status="done")
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/node/z?variant=all")
+    assert r.status_code == 200
+    node = r.json()["node"]
+    assert node["subtasks_total"] == 2
+    assert node["subtasks_settled"] == 1
+
+
 async def test_tiles_auto_expand_with_empty_expanded_returns_and_applies_active_set(
     db, client_factory
 ):

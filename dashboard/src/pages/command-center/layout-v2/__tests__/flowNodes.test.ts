@@ -180,6 +180,32 @@ describe("toFlowElements", () => {
     expect(discovered.style).toMatchObject({ strokeDasharray: "2 4" });
   });
 
+  it("carries subtask counts in the card payload, defaulting to zero", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0, { subtasks_total: 3, subtasks_settled: 1 }), n("y", "card", 1, 0)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const z = nodes.find((x) => x.id === "z")!;
+    const y = nodes.find((x) => x.id === "y")!;
+    expect((z.data as { subtasks: { total: number; settled: number } }).subtasks).toEqual({ total: 3, settled: 1 });
+    expect((y.data as { subtasks: { total: number; settled: number } }).subtasks).toEqual({ total: 0, settled: 0 });
+  });
+
+  it("rebuilds a card when only its subtask counts change", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0, { subtasks_total: 2, subtasks_settled: 0 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = () => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(tiles)) as never);
+    const first = toFlowElements(wire(), ctx);
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { subtasks_total: 2, subtasks_settled: 1 })] };
+    const second = toFlowElements(
+      mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
+  });
+
   it("drops to straight unlabelled edges at far zoom", () => {
     const store = mergeTiles(emptyStore(), ["0:0"], {
       nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],

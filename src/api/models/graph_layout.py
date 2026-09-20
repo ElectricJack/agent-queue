@@ -117,6 +117,8 @@ class LayoutNode(GraphTaskNode):
     agg_running: int = 0
     agg_blocked: int = 0
     agg_active: int = 0
+    subtasks_total: int = 0
+    subtasks_settled: int = 0
 
 
 class LayoutEdge(BaseModel):

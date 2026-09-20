@@ -26,6 +26,7 @@ import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
 import TaskComments from "../../components/TaskComments";
+import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
 import TaskAttention from "../../components/TaskAttention";
 import TaskDescription from "../../components/TaskDescription";
@@ -313,6 +314,8 @@ export default function TaskDetailPane({
       )}
 
       {task && <TaskSessions taskId={args.taskId} onOpenSession={close} fromTaskPane />}
+
+      {task && <TaskSubtaskList taskId={args.taskId} />}
 
       {task && <TaskComments taskId={args.taskId} />}
 

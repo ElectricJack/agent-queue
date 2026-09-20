@@ -72,20 +72,21 @@ REFERENCE_SAMPLES = 20
 
 #: Round trips one steady-state tiles request is allowed, as
 #: ``(statements, pooled transactions)``.  They are equal because every DB
-#: call on this path takes its own connection: seven of them always run --
+#: call on this path takes its own connection: eight of them always run --
 #: ``get_project``, ``get_layout_meta``, the collapsed containers' paths,
-#: the edges touching them, ``list_agents``, ``list_gates`` and the
-#: visible rows with their tasks -- and two more (``load_layout_rows``
-#: plus ``load_rows_with_tasks`` for the stub titles) only when an edge
-#: has an endpoint the request is not returning.
+#: the edges touching them, ``list_agents``, ``list_gates``, the visible
+#: rows with their tasks and one ``count_task_subtasks`` lookup over those
+#: same visible ids -- and two more (``load_layout_rows`` plus
+#: ``load_rows_with_tasks`` for the stub titles) only when an edge has an
+#: endpoint the request is not returning.
 #:
-#: Measured on ``pg_small`` at 9/9 for both focus shapes and 7/7 for the
+#: Measured on ``pg_small`` at 10/10 for both focus shapes and 8/8 for the
 #: rect one, whose cross-epic edge lands on a container that is itself
 #: inside the window, so it never reaches the stub queries.  A rect shape
 #: that starts paying them is a real change in what the request does, not
 #: noise: read the endpoint before raising this.
-TILES_ROUND_TRIPS_WITH_STUBS = (9, 9)
-TILES_ROUND_TRIPS_NO_STUBS = (7, 7)
+TILES_ROUND_TRIPS_WITH_STUBS = (10, 10)
+TILES_ROUND_TRIPS_NO_STUBS = (8, 8)
 
 #: Latency budgets, as a multiple of the reference request measured on the
 #: same box in the same process (see the module docstring).
