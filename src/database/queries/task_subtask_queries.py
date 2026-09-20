@@ -147,6 +147,11 @@ class TaskSubtaskQueriesMixin:
     async def skip_open_task_subtasks(self, task_id: str, note: str) -> int:
         """Flip every open (``pending``/``in_progress``) subtask to ``skipped``.
 
+        *note* is a default, not an overwrite: a row that already carries a
+        note keeps it. The worker's own note is the evidence of why the item
+        was left; the blanket close note says nothing that the ``skipped``
+        status does not already say.
+
         Returns the number of rows flipped.
         """
         async with self._engine.begin() as conn:
@@ -156,7 +161,14 @@ class TaskSubtaskQueriesMixin:
                     task_subtasks.c.task_id == task_id,
                     task_subtasks.c.status.in_(OPEN_SUBTASK_STATUSES),
                 )
-                .values(status="skipped", note=note, updated_at=time.time())
+                .values(
+                    status="skipped",
+                    note=case(
+                        (func.coalesce(task_subtasks.c.note, "") == "", note),
+                        else_=task_subtasks.c.note,
+                    ),
+                    updated_at=time.time(),
+                )
             )
             return result.rowcount
 

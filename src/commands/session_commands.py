@@ -865,12 +865,22 @@ class SessionCommandsMixin:
         # check above) so the same claim can settle them and retry. Only outcomes
         # that complete the task (``pass``) are gated — a failing close must never
         # be blocked on housekeeping.
+        #
+        # The *refusal* belongs here, before any side effect. The *flip* the
+        # override performs does not: it is a write, and several refusals
+        # still lie between here and the close (open children, live or
+        # manually paused descendants, review evidence, a stale claim, git
+        # verification). Committing it here left a refused close with every
+        # row ``skipped`` and its note overwritten, so the retry had nothing
+        # to settle. Only the decision is taken here; the write happens after
+        # the last refusal point (see ``skip_open_subtasks_at_close`` below).
+        skip_open_subtasks_at_close = False
         if outcome == "pass":
             subtasks = await self.db.list_task_subtasks(task_id)
             open_subtasks = [item for item in subtasks if item["status"] in OPEN_SUBTASK_STATUSES]
             if open_subtasks:
                 if args.get("skip_open_subtasks"):
-                    await self.db.skip_open_task_subtasks(task_id, "skipped at close")
+                    skip_open_subtasks_at_close = True
                 else:
                     listed = ", ".join(str(item["ordinal"]) for item in open_subtasks)
                     return {
@@ -1100,6 +1110,17 @@ class SessionCommandsMixin:
                 "unmerged": result.get("unmerged"),
                 "error": f"{lead}:\n{bullets}\n{tail}",
             }
+
+        # Past the last refusal point: ``complete_session_task`` has
+        # transitioned the task and neither the stale-claim nor the
+        # git-verification path can return from here on. Only now is it safe
+        # to settle the checklist the closing agent asked to skip.
+        if skip_open_subtasks_at_close:
+            flipped = await self.db.skip_open_task_subtasks(task_id, "skipped at close")
+            if flipped:
+                counts = await self.db.count_task_subtasks([task_id])
+                total, settled = counts.get(task_id, (0, 0))
+                await self._emit_task_subtasks_updated(task, total, settled)
 
         final_task = await self.db.get_task(task_id)
         # Capture the final branch tip after verification/integration. The

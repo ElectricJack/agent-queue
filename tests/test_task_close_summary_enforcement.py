@@ -26,6 +26,16 @@ from tests.db_fixtures import lease_dsn
 # ---------------------------------------------------------------------------
 
 
+class _StubBus:
+    """Records what the close path publishes, so a test can assert on it."""
+
+    def __init__(self):
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type, payload):
+        self.events.append((event_type, payload))
+
+
 class _StubOrchestrator:
     """Minimal orchestrator stub sufficient for _cmd_task_close."""
 
@@ -34,6 +44,7 @@ class _StubOrchestrator:
         self.plugin_registry = None
         self.token_store = None
         self.git = MagicMock()
+        self.bus = _StubBus()
 
     async def complete_session_task(self, task, **kwargs):
         status = TaskStatus.COMPLETED if kwargs.get("outcome") == "pass" else TaskStatus.FAILED
@@ -557,6 +568,59 @@ async def test_close_with_skip_open_subtasks_flag_settles_and_succeeds(handler, 
     subtasks = await db.list_task_subtasks("t1")
     assert [item["status"] for item in subtasks] == ["skipped", "skipped"]
     assert all(item["note"] == "skipped at close" for item in subtasks)
+    assert ("task.subtasks_updated", {
+        "task_id": "t1", "project_id": "p", "total": 2, "settled": 2,
+    }) in handler.orchestrator.bus.events
+
+
+@pytest.mark.asyncio
+async def test_skip_open_subtasks_writes_nothing_when_a_later_refusal_wins(handler, db):
+    """The flip must land after the LAST refusal point, not before the first.
+
+    ``--skip-open-subtasks`` used to commit the moment the flag was seen,
+    so a close that the open-children gate (or any other later check) then
+    refused left every row ``skipped`` with its note overwritten -- and the
+    retry had nothing left to settle.
+    """
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.create_task(
+        Task(id="t1.1", project_id="p", title="c", description="d", parent_task_id="t1")
+    )
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}, {"title": "Second"}])
+    await db.update_task_subtask("t1", 1, status="in_progress", note="halfway")
+
+    result = await handler.execute(
+        "task_close", {"task_id": "t1", "outcome": "pass", "skip_open_subtasks": True}
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "hierarchy.open_children"
+    subtasks = await db.list_task_subtasks("t1")
+    assert [item["status"] for item in subtasks] == ["in_progress", "pending"]
+    assert subtasks[0]["note"] == "halfway"
+    assert not [e for e in handler.orchestrator.bus.events if e[0] == "task.subtasks_updated"]
+
+
+@pytest.mark.asyncio
+async def test_skip_open_subtasks_never_overwrites_an_existing_note(handler, db):
+    """A note the worker wrote is evidence; ``skipped at close`` is a default."""
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}, {"title": "Second"}])
+    await db.update_task_subtask("t1", 1, note="blocked on upstream fix")
+
+    result = await handler.execute(
+        "task_close", {"task_id": "t1", "outcome": "pass", "skip_open_subtasks": True}
+    )
+
+    assert result["success"] is True, result
+    subtasks = await db.list_task_subtasks("t1")
+    assert [item["status"] for item in subtasks] == ["skipped", "skipped"]
+    assert subtasks[0]["note"] == "blocked on upstream fix"
+    assert subtasks[1]["note"] == "skipped at close"
 
 
 @pytest.mark.asyncio
