@@ -285,9 +285,16 @@ class FormulaCommandsMixin:
         except FormulaError as exc:
             return {"success": False, "error": str(exc)}
 
-        # Before the findings envelope, as ``create_task_graph`` does: where
-        # the graph goes is structural, and a planner given a finding list for
-        # a document that could never be created there learns the wrong thing.
+        # Both structural refusals come before the findings envelope, in the
+        # order ``create_task_graph`` asks them (it validates the parent
+        # before it even parses): where a graph may go is settled first, and
+        # a planner handed a finding list for a document that could never be
+        # created there learns the wrong thing.  The same input must earn the
+        # same refusal at either door.
+        parent_error, _parent = await self._validate_graph_parent(project_id, parent_id)
+        if parent_error is not None:
+            return {**parent_error, "success": False}
+
         phases_refusal = self._phases_need_root_refusal(graph, parent_id)
         if phases_refusal is not None:
             return phases_refusal
@@ -301,10 +308,6 @@ class FormulaCommandsMixin:
                 "errors": [e.to_dict() for e in errors],
                 "warnings": [w.to_dict() for w in warnings],
             }
-
-        parent_error, _parent = await self._validate_graph_parent(project_id, parent_id)
-        if parent_error is not None:
-            return {**parent_error, "success": False}
 
         provenance = FormulaProvenance(
             name=resolved.leaf.name,

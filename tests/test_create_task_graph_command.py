@@ -678,6 +678,62 @@ class TestGraphPhases:
         assert (await db.get_task(node_id)).parent_task_id.endswith(".1")
 
 
+class TestInvertedPhaseEdge:
+    """A gating chain into a later phase is refused at the graph door."""
+
+    @staticmethod
+    def _graph() -> dict:
+        return {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "phases": [
+                {"key": "schema", "title": "Phase 1"},
+                {"key": "engine", "title": "Phase 2"},
+            ],
+            "nodes": [
+                {
+                    "key": "tables",
+                    "title": "Tables",
+                    "acceptance": ["x"],
+                    "phase": "schema",
+                    "needs": [{"on": "helper"}],
+                },
+                # Unphased, and therefore not withheld by a phase — but its own
+                # gating edge still carries the deadlock into phase 2.
+                {
+                    "key": "helper",
+                    "title": "Helper",
+                    "acceptance": ["x"],
+                    "needs": [{"on": "cascade"}],
+                },
+                {"key": "cascade", "title": "Cascade", "acceptance": ["x"], "phase": "engine"},
+            ],
+        }
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_it_is_refused_and_nothing_is_created(self, setup, dry_run):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph(), "dry_run": dry_run}
+        )
+        assert "nothing was created" in result["error"]
+        assert [e["rule"] for e in result["errors"]] == ["inverted_phase_edge"]
+        assert await db.list_tasks(project_id="p1") == []
+
+
+class TestRefusalOrderAtBothDoors:
+    """F8: when the parent is unusable *and* the document declares phases,
+    both doors answer with the same refusal — the parent one."""
+
+    async def test_the_graph_door_reports_the_parent_refusal_first(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph(), "parent_id": "ghost"}
+        )
+        assert result["code"] == "hierarchy.not_found"
+        assert await db.list_tasks(project_id="p1") == []
+
+
 async def _blocks(db, task_id) -> set[str]:
     from sqlalchemy import select
 

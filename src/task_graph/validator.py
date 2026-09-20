@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from collections import deque
-from typing import Any
+from typing import Any, NamedTuple
 
 from src.aq_uri import path_is_within
 from src.database.tables import TASK_DEP_TYPES
@@ -287,25 +287,48 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
     """The ``phases:``/``phase:`` rules (planning-emits-phases §7.3).
 
     Three errors — a duplicate phase key, a node naming a phase that was
-    never declared, and a **phase-inverted** blocking edge — and two
-    warnings.  The warnings are warnings on purpose: an empty phase and a
+    never declared, and a **phase-inverted** gating path — and two warnings.
+    The warnings are warnings on purpose: an empty phase and a
     belt-and-braces backward edge are both *legal*, and whether they are
     wanted is the planner's judgement, not the validator's (§3.5).
 
-    The cross-phase edge rule, in full.  Only a *gating* edge
-    (:data:`BLOCKING_DEP_TYPES`) is considered, and only between two nodes
-    that both name a declared phase:
+    **The cross-phase rule.** Only *gating* edges count
+    (:data:`BLOCKING_DEP_TYPES`); ``related``/``discovered-from`` and friends
+    schedule nothing, so they can neither deadlock nor be redundant.
 
-    - needing an **earlier** phase → ``redundant_phase_edge`` (warning): the
-      phase gate already orders them;
-    - needing a **later** phase → ``inverted_phase_edge`` (error): a
-      permanent deadlock;
-    - needing the **same** phase → nothing: that is ordinary ordering inside
-      a stage, and the whole point of putting them in one phase.
+    - Backward, **per edge**: a phased node needing a node in an earlier
+      phase is ``redundant_phase_edge`` (warning) — the phase gate already
+      orders them.
+    - Within one phase: nothing.  That is ordinary ordering inside a stage.
+    - Forward, **transitively**: if a gating path from a phased node reaches
+      a phased node in a *later* phase — directly, or through any number of
+      **unphased** intermediates — it is ``inverted_phase_edge``.
 
-    An edge with an **unphased** end, either direction, is fine and reported
-    as nothing: an unphased node is a direct child of the epic, which no
-    phase withholds, so it runs no matter which phase is waiting.
+    The forward rule has to be transitive, and the earlier per-edge version
+    of it was unsound.  An unphased node is a direct child of the epic, so no
+    phase *withholds* it through the ``parent-child`` rule — but it is still
+    gated by its own edges.  With ``A`` in phase 1 needing unphased ``U``
+    needing ``B`` in phase 2: ``B`` is withheld under phase 2 (DEFINED,
+    because its ``blocks`` edge onto phase 1 is unsatisfied), so ``U``'s edge
+    never satisfies, so ``A`` never completes, so phase 1 never settles and
+    phase 2 never releases.  A permanent deadlock, and one neither
+    :func:`_check_cycles` nor a per-edge check can see, because the loop runs
+    through the phase containers, which are not edges in this document.
+
+    Propagation stops at a phased node: a phased intermediate is reported by
+    its *own* outgoing edge, so carrying its reach further would report the
+    same deadlock twice under different names.  The search is a memoised DFS
+    over the gating ``needs`` graph.  In a **cyclic** document it cuts back
+    edges and may therefore under-report — that is deliberate and harmless:
+    :func:`_check_cycles` already errors on a gating cycle, so nothing is
+    created either way.
+
+    **Severity follows the weakest edge on the path.** A ``waits-for`` edge
+    is vacuously satisfied while its target has no ``parent-child`` children
+    (``_waits_for_unsat``, ``src/database/queries/blocked_state.py``) and a
+    graph document cannot give a node children — so a path through one is
+    reported as a **warning**: it becomes a deadlock only if the target later
+    gains children.  Every other gating type is an error.
     """
     findings: list[GraphError] = []
     order: dict[str, int] = {}
@@ -347,19 +370,12 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
     node_phase = {node.key: node.phase for node in graph.nodes}
     for node in graph.nodes:
         if node.phase not in order:
-            # An UNPHASED node is a direct child of the epic, and no phase
-            # gates the epic — it runs whatever any phase is waiting for, so
-            # an edge from it can never close the loop below.
             continue
         for need in node.needs:
             if need.dep_type not in BLOCKING_DEP_TYPES:
-                # A non-gating edge (``related``, ``discovered-from``, …)
-                # neither deadlocks nor is covered by the phase gate.
                 continue
             target = node_phase.get(need.on)
             if target is None or target not in order:
-                # The other end is unphased (see above) or is an id naming a
-                # task outside this document, which no phase here withholds.
                 continue
             if order[target] < order[node.phase]:
                 findings.append(
@@ -371,24 +387,117 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
                         severity="warning",
                     )
                 )
-            elif order[target] > order[node.phase]:
-                # Deadlock, and one no cycle check can see: phase B is
-                # blocked until phase A is COMPLETED, phase A settles only
-                # when every child including *node* completes, and *node*
-                # waits on a task withheld under blocked phase B.  The cycle
-                # runs through the phase containers, which are not edges in
-                # this document at all.
-                findings.append(
-                    _error(
-                        "inverted_phase_edge",
-                        f"node '{node.key}' in phase '{node.phase}' needs '{need.on}' in the "
-                        f"later phase '{target}' — that deadlocks: phase '{target}' cannot "
-                        f"start until phase '{node.phase}' completes, which waits on "
-                        f"'{node.key}'. Move one of them, or drop the phases and order the "
-                        "tasks with needs/blocks edges",
-                        node.key,
-                    )
+
+    findings.extend(_check_inverted_phase_paths(graph, order, node_phase))
+    return findings
+
+
+#: The one gating dep type a graph document cannot make bite: ``_waits_for_unsat``
+#: is vacuously satisfied while the target has no ``parent-child`` children, and
+#: a document cannot give a node children.
+_SOFT_GATING_DEP_TYPE = "waits-for"
+
+
+class _Reach(NamedTuple):
+    """The worst later phase reachable from a node over gating edges.
+
+    ``order`` is that phase's index, ``path`` the node keys walked to get
+    there (excluding the node itself) and ``soft`` says the walk crossed a
+    ``waits-for`` edge, which downgrades the finding to a warning.
+    """
+
+    order: int
+    path: tuple[str, ...]
+    soft: bool
+
+
+def _worse(a: _Reach | None, b: _Reach | None) -> _Reach | None:
+    """The more serious of two reaches: later phase first, then hard over soft."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return b if (b.order, not b.soft) > (a.order, not a.soft) else a
+
+
+def _check_inverted_phase_paths(
+    graph: TaskGraph, order: dict[str, int], node_phase: dict[str, str | None]
+) -> list[GraphError]:
+    """One ``inverted_phase_edge`` per phased node that reaches a later phase.
+
+    See :func:`_check_phases` for why this is transitive and where it stops.
+    """
+    nodes = {node.key: node for node in graph.nodes}
+    memo: dict[str, _Reach | None] = {}
+    walking: set[str] = set()
+
+    def reach(key: str) -> _Reach | None:
+        """Worst later-phase reach from *key*'s own outgoing gating edges."""
+        if key in memo:
+            return memo[key]
+        if key in walking:
+            # A gating cycle; ``_check_cycles`` reports it and blocks
+            # creation, so cutting the back edge here is safe.
+            return None
+        walking.add(key)
+        best: _Reach | None = None
+        for need in nodes[key].needs:
+            if need.dep_type not in BLOCKING_DEP_TYPES or need.on not in nodes:
+                # Non-gating, or an id naming a task outside this document —
+                # which no phase declared here withholds.
+                continue
+            soft = need.dep_type == _SOFT_GATING_DEP_TYPE
+            target_phase = node_phase.get(need.on)
+            if target_phase in order:
+                # Stop here: a phased node answers for its own edges.
+                best = _worse(best, _Reach(order[target_phase], (need.on,), soft))
+                continue
+            onward = reach(need.on)
+            if onward is not None:
+                best = _worse(
+                    best, _Reach(onward.order, (need.on, *onward.path), soft or onward.soft)
                 )
+        walking.discard(key)
+        memo[key] = best
+        return best
+
+    findings: list[GraphError] = []
+    for node in graph.nodes:
+        if node.phase not in order:
+            # An unphased node's own start is gated by nothing, so it is only
+            # ever the *carrier* of someone else's deadlock, never its owner.
+            continue
+        worst = reach(node.key)
+        if worst is None or worst.order <= order[node.phase]:
+            continue
+        target_key = worst.path[-1]
+        target_phase = node_phase[target_key]
+        route = " -> ".join((node.key, *worst.path))
+        if worst.soft:
+            findings.append(
+                _error(
+                    "inverted_phase_edge",
+                    f"node '{node.key}' in phase '{node.phase}' waits for '{target_key}' in "
+                    f"the later phase '{target_phase}' ({route}). A 'waits-for' is satisfied "
+                    "while its target has no children, so this runs today — but it deadlocks "
+                    f"the moment '{target_key}' gains any, because phase '{target_phase}' "
+                    f"cannot start until phase '{node.phase}' completes",
+                    node.key,
+                    severity="warning",
+                )
+            )
+            continue
+        findings.append(
+            _error(
+                "inverted_phase_edge",
+                f"node '{node.key}' in phase '{node.phase}' depends on '{target_key}' in the "
+                f"later phase '{target_phase}' ({route}) — that deadlocks: phase "
+                f"'{target_phase}' cannot start until phase '{node.phase}' completes, which "
+                f"waits on '{node.key}'. Move one of them, or drop the phases and order the "
+                "tasks with needs/blocks edges",
+                node.key,
+            )
+        )
     return findings
 
 

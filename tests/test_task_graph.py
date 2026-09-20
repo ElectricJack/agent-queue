@@ -531,8 +531,8 @@ class TestPhaseValidation:
         # Nothing else fires: the cycle check cannot see this at all.
         assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
 
-    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks"])
-    async def test_every_blocking_dep_type_inverts(self, vault, dep_type):
+    @pytest.mark.parametrize("dep_type", ["blocks", "conditional-blocks", "parent-child"])
+    async def test_every_hard_gating_dep_type_inverts(self, vault, dep_type):
         findings = await self._findings(
             {
                 "version": 1,
@@ -579,27 +579,115 @@ class TestPhaseValidation:
         )
         assert [f.rule for f in findings] == []
 
-    @pytest.mark.parametrize("phased_needs_unphased", [True, False])
-    async def test_an_edge_between_a_phased_and_an_unphased_node_is_fine(
-        self, vault, phased_needs_unphased
-    ):
-        """Neither direction can deadlock: an unphased node hangs off the epic,
-        which nothing gates, so it runs whatever any phase is waiting for."""
-        phased = {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}
-        unphased = {"key": "u", "title": "U", "acceptance": ["x"]}
-        if phased_needs_unphased:
-            phased["needs"] = [{"on": "u"}]
-        else:
-            unphased["needs"] = [{"on": "a"}]
+    async def test_waits_for_onto_a_later_phase_is_only_a_warning(self, vault):
+        """``_waits_for_unsat`` is vacuously satisfied for a node with no
+        children, and a graph document cannot give a node children — so this
+        one deadlocks only if the target later gains some."""
         findings = await self._findings(
             {
                 "version": 1,
-                "phases": [{"key": "one", "title": "One"}],
-                "nodes": [phased, unphased],
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "waits-for"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].severity == "warning"
+        assert "children" in matched[0].detail
+        assert [f.rule for f in findings if f.is_error] == []
+
+    @staticmethod
+    def _chain(*hops: tuple[str, str | None]) -> dict:
+        """A document whose nodes form one ``needs`` chain, first needs second.
+
+        Each hop is ``(key, phase or None)``.
+        """
+        nodes = []
+        for index, (key, phase) in enumerate(hops):
+            node: dict = {"key": key, "title": key.upper(), "acceptance": ["x"]}
+            if phase is not None:
+                node["phase"] = phase
+            if index + 1 < len(hops):
+                node["needs"] = [{"on": hops[index + 1][0]}]
+            nodes.append(node)
+        # Only the phases the chain actually uses, so an unrelated
+        # ``phase_without_nodes`` warning never muddies an assertion.
+        used = [p for p in ("one", "two") if any(h[1] == p for h in hops)]
+        return {
+            "version": 1,
+            "phases": [{"key": key, "title": key.title()} for key in used],
+            "nodes": nodes,
+        }
+
+    async def test_a_later_phase_reached_through_one_unphased_hop_is_an_error(self, vault):
+        """The unsound case: an unphased node is not withheld by any phase, but
+        it is still gated by its OWN edges, so it carries the deadlock."""
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "two")), vault)
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "a -> u -> b" in matched[0].detail
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+
+    async def test_a_later_phase_reached_through_two_unphased_hops_is_an_error(self, vault):
+        findings = await self._findings(
+            self._chain(("a", "one"), ("u", None), ("v", None), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert "a -> u -> v -> b" in matched[0].detail
+
+    async def test_a_chain_back_into_the_same_phase_is_not_an_error(self, vault):
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_a_chain_from_a_later_phase_to_an_earlier_one_is_not_an_error(self, vault):
+        """Phase 2 waiting on phase-1 work through an unphased hop is the
+        ordinary direction: phase 1 finishes first anyway."""
+        findings = await self._findings(self._chain(("a", "two"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_an_unphased_node_needing_a_later_phase_is_not_itself_reported(self, vault):
+        """Nothing gates an unphased node's *start*, so on its own it is fine;
+        only a phased node that reaches through it deadlocks."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "u",
+                        "title": "U",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
             },
             vault,
         )
         assert [f.rule for f in findings] == []
+
+    async def test_a_phased_intermediate_is_reported_by_its_own_edge_only_once(self, vault):
+        """``a`` (phase one) -> ``m`` (phase one) -> ``b`` (phase two): the
+        violation belongs to ``m``, and ``a`` is not reported for reaching
+        through it — propagation stops at a phased node."""
+        findings = await self._findings(
+            self._chain(("a", "one"), ("m", "one"), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [f.node for f in matched] == ["m"]
 
     async def test_an_edge_within_one_phase_is_not_redundant(self, vault):
         findings = await self._findings(

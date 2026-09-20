@@ -212,6 +212,15 @@ class TestCook:
                                          "parent_id": "epic"})
         assert res["code"] == "graph.phases_need_root"
 
+    async def test_cook_reports_the_parent_refusal_before_phases_need_root(self, setup):
+        """F8: the same input must earn the same refusal at both doors, and
+        ``create_task_graph`` validates the parent before it parses at all."""
+        h, db, *_ = setup
+        res = await h._cmd_formula_cook({"name": "with-phases", "project_id": "p1",
+                                         "parent_id": "ghost", "vars": {"branch": "feat/x"}})
+        assert res["code"] == "hierarchy.not_found"
+        assert await db.list_tasks(project_id="p1") == []
+
     async def test_cook_dry_run_writes_nothing(self, setup):
         h, db, *_ = setup
         res = await h._cmd_formula_cook({"name": "review-and-fix", "project_id": "p1",
