@@ -69,6 +69,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "add_dependency",
     "agent_message",
     "create_task",
+    "create_task_graph",
     "edit_task",
     "escalation_apply_reply",
     "escalation_create",

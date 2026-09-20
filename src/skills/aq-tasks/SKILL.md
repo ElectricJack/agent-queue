@@ -140,8 +140,8 @@ with a checklist, work that one — do not re-decompose it — and add rows for
 steps you discover as you go, settling each as you finish it.
 
 A subtask is not a place to put work that belongs to someone else. Something
-outside this task's scope is still emergent work: file it as a task
-(`aq task create --reason "..."`), not as a checklist row.
+outside this task's scope is still emergent work: file it as a task instead
+of a checklist row, passing `--reason` (see "Creating tasks" below).
 
 **The close rule:** `aq task close --outcome pass` is refused with
 `subtasks.open` while any subtask is still `pending`/`in_progress`. Settle
@@ -348,7 +348,9 @@ semantic — a phase is a container with a `blocks` edge onto every earlier
 open sibling phase, and a blocked container withholds its children, so one
 edge gates a whole stage. Stop at five per level. If two groups could
 overlap, they are not phases; use `needs`/`blocks` edges between the
-individual tasks.
+individual tasks. Do not create phases in a project whose integration mode
+is `hierarchy` or `train` — there a phase container would own its
+children's delivery branch, and the command refuses them.
 
 A phase is an ordered container that gates implicitly: phase *N+1* stays
 blocked until every child of phase *N* is COMPLETED, with no extra edges to
@@ -364,8 +366,11 @@ File tasks into a phase with `aq task create --parent <phase-id>` — from the
 loopback CLI or a supervisor session. A **worker or planner session cannot**:
 a non-elevated filing's parent must be the task it holds, one of that task's
 descendants, or that task's own parent, and a root-level phase is none of
-those (`hierarchy.parent_out_of_scope`). From a session, create the phase's
-children through a graph (`--from-spec` / `--graph`) instead.
+those (`hierarchy.parent_out_of_scope`). Such a session has no in-scope way
+to populate a phase: file the work under the task you hold as usual, and ask
+the supervisor to place it (`aq message send --to session:supervisor-<pid>
+--body "..."`) — never attempt `--graph`/`--from-spec`, which are
+elevated/supervisor-only.
 A phase settles like any container — all children COMPLETED — so a failed
 child holds the gate on purpose. A childless phase is never claimable and is
 held open (never auto-settled); if it turns out to be unneeded, delete it
