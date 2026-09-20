@@ -14,6 +14,10 @@ export default defineConfig({
   base: embedded ? "/dashboard/" : "/",
   plugins: [react(), tailwindcss()],
   server: {
+    // Bind all interfaces, not just loopback: under WSL2 a Windows browser can
+    // arrive over the VM's IP (e.g. a netsh portproxy rule), which never reaches
+    // a 127.0.0.1-only listener.
+    host: true,
     port: 5173,
     proxy: {
       "/api": target,
