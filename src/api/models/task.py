@@ -195,6 +195,50 @@ class TaskCommentDeleteResponse(BaseModel):
     task_id: str
 
 
+class TaskSubtask(BaseModel):
+    """One durable checklist row under a task (``task_subtasks`` table)."""
+
+    id: str
+    task_id: str
+    project_id: str
+    ordinal: int
+    title: str
+    status: str
+    note: str | None = None
+    created_at: float
+    updated_at: float
+
+
+class TaskSubtaskWithContext(TaskSubtask):
+    context: str = ""
+
+
+class TaskSubtaskAddResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    subtasks: list[TaskSubtaskWithContext] = []
+
+
+class TaskSubtasksResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    subtasks: list[TaskSubtask] = []
+    total: int
+    settled: int
+
+
+class TaskSubtaskGetResponse(BaseModel):
+    success: bool = True
+    subtask: TaskSubtaskWithContext
+
+
+class TaskSubtaskUpdateResponse(BaseModel):
+    success: bool = True
+    subtask: TaskSubtaskWithContext
+    total: int
+    settled: int
+
+
 class PhaseRef(BaseModel):
     """The phase ``phase_create`` just wrote."""
 
@@ -865,6 +909,10 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_comments": TaskCommentsResponse,
     "task_comment_edit": TaskCommentResponse,
     "task_comment_delete": TaskCommentDeleteResponse,
+    "task_subtask_add": TaskSubtaskAddResponse,
+    "task_subtasks": TaskSubtasksResponse,
+    "task_subtask_get": TaskSubtaskGetResponse,
+    "task_subtask_update": TaskSubtaskUpdateResponse,
     "phase_create": PhaseCreateResponse,
     "phase_list": PhaseListResponse,
     "edit_task": EditTaskResponse,

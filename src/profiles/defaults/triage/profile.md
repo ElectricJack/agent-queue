@@ -95,7 +95,11 @@ retrying the same gates or creating replacement triage tasks.
     "task_heartbeat",
     "task_route",
     "task_set",
-    "task_show"
+    "task_show",
+    "task_subtask_add",
+    "task_subtask_get",
+    "task_subtask_update",
+    "task_subtasks"
   ],
   "plugin_tools": [
     "memory_save",

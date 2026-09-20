@@ -49,7 +49,11 @@ tags: [system, review, merge-authority, dv2-phase2]
     "task_handoff",
     "task_heartbeat",
     "task_set",
-    "task_show"
+    "task_show",
+    "task_subtask_add",
+    "task_subtask_get",
+    "task_subtask_update",
+    "task_subtasks"
   ],
   "plugin_tools": [
     "git_diff",

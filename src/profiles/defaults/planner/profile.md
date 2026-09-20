@@ -80,7 +80,11 @@ For each planning task you:
     "task_heartbeat",
     "task_progress",
     "task_set",
-    "task_show"
+    "task_show",
+    "task_subtask_add",
+    "task_subtask_get",
+    "task_subtask_update",
+    "task_subtasks"
   ],
   "plugin_tools": [
     "memory_save",

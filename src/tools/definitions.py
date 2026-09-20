@@ -231,6 +231,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_comments": "task",
     "task_comment_edit": "task",
     "task_comment_delete": "task",
+    "task_subtask_add": "task",
+    "task_subtasks": "task",
+    "task_subtask_get": "task",
+    "task_subtask_update": "task",
     "phase_create": "task",
     "phase_list": "task",
     "task_close": "task",
@@ -4463,6 +4467,112 @@ _ALL_TOOL_DEFINITIONS = [
                 "comment_id": {"type": "string", "description": "Comment id to delete."},
             },
             "required": ["task_id", "comment_id"],
+        },
+    },
+    {
+        "name": "task_subtask_add",
+        "description": (
+            "Append one or more durable, non-schedulable checklist rows to a task. "
+            "Subtasks are pure bookkeeping local to whichever agent owns the parent "
+            "task -- they are never scheduled, claimed or assigned on their own."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Task id to add subtasks to. Omit to use the session's held task."
+                    ),
+                },
+                "subtasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 300,
+                                "description": "Subtask title (1..300 characters).",
+                            },
+                            "context": {
+                                "type": "string",
+                                "maxLength": 16000,
+                                "description": "Optional detail, shown only on a direct read.",
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                    "description": "1 to 50 subtasks to append after the current max ordinal.",
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": "Current claim epoch; required for pool workers.",
+                },
+            },
+            "required": ["subtasks"],
+        },
+    },
+    {
+        "name": "task_subtasks",
+        "description": "List a task's subtasks in order, with total and settled counts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Task id to list subtasks for. Omit to use the session's held task."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "task_subtask_get",
+        "description": "Read one subtask by ordinal, including its context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task id the subtask belongs to. Omit to use the held task.",
+                },
+                "ordinal": {"type": "integer", "description": "1-based subtask ordinal."},
+            },
+            "required": ["ordinal"],
+        },
+    },
+    {
+        "name": "task_subtask_update",
+        "description": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task id the subtask belongs to. Omit to use the held task.",
+                },
+                "ordinal": {"type": "integer", "description": "1-based subtask ordinal."},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "done", "skipped"],
+                    "description": "New status.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note (e.g. why a subtask was skipped).",
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": "Current claim epoch; required for pool workers.",
+                },
+            },
+            "required": ["ordinal"],
         },
     },
     {

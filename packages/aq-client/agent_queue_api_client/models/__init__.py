@@ -1149,6 +1149,20 @@ from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
+from .task_subtask import TaskSubtask
+from .task_subtask_add_request import TaskSubtaskAddRequest
+from .task_subtask_add_response import TaskSubtaskAddResponse
+from .task_subtask_add_response_422 import TaskSubtaskAddResponse422
+from .task_subtask_get_request import TaskSubtaskGetRequest
+from .task_subtask_get_response import TaskSubtaskGetResponse
+from .task_subtask_get_response_422 import TaskSubtaskGetResponse422
+from .task_subtask_update_request import TaskSubtaskUpdateRequest
+from .task_subtask_update_response import TaskSubtaskUpdateResponse
+from .task_subtask_update_response_422 import TaskSubtaskUpdateResponse422
+from .task_subtask_with_context import TaskSubtaskWithContext
+from .task_subtasks_request import TaskSubtasksRequest
+from .task_subtasks_response import TaskSubtasksResponse
+from .task_subtasks_response_422 import TaskSubtasksResponse422
 from .throughput_metrics import ThroughputMetrics
 from .tidy_request import TidyRequest
 from .tidy_response import TidyResponse
@@ -2333,6 +2347,20 @@ __all__ = (
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
+    "TaskSubtask",
+    "TaskSubtaskAddRequest",
+    "TaskSubtaskAddResponse",
+    "TaskSubtaskAddResponse422",
+    "TaskSubtaskGetRequest",
+    "TaskSubtaskGetResponse",
+    "TaskSubtaskGetResponse422",
+    "TaskSubtasksRequest",
+    "TaskSubtasksResponse",
+    "TaskSubtasksResponse422",
+    "TaskSubtaskUpdateRequest",
+    "TaskSubtaskUpdateResponse",
+    "TaskSubtaskUpdateResponse422",
+    "TaskSubtaskWithContext",
     "ThroughputMetrics",
     "TidyRequest",
     "TidyResponse",

@@ -13956,6 +13956,194 @@
           }
         }
       }
+    },
+    "/api/task/subtask-add": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Append one or more durable, non-schedulable checklist rows to a task. Subtasks are pure bookkeeping local to whichever agent owns the parent task -- they are never scheduled, claimed or assigned on their own.",
+        "description": "Append one or more durable, non-schedulable checklist rows to a task. Subtasks are pure bookkeeping local to whichever agent owns the parent task -- they are never scheduled, claimed or assigned on their own.",
+        "operationId": "task_subtask_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskAddResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtask-get": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Read one subtask by ordinal, including its context.",
+        "description": "Read one subtask by ordinal, including its context.",
+        "operationId": "task_subtask_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtask-update": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "description": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "operationId": "task_subtask_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtasks": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List a task's subtasks in order, with total and settled counts.",
+        "description": "List a task's subtasks in order, with total and settled counts.",
+        "operationId": "task_subtasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -44977,6 +45165,381 @@
         },
         "type": "object",
         "title": "TaskStatusSummary"
+      },
+      "TaskSubtask": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "project_id",
+          "ordinal",
+          "title",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskSubtask",
+        "description": "One durable checklist row under a task (``task_subtasks`` table)."
+      },
+      "TaskSubtaskAddRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id to add subtasks to. Omit to use the session's held task."
+          },
+          "subtasks": {
+            "items": {},
+            "type": "array",
+            "title": "Subtasks",
+            "description": "1 to 50 subtasks to append after the current max ordinal."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtasks"
+        ],
+        "title": "TaskSubtaskAddRequest"
+      },
+      "TaskSubtaskAddResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSubtaskWithContext"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskSubtaskAddResponse"
+      },
+      "TaskSubtaskGetRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id the subtask belongs to. Omit to use the held task."
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal",
+            "description": "1-based subtask ordinal."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal"
+        ],
+        "title": "TaskSubtaskGetRequest"
+      },
+      "TaskSubtaskGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "subtask": {
+            "$ref": "#/components/schemas/TaskSubtaskWithContext"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtask"
+        ],
+        "title": "TaskSubtaskGetResponse"
+      },
+      "TaskSubtaskUpdateRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id the subtask belongs to. Omit to use the held task."
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal",
+            "description": "1-based subtask ordinal."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "New status."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Optional note (e.g. why a subtask was skipped)."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal"
+        ],
+        "title": "TaskSubtaskUpdateRequest"
+      },
+      "TaskSubtaskUpdateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "subtask": {
+            "$ref": "#/components/schemas/TaskSubtaskWithContext"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "settled": {
+            "type": "integer",
+            "title": "Settled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtask",
+          "total",
+          "settled"
+        ],
+        "title": "TaskSubtaskUpdateResponse"
+      },
+      "TaskSubtaskWithContext": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "context": {
+            "type": "string",
+            "title": "Context",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "project_id",
+          "ordinal",
+          "title",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskSubtaskWithContext"
+      },
+      "TaskSubtasksRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id to list subtasks for. Omit to use the session's held task."
+          }
+        },
+        "type": "object",
+        "title": "TaskSubtasksRequest"
+      },
+      "TaskSubtasksResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSubtask"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "settled": {
+            "type": "integer",
+            "title": "Settled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "total",
+          "settled"
+        ],
+        "title": "TaskSubtasksResponse"
       },
       "ThroughputMetrics": {
         "properties": {
