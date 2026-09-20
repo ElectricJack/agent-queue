@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from src.database import Database
@@ -353,44 +355,78 @@ async def test_snapshot_reads_metadata_in_one_statement(db):
     assert len(selects) == 3, selects
 
 
-async def test_layout_job_exists_ignores_failed_and_other_kinds(db):
-    """The ledger read answers "converged", not "a job once existed".
+async def test_the_ledger_ignores_failed_and_other_kinds(db):
+    """The ledger answers "converged", not "a job once existed".
 
-    A ``failed`` job is not convergence (the rebuild never happened), and a
-    job of a different kind — an operator tidy, a backfill, an older rules
-    version — says nothing about the current engine rules.
+    A ``failed`` job is not convergence (the rebuild never happened) but it
+    does spend retry budget, and a job of a different kind — an operator
+    tidy, a backfill, an older rules version — says nothing about the
+    current engine rules.
     """
-    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+    kind = "rules:1"
+    assert await db.layout_job_ledger(kind) == {}
 
     tidy = await db.enqueue_layout_job("p1", "all", "tidy")
     await db.finish_layout_job(tidy["id"], error=None)
-    assert await db.layout_job_exists("p1", "all", "rules:1") is False
-
     older = await db.enqueue_layout_job("p1", "all", "rules:0")
     await db.finish_layout_job(older["id"], error=None)
-    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+    assert await db.layout_job_ledger(kind) == {}
 
-    failed = await db.enqueue_layout_job("p1", "all", "rules:1")
+    failed = await db.enqueue_layout_job("p1", "all", kind)
     await db.finish_layout_job(failed["id"], error="boom")
-    assert await db.layout_job_exists("p1", "all", "rules:1") is False
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry == {"settled": False, "in_flight": False, "failed": 1, "last_error": "boom"}
 
-    queued = await db.enqueue_layout_job("p1", "all", "rules:1")
-    assert await db.layout_job_exists("p1", "all", "rules:1") is True
-    # Other pairs are unaffected: the ledger is per (project, variant).
-    assert await db.layout_job_exists("p1", "active", "rules:1") is False
-    assert await db.layout_job_exists("p2", "all", "rules:1") is False
+    queued = await db.enqueue_layout_job("p1", "all", kind)
+    ledger = await db.layout_job_ledger(kind)
+    assert ledger[("p1", "all")]["settled"] and ledger[("p1", "all")]["in_flight"]
+    assert set(ledger) == {("p1", "all")}  # per (project, variant), nothing else
 
     await db.finish_layout_job(queued["id"], error=None)
-    assert await db.layout_job_exists("p1", "all", "rules:1") is True
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry["settled"] and not entry["in_flight"] and entry["failed"] == 1
 
 
-async def test_layout_job_in_flight_sees_any_project_and_variant(db):
-    assert await db.layout_job_in_flight("rules:1") is False
-    job = await db.enqueue_layout_job("p1", "active", "rules:1")
-    assert await db.layout_job_in_flight("rules:1") is True
-    assert await db.layout_job_in_flight("tidy") is False
-    await db.finish_layout_job(job["id"], error=None)
-    assert await db.layout_job_in_flight("rules:1") is False
+async def test_published_layout_variants_lists_every_published_pair(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    assert await db.published_layout_variants() == set()
+    await LayoutDriver(db).full_layout("p1", "all")
+    assert await db.published_layout_variants() == {("p1", "all")}
+
+
+async def test_reap_stale_layout_jobs_only_takes_the_long_running_ones(db):
+    """Nothing else resets a ``running`` row, so a daemon killed mid-rebuild
+    would leave one forever."""
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_jobs
+
+    orphan = await db.enqueue_layout_job("p1", "all", "rules:1")
+    live = await db.enqueue_layout_job("p1", "active", "tidy")
+    queued = await db.enqueue_layout_job("p2", "all", "rules:1")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == orphan["id"])
+            .values(status="running", started_at=now - 500)
+        )
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == live["id"])
+            .values(status="running", started_at=now - 5)
+        )
+
+    reaped = await db.reap_stale_layout_jobs(started_before=now - 240, error="orphaned: boom")
+
+    assert [r["id"] for r in reaped] == [orphan["id"]]
+    assert reaped[0]["kind"] == "rules:1" and reaped[0]["variant"] == "all"
+    row = await db.get_layout_job(orphan["id"])
+    assert row["status"] == "failed" and row["error"] == "orphaned: boom"
+    assert (await db.get_layout_job(live["id"]))["status"] == "running"
+    assert (await db.get_layout_job(queued["id"]))["status"] == "queued"
 
 
 async def test_a_rules_job_runs_a_full_layout(db):
@@ -413,4 +449,4 @@ async def test_a_rules_job_runs_a_full_layout(db):
     assert meta["layout_version"] == first + 1
     rows = await db.load_layout_rows("p1", "all", ["a", "b"])
     assert set(rows) == {"a", "b"}
-    assert await db.layout_job_exists("p1", "all", "rules:1") is True
+    assert (await db.layout_job_ledger("rules:1"))[("p1", "all")]["settled"] is True

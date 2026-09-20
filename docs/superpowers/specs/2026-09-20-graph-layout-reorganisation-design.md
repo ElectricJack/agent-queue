@@ -470,7 +470,32 @@ So the ledger *is* the convergence record:
   ('queued','running'))` **regardless of kind** and returns the existing row. So the
   caller must check `job["kind"] == kind`; if an unrelated tidy is in flight the pair is
   left stale and retried on a later sweep. Self-limiting and idempotent.
-- A `failed` rules job is not treated as convergence, so it is retried on a later sweep.
+- A `failed` rules job is not treated as convergence, so it is retried on a later sweep —
+  but the walk is **two passes**: never-attempted pairs first, then failed ones, capped at
+  `MAX_RULES_ATTEMPTS = 3` failures per `(project, variant, version)`, after which the pair
+  is skipped with one WARNING naming it and its last error. Without the split, one pair
+  that fails deterministically would be re-picked every sweep and nothing else would ever
+  converge; bumping the version starts a new ledger and a fresh budget.
+- Nothing else resets a `running` job (`next_layout_job` claims only `queued`) and shutdown
+  waits 30 s while a tidy may run 60, so a restart mid-rebuild could leave a row `running`
+  forever — which would wedge the fleet-wide stand-down *and* count as convergence for its
+  pair. The sweep therefore begins with a reaper: any job `running` for more than
+  `4 x tidy_job_budget_seconds` is marked `failed` ("orphaned: daemon stopped mid-job") and
+  logged once at WARNING. The job runner also records a cancelled job as failed in a
+  `finally`, for the case the process survives the cancellation. Both cover operator tidies
+  and backfills too; neither needs a schema change (`layout_jobs.started_at` already exists).
+- Convergence walks **ACTIVE** projects only — a paused or archived project must not spend a
+  CPU-bound full layout. (The reconcile loop above it is unchanged and still walks all.)
+- Cost: **five statements per sweep, flat**, whatever the project count — the reaper, the
+  ledger (`layout_job_ledger`, one row-set for the whole fleet), the published-pair set
+  (`published_layout_variants`), the active-project list, and at most one enqueue.
+
+**What an operator sees.** `enqueue_layout_job` de-duplicates per `(project, variant)`
+whatever the kind, so an `aq graph tidy` (or the dashboard's Tidy button) issued while a
+`rules:<n>` job is already queued for that pair is served by that job and the response
+shows `kind: rules:<n>` — the rebuild is the same full layout either way. And because the
+job queue is FIFO, an operator Tidy may wait behind at most **one** rules rebuild, since
+convergence never queues a second while one is in flight.
 
 **Blast radius, stated plainly (review S4).** `row_target` depends on the children's
 allocated sizes, so **any container holding a container child changes** — i.e. essentially

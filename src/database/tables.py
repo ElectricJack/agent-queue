@@ -420,7 +420,10 @@ layout_jobs = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("variant", Text, nullable=False),
-    Column("kind", Text, nullable=False),  # 'tidy' | 'backfill'
+    # 'tidy' | 'backfill' | 'rules:<n>' (the engine-rules convergence ledger,
+    # src/task_graph/layout/constants.py:ENGINE_RULES_VERSION). Free text by
+    # design: a new kind is a label, never a schema change.
+    Column("kind", Text, nullable=False),
     Column("status", Text, nullable=False),  # queued | running | done | failed
     Column("requested_at", Float, nullable=False),
     Column("started_at", Float, nullable=True),

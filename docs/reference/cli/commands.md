@@ -236,6 +236,16 @@ leaves are synchronous jobs: `layout-rebuild` recomputes a project's layout,
 `tidy` enqueues a tidy pass. The layout is published atomically and the
 dashboard reads it; nothing here changes tasks.
 
+The daemon also enqueues tidy jobs of its own, of kind `rules:<n>`, to bring a
+project laid out under older engine rules up to the current ones (one
+`(project, variant)` per 15-minute sweep). Two consequences for `aq graph
+tidy`: a job is de-duplicated per `(project, variant)` whatever its kind, so a
+Tidy asked for while a `rules:<n>` job is already queued for that pair is
+served by **that** job — the response shows `kind: rules:<n>`, and the rebuild
+is the same full layout you asked for; and because the job queue is FIFO, a
+Tidy may wait behind at most one rules rebuild (the daemon never queues a
+second while one is in flight).
+
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|

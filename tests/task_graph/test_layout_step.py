@@ -1,7 +1,11 @@
 import asyncio
+import logging
+import time
 from unittest.mock import AsyncMock, patch
 
-from src.models import Project, Task
+import pytest
+
+from src.models import Project, ProjectStatus, Task
 from src.task_graph.layout.driver import LayoutDriver, LayoutRelayDepthExceeded
 
 
@@ -140,15 +144,17 @@ async def test_layout_step_reconcile_sweep_is_interval_gated(orchestrator_factor
         sweeps += 1
         return await real(*a, **kw)
 
+    # One sweep reads the project list twice: once for the reconcile loop and
+    # once, active-only, for the engine-rules convergence step.
     o.db.list_projects = counting
     await o._run_layout_step()
-    assert sweeps == 1
+    assert sweeps == 2
     await o._run_layout_step()  # inside the interval
-    assert sweeps == 1
+    assert sweeps == 2
 
     o._layout_last_reconcile_check -= o.config.graph_layout.reconcile_interval_seconds + 1
     await o._run_layout_step()
-    assert sweeps == 2
+    assert sweeps == 4
 
 
 async def test_schedule_layout_step_runs_in_the_background_and_does_not_overlap(orchestrator_factory):
@@ -239,6 +245,27 @@ async def _sweep(o) -> None:
     await o._run_layout_step()
 
 
+async def _converge(o) -> None:
+    """The convergence step on its own, with the step's own budget."""
+    await o._converge_engine_rules(
+        tidy_job_seconds=o.config.graph_layout.tidy_job_budget_seconds
+    )
+
+
+async def _force_running(o, job_id: str, *, age_seconds: float) -> None:
+    """Leave a job the way a daemon killed mid-rebuild leaves it."""
+    from sqlalchemy import update
+
+    from src.database.tables import layout_jobs
+
+    async with o.db._engine.begin() as conn:
+        await conn.execute(
+            update(layout_jobs)
+            .where(layout_jobs.c.id == job_id)
+            .values(status="running", started_at=time.time() - age_seconds)
+        )
+
+
 async def test_the_sweep_enqueues_one_stale_pair_per_sweep_active_first(orchestrator_factory):
     """A full layout is a CPU-bound thread and the step takes one job per
     cycle, so a fan-out of every (project, variant) would put a long tail of
@@ -300,10 +327,16 @@ async def test_a_failed_rules_job_is_retried(orchestrator_factory):
 
     await _sweep(o)
 
-    jobs = await _rules_jobs(o)
-    assert len(jobs) == 2
-    retry = [j for j in jobs if j["id"] != bad["id"]]
-    assert [(j["project_id"], j["variant"]) for j in retry] == [("p00", "active")]
+    # Never-attempted pairs go first (a failing pair must not head-of-line
+    # block the fleet), so the retry lands on the sweep after.
+    queued = [j for j in await _rules_jobs(o) if j["status"] == "queued"]
+    assert [(j["project_id"], j["variant"]) for j in queued] == [("p00", "all")]
+    await o.db.finish_layout_job(queued[0]["id"], error=None)
+
+    await _converge(o)
+    queued = [j for j in await _rules_jobs(o) if j["status"] == "queued"]
+    assert [(j["project_id"], j["variant"]) for j in queued] == [("p00", "active")]
+    assert bad["id"] not in {j["id"] for j in queued}
 
 
 async def test_an_unrelated_tidy_in_flight_defers_the_pair(orchestrator_factory):
@@ -314,9 +347,9 @@ async def test_an_unrelated_tidy_in_flight_defers_the_pair(orchestrator_factory)
     await _laid_out_install(o, n=1)
     tidy = await o.db.enqueue_layout_job("p00", "active", "tidy")
 
-    await o._converge_engine_rules(await o.db.list_projects())
+    await _converge(o)
 
-    assert await o.db.layout_job_exists("p00", "active", _rules_kind()) is False
+    assert ("p00", "active") not in await o.db.layout_job_ledger(_rules_kind())
     assert (await o.db.get_layout_job(tidy["id"]))["kind"] == "tidy"
     # The walk moved on to the next pair rather than spending the sweep.
     assert [(j["project_id"], j["variant"]) for j in await _rules_jobs(o)] == [("p00", "all")]
@@ -325,8 +358,8 @@ async def test_an_unrelated_tidy_in_flight_defers_the_pair(orchestrator_factory)
     await o.db.finish_layout_job(tidy["id"], error=None)
     for job in await _rules_jobs(o):
         await o.db.finish_layout_job(job["id"], error=None)
-    await o._converge_engine_rules(await o.db.list_projects())
-    assert await o.db.layout_job_exists("p00", "active", _rules_kind()) is True
+    await _converge(o)
+    assert (await o.db.layout_job_ledger(_rules_kind()))[("p00", "active")]["settled"]
 
 
 async def test_a_project_with_no_meta_row_is_skipped(orchestrator_factory):
@@ -337,34 +370,64 @@ async def test_a_project_with_no_meta_row_is_skipped(orchestrator_factory):
     await o.db.create_project(Project(id="p000", name="fresh"))  # sorts first
     assert await o.db.get_layout_meta("p000", "active") is None
 
-    await o._converge_engine_rules(await o.db.list_projects())
+    await _converge(o)
 
     assert [(j["project_id"], j["variant"]) for j in await _rules_jobs(o)] == [("p00", "active")]
 
 
-async def test_the_sweep_is_bounded_when_nothing_is_stale(orchestrator_factory):
-    """Steady state: one ledger read per pair, on the reconcile interval
-    only, and no writes."""
-    o = await orchestrator_factory()
-    await _laid_out_install(o, n=3)
-    for i in range(3):
+async def _count_statements(o) -> int:
+    from sqlalchemy import event
+
+    seen: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        head = statement.lstrip().upper()
+        if head.startswith(("SELECT", "UPDATE", "INSERT", "DELETE")):
+            seen.append(statement)
+
+    event.listen(o.db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        await _converge(o)
+    finally:
+        event.remove(o.db._engine.sync_engine, "before_cursor_execute", _hook)
+    return len(seen)
+
+
+async def _settle_every_pair(o, n: int) -> None:
+    for i in range(n):
         for variant in ("active", "all"):
             job = await o.db.enqueue_layout_job(f"p{i:02d}", variant, _rules_kind())
             await o.db.finish_layout_job(job["id"], error=None)
+
+
+async def test_the_sweep_is_bounded_when_nothing_is_stale(orchestrator_factory):
+    """Steady state costs a FIXED number of statements — the same for three
+    projects as for six — and writes nothing."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=3)
+    await _settle_every_pair(o, 3)
     before = len(await _rules_jobs(o))
 
-    reads: list[tuple] = []
-    real = o.db.layout_job_exists
-
-    async def counting(project_id, variant, kind):
-        reads.append((project_id, variant, kind))
-        return await real(project_id, variant, kind)
-
-    o.db.layout_job_exists = counting
-    await o._converge_engine_rules(await o.db.list_projects())
-
-    assert len(reads) == 6 == len(set(reads))
+    small = await _count_statements(o)
     assert len(await _rules_jobs(o)) == before
+
+    for i in range(3, 6):
+        pid = f"p{i:02d}"
+        await o.db.create_project(Project(id=pid, name=pid))
+        await o.db.create_task(Task(id=f"t{i:02d}", project_id=pid, title="t", description=""))
+    o.config.graph_layout.incremental_debounce_ms = 0
+    await o._run_layout_step()  # publish the three new projects
+    async with o.db._engine.begin() as conn:
+        from sqlalchemy import delete as sa_delete
+
+        from src.database.tables import layout_jobs as lj
+
+        await conn.execute(sa_delete(lj).where(lj.c.kind == _rules_kind(), lj.c.status != "done"))
+    await _settle_every_pair(o, 6)
+
+    big = await _count_statements(o)
+    assert big == small, (big, small)
+    assert small <= 6, small
 
 
 async def test_convergence_stands_down_while_a_rules_job_is_in_flight(orchestrator_factory):
@@ -374,7 +437,7 @@ async def test_convergence_stands_down_while_a_rules_job_is_in_flight(orchestrat
     await _laid_out_install(o, n=3)
     await o.db.enqueue_layout_job("p00", "active", _rules_kind())
 
-    await o._converge_engine_rules(await o.db.list_projects())
+    await _converge(o)
 
     assert len(await _rules_jobs(o)) == 1
 
@@ -391,7 +454,7 @@ async def test_bumping_the_engine_rules_version_makes_every_pair_stale_again(
         await o.db.finish_layout_job(job["id"], error=None)
 
     with patch("src.orchestrator.layout_step.ENGINE_RULES_VERSION", 2):
-        await o._converge_engine_rules(await o.db.list_projects())
+        await _converge(o)
         assert [(j["project_id"], j["variant"]) for j in await _rules_jobs(o, "rules:2")] == [
             ("p00", "active")
         ]
@@ -406,3 +469,152 @@ async def test_no_convergence_while_the_layout_feature_is_disabled(orchestrator_
     await _sweep(o)
 
     assert await _rules_jobs(o) == []
+
+
+# ── orphan reaping and retry budget (review F1/F2) ─────────────────────
+
+
+async def test_a_job_stuck_running_is_reaped_and_convergence_resumes(orchestrator_factory):
+    """A daemon killed mid-rebuild leaves `status='running'` forever: nothing
+    ever claims it again, so the fleet-wide stand-down would silently disable
+    convergence for every project."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    budget = o.config.graph_layout.tidy_job_budget_seconds
+    orphan = await o.db.enqueue_layout_job("p00", "active", _rules_kind())
+    await _force_running(o, orphan["id"], age_seconds=budget * 4 + 10)
+
+    await _converge(o)
+
+    reaped = await o.db.get_layout_job(orphan["id"])
+    assert reaped["status"] == "failed"
+    assert "orphaned" in (reaped["error"] or "")
+    # Convergence is no longer wedged: the never-attempted pair goes first.
+    assert [(j["project_id"], j["variant"]) for j in await _rules_jobs(o) if j["id"] != orphan["id"]] == [
+        ("p00", "all")
+    ]
+
+    # …and the reaped pair, whose rebuild never finished, is retried after it.
+    for job in await _rules_jobs(o):
+        if job["status"] == "queued":
+            await o.db.finish_layout_job(job["id"], error=None)
+    await _converge(o)
+    fresh = [j for j in await _rules_jobs(o) if j["status"] == "queued"]
+    assert [(j["project_id"], j["variant"]) for j in fresh] == [("p00", "active")]
+
+
+async def test_a_running_job_inside_its_budget_is_left_alone(orchestrator_factory):
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    budget = o.config.graph_layout.tidy_job_budget_seconds
+    live = await o.db.enqueue_layout_job("p00", "active", _rules_kind())
+    await _force_running(o, live["id"], age_seconds=budget)
+
+    await _converge(o)
+
+    assert (await o.db.get_layout_job(live["id"]))["status"] == "running"
+    assert len(await _rules_jobs(o)) == 1  # stood down behind the live job
+
+
+async def test_an_operator_tidy_stuck_running_is_reaped_too(orchestrator_factory):
+    """The reaper is about `layout_jobs`, not about convergence."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    budget = o.config.graph_layout.tidy_job_budget_seconds
+    tidy = await o.db.enqueue_layout_job("p00", "all", "tidy")
+    await _force_running(o, tidy["id"], age_seconds=budget * 4 + 1)
+
+    await _converge(o)
+
+    assert (await o.db.get_layout_job(tidy["id"]))["status"] == "failed"
+
+
+async def test_a_cancelled_job_is_recorded_failed_rather_than_left_running(orchestrator_factory):
+    """Shutdown cancels the background step; the runner must not leave the
+    row it claimed stuck in `running`."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    job = await o.db.enqueue_layout_job("p00", "all", "tidy")
+
+    with patch(
+        "src.task_graph.layout.driver.LayoutDriver.full_layout",
+        new=AsyncMock(side_effect=asyncio.CancelledError()),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await o._run_layout_step()
+
+    row = await o.db.get_layout_job(job["id"])
+    assert row["status"] == "failed" and "cancel" in (row["error"] or "")
+
+
+async def test_a_failing_pair_does_not_block_the_other_projects(orchestrator_factory):
+    """The walk is ordered and returns at the first pair it enqueues, so a
+    deterministically failing pair would otherwise be re-picked forever."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=3)
+    failed = await o.db.enqueue_layout_job("p00", "active", _rules_kind())
+    await o.db.finish_layout_job(failed["id"], error="boom")
+
+    picked: list[tuple[str, str]] = []
+    for _ in range(5):
+        await _converge(o)
+        queued = [j for j in await _rules_jobs(o) if j["status"] == "queued"]
+        assert len(queued) == 1
+        picked.append((queued[0]["project_id"], queued[0]["variant"]))
+        await o.db.finish_layout_job(queued[0]["id"], error=None)
+
+    # Pass 1 — every never-attempted pair — comes before the failed retry.
+    assert picked == [
+        ("p00", "all"),
+        ("p01", "active"),
+        ("p01", "all"),
+        ("p02", "active"),
+        ("p02", "all"),
+    ]
+    await _converge(o)
+    retry = [j for j in await _rules_jobs(o) if j["status"] == "queued"]
+    assert [(j["project_id"], j["variant"]) for j in retry] == [("p00", "active")]
+
+
+async def test_a_failed_pair_is_retried_at_most_three_times(orchestrator_factory, caplog):
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    for variant in ("active", "all"):
+        for _ in range(3 if variant == "active" else 1):
+            job = await o.db.enqueue_layout_job("p00", variant, _rules_kind())
+            await o.db.finish_layout_job(job["id"], error="boom" if variant == "active" else None)
+
+    with caplog.at_level(logging.WARNING, logger="src.orchestrator.layout_step"):
+        await _converge(o)
+
+    assert [j for j in await _rules_jobs(o) if j["status"] == "queued"] == []
+    warned = [r.getMessage() for r in caplog.records]
+    assert any("p00" in m and "active" in m and "giving up" in m for m in warned), warned
+
+
+async def test_a_version_bump_resets_the_retry_budget(orchestrator_factory):
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    for variant in ("active", "all"):
+        for _ in range(3):
+            job = await o.db.enqueue_layout_job("p00", variant, "rules:1")
+            await o.db.finish_layout_job(job["id"], error="boom")
+
+    await _converge(o)
+    assert [j for j in await _rules_jobs(o, "rules:1") if j["status"] == "queued"] == []
+
+    with patch("src.orchestrator.layout_step.ENGINE_RULES_VERSION", 2):
+        await _converge(o)
+    fresh = await _rules_jobs(o, "rules:2")
+    assert [(j["project_id"], j["variant"]) for j in fresh] == [("p00", "active")]
+
+
+async def test_convergence_walks_active_projects_only(orchestrator_factory):
+    """A paused or archived project must not spend a CPU-bound full layout."""
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=2)
+    await o.db.update_project("p00", status=ProjectStatus.PAUSED.value)
+
+    await _converge(o)
+
+    assert [(j["project_id"], j["variant"]) for j in await _rules_jobs(o)] == [("p01", "active")]

@@ -250,44 +250,103 @@ class LayoutQueryMixin:
                 .values(status="failed" if error else "done", finished_at=time.time(), error=error)
             )
 
-    async def layout_job_exists(self, project_id: str, variant: str, kind: str) -> bool:
-        """True when a job of this (project, variant, kind) exists and did not fail.
+    async def layout_job_ledger(self, kind: str) -> dict[tuple[str, str], dict]:
+        """Every ``(project, variant)`` this *kind* has a job for, in ONE statement.
 
-        ``layout_jobs`` rows are never trimmed, so a job of kind
-        ``rules:<ENGINE_RULES_VERSION>`` doubles as the engine-rules
-        convergence ledger (reorganisation design §3.3). A ``failed`` row is
-        deliberately not convergence — the rebuild never happened, so the pair
-        must be retried on a later sweep.
+        ``layout_jobs`` rows are never trimmed, so jobs of kind
+        ``rules:<ENGINE_RULES_VERSION>`` are the engine-rules convergence
+        ledger (reorganisation design §3.3). Each entry carries:
+
+        - ``settled`` — a non-failed job exists (queued, running or done), so
+          the pair is converged or already scheduled. A ``failed`` row is
+          deliberately *not* convergence: the rebuild never happened.
+        - ``in_flight`` — a job of this kind is queued or running somewhere.
+        - ``failed`` — how many attempts failed, i.e. the pair's spent retry
+          budget.
+        - ``last_error`` — the most recently recorded failure, for the log.
+
+        Reading the rows rather than aggregating in SQL keeps ``last_error``
+        honest; a rules kind holds at most one settled row plus a capped
+        handful of failures per pair, so the scan is small and bounded.
         """
         async with self._engine.begin() as conn:
-            row = (
-                await conn.execute(
-                    select(layout_jobs.c.id)
-                    .where(
-                        layout_jobs.c.project_id == project_id,
-                        layout_jobs.c.variant == variant,
-                        layout_jobs.c.kind == kind,
-                        layout_jobs.c.status != "failed",
+            rows = (
+                (
+                    await conn.execute(
+                        select(
+                            layout_jobs.c.project_id,
+                            layout_jobs.c.variant,
+                            layout_jobs.c.status,
+                            layout_jobs.c.error,
+                            layout_jobs.c.finished_at,
+                        ).where(layout_jobs.c.kind == kind)
                     )
-                    .limit(1)
                 )
-            ).first()
-        return row is not None
+                .mappings()
+                .all()
+            )
+        ledger: dict[tuple[str, str], dict] = {}
+        seen_at: dict[tuple[str, str], float] = {}
+        for row in rows:
+            key = (row["project_id"], row["variant"])
+            entry = ledger.setdefault(
+                key, {"settled": False, "in_flight": False, "failed": 0, "last_error": None}
+            )
+            if row["status"] == "failed":
+                entry["failed"] += 1
+                at = row["finished_at"] or 0.0
+                if at >= seen_at.get(key, -1.0):
+                    seen_at[key] = at
+                    entry["last_error"] = row["error"]
+            else:
+                entry["settled"] = True
+                if row["status"] in ("queued", "running"):
+                    entry["in_flight"] = True
+        return ledger
 
-    async def layout_job_in_flight(self, kind: str) -> bool:
-        """True when any project/variant has a queued or running job of *kind*."""
+    async def published_layout_variants(self) -> set[tuple[str, str]]:
+        """Every ``(project_id, variant)`` with a published layout, in one statement."""
         async with self._engine.begin() as conn:
-            row = (
+            rows = (
                 await conn.execute(
-                    select(layout_jobs.c.id)
-                    .where(
-                        layout_jobs.c.kind == kind,
-                        layout_jobs.c.status.in_(("queued", "running")),
-                    )
-                    .limit(1)
+                    select(project_layout_meta.c.project_id, project_layout_meta.c.variant)
                 )
-            ).first()
-        return row is not None
+            ).all()
+        return {(r[0], r[1]) for r in rows}
+
+    async def reap_stale_layout_jobs(self, *, started_before: float, error: str) -> list[dict]:
+        """Fail every job stuck ``running`` since before *started_before*.
+
+        Nothing else ever resets a ``running`` row — ``next_layout_job``
+        claims only ``queued`` — so a daemon killed mid-rebuild (shutdown
+        waits 30 s while a tidy may run 60) would leave one forever. A stuck
+        row wedges the engine-rules stand-down fleet-wide *and* counts as
+        convergence for its pair, so it must not simply be ignored.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        update(layout_jobs)
+                        .where(
+                            layout_jobs.c.status == "running",
+                            layout_jobs.c.started_at.is_not(None),
+                            layout_jobs.c.started_at < started_before,
+                        )
+                        .values(status="failed", finished_at=time.time(), error=error)
+                        .returning(
+                            layout_jobs.c.id,
+                            layout_jobs.c.project_id,
+                            layout_jobs.c.variant,
+                            layout_jobs.c.kind,
+                            layout_jobs.c.started_at,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
 
     async def get_layout_job(self, job_id: str) -> dict | None:
         async with self._engine.begin() as conn:
