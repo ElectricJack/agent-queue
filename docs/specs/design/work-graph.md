@@ -335,7 +335,7 @@ A phase may sit at the project root or nest one level under an epic (the existin
 
 `phase_create` / `phase_list` are commands (category `task`; CLI `aq task phase-create` / `aq task phase-list` — there is no `aq phase` group). They are operator/planner/supervisor surfaces, not granted to worker profiles; work joins a phase the ordinary way, `aq task create --parent <phase-id>`.
 
-**A childless container that carries the `phase` key (or the `standing_parent` key, §13c) is deliberately held open**: `childless_held_open_container()` (`src/database/queries/hierarchy_queries.py`) excludes it from both `settle_containers` and `settle_candidates`, so it does not auto-complete while empty — every other childless container still settles normally. An abandoned empty phase must be deleted (`task delete`); deleting it drops its own edges and leaves every remaining gate intact, so the later phases stay behind whichever earlier phases are still open.
+**A childless container that carries the `phase` key (or the `standing_parent` key, §13d) is deliberately held open**: `childless_held_open_container()` (`src/database/queries/hierarchy_queries.py`) excludes it from both `settle_containers` and `settle_candidates`, so it does not auto-complete while empty — every other childless container still settles normally. An abandoned empty phase must be deleted (`task delete`); deleting it drops its own edges and leaves every remaining gate intact, so the later phases stay behind whichever earlier phases are still open.
 
 **Deliberately not supported:** formulas cannot declare phases — an `aq-graph` node carries no metadata or nesting, so a formula-cooked graph has no way to express `phase` key/order or the inter-phase `blocks` edge. A phase is filed by hand or by a playbook that calls `phase_create` directly.
 
@@ -348,6 +348,16 @@ Status is `pending | in_progress | done | skipped`, tracked per row with a 1-bas
 Layout nodes carry `subtasks_total`/`subtasks_settled` (settled = done + skipped) so the graph and the task panel can show progress without a second round trip.
 
 **Deliberately not supported:** promoting a subtask to a real `tasks` row (it stays a checklist item, never independently schedulable); rolling subtask counts up into a container's own `agg_*` aggregates (a container's progress is still computed purely from its children's task statuses, §13 — subtasks are local to the one task that owns them and never escape it).
+
+## 13d. Keyed standing parents
+
+**Implemented, graph-visibility branch.** `create_task` and `ensure_task` take `parent_key`: mechanism for "file this under the one open container for this key", so a recurring automated creator (a playbook, the supervisor, a sentinel) stops accumulating work in the project root. *Which* key a creator uses is policy and lives in the playbook that creates the work, never in code.
+
+The container is an ordinary root container task carrying `dedup_key = "parent:<key>"` plus the `task_metadata` key `standing_parent = {"key": ...}`, flagged a container at creation and born DEFINED. Resolution is resolve-or-create under a transaction-scoped advisory lock held across both halves — resolving the container and filing the first child — so two concurrent creators cannot produce two containers for one key (`hierarchy.parent_key_busy` when the bounded retry budget is spent). A COMPLETED or FAILED container is settled and never reused: a fresh one is created beside it and the old one leaves through normal archival, so the standing parent is self-cleaning. Every other status is still open work and is reused. Like a phase, a childless one is held open by `childless_held_open_container()` (§13b) so settlement cannot complete it in the window before its first child exists.
+
+Refusals: `hierarchy.parent_conflict` (combined with `parent_id`/`root`), `hierarchy.parent_key_not_for_sessions` (a worker already files under the task it holds, §12), `hierarchy.parent_key_invalid` (outside 1–64 characters of `[a-z0-9][a-z0-9_-]*`), and `hierarchy.reserved_dedup_key` for a caller-supplied `dedup_key` starting `parent:` — nothing but the mechanism may name a standing container.
+
+**Refused entirely in hierarchy/train projects** (`hierarchy.parent_key_unsupported_mode`, checked before any write). There the child is filed through `file_prepared_child_on`: based on the container's checkpoint and delivered to the container's own branch, so it reaches the default branch only when the container settles — which one FAILED or BLOCKED sibling prevents indefinitely. A standing parent groups work; it must not own delivery. In those projects, name a parent with `parent_id` or create at the root.
 
 ## 14. Out of scope
 

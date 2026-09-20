@@ -324,6 +324,13 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `live_descendants` | abandon/cascade refused: a descendant has a live session |
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
+| `parent_conflict` | `parent_key` was combined with `parent_id` or `root` — pass exactly one |
+| `parent_key_not_for_sessions` | `parent_key` is for automated creators; a worker files under the task it holds |
+| `parent_key_busy` | another creator holds the standing-parent lock for that key — retry |
+| `parent_key_unavailable` | the standing container could not be created (the underlying refusal is returned when there is one) |
+| `parent_key_unsupported_mode` | the project delivers hierarchically, where a standing parent would own its children's delivery — use `parent_id` or the root |
+| `parent_key_invalid` | `parent_key` must be 1–64 characters matching `[a-z0-9][a-z0-9_-]*` |
+| `reserved_dedup_key` | a `dedup_key` starting `parent:` belongs to the standing-parent mechanism — pass `parent_key` instead |
 
 ## Phases (planner)
 

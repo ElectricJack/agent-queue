@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import case, delete, func, select, update
+from sqlalchemy import case, func, select, update
 
 from src.database.tables import task_subtasks
 
@@ -193,12 +193,3 @@ class TaskSubtaskQueriesMixin:
                 .group_by(task_subtasks.c.task_id)
             )
             return {row.task_id: (row.total, int(row.settled)) for row in result}
-
-    async def delete_task_subtasks(self, task_id: str, *, conn=None) -> None:
-        """Remove all subtasks for ``task_id``."""
-        stmt = delete(task_subtasks).where(task_subtasks.c.task_id == task_id)
-        if conn is not None:
-            await conn.execute(stmt)
-            return
-        async with self._engine.begin() as own_conn:
-            await own_conn.execute(stmt)

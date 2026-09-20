@@ -100,7 +100,6 @@ class DatabaseBackend(Protocol):
 
     async def count_task_subtasks(self, task_ids: list[str]) -> dict[str, tuple[int, int]]: ...
 
-    async def delete_task_subtasks(self, task_id: str, *, conn=None) -> None: ...
 
     # --- Lifecycle ---
 
