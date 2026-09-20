@@ -327,6 +327,28 @@ depends on is emitted on every `DEFINED → READY` promotion, `is_blocked` flip,
 removal, and gate resolution (design §9), not only on the legacy `task.unblocked` path.
 Off by default (`swarm.enabled: false`, `docs/specs/config.md` §4.11).
 
+## 13b. Phases
+
+**Implemented, graph-visibility branch.** A phase is nothing new at the schema level: it is an ordinary container task (`task_metadata.container = true`, set at creation rather than on first child, so a childless phase is never a claimable READY task) carrying `task_metadata` key `phase = {"order": int, "label": str}`, plus one `blocks` edge onto the previous sibling phase under the same parent. Ordering falls entirely out of §3–§4: the `blocks` edge keeps phase *N+1*'s `is_blocked` set until phase *N* is COMPLETED, and the `parent-child` rule withholds every descendant of a DEFINED parent, so the claim frontier and the promotion cascade need no phase-specific code. A phase settles by ordinary container settlement (§13) — all children COMPLETED — so a FAILED child holds the gate deliberately.
+
+A phase may sit at the project root or nest one level under an epic (the existing structural-depth budget of 3 is unchanged: phase → epic → task, or epic → phase → task). Placement is always explicit — under a session principal, an omitted parent normally means "child of my held task" (§ Worker-filed tasks), so `phase_create` sends `root: True` rather than relying on omission to reach the project root.
+
+`phase_create` / `phase_list` are commands (category `task`; CLI `aq task phase-create` / `aq task phase-list` — there is no `aq phase` group). They are operator/planner/supervisor surfaces, not granted to worker profiles; work joins a phase the ordinary way, `aq task create --parent <phase-id>`.
+
+**A childless container that carries the `phase` key (or the `standing_parent` key, §13c) is deliberately held open**: `childless_held_open_container()` (`src/database/queries/hierarchy_queries.py`) excludes it from both `settle_containers` and `settle_candidates`, so it does not auto-complete while empty — every other childless container still settles normally. An abandoned empty phase must be deleted (`task delete`); deleting it releases the next phase's `blocks` edge like any other terminal transition would.
+
+**Deliberately not supported:** formulas cannot declare phases — an `aq-graph` node carries no metadata or nesting, so a formula-cooked graph has no way to express `phase` key/order or the inter-phase `blocks` edge. A phase is filed by hand or by a playbook that calls `phase_create` directly.
+
+## 13c. In-task subtasks
+
+**Implemented, graph-visibility branch.** A subtask is a durable checklist row in its own table, `task_subtasks` (migration `a00000000010`) — modelled on `task_comments`, not on `tasks`: no foreign key to `tasks.id` (so it survives archive), no branch, no schedulability, and no hierarchy depth cost. It exists purely to let one agent track a decomposition of the single task it holds; it never appears on the claim frontier and never gates `is_blocked`.
+
+Status is `pending | in_progress | done | skipped`, tracked per row with a 1-based `ordinal` scoped to the task. Commands `task_subtask_add`, `task_subtasks`, `task_subtask_get`, `task_subtask_update` (category `task`) are worker-facing — the same session that holds the task may add, list, inspect and update its own subtasks; CLI `aq task subtasks | subtask-add | subtask-show | subtask-start | subtask-done | subtask-skip`. Every write emits `task.subtasks_updated` with `{task_id, project_id, total, settled}` — titles and context are deliberately excluded from the event payload. Prime renders a `## Subtasks` block when the held task has any (titles only, glyphs for status). `task_close` with a completing outcome is refused with `subtasks.open` while any subtask is `pending`/`in_progress`, unless the caller passes `skip_open_subtasks` (open rows become `skipped`, noted `"skipped at close"`); a failing close is never gated on subtasks.
+
+Layout nodes carry `subtasks_total`/`subtasks_settled` (settled = done + skipped) so the graph and the task panel can show progress without a second round trip.
+
+**Deliberately not supported:** promoting a subtask to a real `tasks` row (it stays a checklist item, never independently schedulable); rolling subtask counts up into a container's own `agg_*` aggregates (a container's progress is still computed purely from its children's task statuses, §13 — subtasks are local to the one task that owns them and never escape it).
+
 ## 14. Out of scope
 
 Formulas/orders (playbook comeback, todo §8), the `messages` table (Workstream B), session/lease mechanics (Workstream A — this spec only reserves the `lease_stalled` explain code), and wave-*driven* scheduling. The `aq` CLI verbs themselves (`aq task explain`, `aq gate resolve`, `aq project ready`) are Workstream C surface over the commands this spec defines.

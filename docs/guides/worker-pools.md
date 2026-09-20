@@ -608,6 +608,7 @@ aq doctor --fix                             # apply fixable repairs, then re-run
 | `pools.floor_exceeds_max` | WARN | no | `max(min_active, Σ min_per_project)` is greater than `max_active`. Nothing breaks — sizing clamps to `max_active` — but some projects will never get the warm worker their `min_per_project` asks for. Raise `max_active` or lower `min_per_project`. |
 | `pools.placement_starved` | WARN | no | A profile has had authorised starts and no eligible project for over 5 minutes, with the blocking reason per project (`quarantined` / `no workspace capacity` / `at project cap`). Reads the running orchestrator's observation, so it reports INFO ("cannot see") when no daemon is reachable. |
 | `claims.holder_consistency` | WARN | no | An IN_PROGRESS task whose claim holder disagrees with `agents.current_task_id` or with the `claimed_by_session` task-meta. Report-only. |
+| `agents.dangling_current_task` | WARN | yes | An agent's `current_task_id` names a task that is missing or not `ASSIGNED`/`IN_PROGRESS`, and the agent has no live session attempt on it. Broader than the BUSY-only reconciler rescue: any agent row, since the dashboard's graph markers read `current_task_id` regardless of `state`. `--fix` resets the agent (`IDLE`, `current_task_id=None`) and emits `agent.updated`; it never touches `tasks.assigned_agent_id`. |
 
 ### The agent-row rule, and the one thing not to do
 

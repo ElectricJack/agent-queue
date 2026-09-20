@@ -318,3 +318,15 @@ Tasks are numbered in execution order (`Task N (lane id)`); cross-references use
 ## Out of scope
 
 Evaluation harness and repo-cleanliness metrics (planning doc D, E); promoting a subtask to a real task; restoring archived tasks; changing `archive.*` defaults; clearing `assigned_agent_id` inside `_apply_transition` (B1–B4 make the marker correct without touching retained-claim evidence; revisit only if `agents.dangling_current_task` keeps firing).
+
+## Implementation notes (as built)
+
+The branch landed close to this plan; the notable deviations, verified in code:
+
+- **Phases are `phase_create`/`phase_list`, not an `aq phase` group.** They're plain `category: "task"` commands, auto-CLI-derived to `aq task phase-create` / `aq task phase-list` alongside the other task verbs.
+- **Held-open containers generalised beyond phases.** `childless_held_open_container()` and `HELD_OPEN_CONTAINER_KEYS` (`src/database/queries/hierarchy_queries.py`) cover both the `phase` key and the `standing_parent` key (A2) with one predicate, rather than two separate settlement carve-outs.
+- **`parent_key` resolution is a Postgres advisory-lock try-lock** (`pg_advisory_xact_lock(hashtext(project_id:parent_key))`), surfaced as `hierarchy.parent_key_busy` on contention, rather than the plan's `lock_hierarchy_project`.
+- **Subtasks landed exactly as specified** — table, mixin, four commands, prime block, close refusal, layout counts — with `MAX_SUBTASKS_PER_TASK = 200` and `OPEN_SUBTASK_STATUSES = (pending, in_progress)` as named constants worth knowing when reading `task_subtask_commands.py`.
+- **Agent markers**: `live_attempt_predicate` was extracted from the digest's activity predicate as planned; `layoutStore.ts`'s `pruneAnnotations` now takes the response's node-id set and evicts workers docked at reported nodes while keeping ones docked outside the response's cells; `reset_stale_busy_agent` is shared by both the orchestrator reconciler (B3) and the doctor check's `--fix` (B4), and the doctor check is intentionally broader than the reconciler — it flags any agent with a dangling `current_task_id`, not only BUSY ones, because the dashboard reads the pointer regardless of `state`.
+- **Graph**: `auto_expand`/`expanded_applied` and `active_expansion()` landed as specified; the client persists the applied set once per project via `expanded_initialised` on the `command_center_project_view` dashboard-state document. `ProgressBar` is a shared component across containers, phases and subtask-bearing task cards. `discovered-from` edges render dashed with no arrowhead and are excluded from the layout engine's layering inputs, matching the plan's requirement that they stay pure annotation.
+- **Formulas**: as anticipated by Step 6, an `aq-graph` node has no way to carry `metadata`/nesting, so phases were deliberately left out of the formula grammar rather than extending it.

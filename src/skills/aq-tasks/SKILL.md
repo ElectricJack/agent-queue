@@ -325,6 +325,25 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
 
+## Phases (planner)
+
+A phase is an ordered container that gates implicitly: phase *N+1* stays
+blocked until every child of phase *N* is COMPLETED, with no extra edges to
+manage per task. Available if your profile lists `phase_create`/`phase_list`
+(planner, supervisor, operator — not a plain worker):
+
+```bash
+aq task phase-create --project-id <pid> --title "..." [--label "..."] [--parent-id <id>]
+aq task phase-list --project-id <pid> [--parent-id <id>]
+```
+
+File tasks into a phase the ordinary way, `aq task create --parent <phase-id>`.
+A phase settles like any container — all children COMPLETED — so a failed
+child holds the gate on purpose. A childless phase is never claimable and is
+held open (never auto-settled); if it turns out to be unneeded, delete it
+(`aq task delete --task-id <phase-id>`) rather than leaving it empty — that
+releases the next phase.
+
 ## Dependencies
 
 ```bash
