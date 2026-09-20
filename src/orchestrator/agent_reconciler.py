@@ -13,7 +13,9 @@ from src.database import Database
 logger = logging.getLogger(__name__)
 
 
-async def reset_stale_busy_agent(db: Database, agent, *, bus=None) -> None:
+async def reset_stale_busy_agent(
+    db: Database, agent, *, bus=None, reset_state: bool = True
+) -> None:
     """Reset a BUSY agent with no live session to IDLE, clearing its task pin.
 
     Import path: ``src.orchestrator.agent_reconciler.reset_stale_busy_agent``.
@@ -25,6 +27,15 @@ async def reset_stale_busy_agent(db: Database, agent, *, bus=None) -> None:
     reset; when a bus is given, one ``agent.updated`` event is emitted after
     the write.
 
+    ``reset_state=False`` clears the pointer alone and leaves the agent's
+    state exactly as it was. Only a BUSY agent is *supposed* to become IDLE:
+    production sets ERROR and RETIRED without clearing ``current_task_id``
+    (``src/orchestrator/pools.py``), and RETIRED is what gates workspace
+    reclaim, so a caller that sweeps agents in any state (the
+    ``agents.dangling_current_task`` doctor fix) must not write IDLE over
+    them. The reconciler's own rescue rule only ever sees BUSY agents and
+    keeps the default.
+
     Never touches ``tasks.assigned_agent_id`` or any integration-owner row:
     a retained claim keeps its evidence on the task side, not the agent's
     transient pointer.
@@ -32,7 +43,10 @@ async def reset_stale_busy_agent(db: Database, agent, *, bus=None) -> None:
     from src.models import AgentState
 
     agent_id = agent.id if hasattr(agent, "id") else agent
-    await db.update_agent(agent_id, state=AgentState.IDLE, current_task_id=None)
+    fields = {"current_task_id": None}
+    if reset_state:
+        fields["state"] = AgentState.IDLE
+    await db.update_agent(agent_id, **fields)
     if bus is not None:
         await bus.emit("agent.updated", {
             "event_type": "agent.updated", "agent_id": agent_id,

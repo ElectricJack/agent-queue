@@ -1265,7 +1265,15 @@ async def _fix_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
     bad = await _find_dangling_current_task(ctx)
     bus = getattr(getattr(ctx.handler, "orchestrator", None), "bus", None)
     for agent, _task in bad:
-        await reset_stale_busy_agent(ctx.db, agent, bus=bus)
+        # The check is deliberately broader than the reconciler's rescue rule
+        # (any state, not just BUSY), so the repair has to be narrower than
+        # the reconciler's reset: only a BUSY agent is meant to land IDLE.
+        # ERROR and RETIRED are set *without* clearing ``current_task_id``
+        # upstream, and RETIRED gates workspace reclaim -- rewriting either to
+        # IDLE would un-retire an agent as a side effect of tidying a pointer.
+        await reset_stale_busy_agent(
+            ctx.db, agent, bus=bus, reset_state=agent.state == AgentState.BUSY
+        )
     return CheckResult(
         id="agents.dangling_current_task",
         severity=Severity.OK,

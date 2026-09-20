@@ -903,6 +903,59 @@ async def test_dangling_current_task_fix_clears_the_agent(db):
     assert agent.current_task_id is None
 
 
+@pytest.mark.parametrize(
+    "state", [AgentState.ERROR, AgentState.RETIRED, AgentState.PAUSED]
+)
+async def test_dangling_current_task_fix_keeps_a_non_busy_state(db, state):
+    """The fix clears the pointer; it must not also un-retire the agent.
+
+    Production sets ERROR/RETIRED without clearing ``current_task_id``, and
+    RETIRED is what gates workspace reclaim -- rewriting it to IDLE would
+    hand a retired agent's workspace back to the scheduler.
+    """
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=state, current_task_id="t1")
+
+    repaired = await pool_checks.run_check(
+        db, "agents.dangling_current_task", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+
+    agent = await db.get_agent("a1")
+    assert agent is not None
+    assert agent.state is state
+    assert agent.current_task_id is None
+
+
+async def test_reset_stale_busy_agent_keeps_the_state_when_asked(db):
+    """The reconciler's own rescue is unchanged; only the doctor opts out."""
+    from src.orchestrator.agent_reconciler import reset_stale_busy_agent
+
+    await db.create_task(
+        Task(
+            id="t1", project_id=PROJECT_ID, title="t", description="",
+            status=TaskStatus.FAILED,
+        )
+    )
+    await _stale_agent(db, "a1", state=AgentState.ERROR, current_task_id="t1")
+
+    await reset_stale_busy_agent(db, "a1", reset_state=False)
+    agent = await db.get_agent("a1")
+    assert agent.state is AgentState.ERROR
+    assert agent.current_task_id is None
+
+    await db.update_agent("a1", state=AgentState.BUSY, current_task_id="t1")
+    await reset_stale_busy_agent(db, "a1")
+    agent = await db.get_agent("a1")
+    assert agent.state is AgentState.IDLE
+    assert agent.current_task_id is None
+
+
 def test_dangling_current_task_is_fixable():
     check = next(c for c in pool_checks.CHECKS if c.id == "agents.dangling_current_task")
     assert check.fix is not None
