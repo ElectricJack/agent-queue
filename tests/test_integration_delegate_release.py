@@ -19,6 +19,7 @@ from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
+    integration_branch_owners,
     integration_candidate_member_results,
     integration_candidate_resolutions,
     integration_candidate_revisions,
@@ -321,6 +322,132 @@ async def test_a_retained_workspace_is_named_not_released(db):
     assert [b["code"] for b in released[0]["cleanup"]["blockers"]] == ["workspace_locked"]
     # Preserved exactly as found: releasing it needs proof this pass cannot take.
     assert (await db.get_workspace("retained")).locked_by_task_id == "delegate"
+
+
+async def test_a_stopped_writer_that_kept_its_claim_does_not_hold_the_delegate(db):
+    """Production's ``repair-repair-batch-…-1``: BLOCKED, cancelled, and never released.
+
+    ``_terminate_pool_session_locked`` confirms a pool writer's process is gone
+    and marks the row stopped, but keeps ``task_id``/``claim_phase`` while an
+    integration owner still retains its checkout -- that claim is handoff
+    evidence, not a writer.  ``stopped`` is terminal (nothing revives the row)
+    and a claim only activates on a running session, so the delegate is
+    listed, settled, and its owner/checkout stay named as cleanup.
+    """
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+    from src.integration.delegate_release import release_delegates, stranded_delegates
+
+    await _cancelled_operation_with_delegate(db)
+    await db.create_session(
+        SessionRecord(
+            id="writer",
+            task_id="delegate",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="writer",
+            lifecycle="pool",
+            state="stopped",
+            desired_state="stopped",
+            claim_phase="active",
+            claim_phase_at=110.0,
+            last_claim_epoch=1,
+            work_dir="/tmp/retained",
+            epoch="epoch",
+            instance_token="writer",
+            started_at=100.0,
+            ended_at=200.0,
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id="retained",
+            project_id="p",
+            workspace_path="/tmp/retained",
+            source_type=RepoSourceType.LINK,
+            locked_by_task_id="delegate",
+            enabled=True,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="retained-owner", repository_id="repo", ref="aq/delegate",
+                owner_id="delegate", owner_role="repair", fence_token=3,
+                handoff_state="attached", session_id="writer", workspace_id="retained",
+                created_at=1.0, updated_at=1.0,
+            )
+        )
+
+    reported = await stranded_delegates(db)
+    assert [row["task_id"] for row in reported] == ["delegate"]
+    assert [b["code"] for b in reported[0]["cleanup"]] == [
+        "branch_owner_retained", "workspace_locked",
+    ]
+    check = await run_check(db, "integration.stranded_delegates")
+    assert check.severity is Severity.WARN
+    assert check.data["count"] == 1
+
+    released = await release_delegates(db, now=500.0, released_by="doctor")
+    assert [row["task_id"] for row in released] == ["delegate"]
+    assert (await db.get_task("delegate")).status == TaskStatus.FAILED
+    assert released[0]["cleanup"]["state"] == "blocked"
+    assert [b["code"] for b in released[0]["cleanup"]["blockers"]] == [
+        "branch_owner_retained", "workspace_locked",
+    ]
+
+    # Retirement settles the ticket only: the stopped row keeps its claim, the
+    # owner stays attached to it and the checkout stays locked.
+    writer = await db.get_session("writer")
+    assert (writer.state, writer.task_id, writer.claim_phase) == ("stopped", "delegate", "active")
+    assert (await db.get_workspace("retained")).locked_by_task_id == "delegate"
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners).where(
+                    integration_branch_owners.c.id == "retained-owner"
+                )
+            )
+        ).mappings().one()
+    assert (owner["handoff_state"], owner["session_id"]) == ("attached", "writer")
+    assert (await run_check(db, "integration.stranded_delegates")).severity is Severity.OK
+
+
+@pytest.mark.parametrize(
+    ("state", "desired_state"), [("running", "running"), ("stopped", "running")]
+)
+async def test_a_session_not_fully_stopped_still_defers_the_release(db, state, desired_state):
+    """Only a fully stopped row is history; anything else may still be a writer."""
+    from src.integration.delegate_release import release_delegates, stranded_delegates
+
+    await _cancelled_operation_with_delegate(db)
+    await db.create_session(
+        SessionRecord(
+            id="writer",
+            task_id="delegate",
+            project_id="p",
+            profile_id="repairer",
+            harness="fake",
+            provider="fake",
+            name="writer",
+            lifecycle="pool",
+            state=state,
+            desired_state=desired_state,
+            claim_phase="active",
+            work_dir="/tmp/retained",
+            epoch="epoch",
+            instance_token="writer",
+            started_at=100.0,
+        )
+    )
+    assert await stranded_delegates(db) == []
+    assert await release_delegates(db, now=500.0, released_by="doctor") == []
+    assert (await db.get_task("delegate")).status == TaskStatus.BLOCKED
+    assert [b["code"] for b in await db.get_integration_delegate_cleanup("delegate")] == [
+        "session_attached",
+    ]
 
 
 async def test_release_can_be_scoped_to_one_operation(db):
