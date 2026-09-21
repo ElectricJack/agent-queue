@@ -40,7 +40,7 @@ async def setup(tmp_path):
         needs_workspace=False, harness_tools=[], aq_commands=[], plugin_tools=[],
     ))
     for profile in (
-        _worker("standard-medium-claude", "claude", "standard-medium"),
+        _worker("fast-high-claude", "claude", "fast-high"),
         _worker("standard-high-claude", "claude", "standard-high"),
         _worker("standard-high-codex", "codex", "standard-high"),
         _worker("deep-high-codex", "codex", "deep-high"),
@@ -48,10 +48,10 @@ async def setup(tmp_path):
         _worker("zz-standard-high-task", "claude", "standard-high", lifecycle="task"),
         # Disabled and special-purpose profiles are never a class route.
         _worker("fast-low-claude", "claude", "fast-low", enabled=False),
-        _worker("reviewer", "codex", "standard-low", lifecycle="task"),
+        _worker("reviewer", "codex", "fast-low", lifecycle="task"),
     ):
         await db.create_profile(profile)
-    await db.update_project("p", default_profile_id="standard-medium-claude")
+    await db.update_project("p", default_profile_id="fast-high-claude")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(data_dir=data_dir, database=DatabaseConfig(url=lease_dsn("class_route.db")))
@@ -96,8 +96,8 @@ async def test_class_match_prefers_the_implicit_routes_provider(setup):
 
 async def test_class_the_default_already_runs_keeps_the_default(setup):
     handler, _db = setup
-    result = await _create_as(handler, "supervisor", intelligence_class="standard-medium")
-    assert result["profile_id"] == "standard-medium-claude"
+    result = await _create_as(handler, "supervisor", intelligence_class="fast-high")
+    assert result["profile_id"] == "fast-high-claude"
     assert result["profile_source"] == "project_default"
 
 
@@ -120,7 +120,7 @@ async def test_supervisor_may_name_a_worker_profile_it_does_not_contain(setup):
 async def test_worker_caller_escalation_is_still_enforced(setup):
     handler, db = setup
     await db.create_profile(_worker(
-        "narrow-worker", "claude", "standard-medium", lifecycle="task", harness_tools=[],
+        "narrow-worker", "claude", "fast-high", lifecycle="task", harness_tools=[],
     ))
     explicit = await _create_as(handler, "narrow-worker", profile_id="standard-high-claude")
     assert "Capability escalation rejected" in explicit["error"]
@@ -133,11 +133,11 @@ async def test_worker_caller_escalation_is_still_enforced(setup):
 
 async def test_worker_caller_class_match_within_its_bounds(setup):
     handler, _db = setup
-    inherited = await _create_as(handler, "standard-medium-claude")
-    assert inherited["profile_id"] == "standard-medium-claude"
+    inherited = await _create_as(handler, "fast-high-claude")
+    assert inherited["profile_id"] == "fast-high-claude"
     assert inherited["profile_source"] == "inherited"
     matched = await _create_as(
-        handler, "standard-medium-claude", intelligence_class="standard-high"
+        handler, "fast-high-claude", intelligence_class="standard-high"
     )
     assert matched["profile_id"] == "standard-high-claude"
     assert matched["profile_source"] == "class_match"
@@ -149,7 +149,7 @@ async def test_class_no_enabled_worker_runs_fails_listing_available_classes(setu
     result = await _create_as(handler, "supervisor", intelligence_class="fast-low")
     assert result["success"] is False
     assert "no enabled worker profile runs intelligence class 'fast-low'" in result["error"]
-    assert "deep-high, standard-high, standard-medium" in result["error"]
+    assert "deep-high, fast-high, standard-high" in result["error"]
     assert await db.list_tasks(project_id="p") == []
 
 
@@ -166,7 +166,7 @@ async def test_operator_create_pins_the_class_lane_over_an_implicit_default(setu
     assert matched["profile_source"] == "class_match"
     assert (await db.get_task(matched["created"])).profile_id == "standard-high-claude"
     # A class the default runs keeps the historical implicit (NULL) route.
-    kept = await _create_as(handler, None, intelligence_class="standard-medium")
+    kept = await _create_as(handler, None, intelligence_class="fast-high")
     assert kept["profile_source"] == "project_default"
     assert (await db.get_task(kept["created"])).profile_id is None
 
@@ -177,7 +177,7 @@ async def test_graph_nodes_resolve_their_class_lane(setup):
         "project_id": "p",
         "graph": {"nodes": [
             {"key": "high", "title": "High", "intelligence_class": "standard-high"},
-            {"key": "same", "title": "Same", "intelligence_class": "standard-medium"},
+            {"key": "same", "title": "Same", "intelligence_class": "fast-high"},
             {"key": "pinned", "title": "Pinned", "profile": "standard-high-codex",
              "intelligence_class": "standard-high"},
         ]},
