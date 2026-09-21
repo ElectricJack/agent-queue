@@ -1163,11 +1163,25 @@ class PlaybookEngine:
             # The interrupted receipt is a boundary of its own.  Re-load the
             # durable snapshot shape before replaying the identical attempt.
             snapshot = await repository.load_run(run_id) or snapshot
-        if isinstance(cause, ChildTaskCompleted):
-            return await self._resume_child_task(
-                snapshot, cause, principal, artifact, artifact_ref, mode, repository
-            )
         current_step = artifact.steps.get(snapshot.current_step_id or "")
+        if isinstance(cause, ChildTaskCompleted):
+            if not isinstance(current_step, WaitStep):
+                return await self._resume_child_task(
+                    snapshot, cause, principal, artifact, artifact_ref, mode, repository
+                )
+            # A ``WaitStep`` of kind ``task`` stores the same ``agent_task``
+            # wait and resumes through the claim path below like every other
+            # wait — but only for the task it names.  Anything else would
+            # hand a child's status to a human gate as its answer.
+            wait = snapshot.wait
+            if (
+                wait is None
+                or wait.kind != "agent_task"
+                or wait.match.get("task_id") != cause.task_id
+            ):
+                return RunOutcome(
+                    snapshot.run_id, snapshot.lifecycle, "duplicate_child_completion", snapshot
+                )
         if snapshot.lifecycle is RunLifecycle.RUNNING and isinstance(current_step, LlmStep):
             step_id = snapshot.current_step_id or ""
             iteration = self._iteration_of(snapshot, step_id)
@@ -2147,6 +2161,20 @@ class PlaybookEngine:
             return await finish(
                 self._resume_wait(attempt, step, artifact, artifact_ref, repository)
             )
+        # The same rule for an ``AgentTaskStep`` that already owns a child:
+        # its executor *is* ``create_task``, so re-entering it on a deadline
+        # (or on any cause that is not the child's own) would delegate the
+        # work a second time.  ``ChildTaskCompleted`` never reaches here —
+        # ``resume`` reconciles it directly.
+        if (
+            isinstance(step, AgentTaskStep)
+            and snapshot.wait is not None
+            and snapshot.wait.kind == "agent_task"
+            and snapshot.wait.step_id == step_id
+        ):
+            return await finish(
+                self._resume_child_wait(attempt, artifact, artifact_ref, repository)
+            )
 
         scope = self._scope(snapshot, artifact)
 
@@ -3078,6 +3106,47 @@ class PlaybookEngine:
                 attempt.error = "the wait result exceeds the state limit"
         return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
 
+    async def _resume_child_wait(
+        self,
+        attempt: _Attempt,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+        """An open child wait resumed by anything but the child itself.
+
+        Only an expiry decides anything: it takes ``timed_out`` and clears the
+        wait in the boundary that takes the edge.  Every other cause leaves
+        the run paused with no boundary and no receipt, exactly as
+        :meth:`_resume_wait` does for a resume with nothing to resume on.  The
+        child is left running either way — ``cancel_child`` governs a
+        *cancelled* run, not a deadline.
+        """
+        snapshot = attempt.snapshot
+        wait = snapshot.wait
+        claim = next(
+            (
+                c
+                for c in snapshot.pending_wait_claims
+                if wait is not None and c.wait_id == wait.wait_id and c.expired
+            ),
+            None,
+        )
+        # Claims are transient here: one that did not expire this wait says
+        # nothing about the child, and keeping it would replay on every resume.
+        attempt.snapshot = replace(snapshot, pending_wait_claims=())
+        if wait is None or claim is None:
+            return replace(attempt.snapshot, lifecycle=RunLifecycle.PAUSED), None, "paused"
+
+        attempt.outcome = "timed_out"
+        attempt.timed_out = True
+        attempt.error = "wait deadline fired"
+        attempt.clear_waits = True
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_run_waits=True)
+        attempt.receipt_result = {"child_task_id": wait.match.get("task_id")}
+        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+
     def _deadline_that_fired(
         self, snapshot: RunSnapshot, step: WaitStep, wait: WaitSpec
     ) -> str:
@@ -3579,8 +3648,61 @@ class WaitScheduler:
         return tuple(resumed)
 
 
+class ChildTaskReconciler:
+    """The producer of ``ChildTaskCompleted`` — §4.5 step 5's other half.
+
+    A scan over durable state, not a bus subscriber, for the reason
+    ``_claim_for_cause`` gives: a task reaches a terminal status from some
+    thirty call sites (the close path, the session reconciler, recovery,
+    integration retirement, an operator's stop or delete), several of which
+    emit nothing, and a bus delivery that a restart swallows is never
+    re-sent.  The wait row and the task row both survive all of that, so
+    asking "which suspended runs await a task that has settled?" finds every
+    completion by every route, including one that happened while the daemon
+    was down.
+
+    Nothing is claimed.  The engine clears the wait in the boundary that
+    takes the edge, which is what takes the run out of the next scan; a
+    second delivery of the same completion is the no-op
+    ``_resume_child_task`` already documents.
+    """
+
+    def __init__(self, engine: PlaybookEngine, waits: Any, principal: Any) -> None:
+        self._engine = engine
+        self._waits = waits
+        self._principal = principal
+
+    async def tick(self, *, limit: int = 100) -> tuple[str, ...]:
+        """Resume every run whose awaited child has settled.  Returns the ids."""
+        scan = getattr(self._waits, "settled_child_waits", None)
+        if scan is None:
+            return ()
+        resumed: list[str] = []
+        for settled in await scan(limit=limit):
+            try:
+                outcome = await self._engine.resume(
+                    settled.run_id,
+                    ChildTaskCompleted(settled.task_id, settled.status),
+                    self._principal,
+                )
+            except Exception:
+                # One stuck run never stalls the sweep.
+                logger.exception(
+                    "V2 wait %s could not resume run %s on child %s",
+                    settled.wait_id,
+                    settled.run_id,
+                    settled.task_id,
+                )
+                continue
+            if outcome.outcome == "duplicate_child_completion":
+                continue
+            resumed.append(settled.run_id)
+        return tuple(resumed)
+
+
 __all__ = [
     "ChildTaskCompleted",
+    "ChildTaskReconciler",
     "DispatchResult",
     "EventArrived",
     "HumanDecision",

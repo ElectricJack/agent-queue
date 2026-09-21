@@ -263,6 +263,19 @@ Two ceilings bind the sizer, in order:
 `projects.max_concurrent_agents` is **not** a sizing input any more. It is a
 property of a project, not of a pool, so it moved to placement.
 
+**An idle worker whose claim loop has gone silent is not supply.** `task_claim`
+stamps the session's activity at entry, so a healthy idle worker is never more
+than one long poll old. An idle session (no task, no claim phase) with no
+activity for `max(prepare_timeout, 2 × claim_wait_max)` seconds — 120 s by
+default — counts as `unresponsive` rather than `running_idle`: it satisfies no
+demand and is never offered to a drain. That is the shape of a harness parked
+on a provider's usage-limit or login screen, which is painted in answer to the
+bootstrap prompt, after the startup dialog pass has finished. The session
+reconciler recycles such a worker (termination reason `claim_loop_stalled`,
+fenced against a claim that lands at the same moment), returning its agent row
+and workspace, and `aq task explain` names the count
+(`… 0 idle, 0 starting, 2 unresponsive`) instead of calling them idle.
+
 **Scale-down** is deliberately reluctant. It only ever drains *idle* sessions,
 only after the pool has been continuously in surplus for
 `swarm.scale_down_grace` seconds (default 120), and at most
@@ -620,6 +633,12 @@ is the whole rule:
   the next launch draws its candidate from `list_agents(state=IDLE)`. That
   reuse is what bounds the roster at roughly `max_active` per pool instead of
   growing it by one row per claimed task.
+- **Reuse never changes provider.** A candidate row is eligible only when the
+  harness it would run — its own saved `harness`, else its profile's — equals
+  the pool profile's harness. Routing lets a generic Claude profile accept any
+  worker of its class, so without this rule a Claude pool reused an idle Codex
+  row and launched Codex in its name (2026-09-21, with OpenAI usage exhausted).
+  With no eligible row the pool mints a row for its own profile.
 - **Unconfirmed stop → `RETIRED`.** The row is marked `RETIRED` *before*
   `provider.stop` and cleared back to `IDLE` only once the stop is confirmed,
   so a worker whose process might still be alive is never handed to a second
