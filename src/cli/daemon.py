@@ -15,6 +15,7 @@ interactive offer to launch the Vite dev server instead.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -71,10 +72,13 @@ def _find_daemon_pid() -> int | None:
     pid = _read_pid()
     if pid:
         return pid
-    # Fallback: search for process
+    # A dashboard server receives the same config path, so matching only the
+    # checkout name and config can mistake it for the daemon. The daemon is
+    # always launched as ``agent-queue <config>`` in ``start_daemon``; require
+    # that exact argv suffix when recovering without a PID file.
     try:
         result = subprocess.run(
-            ["pgrep", "-f", f"agent-queue.*{CONFIG_PATH}"],
+            ["pgrep", "-f", rf"(^|/)agent-queue {re.escape(CONFIG_PATH)}$"],
             capture_output=True,
             text=True,
         )

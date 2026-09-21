@@ -8,6 +8,7 @@ are patched — nothing here touches Docker or a real process.
 
 from __future__ import annotations
 
+import re
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -141,6 +142,62 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
 
     # No branch above may have attempted to spawn the daemon.
     no_popen.assert_not_called()
+
+
+def test_start_and_stop_ignore_dashboard_server_when_daemon_pid_file_is_missing(
+    runner, tmp_path, monkeypatch,
+):
+    """A dashboard server has the config path in argv but is not the daemon."""
+    import urllib.request
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "CONFIG_DIR": tmp_path,
+        "LOCK_DIR": tmp_path / "daemon.lock",
+        "PID_FILE": tmp_path / "daemon.pid",
+        "LOG_PATH": tmp_path / "daemon.log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+
+    dashboard_pid = 7123
+    dashboard_argv = (
+        "/home/operator/dev/agent-queue2/.venv/bin/python3 -m "
+        f"src.dashboard_server --config {config_path}"
+    )
+
+    def pgrep(command, **kwargs):
+        assert command[:2] == ["pgrep", "-f"]
+        if re.search(command[2], dashboard_argv):
+            return MagicMock(returncode=0, stdout=f"{dashboard_pid}\n")
+        return MagicMock(returncode=1, stdout="")
+
+    proc = MagicMock(pid=12345)
+    health = MagicMock()
+    health.__enter__.return_value.status = 200
+    kill = MagicMock()
+    monkeypatch.setattr(daemon_mod.subprocess, "run", pgrep)
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", MagicMock(return_value=proc))
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr(daemon_mod.os, "kill", kill)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *args, **kwargs: health)
+
+    started = runner.invoke(cli, ["start", "--no-dashboard", "--no-dashboard-server"])
+
+    assert started.exit_code == 0, started.output
+    daemon_mod.subprocess.Popen.assert_called_once()
+
+    # The started daemon is then killed and its PID file removed. The dashboard
+    # server remains the only process matching the old broad pgrep pattern.
+    (tmp_path / "daemon.pid").unlink()
+    kill.reset_mock()
+    stopped = runner.invoke(cli, ["stop", "--keep-sessions", "--no-dashboard-server"])
+
+    assert stopped.exit_code == 0, stopped.output
+    assert "not running" in stopped.output
+    kill.assert_not_called()
 
 
 def test_daemon_environment_appends_installed_user_executable_dirs(
