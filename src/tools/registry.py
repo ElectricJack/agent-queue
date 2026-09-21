@@ -142,6 +142,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "review": CategoryMeta(
+        name="review",
+        description="Document reviews: submit specs and plans for Jack's approval",
+    ),
     "digest": CategoryMeta(
         name="digest",
         description=(

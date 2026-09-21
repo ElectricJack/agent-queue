@@ -86,6 +86,7 @@ from src.commands.provider_commands import ProviderCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
 from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
+from src.commands.review_commands import ReviewCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
@@ -367,6 +368,7 @@ class CommandHandler(
     DashboardStateCommandsMixin,
     DigestCommandsMixin,
     EscalationCommandsMixin,
+    ReviewCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,

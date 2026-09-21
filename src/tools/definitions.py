@@ -87,6 +87,15 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    # document reviews
+    "review_submit": "review",
+    "review_show": "review",
+    "review_list": "review",
+    "review_withdraw": "review",
+    "review_decide": "review",
+    "review_comment": "review",
+    "review_delegate": "review",
+    "review_import_edits": "review",
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
@@ -808,6 +817,11 @@ _ALL_TOOL_DEFINITIONS = [
                 "repo_default_branch": {
                     "type": "string",
                     "description": "Default git branch for the project (e.g. main, dev, master)",
+                },
+                "review_delegate_to": {
+                    "type": "string",
+                    "enum": ["", "user", "supervisor"],
+                    "description": "LOCAL-only default document-review decider; empty clears it.",
                 },
                 "integration_repository_id": {
                     "type": ["string", "null"],
@@ -6274,6 +6288,128 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
                 },
                 "required": ["question_id", "reason"],
+            },
+        },
+    ]
+)
+
+# Document-review command surface.  ``review_submit`` has a hand-written CLI
+# because the document bytes must be read locally, not by the daemon.
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "review_submit",
+            "description": "Submit markdown for review, or submit a revision to an open review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "review_id": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
+                    "title": {"type": "string", "maxLength": 200},
+                    "content": {"type": "string", "maxLength": 262144},
+                    "changes": {"type": "string"},
+                    "resolves": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_show",
+            "description": "Read a document-review revision, optionally with comments or a block diff.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "comments": {"type": "boolean"},
+                    "diff_from": {"type": "integer", "minimum": 1},
+                },
+                "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_list",
+            "description": "List document reviews in a project.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "state": {
+                        "type": "string",
+                        "enum": ["in_review", "changes_requested", "approved", "withdrawn"],
+                    },
+                    "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
+                    "task_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_withdraw",
+            "description": "Withdraw an open review without approving its gate.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["review_id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_decide",
+            "description": "Approve a review or request changes on its current revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes"]},
+                    "note": {"type": "string"},
+                },
+                "required": ["review_id", "revision", "decision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_comment",
+            "description": "Add an anchored or section-level comment to a review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "quote": {"type": "string"},
+                    "heading_path": {"type": "array", "items": {"type": "string"}},
+                    "body": {"type": "string", "minLength": 1, "maxLength": 16000},
+                },
+                "required": ["review_id", "revision", "body"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_delegate",
+            "description": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "to": {"type": "string", "enum": ["user", "supervisor"]},
+                },
+                "required": ["review_id", "to"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_import_edits",
+            "description": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}},
+                "required": ["review_id"],
+                "additionalProperties": False,
             },
         },
     ]

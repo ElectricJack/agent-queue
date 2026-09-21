@@ -58,6 +58,7 @@ _FORWARDED_PREFIXES: tuple[str, ...] = (
     "pool.",
     "metrics.",
     "dashboard_state.",
+    "review.",
     # Run lifecycle from the V2 engine ("playbook.v2.run.started" and
     # friends).  Without this the dashboard's playbook views only changed
     # when their 30s poll happened to land inside a run, so the fleet's

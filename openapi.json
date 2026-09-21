@@ -10130,6 +10130,382 @@
         }
       }
     },
+    "/api/review/comment": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Add an anchored or section-level comment to a review revision.",
+        "description": "Add an anchored or section-level comment to a review revision.",
+        "operationId": "review_comment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/decide": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Approve a review or request changes on its current revision.",
+        "description": "Approve a review or request changes on its current revision.",
+        "operationId": "review_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/delegate": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+        "description": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+        "operationId": "review_delegate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDelegateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDelegateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/import-edits": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+        "description": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+        "operationId": "review_import_edits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewImportEditsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewImportEditsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/list": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List document reviews in a project.",
+        "description": "List document reviews in a project.",
+        "operationId": "review_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/show": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Read a document-review revision, optionally with comments or a block diff.",
+        "description": "Read a document-review revision, optionally with comments or a block diff.",
+        "operationId": "review_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/submit": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Submit markdown for review, or submit a revision to an open review.",
+        "description": "Submit markdown for review, or submit a revision to an open review.",
+        "operationId": "review_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/withdraw": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Withdraw an open review without approving its gate.",
+        "description": "Withdraw an open review without approving its gate.",
+        "operationId": "review_withdraw",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewWithdrawRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewWithdrawResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/claude-usage": {
       "post": {
         "tags": [
@@ -21420,6 +21796,18 @@
             ],
             "title": "Repo Default Branch",
             "description": "Default git branch for the project (e.g. main, dev, master)"
+          },
+          "review_delegate_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Delegate To",
+            "description": "LOCAL-only default document-review decider; empty clears it."
           },
           "integration_repository_id": {
             "anyOf": [
@@ -41281,6 +41669,660 @@
         "additionalProperties": false,
         "type": "object",
         "title": "RetryPolicyDTO"
+      },
+      "ReviewCommentRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote",
+            "description": ""
+          },
+          "heading_path": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading Path",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "body"
+        ],
+        "title": "ReviewCommentRequest"
+      },
+      "ReviewCommentResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "comment_id": {
+            "type": "string",
+            "title": "Comment Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment_id"
+        ],
+        "title": "ReviewCommentResponse"
+      },
+      "ReviewDecideRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "decision"
+        ],
+        "title": "ReviewDecideRequest"
+      },
+      "ReviewDecideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "unblocked_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unblocked Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "state"
+        ],
+        "title": "ReviewDecideResponse"
+      },
+      "ReviewDelegateRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "to"
+        ],
+        "title": "ReviewDelegateRequest"
+      },
+      "ReviewDelegateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "decider": {
+            "type": "string",
+            "title": "Decider"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "decider"
+        ],
+        "title": "ReviewDelegateResponse"
+      },
+      "ReviewImportEditsRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewImportEditsRequest"
+      },
+      "ReviewImportEditsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision"
+        ],
+        "title": "ReviewImportEditsResponse"
+      },
+      "ReviewListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": ""
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "ReviewListRequest"
+      },
+      "ReviewListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewRecord"
+            },
+            "type": "array",
+            "title": "Reviews",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ReviewListResponse"
+      },
+      "ReviewRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "current_revision": {
+            "type": "integer",
+            "title": "Current Revision"
+          },
+          "author_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Task Id"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          },
+          "decider": {
+            "type": "string",
+            "title": "Decider",
+            "default": "user"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "title",
+          "kind",
+          "state",
+          "current_revision",
+          "vault_path"
+        ],
+        "title": "ReviewRecord"
+      },
+      "ReviewShowRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision",
+            "description": ""
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments",
+            "description": ""
+          },
+          "diff_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff From",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewShowRequest"
+      },
+      "ReviewShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewRecord"
+          },
+          "revision": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Revision"
+          },
+          "revisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Revisions",
+            "default": []
+          },
+          "vault_state": {
+            "type": "string",
+            "title": "Vault State"
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "review",
+          "revision",
+          "vault_state"
+        ],
+        "title": "ReviewShowResponse"
+      },
+      "ReviewSubmitRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id",
+            "description": ""
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": ""
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": ""
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": ""
+          },
+          "changes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changes",
+            "description": ""
+          },
+          "resolves": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolves",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ReviewSubmitRequest"
+      },
+      "ReviewSubmitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "vault_path"
+        ],
+        "title": "ReviewSubmitResponse"
+      },
+      "ReviewWithdrawRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "reason"
+        ],
+        "title": "ReviewWithdrawRequest"
+      },
+      "ReviewWithdrawResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "flagged_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Flagged Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewWithdrawResponse"
       },
       "RightSurface": {
         "properties": {

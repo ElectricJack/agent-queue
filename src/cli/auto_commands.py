@@ -89,6 +89,8 @@ HANDCRAFTED_COVERAGE = {
     "question_list",
     "question_answer",
     "question_escalate",
+    # reviews.py — reads the local markdown file before calling the API.
+    "review_submit",
     # projects.py — composite/UX-heavy commands only
     "edit_project",
     "set_default_branch",
@@ -161,6 +163,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "mcp": "mcp",
     "message": "message",
     "escalation": "escalation",
+    "review": "review",
     "digest": "digest",
     "dashboard": "dashboard",
     "discord": "discord",
@@ -179,6 +182,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "mcp": "MCP server registry and tool catalog.",
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
+    "review": "Document reviews: submit specs and plans for Jack's approval",
     "digest": "Hourly activity digest — dry preview and schedule health.",
     "dashboard": "Durable shared and roaming dashboard state.",
     "discord": "Explicit Discord historical-message housekeeping.",
