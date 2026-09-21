@@ -12,8 +12,10 @@ import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
-  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
-  const variant = filters.showCompleted || focusId ? "all" : "active";
+  const { projectId, filters, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
+  // The same variant the canvas draws, so a located hit's coordinates are the
+  // ones on screen. Entering a container does not change it.
+  const variant = filters.showCompleted ? "all" : "active";
   // Only the graph pans to a hit, and only a server-side layout knows where
   // one is: on the Tasks tab the control would do nothing, so it is not shown
   // and the `locate` request is never issued.

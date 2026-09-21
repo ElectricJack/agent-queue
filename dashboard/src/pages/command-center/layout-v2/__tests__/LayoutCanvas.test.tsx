@@ -651,6 +651,19 @@ describe("LayoutCanvas", () => {
       expect(fitBounds).not.toHaveBeenCalled();
     });
 
+    it("does not re-fit a spent hit once entering its container has landed", () => {
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      const view = render(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).toHaveBeenCalledWith("pkg");
+      fitBounds.mockClear();
+      // The URL change comes back as a new `focusId`, with the same hit.
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" jumpTarget={hit} /></MemoryRouter>);
+      expect(fitBounds).not.toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+
     it("fits the hit itself once its own container is the one on screen", () => {
       const view = render(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" /></MemoryRouter>);
       fitBounds.mockClear();

@@ -456,8 +456,13 @@ function Inner(props: LayoutCanvasProps) {
   // -- there is no inline expansion to reveal it, and its coordinates belong
   // to that scope, so fitting them here would frame the wrong place.
   const jumpOffset = offsets.get(focusProject ?? "") ?? 0;
+  // Acting on a hit can change the scope, which re-runs this effect: the hit
+  // is spent once so the coordinates of the scope it was located in are never
+  // applied to the scope it took us to.
+  const jumpHandled = useRef<LocateHit | null>(null);
   useEffect(() => {
-    if (!jumpTarget) return;
+    if (!jumpTarget || jumpHandled.current === jumpTarget) return;
+    jumpHandled.current = jumpTarget;
     setKbFocusId(jumpTarget.id);
     const container = jumpTarget.container_id ?? null;
     if (container !== focusId) {

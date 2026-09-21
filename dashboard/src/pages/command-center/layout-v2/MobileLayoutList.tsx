@@ -171,12 +171,15 @@ export function MobileLayoutLists({ projectIds, projectNames, ...rest }: ListsPr
   }
   return (
     <div className="h-full overflow-y-auto">
-      {projectIds.map((pid) => (
+      {projectIds.map((pid, index) => (
         <section key={pid}>
           <h2 className="sticky top-0 z-10 bg-gray-950 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
             {projectNames.get(pid) ?? pid}
           </h2>
-          <MobileLayoutList {...rest} projectId={pid} projectName={projectNames.get(pid) ?? pid} />
+          {/* Entering is scoped to one project, the same one the canvas
+            * treats as the focus project. */}
+          <MobileLayoutList {...rest} projectId={pid} projectName={projectNames.get(pid) ?? pid}
+            focusId={index === 0 ? rest.focusId : null} />
         </section>
       ))}
     </div>
