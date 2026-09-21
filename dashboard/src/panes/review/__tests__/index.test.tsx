@@ -28,7 +28,7 @@ const response = {
   revisions: [{ revision: 1 }, { revision: 2, changes_note: "Expanded the goal" }],
   vault_state: "ok",
   comments: [],
-  diff: [{ op: "added", text: "new paragraph" }],
+  diff: [{ op: "removed", text: "old paragraph" }, { op: "added", text: "new paragraph" }],
 };
 
 function renderPane() {
@@ -66,6 +66,27 @@ describe("review pane", () => {
     fireEvent.click(screen.getByLabelText("Changes since previous"));
     await waitFor(() => expect(hooks.useReview).toHaveBeenCalledWith("rev-x", { revision: 2, diffFrom: 1 }));
     expect(screen.getByText("new paragraph").closest("pre")).toHaveClass("bg-emerald-950");
+    expect(screen.getByText("old paragraph").closest("pre")).toHaveClass("bg-red-950");
+  });
+
+  it("opens a comment popover from an in-body text selection", async () => {
+    renderPane();
+    const body = screen.getByText("Visible body");
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      rangeCount: 1,
+      isCollapsed: false,
+      getRangeAt: () => range,
+      toString: () => "Visible body",
+    } as unknown as Selection);
+    fireEvent.mouseUp(body);
+    fireEvent.click(await screen.findByRole("button", { name: "Comment" }));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Please explain." } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(hooks.comment.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, quote: "Visible body", heading_path: ["Goal"], body: "Please explain.",
+    }));
   });
 
   it("submits a section comment and decisions with the viewed revision", async () => {
@@ -97,5 +118,21 @@ describe("review pane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Import my edits" }));
     await waitFor(() => expect(hooks.importEdits.mutateAsync).toHaveBeenCalledWith({ review_id: "rev-x" }));
     expect(screen.getByText("This file was edited outside the review")).toBeInTheDocument();
+  });
+
+  it("explains why decisions are disabled for delegated and stale views", async () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, review: { ...response.review, decider: "user_or_supervisor" } }, isLoading: false, error: null,
+    }));
+    const { rerender } = renderPane();
+    expect(screen.getByText("delegated to supervisor")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+    hooks.useReview.mockImplementation((_id: string, opts?: { revision?: number }) => ({
+      data: { ...response, revision: { ...response.revision, revision: opts?.revision ?? 2 } }, isLoading: false, error: null,
+    }));
+    rerender(<MemoryRouter><ReviewPaneView args={{ reviewId: "rev-x" }} close={vi.fn()} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} /></MemoryRouter>);
+    fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
+    await waitFor(() => expect(screen.getByText("revised since you opened it — reload")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Request changes" })).toBeDisabled();
   });
 });
