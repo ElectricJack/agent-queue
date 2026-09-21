@@ -29,6 +29,7 @@ Then, for the fleet-wide view:
 aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
 aq doctor --check integration.stranded_delegates
+aq doctor --check integration.finished_branch_owners
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
@@ -51,6 +52,7 @@ aq doctor --check integration.development_publisher_stalled
 | Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
+| A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
 | Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
@@ -224,7 +226,49 @@ It is a **report, not a repair**, and deliberately so: nothing it can see proves
 the old writer's process is stopped, its checkout clean, or its work published.
 The repair is the guarded integration recovery path, which takes those proofs —
 in a development-mode project, `preserve_stopped_owners` does exactly that on
-each sweep, once the session provider confirms the process is really gone.
+each sweep, once the session provider confirms the process is really gone. It
+only covers a writer still attached to its own checkout, though: when the task
+has finished or been deleted and its slot was reused, see
+[A finished task still owns its branch](#a-finished-task-still-owns-its-branch).
+
+## A finished task still owns its branch
+
+Branch cleanup keeps any branch an `integration_branch_owners` row still names
+unless that row is `released`. In the hierarchy modes a row is released when its
+task is deleted or archived; nothing in development mode releases one, and
+development claims create none. So a project that left `hierarchy`/`train` kept
+one row per task it had claimed — `reserved`, or `attached` when a stopped
+writer's slot was later reused — and every one of them pins that task's branch
+on the remote after it is delivered.
+
+```bash
+aq doctor --check integration.finished_branch_owners          # what is held, and why
+aq doctor --check integration.finished_branch_owners --fix    # release what is safe
+```
+
+A row is released only when all of these hold:
+
+- its owner is a task (`worker`/`repair`; a `collector` row belongs to an
+  operation and is never touched) that is `COMPLETED`/`FAILED`, archived, or
+  gone from both task tables;
+- no hierarchy/train project integrates the repository, as its mode or its
+  desired mode — there a finished child's branch is still its parent's to
+  transfer;
+- no live session names the task, no workspace is locked by it, no candidate ref
+  mutation is in flight on the branch and no running integration operation owns
+  the task;
+- for an `attached`/`handoff_pending` row, its writer session is stopped in both
+  `state` and `desired_state` and the session provider confirms, by a fresh
+  probe, that the process is gone — the proof `preserve_stopped_owners` takes.
+  Run the check through the daemon (the plain `aq doctor` does); without the
+  provider such a row is kept, naming why.
+
+Each row is re-proved under the project's hierarchy lock and its own row lock
+before the write, so anything that changed after the scan keeps the row. The fix
+changes the ownership row only — no checkout, workspace lock, session or task —
+gives a released writer's row a fresh fence, and records one
+`integration.branch_owner_released` event per row. It is safe to repeat. Once it
+has run, re-run whatever branch cleanup was keeping the branches.
 
 ## A task will not delete, archive, resume or restart
 

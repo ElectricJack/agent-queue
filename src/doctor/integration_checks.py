@@ -574,7 +574,9 @@ async def _check_stranded_fences(ctx: DoctorContext) -> CheckResult:
             "'canonical branch is not reserved by this task'. Report only: recovering an "
             "ownership row needs proof this check cannot take (the writer's provider stopped, "
             "its checkout clean and published), so the repair belongs to the guarded "
-            "integration recovery path, not to doctor"
+            "integration recovery path, not to doctor. A row whose task finished or is gone, "
+            "outside the hierarchy modes, is released with that proof by "
+            "`aq doctor --check integration.finished_branch_owners --fix`"
         ),
         fixable=False,
         data={"count": len(stranded), "fences": stranded},
@@ -831,6 +833,100 @@ async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _stop_confirmer(ctx: DoctorContext):
+    from src.integration.finished_owners import stop_confirmer_for
+
+    return stop_confirmer_for(getattr(ctx.handler, "orchestrator", None))
+
+
+def _describe_owner(finding: dict) -> str:
+    return (
+        f"{finding['ref']} for {finding['owner_role']} {finding['owner_id']} "
+        f"({finding['owner_status']}, {finding['handoff_state']})"
+    )
+
+
+async def _check_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.finished_branch_owners",
+            severity=Severity.INFO,
+            detail="database not initialised — branch ownership state unknown",
+        )
+    from src.integration.finished_owners import finished_branch_owners
+
+    findings = await finished_branch_owners(ctx.db, confirm_stopped=_stop_confirmer(ctx))
+    releasable = [f for f in findings if f["blocker"] is None]
+    kept = [f for f in findings if f["blocker"] is not None]
+    data = {
+        "count": len(releasable),
+        "kept_count": len(kept),
+        "releasable": releasable[:50],
+        "kept": kept[:50],
+    }
+    if not findings:
+        return CheckResult(
+            id="integration.finished_branch_owners",
+            severity=Severity.OK,
+            detail="no branch owner row is held for a task that finished or is gone",
+        )
+    if not releasable:
+        first = kept[0]
+        return CheckResult(
+            id="integration.finished_branch_owners",
+            severity=Severity.INFO,
+            detail=(
+                f"{len(kept)} branch owner row(s) held for a finished or deleted task are "
+                f"kept on purpose — e.g. {_describe_owner(first)}: {first['blocker']}"
+            ),
+            data=data,
+        )
+    first = releasable[0]
+    detail = (
+        f"{len(releasable)} branch owner row(s) are still held for a task that finished or "
+        f"is gone — e.g. {_describe_owner(first)}. Nothing will ever release them, and "
+        "branch cleanup keeps every branch a row that is not released still names. "
+        "Release them with `aq doctor --check integration.finished_branch_owners --fix`, "
+        "which changes only the ownership rows and records each one as an "
+        "integration.branch_owner_released event"
+    )
+    if kept:
+        detail += (
+            f"; {len(kept)} more are kept — e.g. {_describe_owner(kept[0])}: {kept[0]['blocker']}"
+        )
+    return CheckResult(
+        id="integration.finished_branch_owners",
+        severity=Severity.WARN,
+        detail=detail,
+        fixable=True,
+        data=data,
+    )
+
+
+async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
+    """Release each owner row the check clears, re-proving it under lock.
+
+    Safe to repeat: a released row is never selected again, so a second run
+    reports clean rather than writing a second event.
+    """
+    from src.integration.finished_owners import release_finished_branch_owners
+
+    released = await release_finished_branch_owners(
+        ctx.db, confirm_stopped=_stop_confirmer(ctx), released_by="doctor"
+    )
+    return CheckResult(
+        id="integration.finished_branch_owners",
+        severity=Severity.OK,
+        detail=(
+            f"released {len(released)} branch owner row(s) held for a finished or deleted "
+            "task; each is recorded as an integration.branch_owner_released event"
+        ),
+        fixable=True,
+        fix_applied=True,
+        data={"count": len(released), "released": released[:50]},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -903,6 +999,22 @@ def integration_checks() -> list[DoctorCheck]:
             run=_check_stranded_delegates,
             fix=_fix_stranded_delegates,
             owner=OWNER,
+        ),
+        # Fixable, unlike ``integration.stranded_fences``, because it only
+        # acts where that check's objection does not apply: the owning task
+        # is finished or gone, no hierarchy/train project integrates the
+        # repository (so no claim will ever take the branch), nothing live
+        # names the task or the branch, and an attached writer's stop is
+        # proven by the session provider, not read off a snapshot.  The fix
+        # changes the ownership row only — never a checkout, workspace lock,
+        # session or task.  ``timeout_s`` covers one transaction per row plus
+        # one provider probe per attached row.
+        DoctorCheck(
+            id="integration.finished_branch_owners",
+            run=_check_finished_branch_owners,
+            fix=_fix_finished_branch_owners,
+            owner=OWNER,
+            timeout_s=60.0,
         ),
     ]
 
