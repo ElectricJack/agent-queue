@@ -26,6 +26,7 @@ import click
 
 from .app import cli, console
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
+from src.sessions.env import DAEMON_ENV_STRIP_KEYS
 
 CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
@@ -363,17 +364,38 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
             path_parts.append(candidate)
     env["PATH"] = os.pathsep.join(path_parts)
     strip_harness_session_markers(env)
+    for key in DAEMON_ENV_STRIP_KEYS:
+        env.pop(key, None)
     return env
 
 
 def _warn_harness_environment(command: str) -> None:
     """Explain that a daemon launched from a harness will be sanitized."""
-    markers = harness_session_markers(os.environ)
+    markers = sorted(
+        set(harness_session_markers(os.environ)).union(DAEMON_ENV_STRIP_KEYS).intersection(os.environ)
+    )
     if markers:
         console.print(
-            f"[yellow]aq {command} detected enclosing harness marker(s): "
+            f"[yellow]aq {command} detected enclosing harness marker(s) and/or AQ session marker(s): "
             f"{', '.join(markers)}. The daemon will be launched with them removed.[/]"
         )
+
+
+def _is_worker_session_environment() -> bool:
+    """Whether this environment belongs to a worker that cannot manage AQ."""
+    return os.environ.get("AQ_SESSION_KIND") in {"pool", "task"} or (
+        os.environ.get("AQ_DB_SCOPE") == "worker" and bool(os.environ.get("AQ_SESSION_ID"))
+    )
+
+
+def _refuse_worker_daemon_management() -> None:
+    """Stop workers before a lifecycle command can change operator state."""
+    if _is_worker_session_environment():
+        console.print(
+            "[bold red]Refused:[/] a worker must never manage the operator's daemon; "
+            "report the need to the operator instead."
+        )
+        raise SystemExit(10)
 
 
 def start_daemon() -> bool:
@@ -804,6 +826,7 @@ def daemon_start(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bo
     """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq start",
@@ -834,6 +857,7 @@ def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bo
     """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq stop",
@@ -867,6 +891,7 @@ def daemon_restart(ctx: click.Context, no_dashboard: bool, no_dashboard_server: 
     """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq restart",

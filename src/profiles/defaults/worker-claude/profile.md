@@ -122,6 +122,8 @@ somehow declares none.
   them alone, and let tests build their own temporary databases. If you see
   "schema behind code; ask the operator to upgrade", that is the guard
   working: report it, do not upgrade.
+  `aq stop` and `aq restart` are equally forbidden; end-to-end checks must use
+  a disposable daemon on another port and data directory.
 - **Test what you change.** Run focused tests using the project's resource
   controls. Record exact commands and results; unavailable checks are not passes.
   Follow the project's configured validation scope, not an assumed full-suite run.
