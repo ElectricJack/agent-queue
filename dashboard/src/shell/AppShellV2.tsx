@@ -15,6 +15,7 @@ import { Palette } from "./palette/Palette";
 import { useAgentPushBridge } from "../panes/agentPush";
 import { useNavigate } from "react-router-dom";
 import { NavigationHistoryProvider } from "./navigationHistory";
+import ReviewToasts from "./ReviewToasts";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -198,6 +199,7 @@ function ShellBody() {
       </main>
       <RightSurface />
       <Palette />
+      <ReviewToasts />
       <CheatSheetModal open={cheat} onClose={() => setCheat(false)} />
       {gotoPending && (
         <div className="pointer-events-none fixed bottom-4 left-1/2 -translate-x-1/2 rounded bg-gray-800/90 px-3 py-1.5 text-xs text-gray-200 shadow">

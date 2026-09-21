@@ -387,6 +387,49 @@ export interface ProposalStatusChangedEvent extends BaseEvent {
   status: "committed" | "discarded";
 }
 
+// --- Document review lifecycle ---
+
+export interface ReviewSubmittedEvent extends BaseEvent {
+  event_type: "review.submitted";
+  review_id: string;
+  title?: string;
+  kind?: string;
+  revision?: number;
+  author_task_id?: string;
+  changes_note?: string;
+}
+
+export interface ReviewRevisedEvent extends BaseEvent {
+  event_type: "review.revised";
+  review_id: string;
+  title?: string;
+  kind?: string;
+  revision?: number;
+  author_task_id?: string;
+  changes_note?: string;
+}
+
+export interface ReviewDecidedEvent extends BaseEvent {
+  event_type: "review.decided";
+  review_id: string;
+  revision?: number;
+  decision?: string;
+  decided_by?: string;
+  unblocked_task_ids?: string[];
+}
+
+export interface ReviewWithdrawnEvent extends BaseEvent {
+  event_type: "review.withdrawn";
+  review_id: string;
+}
+
+export interface ReviewCommentedEvent extends BaseEvent {
+  event_type: "review.commented";
+  review_id: string;
+  revision?: number;
+  comment_id?: string;
+}
+
 // --- Fleet metrics (Metrics tab) ---
 
 /**
@@ -459,5 +502,10 @@ export type NotifyEvent =
   | AgentWaitingQuestionEvent
   | CommandInvokedEvent
   | ProposalStatusChangedEvent
+  | ReviewSubmittedEvent
+  | ReviewRevisedEvent
+  | ReviewDecidedEvent
+  | ReviewWithdrawnEvent
+  | ReviewCommentedEvent
   | MetricsTickEvent
   | DashboardStateChangedEvent;

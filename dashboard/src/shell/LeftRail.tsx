@@ -7,9 +7,11 @@ import {
   ChevronDownIcon,
   FolderPlusIcon,
   PlusIcon,
+  DocumentTextIcon,
 } from "@heroicons/react/24/outline";
 import AgentFlock from "./AgentFlock";
 import { useProjects } from "../api/hooks";
+import { useWaitingReviewCount } from "../api/reviews";
 import ProjectOnboardingWizard from "../pages/project/onboarding";
 import { useProjectRoots } from "../pages/project/onboarding/useProjectRoots";
 import { useProjectCreatedNavigation } from "../pages/project/onboarding/useProjectCreatedNavigation";
@@ -22,6 +24,7 @@ import { linkClass } from "./railStyles";
 
 export default function LeftRail() {
   const { data: projects } = useProjects();
+  const waitingReviewCount = useWaitingReviewCount();
   const location = useLocation();
   const { projectId, tab, isWorkspace, search } = workspaceNavigation(location);
   const navRef = useListNav<HTMLElement>({ axis: "vertical" });
@@ -111,6 +114,15 @@ export default function LeftRail() {
           <NavLink to="/metrics" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
             <ChartBarIcon className="h-4 w-4" />
             <span>Metrics</span>
+          </NavLink>
+          <NavLink to="/reviews" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
+            <DocumentTextIcon className="h-4 w-4" />
+            <span>Reviews</span>
+            {waitingReviewCount > 0 && (
+              <span className="ml-auto rounded-full bg-indigo-500/20 px-1.5 py-0.5 text-xs text-indigo-200">
+                {waitingReviewCount}
+              </span>
+            )}
           </NavLink>
           <NavLink to="/settings" data-listnav="1" className={({ isActive }) => linkClass(isActive)}>
             <Cog6ToothIcon className="h-4 w-4" />

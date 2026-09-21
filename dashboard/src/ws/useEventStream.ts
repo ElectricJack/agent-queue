@@ -395,6 +395,12 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
         queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
         return;
       }
+      if (type.startsWith("review.")) {
+        const reviewId = (event as { review_id?: string }).review_id;
+        queryClient.invalidateQueries({ queryKey: ["reviews"] });
+        if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+        return;
+      }
 
       switch (type) {
         case "notify.task_started":

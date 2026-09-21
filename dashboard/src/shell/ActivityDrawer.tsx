@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import {
   useAllOpenGates,
@@ -22,11 +23,17 @@ function GatesList() {
   const { data: gates, isLoading } = useAllOpenGates();
   const resolveMut = useResolveGate();
   const pane = useShellPaneStore();
+  const navigate = useNavigate();
   const listRef = useListNav<HTMLUListElement>({ axis: "vertical" });
 
   const openForGate = (g: GateSummary) => {
     const taskIds = (g as unknown as { task_ids?: string[] }).task_ids;
     const subjectId = (g as unknown as { subject_id?: string }).subject_id;
+    const reviewId = (g as unknown as { await_id?: string }).await_id;
+    if (g.gate_type === "review" && reviewId) {
+      navigate(`/reviews/${encodeURIComponent(reviewId)}`);
+      return;
+    }
     if (g.gate_type === "routing" && subjectId) {
       pane.open("proposal-preview", { proposalId: subjectId });
       return;
@@ -71,7 +78,7 @@ function GatesList() {
                 {g.project_id}
               </p>
             </div>
-            <div className="flex items-center gap-1">
+            {g.gate_type !== "review" && <div className="flex items-center gap-1">
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -100,7 +107,7 @@ function GatesList() {
               >
                 <XMarkIcon className="h-4 w-4" />
               </button>
-            </div>
+            </div>}
           </div>
         </li>
       ))}
