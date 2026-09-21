@@ -122,6 +122,9 @@ class CreateTaskResponse(BaseModel):
     integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
+    # Which rule chose the route: explicit, class_match, project_default or
+    # inherited.  Absent when no profile was chosen (routing gate owns it).
+    profile_source: str | None = None
     intelligence_class: str | None = None
     preferred_workspace_id: str | None = None
     attachments: list[str] | None = None
