@@ -207,14 +207,144 @@ class TestPerNamespace:
 
 
 class TestDefaultInheritance:
-    async def test_omitting_profile_id_inherits_the_callers(self, handler):
+    """A worker's profile bounds what it may name, never where its filing runs."""
+
+    async def test_worker_filing_without_a_profile_is_routed_not_inherited(self, handler):
         sid = await _session_for(handler, "narrow")
 
         result = await _create(handler, sid)
 
         assert "error" not in result, result
         task = await handler.db.get_task(result["task_id"])
-        assert task.profile_id == "narrow"
+        assert task.profile_id is None
+        assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
+
+    async def test_worker_filing_does_not_take_the_project_default(self, handler):
+        """The project default is an implicit route too; a filing must be routed."""
+        await handler.db.update_project("p", default_profile_id="broad")
+        sid = await _session_for(handler, "narrow")
+
+        result = await _create(handler, sid)
+
+        assert "error" not in result, result
+        assert (await handler.db.get_task(result["task_id"])).profile_id is None
+
+    async def test_worker_filing_with_a_class_is_routed_not_class_matched(self, handler):
+        """An explicit class does not re-pin a filing onto a class lane at create.
+
+        Class-lane resolution picks a lane for the *implicit* route; a worker
+        filing has none, so the class travels with the unpinned task to the
+        assignment playbook.
+        """
+        handler._validate_routing_class = lambda *_args, **_kwargs: None
+        lane = await handler.db.get_profile("narrower")
+
+        async def resolve(_class_id, _implicit):
+            return lane, None
+
+        handler._resolve_class_route = resolve
+        sid = await _session_for(handler, "narrow")
+
+        result = await _create(handler, sid, intelligence_class="c")
+
+        assert "error" not in result, result
+        assert "profile_source" not in result
+        task = await handler.db.get_task(result["task_id"])
+        assert task.profile_id is None
+        assert task.intelligence_class == "c"
+        assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
+
+    async def test_an_explicit_profile_from_a_worker_is_still_a_pin(self, handler):
+        sid = await _session_for(handler, "narrow")
+
+        result = await _create(handler, sid, profile_id="narrower")
+
+        assert "error" not in result, result
+        task = await handler.db.get_task(result["task_id"])
+        assert task.profile_id == "narrower"
+        assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") is None
+
+    async def test_a_sandboxed_playbook_still_default_inherits(self, handler):
+        """Only worker filings changed: a playbook delegating work keeps its sandbox."""
+        handler.set_caller_profile("narrow")
+        try:
+            result = await handler.execute(
+                "create_task", {"project_id": "p", "title": "c", "description": "d"}
+            )
+        finally:
+            handler.set_caller_profile(None)
+
+        assert "error" not in result, result
+        assert (await handler.db.get_task(result["task_id"])).profile_id == "narrow"
+
+
+class TestWorkerFiledRouteBound:
+    """``task_route`` keeps an unpinned worker filing on an ordinary worker rung."""
+
+    WORKER = AgentProfile(id="worker-rung", name="Worker", harness="claude", lifecycle="pool")
+    CONTROL = AgentProfile(id="reviewer", name="Reviewer", harness="claude")
+
+    async def _filed(self, handler) -> str:
+        for profile in (self.WORKER, self.CONTROL):
+            await handler.db.create_profile(profile)
+        handler._validate_routing_class = lambda *_args, **_kwargs: None
+        sid = await _session_for(handler, "narrow")
+        result = await _create(handler, sid)
+        assert "error" not in result, result
+        return result["task_id"]
+
+    async def _route(self, handler, task_id: str, profile_id: str, principal=None):
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+        from src.profiles.capabilities import CapabilityPolicy
+
+        # The routing playbook's own principal: enforced, not elevated.
+        principal = principal or ExecutionPrincipal(
+            kind=PrincipalKind.PLAYBOOK,
+            policy=CapabilityPolicy.from_namespaces(aq_commands=["task_route"]),
+            project_id="p",
+        )
+        with principal_context(principal):
+            return await handler._cmd_task_route(
+                {"task_id": task_id, "profile_id": profile_id, "intelligence_class": "c"}
+            )
+
+    async def test_the_router_may_pick_any_worker_rung(self, handler):
+        task_id = await self._filed(handler)
+
+        result = await self._route(handler, task_id, "worker-rung")
+
+        assert result["success"] is True, result
+        assert (await handler.db.get_task(task_id)).profile_id == "worker-rung"
+
+    async def test_the_router_may_not_put_a_filing_on_a_control_profile(self, handler):
+        task_id = await self._filed(handler)
+
+        result = await self._route(handler, task_id, "reviewer")
+
+        assert result["success"] is False
+        assert "ordinary worker profile" in result["error"]
+        assert (await handler.db.get_task(task_id)).profile_id is None
+
+    async def test_the_operator_may_route_it_anywhere(self, handler):
+        from src.commands.principal import TRUSTED_LOCAL
+
+        task_id = await self._filed(handler)
+
+        result = await self._route(handler, task_id, "reviewer", principal=TRUSTED_LOCAL)
+
+        assert result["success"] is True, result
+
+    async def test_work_nobody_filed_is_not_bound(self, handler):
+        for profile in (self.WORKER, self.CONTROL):
+            await handler.db.create_profile(profile)
+        handler._validate_routing_class = lambda *_args, **_kwargs: None
+        await handler.db.create_task(
+            Task(id="op", project_id="p", title="t", description="d", status=TaskStatus.READY)
+        )
+
+        result = await self._route(handler, "op", "reviewer")
+
+        assert result["success"] is True, result
 
 
 class TestFailClosed:
