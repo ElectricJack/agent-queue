@@ -322,7 +322,8 @@ a machine running semi-trusted code, not as a hardened service.
 - The daemon container publishes no ports at all.
 - Containers run as a non-root `aq` user.
 
-A genuinely public dashboard is a separate project with its own auth review.
+A genuinely public dashboard is a separate project with its own auth review —
+designed in [`docs/superpowers/specs/2026-09-21-auth0-google-login-design.md`](../docs/superpowers/specs/2026-09-21-auth0-google-login-design.md).
 
 ## Sizing
 
