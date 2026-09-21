@@ -105,8 +105,15 @@ def run_command(
         return CommandOutput(argv=command, error=f"{command[0]} is not installed")
     except PermissionError as error:
         return CommandOutput(argv=command, error=f"{command[0]} is not executable: {error}")
-    except subprocess.TimeoutExpired:
-        return CommandOutput(argv=command, error=f"{command[0]} did not finish within {timeout:g}s")
+    except subprocess.TimeoutExpired as expired:
+        # What it printed before it was killed is kept: a caller following a
+        # child's progress needs to know how far it got.
+        return CommandOutput(
+            argv=command,
+            stdout=_partial(expired.stdout),
+            stderr=_partial(expired.stderr),
+            error=f"{command[0]} did not finish within {timeout:g}s",
+        )
     except OSError as error:  # pragma: no cover - defensive; exec failures are rare
         return CommandOutput(argv=command, error=f"{command[0]} could not be run: {error}")
     return CommandOutput(
@@ -115,6 +122,15 @@ def run_command(
         stdout=completed.stdout or "",
         stderr=completed.stderr or "",
     )
+
+
+def _partial(captured: str | bytes | None) -> str:
+    """A timed-out child's output, which `subprocess` hands back undecoded."""
+    if captured is None:
+        return ""
+    if isinstance(captured, bytes):
+        return captured.decode("utf-8", errors="replace")
+    return captured
 
 
 __all__ = [

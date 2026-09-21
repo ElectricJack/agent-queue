@@ -220,6 +220,10 @@ Common recovery paths follow those boundaries:
 * [Messaging](messaging.md) — adapter, digest and escalation semantics.
 * [Architecture module catalog](../reference/modules/architecture.md) — all
   modules owned by this page and their focused tests.
+* [Dashboard server and API-only daemon](../specs/dashboard-server.md) — design
+  record dated 2026-09-20, approved and not yet implemented: the dashboard
+  bundle moves out of the daemon into its own process, and the daemon goes back
+  to exposing an API only. Background, not current behaviour.
 
 Focused source checks are
 [`tests/test_main_lifecycle.py`](../../tests/test_main_lifecycle.py),
