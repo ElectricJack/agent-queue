@@ -1015,7 +1015,7 @@ async def _repair_chain(db, service, depth):
     return previous
 
 
-async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
+async def test_archived_repair_source_does_not_wedge_the_publisher(setup, monkeypatch):
     """The exact incident: manifest -> source closes -> source archived -> tick.
 
     ``development-repair-8d6e0c872accc17c1d65`` was a generation-3 repair that
@@ -1024,14 +1024,27 @@ async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
     repair and raised ``repair source ... is not in project``, which aborted
     the whole sweep for five months of ticks.
     """
+    from src.database.queries.hierarchy_queries import HierarchyError
+
     db, service, _source, _remote, _repo = setup
     await feature(setup, "original")
     previous = await _repair_chain(db, service, 3)
 
     await _park(service, "wedged", [{"task_id": previous, "source_sha": "a" * 40}])
 
-    # The generation-3 repair closes pass and is archived.
+    # The generation-3 repair closes pass.  Archive now refuses a task an
+    # unsettled batch still names ...
     await db.update_task(previous, status=TaskStatus.COMPLETED.value)
+    with pytest.raises(HierarchyError, match="development batch wedged"):
+        await db.archive_task(previous)
+
+    # ... but the incident's repair was archived by a daemon that predated that
+    # guard, and such rows are still in installs, so the publisher must survive
+    # them.  Archive it the way that daemon did.
+    async def _no_hold(ids, project_id, *, conn):
+        return None
+
+    monkeypatch.setattr(db, "_development_integration_hold", _no_hold)
     assert await db.archive_task(previous)
     assert await db.get_task(previous) is None
     assert (await db.get_archived_task(previous))["status"] == TaskStatus.COMPLETED.value
