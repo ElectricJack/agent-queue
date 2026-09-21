@@ -42,6 +42,7 @@ from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_delegate_releases,
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
@@ -158,6 +159,8 @@ _ORDERED_TABLES = [
     task_session_attempts,
     # No FK to tasks: checklist rows survive archive like task_comments.
     task_subtasks,
+    # Soft-referenced audit of retired integration delegates; no FKs.
+    integration_delegate_releases,
     dashboard_state_documents,
     agent_questions,
     subagent_events,
