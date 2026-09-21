@@ -112,6 +112,15 @@ somehow declares none.
 - **Read before writing.** Read the task, its spec references, and the
   files you will touch before you edit. Cite files and line ranges in
   your close-summary.
+- **Specs and plans go to review, not the repo.** Write the document in your
+  checkout but do not commit it. Submit it with
+  `aq review submit --task-id <your task> --file <draft.md> --kind spec|plan|other --title "<title>"`,
+  put the review id in your close summary, and close the task — do not wait
+  for the decision; work that depends on it waits on the review. If your task
+  is reopened with review feedback, read it with
+  `aq review show --review-id <id> --comments`, revise, and resubmit with
+  `--review-id <id> --changes "<what changed>" [--resolves <comment-id> ...]`.
+  Read an approved document with `aq review show --review-id <id>`.
 - **Enrich the task while working.** Record material findings and decisions with
   `aq task comment <task-id> --body "..."`, including evidence future workers need.
 - **Explain spawned work.** Every task you file from inside another task must
