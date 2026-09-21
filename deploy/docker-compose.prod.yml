@@ -59,6 +59,10 @@ services:
       # Codex keeps its login in ~/.codex/auth.json (CODEX_HOME), outside
       # ~/.claude — without this it is lost on every rebuild.
       - aq-codex:/home/aq/.codex
+      # `gh auth login` writes hosts.yml here (GH_CONFIG_DIR). AQ shells out to
+      # gh for every PR and CI-gate operation, so losing this on rebuild would
+      # break merges rather than just logins.
+      - aq-gh:/home/aq/.gh
     # No `ports:` — the API is reached through the dashboard container only.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health || exit 1"]
@@ -109,5 +113,6 @@ volumes:
   aq-data:
   aq-home:
   aq-codex:
+  aq-gh:
   aq-workspaces:
   aq-pgdata:
