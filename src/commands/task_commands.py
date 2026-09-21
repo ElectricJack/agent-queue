@@ -22,7 +22,11 @@ from src.commands.helpers import (
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY, HierarchyError
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY, task_repository_id
+from src.database.queries.task_queries import (
+    TERMINAL_BLOCKED_META_KEY,
+    TaskProjectMoveError,
+    task_repository_id,
+)
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.models import (
@@ -3913,6 +3917,10 @@ class TaskCommandsMixin:
             project = await self.db.get_project(new_pid)
             if not project:
                 return {"error": f"Project '{new_pid}' not found"}
+            if new_pid != task.project_id:
+                blockers = await self.db.get_task_project_move_blockers(task.id)
+                if blockers and any(blockers.values()):
+                    return {"error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
             updates["project_id"] = new_pid
         if "title" in args:
             updates["title"] = args["title"]
@@ -4060,7 +4068,10 @@ class TaskCommandsMixin:
             if key not in routing_fields and key != "provider_intent"
         }
         if other_updates:
-            await self.db.update_task(args["task_id"], **other_updates)
+            try:
+                await self.db.update_task(args["task_id"], **other_updates)
+            except TaskProjectMoveError as exc:
+                return {"error": str(exc)}
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 

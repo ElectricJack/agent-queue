@@ -277,7 +277,11 @@ Append-only authored task feedback. The task ID plus project ID is a logical ref
 
 Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`), `idx_task_comments_project_created` (`task_id`, `project_id`, `created_at`, `id`).
 
-Authorized project moves transfer known active-task comment ownership in the same transaction. Moves that would merge a source or destination archive identity, and archival over a different-project ID, are refused without modifying either history.
+Authorized project moves transfer known active-task comment ownership in the same transaction. A
+move is refused while the task has a parent, children, or an active hierarchy/train branch origin;
+the check and write share the source project's hierarchy lock so a concurrent reparent cannot
+create a cross-project edge. Moves that would merge a source or destination archive identity, and
+archival over a different-project ID, are refused without modifying either history.
 
 ### Table: `task_subtasks`
 

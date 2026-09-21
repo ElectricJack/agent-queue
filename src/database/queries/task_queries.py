@@ -25,6 +25,7 @@ from src.database.tables import (
     projects,
     repos,
     sessions,
+    task_branch_origins,
     task_comments,
     task_completion_records,
     task_context,
@@ -70,6 +71,30 @@ REPOSITORY_BOUND_MODES = frozenset({"hierarchy", "train", "development"})
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
     """The ``repo_id`` a task of a project in *mode* is created with."""
     return integration_repository_id if mode in REPOSITORY_BOUND_MODES else None
+
+
+class TaskProjectMoveError(ValueError):
+    """A project move would strand task hierarchy or delivery state."""
+
+    def __init__(self, task_id: str, destination: str, blockers: dict[str, object]):
+        self.task_id = task_id
+        self.destination = destination
+        self.blockers = blockers
+        if blockers.get("project_changed"):
+            detail = "its source project changed concurrently; retry the move"
+        else:
+            reasons = []
+            if parent_id := blockers.get("parent_task_id"):
+                reasons.append(f"it has parent task '{parent_id}'")
+            if blockers.get("has_children"):
+                reasons.append("it has child tasks")
+            if blockers.get("has_branch_origin"):
+                reasons.append("it has an active hierarchy/train branch origin")
+            detail = ", ".join(reasons)
+        super().__init__(
+            f"Cannot move task '{task_id}' to project '{destination}': {detail}. "
+            "Detach or settle its hierarchy and delivery state before moving it."
+        )
 
 
 def supports_returning(conn) -> bool:
@@ -431,6 +456,43 @@ class TaskQueryMixin:
             values[key] = value
         return values
 
+    @staticmethod
+    async def _task_project_move_blockers_on(conn, task_id: str) -> dict[str, object] | None:
+        """Return hierarchy state that makes a one-row project move unsafe."""
+        child = tasks.alias("project_move_child")
+        row = (
+            await conn.execute(
+                select(
+                    tasks.c.parent_task_id,
+                    select(child.c.id)
+                    .where(child.c.parent_task_id == task_id)
+                    .limit(1)
+                    .exists()
+                    .label("has_children"),
+                    select(task_branch_origins.c.id)
+                    .where(
+                        task_branch_origins.c.task_id == task_id,
+                        task_branch_origins.c.retired_at.is_(None),
+                    )
+                    .limit(1)
+                    .exists()
+                    .label("has_branch_origin"),
+                ).where(tasks.c.id == task_id)
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        return {
+            "parent_task_id": row["parent_task_id"],
+            "has_children": bool(row["has_children"]),
+            "has_branch_origin": bool(row["has_branch_origin"]),
+        }
+
+    async def get_task_project_move_blockers(self, task_id: str) -> dict[str, object] | None:
+        """Read the reasons ``task_id`` cannot be moved as one row."""
+        async with self._engine.connect() as conn:
+            return await self._task_project_move_blockers_on(conn, task_id)
+
     async def update_task(self, task_id: str, **kwargs) -> None:
         """Update arbitrary task fields.
 
@@ -457,13 +519,35 @@ class TaskQueryMixin:
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
-                # Serialize moves with comment append and task deletion on both
-                # SQLite and PostgreSQL before reading the old ownership.
-                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
-                comment_source_project = (await conn.execute(
+                # Project moves serialize with hierarchy mutations before
+                # locking the task row.  That makes the root/leaf/origin check
+                # below stable until commit, while the row lock still
+                # serializes comment append and task deletion.
+                initial_project = await conn.scalar(
                     select(tasks.c.project_id).where(tasks.c.id == task_id)
-                )).scalar_one_or_none()
+                )
+                if initial_project is not None:
+                    await self.lock_hierarchy_project(conn, initial_project)
+                source_row = (
+                    await conn.execute(
+                        select(tasks.c.project_id)
+                        .where(tasks.c.id == task_id)
+                        .with_for_update()
+                    )
+                ).one_or_none()
+                comment_source_project = source_row.project_id if source_row else None
+                if (
+                    initial_project is not None
+                    and comment_source_project is not None
+                    and comment_source_project != initial_project
+                ):
+                    raise TaskProjectMoveError(
+                        task_id, values["project_id"], {"project_changed": True}
+                    )
                 if comment_source_project and comment_source_project != values["project_id"]:
+                    blockers = await self._task_project_move_blockers_on(conn, task_id)
+                    if blockers and any(blockers.values()):
+                        raise TaskProjectMoveError(task_id, values["project_id"], blockers)
                     archived_project = (await conn.execute(
                         select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
                     )).scalar_one_or_none()
