@@ -689,3 +689,60 @@ describe("Starting and using agent terminals", () => {
     expect(api.sessionInput).not.toHaveBeenCalled();
   });
 });
+
+describe("Task-lifecycle sessions running on a pool's route", () => {
+  // Four tasks started on standard-high-opencode under the per-task lifecycle
+  // before the profile switched to ``lifecycle: pool``. Their agents are on a
+  // pool profile, so the roster hides them; they are not pool members, so the
+  // pool's own supply says it is idle.
+  const opencode = "standard-high-opencode";
+  function outsideSession(sessionId: string, taskId: string, taskTitle: string, startedAt: number) {
+    return {
+      session_id: sessionId, project_id: "agent-queue", profile_id: opencode, harness: "opencode",
+      intelligence_class: "standard-high", name: "t-" + sessionId, state: "running",
+      task_id: taskId, task_title: taskTitle, started_at: startedAt,
+    };
+  }
+  function onPool(id: string, name: string, sessionId: string, taskId: string): FlockAgent {
+    return { ...agent(id, name), profile_id: opencode, harness: "opencode", state: "busy",
+      session_id: sessionId, current_task_id: taskId, current_task_title: null };
+  }
+
+  beforeEach(() => {
+    roster = [...roster, onPool("oc-1", "opencode-a", "oc-s1", "task-1"), onPool("oc-2", "opencode-b", "oc-s2", "task-2")];
+    api.listProfiles.mockResolvedValue({ data: { profiles: [
+      { id: "implementer", name: "Implementer" }, { id: opencode, name: "OpenCode", lifecycle: "pool" },
+    ] } });
+    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [{
+      profile_id: opencode, min_active: 0, max_active: 4, desired: 0,
+      running_idle: 0, running_busy: 0, starting: 0, draining: 0, ready: 0, projects: [],
+      outside_pools: [
+        outsideSession("oc-s1", "task-1", "Wire the probe", 100),
+        outsideSession("oc-s2", "task-2", "Fix the parser", 200),
+      ],
+    }] } });
+  });
+
+  it("nests them under their pool instead of hiding the pool as idle", async () => {
+    renderFlock();
+    const nested = await screen.findByRole("list", { name: "Sessions outside the " + opencode + " pool" });
+    expect(within(nested).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Open " + opencode + " pool" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open opencode-a" })).not.toBeInTheDocument();
+  });
+
+  it("opens the matched agent's terminal from its nested row, and Shift tiles a second", async () => {
+    renderFlock("/", true);
+    const first = await screen.findByRole("button", { name: "Open opencode-a (outside pool)" });
+    fireEvent.click(first);
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=oc-1");
+    expect(await screen.findByRole("region", { name: "opencode-a agent window" })).toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname))
+      .toEqual(["/ws/terminal/oc-s1"]));
+    expect(screen.getByRole("button", { name: "Open opencode-a (outside pool)" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Open opencode-b (outside pool)" }), { shiftKey: true });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=oc-1&agent=oc-2");
+    expect(await screen.findByRole("region", { name: "opencode-b agent window" })).toBeInTheDocument();
+  });
+});

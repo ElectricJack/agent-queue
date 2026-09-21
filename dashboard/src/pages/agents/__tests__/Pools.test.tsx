@@ -7,7 +7,7 @@ import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
 import type { PoolProjectStatus, PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
-import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, splitBusyPoolEntries, useDebouncedBusyPoolEntries } from "../pools";
+import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
 import { createFakeDashboardStateServer, TestDashboardState } from "../../../testUtils/dashboardState";
@@ -56,6 +56,19 @@ function instance(suffix: string, over: Partial<SessionSummary> = {}): SessionSu
     model: "claude-opus-5", intelligence_class: "standard-high", task_id: null,
     work_dir: "/w/" + suffix, started_at: 100, last_activity: 100,
     idle_seconds: 42, stalled: false, restarts: 0, ...over,
+  };
+}
+
+/**
+ * Mirrors one `pool_status` ``outside_pools`` row: a live *task*-lifecycle
+ * session on a route this pool serves — e.g. a task launched on a profile
+ * before it switched to ``lifecycle: pool``. It is not a pool member.
+ */
+function outside(sessionId: string, over: Partial<OutsidePoolSession> = {}): OutsidePoolSession {
+  return {
+    session_id: sessionId, project_id: "agent-queue", profile_id: "worker-standard",
+    harness: "claude", intelligence_class: "standard-high", name: "t-worker-standard--" + sessionId,
+    state: "running", task_id: null, task_title: null, started_at: 100, ...over,
   };
 }
 
@@ -175,6 +188,41 @@ describe("pool derivation", () => {
     expect(formatIdle(undefined)).toBe("0s idle");
   });
 
+  it("carries a pool's outside-pool sessions, oldest first", () => {
+    const entries = poolEntries([pool({ outside_pools: [
+      outside("late", { started_at: 200 }),
+      outside("early", { started_at: 100 }),
+    ] })], []);
+    expect(entries[0]!.outside.map((session) => session.session_id)).toEqual(["early", "late"]);
+    expect(poolEntries([pool()], [])[0]!.outside).toEqual([]);
+  });
+
+  it("counts a pool whose only work is outside-pool sessions as active", () => {
+    // The sessions hold tasks on this pool's route even though none of them
+    // is a pool member — hiding the pool as idle hid them from the rail.
+    const entries = poolEntries([
+      pool({ profile_id: "worker-outside", running_busy: 0, running_idle: 0,
+        outside_pools: [outside("s-1", { task_id: "task-1" })] }),
+      pool({ profile_id: "worker-idle", running_busy: 0, running_idle: 2, outside_pools: [] }),
+    ], []);
+    expect(splitBusyPoolEntries(entries)).toEqual({
+      busy: [expect.objectContaining({ profileId: "worker-outside" })],
+      hiddenCount: 1,
+    });
+  });
+
+  it("matches an outside session to the roster agent running it", () => {
+    const byTask = { ...agent("by-task", "Task holder", "worker-standard"), session_id: null, current_task_id: "task-1" };
+    const bySession = { ...agent("by-session", "Session owner", "worker-standard"), session_id: "s-1", current_task_id: "other" };
+    // The live session id is exact; the task id is the fallback the pool
+    // status row and the roster always share.
+    expect(outsideSessionAgent(outside("s-1", { task_id: "task-1" }), [byTask, bySession])?.id).toBe("by-session");
+    expect(outsideSessionAgent(outside("s-2", { task_id: "task-1" }), [byTask, bySession])?.id).toBe("by-task");
+    expect(outsideSessionAgent(outside("s-3", { task_id: "task-9" }), [byTask, bySession])).toBeNull();
+    // A session with no task never matches an idle agent through a null id.
+    expect(outsideSessionAgent(outside("s-4"), [{ ...byTask, current_task_id: null }])).toBeNull();
+  });
+
   it("separates busy pools from configured pools without claimed work", () => {
     const entries = poolEntries([
       pool({ profile_id: "worker-busy", running_busy: 1 }),
@@ -197,7 +245,8 @@ describe("pool derivation", () => {
 
     expect(result.current).toEqual({ busy, hiddenCount: 0 });
     rerender({ entries: idle });
-    expect(result.current).toEqual({ busy, hiddenCount: 0 });
+    // Still shown for the hold, but with the numbers it has now.
+    expect(result.current).toEqual({ busy: idle, hiddenCount: 0 });
     act(() => { vi.advanceTimersByTime(1_000); });
     expect(result.current).toEqual({ busy: [], hiddenCount: 1 });
     vi.useRealTimers();
@@ -230,6 +279,23 @@ describe("useDebouncedBusyPoolEntries under a live flock", () => {
     }
     expect(result.current.busy.map((entry) => entry.profileId)).toEqual(["worker-standard"]);
     expect(result.current.hiddenCount).toBe(0);
+  });
+
+  it("renders a shown pool's latest data even when which pools are shown has not changed", () => {
+    // The hold is on *visibility*. A pool that stays busy while its outside
+    // session finishes and another starts must not keep showing the finished
+    // one — that is the progress an operator opens the rail to watch.
+    vi.useFakeTimers();
+    const before = poolEntries([pool({ running_busy: 0, ready: 5,
+      outside_pools: [outside("s-1", { task_id: "task-1", task_title: "First" })] })], []);
+    const after = poolEntries([pool({ running_busy: 0, ready: 6,
+      outside_pools: [outside("s-2", { task_id: "task-2", task_title: "Second" })] })], []);
+    const { result, rerender } = renderHook(({ entries }) => useDebouncedBusyPoolEntries(entries), {
+      initialProps: { entries: before },
+    });
+    rerender({ entries: after });
+    expect(result.current.busy[0]!.pool.ready).toBe(6);
+    expect(result.current.busy[0]!.outside.map((session) => session.task_title)).toEqual(["Second"]);
   });
 
   it("still holds a flip that is reverted within the debounce window", () => {
@@ -338,6 +404,96 @@ describe("pools in the agent flock", () => {
     expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
     // The pool's own agent row is reachable through the pool, not beside it.
     expect(screen.queryByRole("button", { name: "Open worker-standard-9f2a" })).not.toBeInTheDocument();
+  });
+
+  describe("task-lifecycle sessions on a pool's route", () => {
+    // standard-high-opencode switched to ``lifecycle: pool`` while four tasks
+    // were already running on it under the per-task lifecycle: no pool member
+    // is busy, and the roster hides every agent on a pool profile.
+    const opencode = "standard-high-opencode";
+    function outsideOnly(over: Partial<PoolStatusRow> = {}) {
+      return pool({
+        profile_id: opencode, running_busy: 0, running_idle: 0, desired: 0, ready: 0, projects: [],
+        outside_pools: [
+          outside("oc-s1", { profile_id: opencode, harness: "opencode", task_id: "task-1", task_title: "Wire the probe", started_at: 100 }),
+          outside("oc-s2", { profile_id: opencode, harness: "opencode", task_id: "task-2", task_title: "Fix the parser", started_at: 200 }),
+        ],
+        ...over,
+      });
+    }
+    beforeEach(() => {
+      api.listAgents.mockResolvedValue({ data: { agents: [
+        agent("fixed", "Builder", "implementer"),
+        agent("pooled", "worker-standard-9f2a", "worker-standard"),
+        { ...agent("oc-1", "opencode-a", opencode), state: "busy", session_id: "oc-s1", current_task_id: "task-1", current_task_title: "Wire the probe" },
+        { ...agent("oc-2", "opencode-b", opencode), state: "busy", session_id: null, current_task_id: "task-2", current_task_title: "Fix the parser" },
+      ], count: 4 } });
+      api.listProfiles.mockResolvedValue({ data: { profiles: [
+        { id: "implementer", name: "Implementer" },
+        { id: "worker-standard", name: "Worker standard", lifecycle: "pool" },
+        { id: opencode, name: "OpenCode", lifecycle: "pool" },
+      ] } });
+      api.sessionList.mockResolvedValue({ data: { success: true, sessions: [], count: 0 } });
+    });
+
+    it("shows the pool with one nested row per outside session", async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [outsideOnly()] } });
+      renderAgents("/");
+
+      expect(await screen.findByRole("button", { name: "Open " + opencode + " pool" }, SLOW)).toBeInTheDocument();
+      const nested = await screen.findByRole("list", { name: "Sessions outside the " + opencode + " pool" }, SLOW);
+      const rows = within(nested).getAllByRole("listitem");
+      expect(rows).toHaveLength(2);
+      // Oldest first, named by the agent running each one, with its task,
+      // its state, and why it is not in the pool's supply numbers.
+      expect(within(rows[0]!).getByRole("button", { name: "Open opencode-a (outside pool)" })).toBeInTheDocument();
+      expect(within(rows[0]!).getByText("Wire the probe")).toBeInTheDocument();
+      expect(within(rows[0]!).getByText("busy")).toBeInTheDocument();
+      expect(within(rows[0]!).getByText("Outside pool")).toBeInTheDocument();
+      expect(within(rows[1]!).getByRole("button", { name: "Open opencode-b (outside pool)" })).toBeInTheDocument();
+      expect(within(rows[1]!).getByText("Fix the parser")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /idle pool/ })).not.toBeInTheDocument();
+    });
+
+    it("still lists an outside session no roster agent is running, without a click target", async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [outsideOnly({ outside_pools: [
+        outside("orphan", { profile_id: opencode, task_id: "task-9", task_title: "Unowned work", state: "idle" }),
+      ] })] } });
+      renderAgents("/");
+
+      const nested = await screen.findByRole("list", { name: "Sessions outside the " + opencode + " pool" }, SLOW);
+      const row = within(nested).getByRole("listitem");
+      expect(within(row).getByText("t-worker-standard--orphan")).toBeInTheDocument();
+      expect(within(row).getByText("Unowned work")).toBeInTheDocument();
+      expect(within(row).getByText("idle")).toBeInTheDocument();
+      expect(within(row).getByText("Outside pool")).toBeInTheDocument();
+      expect(within(row).queryByRole("button")).not.toBeInTheDocument();
+    });
+
+    it("keeps a pool with only idle members and no outside sessions hidden", async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [
+        outsideOnly(),
+        pool({ profile_id: "worker-standard", running_busy: 0, running_idle: 2, outside_pools: [] }),
+      ] } });
+      renderAgents("/");
+
+      expect(await screen.findByRole("button", { name: "Open " + opencode + " pool" }, SLOW)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Open worker-standard pool" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "1 idle pool" })).toBeInTheDocument();
+    });
+
+    it("lists each agent once and still hides ordinary pool members", async () => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [outsideOnly()] } });
+      renderAgents("/");
+
+      await screen.findByRole("list", { name: "Sessions outside the " + opencode + " pool" }, SLOW);
+      // Outside sessions live under their pool, not also beside it.
+      expect(screen.getAllByRole("button", { name: /opencode-a/ })).toHaveLength(1);
+      expect(screen.queryByRole("button", { name: "Open opencode-a" })).not.toBeInTheDocument();
+      // A real pool member stays reachable through its pool only, as before.
+      expect(screen.queryByRole("button", { name: /worker-standard-9f2a/ })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open Builder" })).toBeInTheDocument();
+    });
   });
 
   it("lists every pool, idle ones included, on the agents page the idle link points at", async () => {
