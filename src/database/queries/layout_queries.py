@@ -39,6 +39,62 @@ def like_escape(needle: str) -> str:
     return needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+#: Edges touching a set of ids whose two endpoints are *drawn* at different
+#: nodes (see :meth:`LayoutQueryMixin.load_edges_touching`).
+#:
+#: The shape of the ``WHERE`` clause is load-bearing and was got wrong once.
+#: ``task_dependencies`` is the preserved side of two outer joins, so a
+#: restriction expressed as ``a.task_id IS NOT NULL OR b.task_id IS NOT NULL``
+#: is a post-join predicate: it is not null-rejecting for either side, the
+#: planner cannot push it down, and with the CTE referenced twice it is
+#: materialised without indexes.  The result was a **sequential scan of the
+#: whole dependency table on every tiles request** — invisible on a
+#: single-project fixture and quadratic-feeling on a real install, since the
+#: table holds every project's edges and this read has no project column to
+#: filter on.  Measured on the §9 fixture plus one unrelated 560k-edge
+#: project: 232ms for the post-join form against 84ms for this one.
+#:
+#: So the base restriction is stated directly on ``d`` against the two
+#: indexes that exist (``idx_task_deps_task_type``,
+#: ``idx_task_deps_depson_type``, giving a ``BitmapOr``), and the joins are
+#: left to do nothing but look the owner up.  ``dep_type`` is restricted here
+#: too: only ``DRAWN_TYPES`` can become an arrow, and on an expanded view the
+#: ``parent-child`` rows the filter removes are the dominant class.
+#: ``view.remap_edges`` still applies both filters, as the backstop.
+CROSSING_EDGES_SQL = """
+WITH own AS (
+    SELECT * FROM unnest(:ids, :owners) AS o(task_id, owner_key)
+)
+SELECT d.task_id, d.depends_on_task_id, d.dep_type, d.description
+FROM task_dependencies d
+LEFT JOIN own a ON a.task_id = d.task_id
+LEFT JOIN own b ON b.task_id = d.depends_on_task_id
+WHERE (d.task_id = ANY(:ids) OR d.depends_on_task_id = ANY(:ids))
+  AND d.dep_type = ANY(:drawn)
+  AND COALESCE(a.owner_key, d.task_id)
+      IS DISTINCT FROM COALESCE(b.owner_key, d.depends_on_task_id)
+"""
+
+
+def crossing_edges_statement(ids: list[str], owners, *, explain: bool = False):
+    """:data:`CROSSING_EDGES_SQL` bound for ``ids`` under ``owners``.
+
+    Separate from the read, and with an ``explain`` seam, so the plan guard in
+    ``tests/perf/test_layout_api_statements.py`` explains the exact statement
+    the endpoint ships rather than a copy of it that can drift.
+    """
+    from sqlalchemy import ARRAY, Text, bindparam, text
+
+    from src.task_graph.layout.constants import DRAWN_TYPES
+
+    sql = ("EXPLAIN " + CROSSING_EDGES_SQL) if explain else CROSSING_EDGES_SQL
+    return text(sql).bindparams(
+        bindparam("ids", value=list(ids), type_=ARRAY(Text)),
+        bindparam("owners", value=[owners.get(t, t) for t in ids], type_=ARRAY(Text)),
+        bindparam("drawn", value=sorted(DRAWN_TYPES), type_=ARRAY(Text)),
+    )
+
+
 class LayoutQueryMixin:
     # ── dirty marks ─────────────────────────────────────────────────────
     async def mark_layout_dirty(
@@ -1076,7 +1132,9 @@ class LayoutQueryMixin:
         itself for a visible node, its collapsed container for a node hidden
         inside one (what ``view.owner_map`` returns).  When it is supplied the
         database drops every row whose two endpoints share an owner, which is
-        exactly the ``f == t: continue`` arm of :func:`view.remap_edges`.
+        exactly the ``f == t: continue`` arm of :func:`view.remap_edges`, and
+        restricts ``dep_type`` to ``DRAWN_TYPES`` the way that function's other
+        early ``continue`` does.  See :data:`CROSSING_EDGES_SQL`.
 
         That filter is not an optimisation of the margins: a collapsed
         container owns every edge *inside* its subtree, and those edges can
@@ -1123,26 +1181,7 @@ class LayoutQueryMixin:
         ``view.remap_edges`` applies when it records an orphan — which is why
         both joins are outer ones and the comparison coalesces.
         """
-        from sqlalchemy import ARRAY, Text, bindparam, text
-
-        owner_keys = [owners.get(t, t) for t in ids]
-        stmt = text(
-            """
-            WITH own AS (
-                SELECT * FROM unnest(:ids, :owners) AS o(task_id, owner_key)
-            )
-            SELECT d.task_id, d.depends_on_task_id, d.dep_type, d.description
-            FROM task_dependencies d
-            LEFT JOIN own a ON a.task_id = d.task_id
-            LEFT JOIN own b ON b.task_id = d.depends_on_task_id
-            WHERE (a.task_id IS NOT NULL OR b.task_id IS NOT NULL)
-              AND COALESCE(a.owner_key, d.task_id)
-                  IS DISTINCT FROM COALESCE(b.owner_key, d.depends_on_task_id)
-            """
-        ).bindparams(
-            bindparam("ids", value=ids, type_=ARRAY(Text)),
-            bindparam("owners", value=owner_keys, type_=ARRAY(Text)),
-        )
+        stmt = crossing_edges_statement(ids, owners)
         async with self._engine.begin() as conn:
             res = await conn.execute(stmt)
             rows = {tuple(r) for r in res.fetchall()}
