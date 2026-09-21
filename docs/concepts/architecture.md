@@ -46,10 +46,60 @@ boundary is documented in [Sessions](sessions.md). The supporting API,
 command, integration and session modules have their own catalog shards so one
 page does not duplicate their reference material.
 
+## Two processes: the daemon and the dashboard server
+
+The daemon is **API only**. Its HTTP app ([`src/api/app.py`](../../src/api/app.py))
+exposes `/api`, `/health`, `/ready`, the `/ws` sockets and the embedded MCP
+server, on `mcp_server.port` (8081 by default), and serves no dashboard page,
+script or stylesheet; the only HTML it returns is the plan viewer at
+`/plans/<task_id>` (the API reference is JSON only at `/openapi.json`). Its old
+`/dashboard` path answers a `307` redirect to the
+same route on the dashboard server, with a JSON pointer naming that URL as the
+body, so an old bookmark still lands on the dashboard; with the dashboard server
+disabled it answers `404` and the pointer's URL is `null`. The redirect also
+lets an `aq update` begun on older code — whose updater still probes the
+daemon's `/dashboard/` — see the new daemon as healthy.
+
+The browser dashboard comes from a second, much smaller process: the
+**dashboard server** ([`src/dashboard_server/`](../../src/dashboard_server/)).
+It serves the verified dashboard bundle at `/` on 127.0.0.1:8082 and relays
+`/api`, `/health`, `/ready` and `/ws` to the daemon unchanged — what the Vite
+dev server does in a source checkout. The browser therefore talks to one origin,
+and neither process needs CORS.
+
+```mermaid
+flowchart LR
+    B[Browser] --> DS[Dashboard server :8082\nbundle + same-origin relay]
+    DS -->|/api /health /ready /ws| D[Daemon :8081\nAPI only]
+    CLI[aq CLI, MCP clients] --> D
+    D --> DB[(PostgreSQL)]
+```
+
+The split is about ownership, not scale:
+
+| | Daemon | Dashboard server |
+|---|---|---|
+| Owns | Tasks, sessions, scheduling, the database, the API | Static files and byte relays; no state |
+| Imports | Everything | Only `src.config` from AQ — never the API, orchestrator, database or command layers ([boundary test](../../tests/test_dashboard_server_app.py)) |
+| Secrets | Database URL, provider keys | None; started with an allowlisted environment |
+| Started by | `aq start` | `aq start`, after the daemon answers `/health`, when a verified bundle is installed and `dashboard.server.enabled` is true |
+| When the other is down | Keeps running; CLI and MCP still work | Keeps serving the page; proxied paths answer `503 daemon_unreachable` until the daemon is back |
+| Supervised | Recovers durable work on restart | Not restarted automatically; `aq status` and `aq doctor` report it and `aq start` heals it |
+
+Because the dashboard server sees the real browser address and the daemon only
+sees the relay on loopback, the dashboard server re-applies the daemon's two
+loopback-only rules — interactive terminals and bearer-token requests — for any
+non-loopback peer. How to reach it from another machine, and what a LAN bind
+exposes, is in the [dashboard guide](../guides/dashboard.md#reaching-it-from-another-machine).
+
 ## Vocabulary and responsibilities
 
 * **Daemon** — the `aq` service process. It owns startup, shutdown, one
-  `Orchestrator`, process-wide services and the recurring scheduler loop.
+  `Orchestrator`, process-wide services and the recurring scheduler loop, and
+  exposes an HTTP API and serves no dashboard.
+* **Dashboard server** — the separate, stateless process that serves the
+  built dashboard and relays its API calls to the daemon (see
+  [above](#two-processes-the-daemon-and-the-dashboard-server)).
 * **Command handler** — the shared command boundary. It validates and applies
   a requested operation; it is not a separate scheduler or database.
 * **Orchestrator** — the in-memory coordinator over configuration, database,
@@ -220,10 +270,11 @@ Common recovery paths follow those boundaries:
 * [Messaging](messaging.md) — adapter, digest and escalation semantics.
 * [Architecture module catalog](../reference/modules/architecture.md) — all
   modules owned by this page and their focused tests.
-* [Dashboard server and API-only daemon](../specs/dashboard-server.md) — design
-  record dated 2026-09-20, approved and not yet implemented: the dashboard
-  bundle moves out of the daemon into its own process, and the daemon goes back
-  to exposing an API only. Background, not current behaviour.
+* [Dashboard guide](../guides/dashboard.md) — opening, managing and exposing
+  the dashboard server.
+* [Dashboard server and API-only daemon](../specs/dashboard-server.md) — the
+  design record (2026-09-20) the split was built from; background for why, where
+  this page describes what ships.
 
 Focused source checks are
 [`tests/test_main_lifecycle.py`](../../tests/test_main_lifecycle.py),

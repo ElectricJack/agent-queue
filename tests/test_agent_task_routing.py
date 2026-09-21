@@ -242,6 +242,46 @@ def test_unknown_requested_class_waits_instead_of_using_a_fallback_model():
     assert reason and "removed-class" in reason
 
 
+def test_a_vendorless_harness_resolves_its_class_model_from_its_id_slice():
+    """The router agrees with ``SessionSpecBuilder`` (provider-failover D23).
+
+    A harness that names no vendor (an operator's own CLI, the failover kit's
+    ``prova``) launches with the class slice keyed by its id; the router must
+    accept the same worker rather than report "no model for harness" for a
+    session the builder would start.
+    """
+    from src.agents.routing import task_agent_mismatch
+    from src.sessions.harness_parser import Harness
+    from src.sessions.harness_registry import HarnessRegistry
+
+    registry = HarnessRegistry()
+    registry.upsert(Harness(id="prova", name="prova", command="prova"))
+    profile = AgentProfile(
+        id="std-high-prova", name="prova", harness="prova", default_class="std-high"
+    )
+    worker = Agent(
+        id="w", name="w", profile_id=profile.id, harness="prova", intelligence_class="std-high"
+    )
+    classes = {
+        "std-high": IntelligenceClass("std-high", "Std", "", {"prova": {"model": "fake-a"}}),
+        "solo-high": IntelligenceClass("solo-high", "Solo", "", {"provb": {"model": "fake-b"}}),
+    }
+    task = requested_task(intelligence_class="std-high", profile_id=profile.id)
+    assert task_agent_mismatch(
+        task, worker, task_profile=profile, agent_profile=profile,
+        harness_registry=registry, intelligence_classes=classes,
+    ) is None
+    # A class with no slice for this harness id is still refused.
+    other = replace(worker, intelligence_class="solo-high")
+    solo = AgentProfile(id="solo", name="solo", harness="prova", default_class="solo-high")
+    reason = task_agent_mismatch(
+        requested_task(intelligence_class="solo-high", profile_id="solo"), other,
+        task_profile=solo, agent_profile=solo,
+        harness_registry=registry, intelligence_classes=classes,
+    )
+    assert reason and "has no model for harness 'prova'" in reason
+
+
 def test_worker_profile_fallback_yields_to_task_class_when_worker_has_no_class():
     profiles = routing_profiles()
     profiles["triage"].default_class = ""
@@ -473,13 +513,18 @@ def test_explain_reports_incompatible_workers_instead_of_fake_project_ownership(
     assert all(reason["code"] != "no_idle_agent" for reason in reasons)
 
 
-def test_explain_reports_global_compatible_worker_cooldown():
+def test_suppressed_worker_is_not_scheduled_and_not_called_incompatible():
+    """A worker on an unavailable provider takes nothing (provider-failover D11)."""
+    from dataclasses import replace
+
     from src.explain import build_capacity_reasons
 
     state = routing_state(agents=[workers()[-1]])
-    state.provider_cooldowns["worker-deep-codex"] = state.now + 100
+    worker = state.agents[0]
+    state = replace(state, suppressed_agent_ids=frozenset({worker.id}))
+    assert Scheduler.schedule(state) == []
     reasons = build_capacity_reasons(state.tasks[0], state, {"p": 1}, {"p": 1})
-    assert any(reason["code"] == "rate_limited" for reason in reasons)
+    assert all(reason["code"] != "no_compatible_agent" for reason in reasons)
 
 
 def test_classified_codex_project_default_binds_provider_without_task_profile():

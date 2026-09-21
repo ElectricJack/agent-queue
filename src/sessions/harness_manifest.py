@@ -66,6 +66,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "c002fa5b88f0a942a38f81649eac0cb694bb48ec8b80ef190b992ac91b15e135",  # ca7ffda9 2026-09-03
             "8ebe1887e58e23a0b68fbdaff0801414470e7e6d70adfaf06dc1d3032f2d0753",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "3f4ab3f3928b7ff3444f8db6650dbed92879dadf755a2a710218fa5d64f0bd7e",  # merged main + composer_clear_keys
+            "1c2bb92d61957c2c936073c0355acf013321406c3735f7da42317ad05187fd4b",  # bold-rapids.2 2026-09-20 (dialog signal)
         }
     ),
     "codex.md": frozenset(
@@ -83,6 +84,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "69faf87a91c38b06871e9501aae2e978f14aa1812503f9503f6935ec2444e3d9",  # keen-current-10 2026-09-02 (composer_clear_keys)
             "b2d63549a13b54ac759e642faf5fa7347fc475020bb8e5e72e4e159fd99a84fb",  # merged main + composer_clear_keys
             "f9dcf86290b94d59fab3369e9d9fef15fcf8aed7e4f4efab498d71fcedea5bfe",  # 84945773 2026-09-06 (--full-auto removed)
+            "9f37a9b7b9e320d840cd2085d8b40823505fc5021a92bcc2904b7353724f8d66",  # bold-rapids.2 2026-09-20 (dialog signal)
         }
     ),
     "gemini.md": frozenset(
@@ -90,6 +92,7 @@ SHIPPED_HARNESS_HASHES: Mapping[str, frozenset[str]] = {
             "9a68080765918a81b14b93f645c7ab8404c5b502aef8fde1a3fecf030f5ad7f4",  # 7024d380 2026-08-22
             "3af7b3252e2dd0dc1f47aea2301ce0e4223c5561c07cffc9dd99cd484f6cbc78",  # 5e65efe9 2026-09-02 (PR #212)
             "2f962b1f0a40ff7475b04782f6b9c41b4c8da80c7d6c8162cfecb73633fc5356",  # keen-current-10 2026-09-02 (composer_clear_keys)
+            "85a26d026e3408af033523e8ac7107be7fa2af27cd6f63cb22a4225caa04781d",  # bold-rapids.2 2026-09-20 (dialog signal)
         }
     ),
 }

@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
+  // The create form's optional route picker (with *Pin to this provider*).
+  useProfiles: () => ({ data: [] }),
   // CreateTaskModal requires an intelligence class, so the toolbar's create
   // form does not render without this hook.
   useIntelligenceClasses: () => ({
@@ -124,6 +126,24 @@ describe("shared Command Center task controls", () => {
     await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
     expect(screen.getByTestId("query")).not.toHaveTextContent("window");
     expect(screen.getByRole("combobox", { name: "Time range" })).toHaveValue("");
+  });
+
+  it("offers Held by provider on the Tasks tab only, stored as held=1 and cleared with the rest", async () => {
+    mount("/projects/alpha/tasks");
+    const held = screen.getByRole("checkbox", { name: "Held by provider" });
+    expect(held).not.toBeChecked();
+    await userEvent.click(held);
+    expect(screen.getByTestId("query")).toHaveTextContent("held=1");
+    expect(held).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "Clear task filters" }));
+    expect(screen.getByTestId("query")).not.toHaveTextContent("held");
+    expect(screen.getByRole("checkbox", { name: "Held by provider" })).not.toBeChecked();
+  });
+
+  it("keeps Held by provider off the graph, which has no such filter", () => {
+    mount("/projects/alpha/graph?held=1");
+    expect(screen.queryByRole("checkbox", { name: "Held by provider" })).not.toBeInTheDocument();
   });
 
   it("uses all projects in the global route without a second project selector", () => {

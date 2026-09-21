@@ -3,6 +3,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task } from "../../api/hooks";
 import { useProjectGraphs } from "../../api/graph";
 import { useRecentActivity, type TaskActivityItem } from "../../api/activity";
+import { useProviderHeldTasks, type ProviderHeldTask } from "../../api/providers";
+import { holdKindLabel, providerName, stateLabel } from "../metrics/providerAvailabilityFormat";
 import { useListNav } from "../../shell/hotkeys/useListNav";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { activityWindowHours, activityWindowLabel, matchesTask } from "./taskFilters";
@@ -43,10 +45,18 @@ export default function CommandCenterTasks() {
   const windowHours = activityWindowHours(filters.window);
   const activity = useRecentActivity(windowHours, projectId);
   const inWindow = windowHours !== null;
-  const isLoading = inWindow
+  // "Held by provider" narrows to the server's held-task ids (D18/D20): a
+  // row carries no hold of its own, and whether a provider outage holds a
+  // task is the daemon's call, so the list is fetched only while the filter
+  // is on and never inferred from status or profile.
+  const held = useProviderHeldTasks(projectId, filters.held);
+  const heldById = useMemo(() => new Map(
+    (held.data?.tasks ?? []).map((item) => [item.task_id, item] as const)), [held.data]);
+  const isLoading = (inWindow
     ? activity.isLoading
-    : graphLoading || (!projectId && isLoadingProjects);
-  const error = inWindow ? !!activity.error : projectsError || errors.some(Boolean);
+    : graphLoading || (!projectId && isLoadingProjects)) || (filters.held && held.isLoading);
+  const error = (inWindow ? !!activity.error : projectsError || errors.some(Boolean))
+    || (filters.held && held.isError);
   const activityById = useMemo(() => new Map(
     (activity.data?.items ?? []).map((item) => [item.task_id, item] as const)), [activity.data]);
   const tasks = useMemo<Task[]>(() => {
@@ -64,8 +74,9 @@ export default function CommandCenterTasks() {
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name || p.id])), [projects]);
   const filtered = useMemo(
     () => tasks.filter((task) => (!projectId || task.project_id === projectId)
+      && (!filters.held || heldById.has(task.id))
       && matchesTask(task, filters, names.get(task.project_id ?? "") ?? "")),
-    [tasks, projectId, filters, names],
+    [tasks, projectId, filters, names, heldById],
   );
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -80,7 +91,7 @@ export default function CommandCenterTasks() {
     if (!scroller || !body) return;
     const offset = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
     setScrollMargin(Math.max(0, Math.round(offset)));
-  }, [bodyRef, error, isLoading, projectId, inWindow]);
+  }, [bodyRef, error, isLoading, projectId, inWindow, filters.held]);
   // Only the rows in view are mounted: the graph snapshot carries every task
   // in the project, and a 5,000-row table with three interactive cells per
   // row re-rendered on every keystroke and every live refetch. Keyboard list
@@ -117,6 +128,13 @@ export default function CommandCenterTasks() {
             : <> — loading work in this window…</>}
         </p>
       )}
+      {filters.held && held.data && (
+        <p role="status" data-testid="held-filter-status" className="mb-3 rounded border border-amber-600/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+          <span className="font-medium">Held by provider</span> — {heldById.size === 0
+            ? "no task is waiting on an unavailable provider."
+            : <>tasks waiting on an unavailable provider{heldSummary(held.data.by_kind)}.</>}
+        </p>
+      )}
       {error && <p role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">Could not load tasks. Check the backend connection and try again.</p>}
       <table className="w-full min-w-[620px] text-left text-sm" aria-rowcount={filtered.length + 1}>
         <thead className="sticky top-0 z-10 border-b border-gray-800 bg-gray-950 text-xs uppercase text-gray-500">
@@ -133,11 +151,12 @@ export default function CommandCenterTasks() {
         </thead>
         <tbody ref={bodyRef} className="divide-y divide-gray-800">
           {isLoading && <tr><td colSpan={columns} className="p-4 text-gray-500">Loading tasks…</td></tr>}
-          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns} className="p-8 text-center text-gray-500">{inWindow ? "No work recorded in this time range." : "No tasks match these filters."}</td></tr>}
+          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns} className="p-8 text-center text-gray-500">{inWindow ? "No work recorded in this time range." : filters.held ? "No held tasks match these filters." : "No tasks match these filters."}</td></tr>}
           {padTop > 0 && <tr aria-hidden="true"><td colSpan={columns} style={{ height: padTop, padding: 0, border: 0 }} /></tr>}
           {items.map((item) => {
             const task = filtered[item.index]!;
             const activityItem = activityById.get(task.id);
+            const hold = filters.held ? heldById.get(task.id) : undefined;
             return (
               <tr key={task.id} data-index={item.index} ref={virtualizer.measureElement} aria-rowindex={item.index + 2}
                 tabIndex={0} data-listnav="1" data-task-row={task.id} aria-selected={selectedTaskId === task.id}
@@ -158,6 +177,7 @@ export default function CommandCenterTasks() {
                     <span className="font-mono text-[10px] text-gray-500">{task.id}</span>
                     <CopyTaskIdButton taskId={task.id} />
                   </span>
+                  {hold && <HoldNote hold={hold} />}
                 </td>
                 {!projectId && <td className="max-w-40 truncate px-3 py-3 text-xs text-gray-400" title={task.project_id}>{names.get(task.project_id ?? "") || task.project_id}</td>}
                 <td className="px-3 py-3"><InlineStatus task={task} /></td>
@@ -173,5 +193,24 @@ export default function CommandCenterTasks() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** ", 3 waiting for failover capacity, 1 pinned" — the server's per-kind counts. */
+function heldSummary(byKind: Record<string, number> | undefined): string {
+  const parts = Object.entries(byKind ?? {})
+    .filter(([, count]) => count > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, count]) => `${count} × ${holdKindLabel(kind).toLowerCase()}`);
+  return parts.length ? `: ${parts.join("; ")}` : "";
+}
+
+/** Why a held row is waiting, in words, from the held-task read. */
+function HoldNote({ hold }: { hold: ProviderHeldTask }) {
+  return (
+    <span data-testid={`held-note-${hold.task_id}`} className="mt-1 block text-[11px] text-amber-300/90"
+      title={hold.detail || hold.remediation || undefined}>
+      {providerName(hold.provider)} {stateLabel(hold.state).toLowerCase()} · {holdKindLabel(hold.kind, hold.ahead)}
+    </span>
   );
 }

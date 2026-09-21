@@ -402,21 +402,51 @@ verdict rather than a crash verdict
 That is pane text — a hint, not a structured channel — so it is used only to
 choose between two safe outcomes.
 
-On that verdict the session goes to `sleeping`, and either the task is paused
-with a `resume_after` 15 minutes out, or (for a pool worker) the task returns to
-the frontier and the *pool key* is quarantined for the same window, so a
-different worker on a different account can pick the work straight back up
-([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py)).
+On that verdict the session goes to `sleeping` and the exit is recorded as
+provider evidence. Under `provider_failover.mode: enforce` (the default) it is
+the provider's failure, not the task's
+([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py),
+[provider failover](../specs/provider-failover.md) D13): before the workspace is
+released the daemon commits uncommitted work as `aq-wip: provider failover
+checkpoint`, pushes the task branch and leaves a hand-off note the next
+worker's `aq prime` shows; no retry is spent and no pool key is quarantined.
+The first such exit pauses the task 30 s (`provider_suspect`); once the provider
+trips, the task returns to `READY` and the failover sweep moves it to another
+provider or holds it. If the push fails the task is held in place instead
+(an operator pause with `needs_attention: provider_failover_push_failed`), so
+nothing is discarded to make a move possible. In `observe`/`off` mode the old
+behaviour stands: the task pauses 15 minutes, or a pool worker's task returns
+to the frontier with its pool key quarantined for that window.
 
-> **A setting that looks relevant and is not.** The scheduler reads a
-> `provider_cooldowns` map, but nothing on `main` writes an entry into the
-> orchestrator's copy of it. Do not plan around it.
+### When a provider runs out
+
+Each rate-limit exit, usage-limit or login screen, failed launch, usage reading
+and login probe is typed **evidence** about one provider — a harness login such
+as `claude` or `codex`, plus the reserved key `llm` for the direct path. The
+daemon folds it into one of six states: `available` and `degraded` are
+launchable; `exhausted`, `unauthenticated`, `failing` and an operator's
+`disabled` are not
+([`src/providers/availability.py`](../../src/providers/availability.py)). In
+`enforce` mode nothing launches against an unavailable provider, queued work on
+it holds with a reason, and the shipped `provider-failover` playbook moves what
+it can to the same intelligence class on an available provider; at the reset
+time, or when the login probe says signed in, the provider goes on probation and
+the next successful launch brings it back. Direct-path calls fail fast while the
+`llm` key is unavailable, or use [`llm.fallback`](../reference/configuration.md#llmfallback)
+if you configured one.
+
+`aq provider status` shows every provider's state, reason and expected recovery.
+The scheduling rules are in
+[scheduling](scheduling.md#provider-availability-and-failover); what to do during
+an outage is the [provider outage runbook](../guides/provider-outage.md); every
+threshold is in the [configuration reference](../reference/configuration.md#provider_failover-keys).
+This replaced an older `provider_cooldowns` map that nothing ever wrote.
 
 ## Inputs and outputs
 
 **In:**
 
-* `llm:`, `providers:`, `pricing:` and `llm_logging:` in
+* `llm:`, `providers:`, `pricing:`, `llm_logging:` and `provider_failover:` in
   `~/.agent-queue/config.yaml`.
 * Vendor credentials, from the environment or the vendor's own login file —
   never from a task or a prompt.
@@ -445,6 +475,7 @@ different worker on a different account can pick the work straight back up
 | Transcript read offsets | Transcript watcher | Checkpoint table, keyed by transcript path | Durable — this is what stops double-charging |
 | Quota snapshots | Watcher (`codex`), probe command (`claude`) | `provider_usage_snapshots` table | Durable, append-only |
 | Probe verdict | `provider_usage_probe` | `system_config`, key `providers.claude_usage.last_probe` | One row, overwritten each probe |
+| Provider availability (state, evidence ring, override) and its transition log | `ProviderAvailabilityService`; overrides by `aq provider set-state` | `provider_availability`, `provider_availability_transitions` tables, mirrored in daemon memory | Durable; the log is append-only |
 | Direct-call log | `LLMLogger` | `<data_dir>/logs/llm/<date>/` | `llm_logging.retention_days`, swept hourly |
 | Prompt analytics | `LLMLogger` | Memory, flushed hourly to `prompt_analytics.jsonl` | Lost on restart between flushes |
 | Adapter instances | `LLMClient` | Memory, cached by provider/model/base-url/extras | Process lifetime |
@@ -464,7 +495,9 @@ directory holds debugging material.
 | `aq costs` shows a large `unpriced` figure | Rows carry no matching `pricing:` entry, or no input/output split (older rows, and rows written by paths that only knew a total). | Add or widen a `pricing:` glob. AQ will not guess a rate. |
 | A playbook step returns `budget_exceeded` immediately | `max_total_tokens` is set and the resolved adapter's `reports_usage` is false. | Use a provider that reports usage, or drop `max_total_tokens` from the step. |
 | Metrics show a large `unattributed` token rate | Ledger rows whose four columns do not add up to `tokens_used` — typically written by a path that knew only a total. | Nothing to repair; it is the honest residue. Investigate the writer if it grows. |
-| A task keeps pausing with `reason: rate_limit` | A session died with rate-limit text in its final pane. | Wait out the cooldown, or spread work across accounts/harnesses. See [session troubleshooting](../guides/session-troubleshooting.md). |
+| A task keeps pausing with `reason: rate_limit` or `provider_suspect` | A session died with rate-limit text in its final pane (`rate_limit` outside enforce mode). | `aq provider status`; under enforce mode a second such exit trips the provider and the task is re-routed. See [session troubleshooting](../guides/session-troubleshooting.md). |
+| A task is paused with `needs_attention: provider_failover_push_failed` | Its session died on its provider and the WIP checkpoint could not be pushed, so it is held rather than moved. | Fix the push (network, credentials), then `aq task resume --task-id <id>`: the next slot restores the saved checkpoint. |
+| A READY task never starts and `aq task explain` reports `provider_hold` | Its provider is `exhausted`, `unauthenticated`, `failing` or `disabled`; the hold's kind says why it is not moving elsewhere. | `aq provider status`, `aq provider held-tasks`; then the [provider outage runbook](../guides/provider-outage.md). |
 | `llm: not configured` in the logs, playbook steps `unavailable` | No credential resolved for `llm.provider`. | [Set up credentials](../guides/llm-providers.md#give-the-daemon-a-provider). |
 | A Gemini session's tokens never appear | The shipped `gemini` harness declares no transcript reader, so nothing observes its usage. | Expected. Use the provider's own console for that spend. |
 
@@ -480,11 +513,11 @@ directory holds debugging material.
   CLI, and where transcripts come from.
 * [Module catalog — providers](../reference/modules/providers.md) — every module
   in this subsystem, one row each.
-* Background, not instructions: the
-  [provider failover design](../specs/provider-failover.md) (2026-09-20) decides
-  how AQ will notice an exhausted or logged-out provider and move work off it.
-  Nothing in it has shipped; [sessions back off instead](#sessions-back-off-instead)
-  is still what happens today.
+* [A provider ran out of usage](../guides/provider-outage.md) — the operator
+  runbook: reading a provider's state, forcing or undoing moves, recovery. The
+  [provider failover design](../specs/provider-failover.md) (2026-09-20) is the
+  historical design record behind it; where the two disagree, the runbook and
+  the code are current.
 
 ## Source and tests
 

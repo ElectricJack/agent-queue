@@ -12,7 +12,8 @@ one does not skip the rest:
 4. **Orphans** — the two ways row and task can disagree: a live session
    whose task is no longer open (kill it), and an open task whose session
    row is not live (release it).
-5. **Stall ladder** — alive but silent: nudge → restart → quarantine.
+5. **Stall ladder** — alive but silent: nudge → restart → quarantine.  A
+   CLI parked on its usage-limit screen leaves as a ``RATE_LIMIT`` exit.
 6. **Named desired-state** — converge persistent sessions (start/sleep).
 7. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
    primary defense.
@@ -38,7 +39,12 @@ from src.pool_claims import (
     is_live_pool_claim_task_status,
     pool_claim_loop_stall_seconds,
 )
-from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
+from src.sessions.exit_classifier import (
+    DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+    ExitVerdict,
+    Verdict,
+    classify_exit,
+)
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -47,6 +53,7 @@ from src.sessions.provider import (
     PartialListError,
     SessionHandle,
 )
+from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_limit_screen
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +69,8 @@ META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
 
 _LIVE_STATES = ("starting", "running", "draining")
+#: Task statuses in which a session still holds the task's claim.
+_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
 #: Public alias — other modules ask "is this session row live?" too
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
@@ -542,6 +551,15 @@ class SessionReconciler:
         returns them.  The database CAS changes intent before teardown,
         closing the race with a late claim and preserving all session/instance
         fences.
+
+        The usage-limit shape is also provider evidence, and this is the only
+        place it is ever seen: the worker holds no task, so the stall ladder's
+        limit-screen check never runs for it.  Before tearing down, the pane
+        is read (:meth:`_idle_pool_usage_limit_line`); on a match the recycle
+        records the same ``exit_rate_limit`` evidence a death on a usage limit
+        would, so two such workers trip the provider rather than pool sizing
+        relaunching into the same limit indefinitely.  There is nothing to
+        checkpoint or requeue.
         """
         if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
             return
@@ -574,13 +592,51 @@ class SessionReconciler:
             current = await self.db.get_session(observed.id)
             if current is None or current.instance_token != observed.instance_token:
                 continue
-            logger.warning(
-                "Pool session %s has not claimed for %.0fs (last result %s); recycling",
-                current.id, stall_seconds, current.last_claim_result or "none",
-            )
-            await self.orchestrator._terminate_pool_session(
-                current, reason="claim_loop_stalled"
-            )
+            reason = "claim_loop_stalled"
+            line = await self._idle_pool_usage_limit_line(current)
+            if line is None:
+                logger.warning(
+                    "Pool session %s has not claimed for %.0fs (last result %s); recycling",
+                    current.id,
+                    stall_seconds,
+                    current.last_claim_result or "none",
+                )
+            else:
+                reason = "usage_limit_screen"
+                logger.warning(
+                    "Pool session %s has not claimed for %.0fs and is parked on a "
+                    "usage-limit screen (%r); recording a rate-limit exit and recycling",
+                    current.id,
+                    stall_seconds,
+                    line,
+                )
+                availability = self._provider_availability()
+                if availability is not None:
+                    # Medium evidence, as a RATE_LIMIT exit verdict is: one
+                    # recycle only degrades the provider; two sessions trip it.
+                    await availability.record_rate_limit_exit(
+                        current,
+                        reason=f"usage-limit screen on an idle pool worker: {line[:160]}",
+                    )
+            await self.orchestrator._terminate_pool_session(current, reason=reason)
+
+    async def _idle_pool_usage_limit_line(self, row: SessionRecord) -> str | None:
+        """The limit line if an idle pool worker's pane is its usage-limit screen.
+
+        Read after the recycle fence and before teardown, while the pane still
+        exists.  Only where provider availability is tracked
+        (``provider_failover.mode`` ``observe`` or ``enforce``): with it off
+        there is nothing to record, and the recycle stays as it was.  The
+        matcher is the stall ladder's own, deliberately strict
+        (:func:`~src.sessions.usage_limit_screen.match_usage_limit_screen`).
+        """
+        failover = getattr(self.config, "provider_failover", None)
+        if failover is None or not failover.tracking:
+            return None
+        provider = self._provider_for(row)
+        if provider is None:
+            return None
+        return match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
 
     # -- step 3: exits -----------------------------------------------------
 
@@ -677,6 +733,14 @@ class SessionReconciler:
             verdict=str(verdict.verdict),
             reason=verdict.reason,
         )
+        availability = self._provider_availability()
+        if verdict.verdict is Verdict.RATE_LIMIT and availability is not None:
+            # Medium evidence (provider-failover D2): pane text, so one exit
+            # alone only degrades the provider; two sessions trip it.
+            await availability.record_rate_limit_exit(row, reason=verdict.reason)
+
+        if await self._apply_provider_failover(row, task, verdict, now):
+            return
 
         if row.lifecycle == "pool":
             return await self._apply_pool_verdict(row, verdict, task, now)
@@ -705,6 +769,25 @@ class SessionReconciler:
                     reason="rate_limit",
                     resume_after=now + verdict.cooldown_seconds,
                 )
+            return
+
+        if verdict.verdict is Verdict.RAPID_CRASH and self._provider_explains(row):
+            # The provider is already unavailable: this death is its fault,
+            # not the task's.  Spend no restart budget and quarantine nothing
+            # (D13); launch suppression keeps the task from relaunching until
+            # the provider is launchable again.
+            await self.db.update_session(row.id, state="stopped", desired_state="stopped",
+                                         ended_at=now, end_reason="rapid_crash")
+            if task is not None:
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.PAUSED,
+                    context="session_rapid_crash",
+                    resume_after=now + self.sessions_config.restart_backoff_seconds,
+                    assigned_agent_id=None,
+                )
+                await self._carry_resume_key(row, task)
+                await self._release_task(task, row, reason="rapid_crash")
             return
 
         if verdict.verdict is Verdict.RAPID_CRASH:
@@ -830,6 +913,199 @@ class SessionReconciler:
                     reason="session_exited_without_close",
                 )
 
+    async def _apply_provider_failover(
+        self, row: SessionRecord, task, verdict: ExitVerdict, now: float
+    ) -> bool:
+        """A mid-task death its provider explains (provider-failover D13).
+
+        A ``RATE_LIMIT`` exit, or any death while the provider is unavailable
+        (already, or tripped by this exit's evidence), in ``mode: enforce``.
+        Such a death spends no retry, arms no pool-key quarantine and never
+        pauses the task into the dead provider.  In this order:
+
+        1. **Preserve the work** (``provider_failover_checkpoint``: WIP
+           commit and push of the task's locked workspace) while the session
+           row is still live -- a daemon that dies mid-push re-runs this on
+           its next tick instead of the orphan sweep blocking an
+           IN_PROGRESS task whose row went non-live first.
+        2. The push failed -> **hold in place** (an operator pause with a
+           local Git checkpoint): nothing is discarded to make a move
+           possible.
+        3. Otherwise release the claim's resources *before* the task becomes
+           claimable, then the guarded transition: provider tripped ->
+           READY for the ``provider-failover`` sweep; first, uncorroborated
+           signal -> a ``launch.suspect_backoff_seconds`` pause with its
+           ``provider_pause`` record.
+        4. The hand-off note, once the outcome is written.
+
+        Returns False, having done nothing, for every other exit, which keeps
+        the verdict handling below exactly as it was.
+        """
+        from src.providers import inflight
+        from src.providers.availability import EXIT_RATE_LIMIT
+
+        orch = self.orchestrator
+        availability = self._provider_availability()
+        if (
+            task is None
+            or verdict.verdict is Verdict.DRAINED
+            # A held claim only: a task paused, parked on a human or moved
+            # meanwhile owns its own recovery, checkpoint included.
+            or task.status not in _HELD_CLAIM_STATUSES
+            or availability is None
+            or orch is None
+            or not hasattr(orch, "provider_failover_checkpoint")
+        ):
+            return False
+        failure = inflight.ProviderFailure(
+            kind=(
+                EXIT_RATE_LIMIT if verdict.verdict is Verdict.RATE_LIMIT else inflight.SESSION_EXIT
+            ),
+            provider=availability.provider_for_harness(row.harness, row.project_id),
+            harness=row.harness or "",
+            profile_id=row.profile_id,
+            session_id=row.id,
+            detail=verdict.reason,
+        )
+        disposition = inflight.decide(availability, failure)
+        if disposition == inflight.UNATTRIBUTED:
+            return False
+        pool = row.lifecycle == "pool"
+        verdict_name = str(verdict.verdict)
+        # A pool claim still being prepared: the daemon owns that slot.
+        checkpoint = await orch.provider_failover_checkpoint(
+            task, preserve=not pool or row.claim_phase == "active"
+        )
+
+        async def handoff(outcome: str, *, held: bool = False) -> None:
+            await orch.provider_failover_handoff(
+                task,
+                row,
+                failure=failure,
+                verdict=verdict_name,
+                reason=verdict.reason,
+                checkpoint=checkpoint,
+                disposition=outcome,
+                held=held,
+                now=now,
+            )
+
+        if verdict.verdict is Verdict.RATE_LIMIT:
+            await self._apply_rate_limit_cooldown(row)
+        elif not pool:
+            # A pool row stays live until ``_terminate_pool_session``
+            # confirms the stop and releases its claim.
+            await self.db.update_session(
+                row.id, state="stopped", desired_state="stopped",
+                ended_at=now, end_reason=verdict_name,
+            )
+
+        if checkpoint.at_risk:
+            if not pool:
+                await self._carry_resume_key(row, task)
+            held = await orch.provider_failover_hold(
+                task,
+                reason=f"checkpoint {checkpoint.status}: {checkpoint.error or 'no remote carries it'}",
+            )
+            if not held:
+                return False  # the ordinary verdict path still releases safely
+            if pool:
+                # Normally already stopped by the hold; otherwise this is
+                # the confirmed-stop teardown every pool exit owes.
+                await orch._terminate_pool_session(row, reason="provider_failover_hold")
+            await handoff(disposition, held=True)
+            await self._emit(
+                "task.paused",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                reason=inflight.PUSH_FAILED_ATTENTION,
+            )
+            return True
+
+        # Tripped goes straight back to the queue -- unless an integration
+        # owner governs the workspace, whose release this path cannot see;
+        # a short provider pause (which the sweep resumes at once) then
+        # keeps the task unclaimable while that settles, as the launch path does.
+        pause = disposition == inflight.SUSPECT or checkpoint.status == "integration_managed"
+        if pause:
+            context = (
+                inflight.CONTEXT_SUSPECT
+                if disposition == inflight.SUSPECT
+                else inflight.CONTEXT_UNAVAILABLE
+            )
+            resume_after = now + float(availability.config.launch.suspect_backoff_seconds)
+            meta = {
+                inflight.PROVIDER_PAUSE_META: inflight.provider_pause_record(
+                    availability, failure, context=context, resume_after=resume_after, now=now
+                )
+            }
+        else:
+            context, resume_after, meta = inflight.CONTEXT_UNAVAILABLE, None, {}
+
+        if pool:
+            if pause:
+                await orch._terminate_pool_session(
+                    row,
+                    reason=context,
+                    task_status=TaskStatus.PAUSED,
+                    resume_after=resume_after,
+                    task_meta=meta,
+                )
+            else:
+                await orch._terminate_pool_session(row, reason=context)
+            current = await self.db.get_task(task.id)
+            moved = (
+                current is not None
+                and current.assigned_agent_id is None
+                and current.status is (TaskStatus.PAUSED if pause else TaskStatus.READY)
+            )
+        else:
+            # Release *before* the task is claimable again: the release frees
+            # every workspace locked by this task id, and a task can be
+            # claimed the moment it is written READY (or the sweep resumes a
+            # provider pause).
+            await self._carry_resume_key(row, task)
+            await self._release_task(task, row, reason=context)
+            moved = await self.db.transition_task_with_meta(
+                task.id,
+                TaskStatus.PAUSED if pause else TaskStatus.READY,
+                meta=meta,
+                context=context,
+                from_statuses=_HELD_CLAIM_STATUSES,
+                resume_after=resume_after,
+                assigned_agent_id=None,
+            )
+        if not moved:
+            # Someone else decided the task's fate meanwhile (an operator
+            # pause or close), or the pool claim is retained for an
+            # integration handoff; the work is preserved either way.
+            logger.info(
+                "Task %s: provider failover left the task as it found it (%s)",
+                task.id,
+                context,
+            )
+            return True
+        await handoff(disposition)
+        if pause:
+            await self._emit(
+                "task.paused",
+                task_id=task.id,
+                project_id=task.project_id,
+                title=task.title,
+                reason=context,
+                resume_after=resume_after,
+            )
+        logger.info(
+            "Task %s: session %s died on provider %s (%s) -- %s, no retry spent",
+            task.id,
+            row.id,
+            failure.provider,
+            verdict_name,
+            f"paused until {resume_after:.0f}" if pause else "back in the queue for re-routing",
+        )
+        return True
+
     async def _record_exit_incident(
         self,
         task,
@@ -895,7 +1171,11 @@ class SessionReconciler:
         if task is not None:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
-        if verdict.verdict is Verdict.RAPID_CRASH:
+        # A rapid crash while the provider is already unavailable is the
+        # provider's fault: pool sizing already targets zero for it, and a
+        # per-(project, profile) quarantine on top would outlive its
+        # recovery (provider-failover D13).
+        if verdict.verdict is Verdict.RAPID_CRASH and not self._provider_explains(row):
             self._quarantine_pool_key(
                 orch,
                 row,
@@ -916,6 +1196,17 @@ class SessionReconciler:
                 reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    def _provider_availability(self):
+        return getattr(self.orchestrator, "provider_availability", None)
+
+    def _provider_explains(self, row: SessionRecord) -> bool:
+        """True when *row*'s provider is already unavailable (provider-failover D13)."""
+        availability = self._provider_availability()
+        if availability is None:
+            return False
+        provider = availability.provider_for_harness(row.harness, row.project_id)
+        return availability.is_unavailable(provider)
 
     @staticmethod
     def _quarantine_pool_key(orch, row, *, until: float, reason: str) -> None:
@@ -943,11 +1234,79 @@ class SessionReconciler:
 
     # -- step 4: stall ladder ---------------------------------------------
 
+    async def _exit_usage_limit_screen(
+        self, provider, row: SessionRecord, task, now: float
+    ) -> bool:
+        """Take a stalled session parked on its usage-limit screen out as a ``RATE_LIMIT`` exit.
+
+        A CLI that hits its provider's usage limit mid-task usually does not
+        exit — it prints the limit line and sits at its prompt — so the exit
+        classifier never sees it and the provider-failover in-flight path
+        (D13) never runs.  Left to the ladder it is nudged
+        ``stall_max_nudges`` times into a CLI that cannot answer, then
+        restarted ~23 minutes in with a restart spent and no provider
+        evidence recorded.
+
+        Instead, when the pane's tail is one of the CLIs' own blocking limit
+        messages (:func:`~src.sessions.usage_limit_screen.match_usage_limit_screen`,
+        deliberately far stricter than the exit classifier's patterns), the
+        process is stopped and the session goes through :meth:`_apply_verdict`
+        exactly as a death on a usage limit would: ``exit_rate_limit``
+        evidence, then the failover exit path — checkpoint, hand-off, requeue
+        — where it is wired, or the RATE_LIMIT pause / pool-key cooldown
+        where it is not.  No restart is spent.
+
+        ``provider_failover.mode: enforce`` only — ``observe`` and ``off`` keep
+        the ladder as it was.  A stop that fails leaves everything to the
+        ladder: nothing is released while the process may still be alive.
+        Returns True when the session was handed off.
+        """
+        failover = getattr(self.config, "provider_failover", None)
+        if failover is None or not failover.enforcing:
+            return False
+        line = match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
+        if line is None:
+            return False
+        logger.warning(
+            "Session %s (%s) on task %s is parked on a usage-limit screen (%r) after "
+            "%.0fs without progress — stopping it and taking it out as a rate-limit exit",
+            row.id,
+            row.name,
+            row.task_id,
+            line,
+            now - (row.last_activity or row.started_at),
+        )
+        try:
+            await provider.stop(self._handle(row), grace=2.0)
+        except Exception:
+            logger.warning(
+                "Stopping usage-limited session %s failed — leaving it to the stall ladder",
+                row.id,
+                exc_info=True,
+            )
+            return False
+        # Whatever comes next, this session's ladder is over; the next
+        # session on the task starts a fresh one (as a stall restart does).
+        await self.db.set_task_meta(row.task_id, META_STALL_NUDGES, "0")
+        await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(now))
+        verdict = ExitVerdict(
+            Verdict.RATE_LIMIT,
+            f"usage-limit screen on a stalled session: {line[:160]}",
+            cooldown_seconds=DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+        )
+        await self._apply_verdict(provider, row, task, verdict, now)
+        return True
+
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
         """Nudge → backoff → restart → quarantine.
 
         A stalled agent is not a dead agent.  Killing on timeout throws away
         the work in progress; nudging asks it to report or finish first.
+
+        The one stall that nudging cannot help is a CLI parked on its
+        provider's usage-limit screen: before every rung the ladder checks
+        for that (:meth:`_exit_usage_limit_screen`) and, when it finds it,
+        hands the session to the exit path instead of climbing.
         """
         ttl = float(self.sessions_config.lease_ttl_seconds)
         if ttl <= 0:
@@ -978,6 +1337,9 @@ class SessionReconciler:
 
             task = await self.db.get_task(row.task_id)
             if task is None or task.status is not TaskStatus.IN_PROGRESS:
+                continue
+
+            if await self._exit_usage_limit_screen(provider, row, task, now):
                 continue
 
             # A provider with no input channel (subprocess) has nothing to

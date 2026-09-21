@@ -24,7 +24,6 @@ from src.config import (
     LLMLoggingConfig,
     MetricsConfig,
     MonitoringConfig,
-    PauseRetryConfig,
     ResourceCgroupConfig,
     ResourcesConfig,
     SchedulingConfig,
@@ -61,7 +60,6 @@ MACHINES = [
 #: Section name -> the dataclass that defines its keys.
 SECTION_DATACLASSES = {
     "scheduling": SchedulingConfig,
-    "pause_retry": PauseRetryConfig,
     "agents_config": AgentsDefaultConfig,
     "monitoring": MonitoringConfig,
     "archive": ArchiveConfig,
@@ -248,13 +246,6 @@ def test_the_repeat_failure_report_is_quieter_than_the_code_default():
     tuned = recommended_tuning(MachineResources(8, 16.0))
     shipped = MonitoringConfig().failed_blocked_report_interval_seconds
     assert tuned["monitoring"]["failed_blocked_report_interval_seconds"] > shipped
-
-
-def test_token_exhaustion_waits_longer_than_the_code_default():
-    """A spent quota window is hours; retrying every 5 min only makes noise."""
-    tuned = recommended_tuning(MachineResources(8, 16.0))
-    shipped = PauseRetryConfig().token_exhaustion_retry_seconds
-    assert tuned["pause_retry"]["token_exhaustion_retry_seconds"] > shipped
 
 
 def test_integration_defaults_never_merge_unreviewed_work_to_the_default_branch():

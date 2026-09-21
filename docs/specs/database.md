@@ -277,7 +277,11 @@ Append-only authored task feedback. The task ID plus project ID is a logical ref
 
 Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`), `idx_task_comments_project_created` (`task_id`, `project_id`, `created_at`, `id`).
 
-Authorized project moves transfer known active-task comment ownership in the same transaction. Moves that would merge a source or destination archive identity, and archival over a different-project ID, are refused without modifying either history.
+Authorized project moves transfer known active-task comment ownership in the same transaction. A
+move is refused while the task has a parent, children, or an active hierarchy/train branch origin;
+the check and write share the source project's hierarchy lock so a concurrent reparent cannot
+create a cross-project edge. Moves that would merge a source or destination archive identity, and
+archival over a different-project ID, are refused without modifying either history.
 
 ### Table: `task_subtasks`
 
@@ -325,6 +329,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
+| `review_delegate_to` | TEXT | nullable, `ck_projects_review_delegate_to` | Who decides the project's new document reviews: `user` or `supervisor`; NULL means `user`. Sets a new review's `doc_reviews.decider` (`supervisor` → `user_or_supervisor`). Added by Alembic `a00000000014` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -367,7 +372,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `id` | TEXT | PRIMARY KEY | Human-readable adjective-noun ID |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | |
 | `parent_task_id` | TEXT | nullable REFERENCES tasks(id) | Self-referential; for subtasks |
-| `repo_id` | TEXT | nullable REFERENCES repos(id) | |
+| `repo_id` | TEXT | nullable REFERENCES repos(id) | The repository whose publisher collects the task: the project's `integration_repository_id` in a `development`/`hierarchy`/`train` project at creation, NULL otherwise. A project move rebinds it, and the development sweep rebinds (and comments on) a live task still naming another project's repository |
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |
@@ -389,6 +394,8 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `next_child_ordinal` | INTEGER | NOT NULL DEFAULT 1 | Per-parent counter for dotted child ids (swarm-work-model §4, §6); incremented atomically by `task_names.reserve_child_ordinal`; never read for anything else |
 | `created_by_kind` | TEXT | nullable | Provenance (swarm-work-model §9): who created the row; stamped by `CommandHandler.execute` from the request scope (Plan 2); nullable so rows from legacy paths stay valid |
 | `created_by_id` | TEXT | nullable | Provenance (swarm-work-model §9), paired with `created_by_kind` |
+| `provider_intent` | TEXT | NOT NULL DEFAULT 'class_only' | `pinned`, `preferred` or `class_only` (`ck_tasks_provider_intent`): whether anyone meant the provider `profile_id` names (provider-failover D8). A pinned task holds while its provider is unavailable; the other two fail over. `pinned`/`preferred` with a NULL `profile_id` reads as `class_only` |
+| `rerouted_from` | TEXT | nullable | The profile the task was on before its first automatic re-route that has not been undone (D17); NULL means "where it was put". Partial index `idx_tasks_rerouted` on (`profile_id`) WHERE `rerouted_from IS NOT NULL` is what the re-route trickle counts |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -806,7 +813,7 @@ blocks progress until it is resolved (principle #5 — human judgment stays huma
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | UUID string |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
-| `gate_type` | TEXT | NOT NULL | Kind of decision being requested |
+| `gate_type` | TEXT | NOT NULL (`ck_gates_type`) | Kind of decision being requested: one of `human`, `timer`, `pr-merged`, `ci-run`, `event`, `task`, `routing`, `review` (`GATE_TYPES`). A `review` gate belongs to a document review (`await_id` = the review id) |
 | `title` | TEXT | NOT NULL | Short display name |
 | `question` | TEXT | NOT NULL DEFAULT '' | Prompt shown to the human |
 | `await_id` | TEXT | nullable | Correlates the gate with the waiter that opened it |
@@ -824,6 +831,72 @@ Join table binding tasks to the gates that block them.
 |---|---|---|---|
 | `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
 | `gate_id` | TEXT | PRIMARY KEY REFERENCES gates(id) | Composite PK part 2 |
+
+### Table: `doc_reviews`
+
+A markdown document (spec, plan or other) an agent submitted for a human
+decision — document-review spec §3.2
+(`vault/projects/agent-queue/specs/2026-09-21-document-review-design.md`).
+The database is the source of truth; the vault file at `vault_path` is a copy
+the daemon writes after each commit. Task ids are soft references with **no
+foreign key to `tasks`**, so a review never blocks a task's archive or delete.
+Queries: `src/database/queries/review_queries.py`. Added by Alembic
+`a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `rev-<adjective>-<noun>`, task-id style (`generate_review_id`) |
+| `project_id` | TEXT | NOT NULL | Owning project |
+| `author_task_id` | TEXT | nullable, no FK | The task that submitted the review |
+| `kind` | TEXT | NOT NULL (`ck_doc_reviews_kind`) | One of: spec, plan, other |
+| `title` | TEXT | NOT NULL | Document title |
+| `vault_path` | TEXT | NOT NULL, UNIQUE (`uq_doc_reviews_vault_path`) | Relative to the vault root: `projects/<pid>/specs/…` (spec, other) or `projects/<pid>/plans/…` (plan) |
+| `current_revision` | INTEGER | NOT NULL DEFAULT 1, `>= 1` (`ck_doc_reviews_revision`) | Latest revision number; state changes compare-and-set on it (`transition_review`) |
+| `state` | TEXT | NOT NULL (`ck_doc_reviews_state`) | One of: in_review, changes_requested, approved, withdrawn |
+| `gate_id` | TEXT | nullable | The review's `review` gate; only an approval resolves it |
+| `decider` | TEXT | NOT NULL DEFAULT 'user' (`ck_doc_reviews_decider`) | One of: user, user_or_supervisor |
+| `decided_by` | TEXT | nullable | Principal label of the latest decision |
+| `decided_at` | REAL | nullable | Unix timestamp of the latest decision |
+| `decision_note` | TEXT | nullable | Note on the latest decision |
+| `notified_revision` | INTEGER | NOT NULL DEFAULT 0 | Last revision announced on Discord; the outbox is every row with `notified_revision < current_revision` |
+| `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
+| `updated_at` | REAL | NOT NULL | Unix timestamp, bumped on every transition |
+
+Indexes: `idx_doc_reviews_project_state` (`project_id`, `state`), `idx_doc_reviews_author_task` (`author_task_id`).
+
+### Table: `doc_review_revisions`
+
+The text of every submitted revision of a review — a second copy of the vault
+document. Added by Alembic `a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `review_id` | TEXT | PRIMARY KEY REFERENCES doc_reviews(id) ON DELETE CASCADE | Composite PK part 1 |
+| `revision` | INTEGER | PRIMARY KEY | Composite PK part 2; 1, 2, … |
+| `content` | TEXT | NOT NULL | The submitted markdown with any leading frontmatter stripped (at most 256 KB) |
+| `content_sha256` | TEXT | NOT NULL | sha256 of `content` in UTF-8 |
+| `submitted_by` | TEXT | NOT NULL | Principal label |
+| `submitted_task_id` | TEXT | nullable, no FK | The submitting task |
+| `changes_note` | TEXT | nullable | What changed since the previous revision |
+| `submitted_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `doc_review_comments`
+
+Anchored comments on a review revision. Added by Alembic `a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Comment id |
+| `review_id` | TEXT | NOT NULL REFERENCES doc_reviews(id) ON DELETE CASCADE | The review |
+| `revision` | INTEGER | NOT NULL | The revision the comment was made on |
+| `quote` | TEXT | nullable | The exact text selected; NULL for a whole-section comment |
+| `heading_path` | JSON | NOT NULL | Heading texts from the top of the document down to the section |
+| `body` | TEXT | NOT NULL, 1–16000 characters (`ck_doc_review_comments_body`) | The comment |
+| `author` | TEXT | NOT NULL | Principal label, e.g. `human:local-operator` |
+| `resolved_in_revision` | INTEGER | nullable | Set when a later revision addresses the comment or it is marked resolved |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Index: `idx_doc_review_comments_review` (`review_id`, `revision`).
 
 ### Table: `workspace_kinds`
 
@@ -1040,6 +1113,93 @@ Provider quota readings from transcripts and probes. Repeated readings update
 
 The series index covers `(provider, window, scope, observed_at DESC)`.
 This table has no foreign keys.
+
+### Table: `provider_availability`
+
+One row per provider key (the harness login: `claude`, `codex`, ... and the
+reserved `llm` for the direct path), written only by the daemon's availability
+service ([provider failover](provider-failover.md) D7). `state` is the state
+derived from evidence and never holds `disabled`; an operator override lives in
+the `override_*` columns and the effective state is computed from both.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| provider | TEXT | Primary key: the provider key |
+| vendor | TEXT | Display attribute (`anthropic`, `openai`, ...); defaults to empty |
+| state | TEXT | Derived state; `ck_provider_availability_state` names the six values |
+| reason_code | TEXT | Machine-readable reason; defaults to empty |
+| reason | TEXT | Human reason; defaults to empty |
+| since | FLOAT | When the derived state began, Unix epoch seconds |
+| until | FLOAT | Nullable expected recovery |
+| level | INTEGER | Flap backoff level; defaults to 0 |
+| last_trip_at | FLOAT | Nullable time of the last trip |
+| consecutive_failures | INTEGER | Generic launch failures since the last success |
+| last_failure_at | FLOAT | Nullable |
+| last_success_at | FLOAT | Nullable |
+| evidence | JSON | Bounded evidence ring, newest first; defaults to `[]` |
+| override_state | TEXT | Nullable `disabled` or `available` (`ck_provider_availability_override_state`) |
+| override_until | FLOAT | Nullable override expiry |
+| override_by | TEXT | Nullable principal |
+| override_reason | TEXT | Nullable |
+| override_set_at | FLOAT | Nullable |
+| generation | INTEGER | Incremented on every change of effective state |
+| probation_from | TEXT | Nullable unavailable state a recovering provider came from |
+| counters_reset_at | FLOAT | Nullable; evidence at or before it no longer counts toward a trip |
+| last_probe_at | FLOAT | Nullable time the auth probe last answered |
+| notified_generation | INTEGER | Generation the state-change message last went out for |
+| updated_at | FLOAT | Last write, Unix epoch seconds |
+
+This table has no foreign keys.
+
+### Table: `provider_availability_transitions`
+
+Append-only audit trail of effective provider state changes: `aq provider
+history` and the dashboard card's history.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Auto-increment primary key |
+| provider | TEXT | Provider key |
+| from_state | TEXT | Effective state before |
+| to_state | TEXT | Effective state after |
+| reason_code | TEXT | Defaults to empty |
+| reason | TEXT | Defaults to empty |
+| until | FLOAT | Nullable expected recovery |
+| generation | INTEGER | The row's generation after the change |
+| actor | TEXT | `system` or a principal; defaults to `system` |
+| detail | JSON | Derived states and the evidence that caused it; defaults to `{}` |
+| at | FLOAT | Unix epoch seconds |
+
+Index `idx_provider_availability_transitions_provider_at` covers (`provider`,
+`at DESC`). This table has no foreign keys.
+
+### Table: `task_reroutes`
+
+Append-only history of provider re-routes (provider-failover D17): every
+automatic move, operator-forced move and undo. `tasks.rerouted_from` is only
+its cheap current projection. Written by `provider_reroute` /
+`provider_reroute_undo` (`src/providers/reroute.py`).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `task_id` | TEXT | REFERENCES tasks(id) ON DELETE CASCADE (`fk_task_reroutes_task`) |
+| `project_id` | TEXT | The task's project |
+| `from_profile_id` | TEXT | Nullable profile before the move |
+| `to_profile_id` | TEXT | Nullable profile after the move |
+| `from_provider` | TEXT | Provider key before; defaults to empty |
+| `to_provider` | TEXT | Provider key after; defaults to empty |
+| `intelligence_class` | TEXT | Nullable class (never changed by a re-route) |
+| `reason_code` | TEXT | `provider_unavailable`, `operator_forced` or `operator_undo` (`ck_task_reroutes_reason_code`) |
+| `provider_state` | TEXT | The source provider's effective state at the time; defaults to empty |
+| `provider_generation` | INTEGER | Nullable source provider generation |
+| `batch_id` | TEXT | Nullable; `prb-<provider>-<generation>` for automatic moves, so one outage is one batch |
+| `actor` | TEXT | `system` or a principal; defaults to `system` |
+| `at` | FLOAT | Unix epoch seconds |
+| `undone_at` | FLOAT | Nullable; set on the move an operator undid |
+
+Indexes `idx_task_reroutes_task_at` (`task_id`, `at`) and
+`idx_task_reroutes_batch` (`batch_id`).
 
 ### Table: `metrics_samples`
 

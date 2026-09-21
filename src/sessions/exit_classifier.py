@@ -17,7 +17,18 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-__all__ = ["ExitVerdict", "Verdict", "classify_exit", "RATE_LIMIT_PATTERNS"]
+__all__ = [
+    "DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS",
+    "RATE_LIMIT_PATTERNS",
+    "ExitVerdict",
+    "Verdict",
+    "classify_exit",
+]
+
+#: Seconds a ``RATE_LIMIT`` verdict asks the caller to wait before any restart,
+#: whether the evidence came from a dead process's last capture or from the
+#: stall ladder's usage-limit screen (:mod:`src.sessions.usage_limit_screen`).
+DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 900.0
 
 
 class Verdict(StrEnum):
@@ -85,7 +96,7 @@ def classify_exit(
     *,
     now: float,
     rapid_crash_window: float = 600.0,
-    rate_limit_cooldown: float = 900.0,
+    rate_limit_cooldown: float = DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
 ) -> ExitVerdict:
     """Classify a dead session.
 

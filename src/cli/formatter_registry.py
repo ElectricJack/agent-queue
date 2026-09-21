@@ -222,6 +222,8 @@ def _register_all():
         format_playbook_graph,
         format_pool_table,
         format_profile_detail,
+        format_provider_held_tasks,
+        format_provider_table,
         format_profile_list,
         format_prompt_list,
         format_project_table,
@@ -468,6 +470,24 @@ def _register_all():
         many=True,
         empty_message="No worker pools configured.",
         entity="pool",
+    )
+
+    # -- Provider availability (provider-failover D20) ------------------------
+
+    FORMATTERS["provider_status"] = FormatterSpec(
+        render=format_provider_table,
+        extract="providers",
+        many=True,
+        empty_message="No providers tracked.",
+        entity="provider",
+    )
+
+    FORMATTERS["provider_held_tasks"] = FormatterSpec(
+        render=format_provider_held_tasks,
+        extract="tasks",
+        many=True,
+        empty_message="No task is held by a provider.",
+        entity="task",
     )
 
     # -- Formulas (swarm-work-model §13) -------------------------------------

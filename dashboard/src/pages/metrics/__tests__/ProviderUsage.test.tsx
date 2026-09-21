@@ -16,11 +16,18 @@ import {
   windowLabel,
 } from "../providerUsageFormat";
 import type { ProviderUsageResponse, ProviderUsageSnapshot } from "../../../api/hooks";
+import type { ProviderAvailabilityStatus, ProviderStatusResponse } from "../../../api/providers";
 
 const api = vi.hoisted(() => ({
   response: null as ProviderUsageResponse | null,
   fail: null as Error | null,
   calls: 0,
+  // Availability (provider-failover D20): the header above each provider's cards.
+  availability: { success: true, mode: "enforce", now: 0, providers: [] } as ProviderStatusResponse,
+  availabilityFail: null as Error | null,
+  availabilityCalls: 0,
+  setState: vi.fn(),
+  recheck: vi.fn(),
 }));
 
 vi.mock("../../../api/client", async () => {
@@ -32,6 +39,13 @@ vi.mock("../../../api/client", async () => {
       if (api.fail) throw api.fail;
       return { data: api.response };
     },
+    getProviderAvailabilityApiProvidersAvailabilityGet: async () => {
+      api.availabilityCalls += 1;
+      if (api.availabilityFail) throw api.availabilityFail;
+      return { data: api.availability };
+    },
+    postProviderStateApiProvidersProviderStatePost: api.setState,
+    postProviderRecheckApiProvidersProviderRecheckPost: api.recheck,
   };
 });
 
@@ -73,6 +87,11 @@ beforeEach(() => {
   api.calls = 0;
   api.fail = null;
   api.response = { now: NOW, snapshots: [], series: {} };
+  api.availability = { success: true, mode: "enforce", now: NOW, providers: [] };
+  api.availabilityFail = null;
+  api.availabilityCalls = 0;
+  api.setState.mockReset();
+  api.recheck.mockReset();
 });
 
 afterEach(cleanup);
@@ -263,5 +282,191 @@ describe("<ProviderUsage />", () => {
       expect(screen.getByText(/Could not load provider usage: boom/)).toBeInTheDocument(),
     );
     expect(screen.queryByText("No provider usage recorded yet")).toBeNull();
+  });
+});
+
+function status(overrides: Partial<ProviderAvailabilityStatus> = {}): ProviderAvailabilityStatus {
+  return {
+    provider: "codex",
+    vendor: "openai",
+    state: "available",
+    half: "launchable",
+    reason_code: "",
+    reason: "",
+    since: NOW - 3 * 3600,
+    until: null,
+    override: null,
+    held: 0,
+    rerouted: 0,
+    probation: false,
+    remediation: "",
+    mode: "enforce",
+    ...overrides,
+  };
+}
+
+describe("<ProviderUsage /> availability header", () => {
+  it.each([
+    ["available", "launchable", "Available", "emerald"],
+    ["degraded", "launchable", "Degraded", "amber"],
+    ["exhausted", "unavailable", "Exhausted", "red"],
+    ["unauthenticated", "unavailable", "Logged out", "red"],
+    ["failing", "unavailable", "Failing", "red"],
+    ["disabled", "unavailable", "Disabled", "gray"],
+  ])("renders a %s pill in the server's colour", async (state, half, label, colour) => {
+    api.availability = { success: true, mode: "enforce", now: NOW, providers: [status({ state, half })] };
+    page();
+
+    const pill = await screen.findByTestId("provider-state-codex");
+    expect(pill).toHaveTextContent(label);
+    expect(pill.className).toContain(colour);
+    expect(screen.getByTestId("provider-availability-codex")).toHaveAttribute("data-half", half);
+  });
+
+  it("shows reason, since, countdown, counts and remediation for an unavailable provider", async () => {
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({
+        state: "exhausted", half: "unavailable", reason: "weekly limit reached",
+        until: NOW + 2 * 3600 + 14 * 60, held: 4, rerouted: 5, batch_id: "prb-codex-3",
+        remediation: "wait for the reset, or disable codex",
+      })],
+    };
+    page();
+
+    const header = await screen.findByTestId("provider-availability-codex");
+    expect(within(header).getByText(/^weekly limit reached · since .+ \(3h ago\) ·$/)).toBeInTheDocument();
+    expect(within(header).getByTestId("provider-countdown-codex")).toHaveTextContent(/^expected back in 2h 14m \(/);
+    expect(within(header).getByTestId("provider-held-codex")).toHaveTextContent("4 held");
+    expect(within(header).getByTestId("provider-rerouted-codex")).toHaveTextContent("5 re-routed");
+    expect(within(header).getByTestId("provider-remediation-codex")).toHaveTextContent("wait for the reset");
+    // The anchor the outage banner links to.
+    expect(screen.getByTestId("provider-group-codex")).toHaveAttribute("id", "provider-codex");
+  });
+
+  it("does not show remediation or an override badge for a healthy provider", async () => {
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({ remediation: "run `codex login`" })],
+    };
+    page();
+
+    await screen.findByTestId("provider-availability-codex");
+    expect(screen.queryByTestId("provider-remediation-codex")).toBeNull();
+    expect(screen.queryByTestId("provider-override-codex")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Clear override" })).toBeNull();
+  });
+
+  it("marks probation and an override with its expiry and author", async () => {
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({
+        state: "disabled", half: "unavailable", derived_state: "available", probation: true,
+        override: { state: "disabled", until: NOW + 4 * 3600, by: "human:local-operator", reason: "billing", set_at: NOW },
+      })],
+    };
+    page();
+
+    expect(await screen.findByTestId("provider-probation-codex")).toHaveTextContent("On probation");
+    const badge = screen.getByTestId("provider-override-codex");
+    expect(badge).toHaveTextContent(/Override: disabled · until .+ \(in 4h\) · by human:local-operator/);
+    expect(badge).toHaveAttribute("title", "Reason: billing");
+  });
+
+  it("gives a provider with no usage reading its header anyway", async () => {
+    api.response = { now: NOW, snapshots: [snap({ provider: "claude" })], series: {} };
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({ provider: "claude", vendor: "anthropic" }), status({ provider: "codex" })],
+    };
+    page();
+
+    const codex = await screen.findByTestId("provider-group-codex");
+    expect(within(codex).getByTestId("provider-availability-codex")).toBeInTheDocument();
+    expect(within(codex).queryByRole("progressbar")).toBeNull();
+    // Claude's header sits above Claude's card.
+    const claude = screen.getByTestId("provider-group-claude");
+    expect(within(claude).getByTestId("provider-availability-claude")).toBeInTheDocument();
+    expect(within(claude).getByTestId("provider-card-claude-week-")).toBeInTheDocument();
+  });
+
+  it("keeps the quota cards when the availability read fails", async () => {
+    api.response = { now: NOW, snapshots: [snap({ provider: "claude" })], series: {} };
+    api.availabilityFail = new Error("availability down");
+    page();
+
+    expect(await screen.findByTestId("provider-card-claude-week-")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByText(/Could not load provider availability: availability down/)).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("provider-availability-claude")).toBeNull();
+  });
+
+  it("disables for a chosen duration with a reason, then refetches availability", async () => {
+    api.availability = { success: true, mode: "enforce", now: NOW, providers: [status()] };
+    api.setState.mockResolvedValue({ data: { success: true, provider: "codex", state: "disabled" } });
+    page();
+
+    await screen.findByTestId("provider-availability-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Disable for…" }));
+    const submit = screen.getByRole("button", { name: "Disable" });
+    // A reason is required before the request can go.
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Disable duration"), { target: { value: "4h" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "billing incident" } });
+    const before = api.availabilityCalls;
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.setState).toHaveBeenCalledTimes(1));
+    expect(api.setState.mock.calls[0]![0]).toMatchObject({
+      path: { provider: "codex" },
+      body: { state: "disabled", for: "4h", reason: "billing incident" },
+    });
+    await waitFor(() => expect(api.availabilityCalls).toBeGreaterThan(before));
+    expect(await screen.findByText("Codex disabled for 4h.")).toBeInTheDocument();
+  });
+
+  it("clears an active override with state auto", async () => {
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({
+        state: "disabled", half: "unavailable",
+        override: { state: "disabled", until: null, by: "human:local-operator", reason: "x", set_at: NOW },
+      })],
+    };
+    api.setState.mockResolvedValue({ data: { success: true, provider: "codex", state: "available" } });
+    page();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Clear override" }));
+    await waitFor(() => expect(api.setState).toHaveBeenCalledTimes(1));
+    expect(api.setState.mock.calls[0]![0]).toMatchObject({ path: { provider: "codex" }, body: { state: "auto" } });
+    expect(screen.getByTestId("provider-override-codex")).toHaveTextContent("no expiry");
+  });
+
+  it("rechecks the provider and reports what the probe said", async () => {
+    api.availability = { success: true, mode: "enforce", now: NOW, providers: [status({ state: "unauthenticated", half: "unavailable" })] };
+    api.recheck.mockResolvedValue({ data: { success: true, provider: "codex", probe: "authenticated", state: "degraded" } });
+    page();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Recheck Codex" }));
+    await waitFor(() => expect(api.recheck).toHaveBeenCalledTimes(1));
+    expect(api.recheck.mock.calls[0]![0]).toMatchObject({ path: { provider: "codex" } });
+    expect(await screen.findByText("Recheck: logged in — now Degraded.")).toBeInTheDocument();
+  });
+
+  it("shows the daemon's refusal instead of the transport prefix", async () => {
+    api.availability = { success: true, mode: "enforce", now: NOW, providers: [status()] };
+    api.setState.mockRejectedValue(
+      Object.assign(new Error("API 400: the override would already have expired"), {
+        payload: { error: "the override would already have expired" },
+      }),
+    );
+    page();
+
+    await screen.findByTestId("provider-availability-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Disable for…" }));
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "why" } });
+    fireEvent.click(screen.getByRole("button", { name: "Disable" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^the override would already have expired$/);
   });
 });

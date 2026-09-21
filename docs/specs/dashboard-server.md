@@ -5,10 +5,16 @@ tags: [spec, dashboard, daemon, api, installer, security]
 # Dashboard server process and API-only daemon
 
 <!-- aq:historical -->
-> **Design record — approved direction, not yet implemented.** Written on
-> 2026-09-20 against `main` `0ad341dfa`, before the code. It is not revised to
-> track the code afterwards; where this page and the code disagree, the code is
-> right. Start at [the documentation home](../README.md) for what AQ does today.
+> **Design record — implemented 2026-09-21.** Written on 2026-09-20 against
+> `main` `0ad341dfa`, before the code. It is not revised to track the code
+> afterwards; where this page and the code disagree, the code is right. The
+> daemon first shipped `/dashboard` as a `404`, and a pre-change install's first
+> `aq update` paid exactly the cost §5 names for that choice; since
+> `smart-meadow.9` it answers the `307` §5 decides — see the
+> [release notes](../release-notes.md). What ships is described
+> by the [dashboard guide](../guides/dashboard.md) and
+> [architecture](../concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server);
+> start at [the documentation home](../README.md) for the rest.
 
 **Decision owner:** Jack, 2026-09-20 — the daemon goes back to exposing an API and
 nothing else, and the one-command install keeps ending at an open dashboard.
@@ -125,11 +131,12 @@ the generated client's base URL.
 | `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=` (`ws/terminalSocket.ts`) | WebSocket |
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
-Nothing else is forwarded. The daemon's other prefixes — `/mcp`, `/docs`,
-`/redoc`, `/openapi.json`, `/plans` and `/dashboard` — answer `404` at the
-dashboard server and never fall back to `index.html`, so a client pointed at the
-wrong port gets an error, not HTML; no SPA route uses them. A proxied path whose
-percent-decoded form contains a `.` or `..` segment is answered `400`. The
+Nothing else is forwarded. The daemon's non-dashboard prefixes and retired
+documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans` and
+`/dashboard` — answer `404` at the dashboard server and never fall back to
+`index.html`, so a client pointed at the wrong port gets an error, not HTML; no
+SPA route uses them. A proxied path whose percent-decoded form contains a `.` or
+`..` segment is answered `400`. The
 spec-document pane's `useHostedDoc` fetches an arbitrary same-origin URL that is
 not a daemon route; it keeps answering `404`, as under the daemon mount.
 
@@ -217,7 +224,13 @@ developer port (3000, 8000, 8080, or 5000 and 7000, which macOS AirPlay holds);
 referenced nowhere else in this repository. A busy port is a startup failure
 naming the key, **never an auto-increment**: the daemon's pointer (§5), the
 installer's open step and bookmarks need a deterministic URL. Validation: port
-1–65535 and different from `mcp_server.port`. Settings are read at process
+1–65535 and different from `mcp_server.port`. When `port` is unset and
+`mcp_server.port` is 8082 — a daemon moved there before the dashboard server
+existed — the default steps aside to **8083**, so an upgrade never leaves a
+config that no longer loads (`src.config.default_dashboard_server_port`, shared
+by the daemon's loader and this process). The rule reads the config alone, so
+the URL stays deterministic; a port the operator sets is never moved, and
+setting it to the daemon's is still an error. Settings are read at process
 start, so `aq dashboard restart` applies a change and the daemon needs no
 restart. The bundle is built with every `VITE_*_URL` escape hatch unset, so the
 page talks only to its own origin.

@@ -49,6 +49,11 @@ EXPLICITLY_UNSUPPORTED: dict[str, str] = {}
 # representative ledger; adding a behavioral test can promote a path here.
 BEHAVIORAL_EVIDENCE: frozenset[str] = frozenset(
     {
+        # tests/test_cli_dashboard_server.py runs these against a real server process.
+        "aq dashboard restart",
+        "aq dashboard start",
+        "aq dashboard status",
+        "aq dashboard stop",
         "aq inbox",
         "aq message reply",
         "aq plugin logs",

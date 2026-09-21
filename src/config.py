@@ -401,38 +401,6 @@ class SchedulingConfig:
 
 
 @dataclass
-class PauseRetryConfig:
-    """Backoff and retry timing for rate-limited and token-exhausted tasks.
-
-    Controls both the in-process exponential backoff (before a task is paused)
-    and the longer pause durations (after a task enters PAUSED state and waits
-    for resume_after to elapse).
-    """
-
-    rate_limit_backoff_seconds: int = 60
-    token_exhaustion_retry_seconds: int = 300
-    # Exponential-backoff retry knobs (in-process, before the task is paused)
-    rate_limit_max_retries: int = 3
-    rate_limit_max_backoff_seconds: int = 300
-
-    def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.rate_limit_backoff_seconds <= 0:
-            errors.append(ConfigError("pause_retry", "rate_limit_backoff_seconds", "must be > 0"))
-        if self.token_exhaustion_retry_seconds <= 0:
-            errors.append(
-                ConfigError("pause_retry", "token_exhaustion_retry_seconds", "must be > 0")
-            )
-        if self.rate_limit_max_retries < 0:
-            errors.append(ConfigError("pause_retry", "rate_limit_max_retries", "must be >= 0"))
-        if self.rate_limit_max_backoff_seconds <= 0:
-            errors.append(
-                ConfigError("pause_retry", "rate_limit_max_backoff_seconds", "must be > 0")
-            )
-        return errors
-
-
-@dataclass
 class AutoTaskConfig:
     """Leftovers of the retired plan-to-subtask pipeline that still have
     live consumers: pre-task workspace cleanup deletes files matching
@@ -701,6 +669,68 @@ def normalize_llm_provider(name: str) -> str:
     return _LEGACY_LLM_PROVIDER_IDS.get(name, name)
 
 
+def _llm_credential_errors(
+    provider: str, api_key: str, base_url: str, *, prefix: str
+) -> list[ConfigError]:
+    """The provider-id and OpenAI-endpoint checks one direct-path credential needs."""
+    errors: list[ConfigError] = []
+    if provider not in LLM_PROVIDER_IDS:
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}provider",
+                f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{provider}'",
+            )
+        )
+    if provider == "openai" and not (base_url or api_key or os.environ.get("OPENAI_API_KEY")):
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}base_url",
+                "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
+                "or an API key (api_key / OPENAI_API_KEY)",
+            )
+        )
+    return errors
+
+
+@dataclass
+class LLMFallbackConfig:
+    """``llm.fallback`` — an optional second credential for the direct path.
+
+    Provider-failover D13a: while provider availability holds the reserved
+    ``llm`` key unavailable, direct-path calls resolve their intelligence
+    class against this block's provider slice and are made with this block's
+    credential instead of failing fast.  It is a full block of its own — its
+    ``default_class`` and ``model`` stand in for the primary's, and only
+    ``max_tokens`` is shared.  A session harness's login is never borrowed:
+    this credential is the only other one the direct path ever uses.
+    """
+
+    provider: str = ""  # required: "anthropic" | "google" | "openai"
+    model: str = ""  # explicit model id; empty = intelligence class, else provider default
+    api_key: str = ""  # optional; the provider's *_API_KEY variable otherwise
+    base_url: str = ""  # openai only: OpenAI-compatible endpoint
+    default_class: str = ""  # intelligence class used when a call names none
+
+    def __post_init__(self) -> None:
+        if self.model and not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+
+    def validate(self) -> list[ConfigError]:
+        if not self.provider:
+            return [
+                ConfigError(
+                    "llm",
+                    "fallback.provider",
+                    f"is required; one of {sorted(LLM_PROVIDER_IDS)}",
+                )
+            ]
+        return _llm_credential_errors(
+            self.provider, self.api_key, self.base_url, prefix="fallback."
+        )
+
+
 @dataclass
 class LLMConfig:
     """The direct LLM path (``src/llm``): playbook nodes and transitions, plugin
@@ -713,6 +743,8 @@ class LLMConfig:
     base_url: str = ""  # openai only: OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1)
     max_tokens: int = 4096
     default_class: str = ""  # intelligence class used when a call names none
+    #: Used only while the primary credential is unavailable (provider-failover D13a).
+    fallback: LLMFallbackConfig | None = None
 
     def __post_init__(self) -> None:
         # YAML may parse ``model: 4`` as an int; APIs require a string.
@@ -720,26 +752,25 @@ class LLMConfig:
             object.__setattr__(self, "model", str(self.model))
 
     def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.provider not in LLM_PROVIDER_IDS:
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "provider",
-                    f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{self.provider}'",
+        errors = _llm_credential_errors(self.provider, self.api_key, self.base_url, prefix="")
+        fallback = self.fallback
+        if fallback is not None:
+            errors.extend(fallback.validate())
+            if (fallback.provider, fallback.api_key, fallback.base_url) == (
+                self.provider,
+                self.api_key,
+                self.base_url,
+            ):
+                # Same provider, key and endpoint is the same credential: it is
+                # unavailable exactly when the primary is, so it can never help.
+                errors.append(
+                    ConfigError(
+                        "llm",
+                        "fallback",
+                        "names the same credential as llm (provider, api_key and "
+                        "base_url all match); a fallback must differ in at least one",
+                    )
                 )
-            )
-        if self.provider == "openai" and not (
-            self.base_url or self.api_key or os.environ.get("OPENAI_API_KEY")
-        ):
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "base_url",
-                    "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
-                    "or an API key (api_key / OPENAI_API_KEY)",
-                )
-            )
         return errors
 
 
@@ -1301,6 +1332,14 @@ class SessionsConfig:
     pane_stream_interval_seconds: float = 1.0
     pane_stream_max_sessions: int = 12
     pane_stream_lines: int = 60
+    #: Test-only: with ``provider: fake``, a JSON file mapping a harness
+    #: command to a scripted mode (``ok``, ``login_required``,
+    #: ``usage_limit``, ``crash``, ``rate_limit_midtask``), re-read on every
+    #: start and answering the login probe for the harnesses it names --
+    #: how the end-to-end kit exhausts and restores a provider mid-run
+    #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
+    #: every other provider.
+    fake_script_file: str = ""
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
 
@@ -2401,6 +2440,300 @@ class ProvidersConfig:
         return errors
 
 
+#: ``provider_failover.mode`` values (provider-failover D22).  ``observe``
+#: tracks state, emits events and serves every surface but suppresses no launch.
+PROVIDER_FAILOVER_MODES = ("off", "observe", "enforce")
+#: Per-class failover policies (D12).  v1 has exactly two.
+PROVIDER_FAILOVER_POLICIES = ("same_class", "hold")
+
+
+@dataclass
+class ProviderFailoverUsageConfig:
+    """Percent thresholds read off the provider's own usage snapshots (D3)."""
+
+    exhausted_percent: float = 99.0
+    degraded_percent: float = 85.0
+    hysteresis_percent: float = 2.0
+
+
+@dataclass
+class ProviderFailoverLaunchConfig:
+    """How many startup deaths trip a provider, and inside what window (D3)."""
+
+    strong_failures_to_trip: int = 2
+    generic_failures_to_trip: int = 5
+    window_seconds: int = 600
+    suspect_backoff_seconds: int = 30
+
+
+@dataclass
+class ProviderFailoverRateLimitConfig:
+    """Mid-task ``RATE_LIMIT`` exits as provider evidence (D3)."""
+
+    exits_to_trip: int = 2
+    #: Backoff base used only when the provider gave no ``resets_at``.
+    cooldown_seconds: int = 900
+
+
+@dataclass
+class ProviderFailoverAuthProbeConfig:
+    """The daemon-side ``probe_login`` (D5)."""
+
+    #: While launchable; ``0`` disables the background probe.
+    interval_seconds: int = 600
+    timeout_seconds: int = 10
+
+
+@dataclass
+class ProviderFailoverRecoveryConfig:
+    """Half-open breaker timing (D4)."""
+
+    reset_grace_seconds: int = 60
+    auth_probe_interval_seconds: int = 120
+    failing_backoff_seconds: int = 300
+    backoff_max_seconds: int = 3600
+    flap_window_seconds: int = 3600
+
+
+@dataclass
+class ProviderFailoverOverrideConfig:
+    """Operator override expiry (D6)."""
+
+    default_ttl_seconds: int = 14400
+    max_ttl_seconds: int = 604800
+
+
+@dataclass
+class ProviderFailoverRerouteConfig:
+    """Re-route sweep limits (D14-D15).  Read by the re-route engine."""
+
+    enabled: bool = True
+    max_per_sweep: int = 10
+    target_backlog_factor: float = 1.0
+    allow_degraded_target: bool = False
+    max_priority_value: int | None = None
+    task_cooldown_seconds: int = 1800
+    max_auto_per_task: int = 2
+
+
+@dataclass
+class ProviderFailoverNotifyConfig:
+    """Who hears about a state change, and when a human is paged (D19)."""
+
+    supervisor: bool = True
+    digest: bool = True
+    escalate_unauthenticated: bool = True
+    escalate_failing_after_seconds: int = 1800
+    escalate_all_down_after_seconds: int = 1800
+    flap_threshold: int = 3
+
+
+@dataclass
+class ProviderFailoverDoctorConfig:
+    held_warn_seconds: int = 14400
+
+
+@dataclass
+class ProviderFailoverEvidenceConfig:
+    #: Evidence items kept per provider, newest first.  The trip rules count
+    #: over this ring, so it must hold at least the largest trip count.
+    keep: int = 20
+
+
+@dataclass
+class ProviderFailoverConfig:
+    """Provider availability and failover (``docs/specs/provider-failover.md`` D22).
+
+    Hot-reloadable: the availability service reads this through a getter on
+    every piece of evidence, never a copy taken at startup.
+    """
+
+    mode: str = "enforce"
+    #: Failover target preference; empty means the project default's
+    #: provider first, then ``WORKER_PROVIDERS`` order.
+    order: list[str] = field(default_factory=list)
+    default_policy: str = "same_class"
+    #: Per-class override, e.g. ``{"deep-high": "hold"}``.
+    classes: dict[str, str] = field(default_factory=dict)
+    usage: ProviderFailoverUsageConfig = field(default_factory=ProviderFailoverUsageConfig)
+    launch: ProviderFailoverLaunchConfig = field(default_factory=ProviderFailoverLaunchConfig)
+    rate_limit: ProviderFailoverRateLimitConfig = field(
+        default_factory=ProviderFailoverRateLimitConfig
+    )
+    auth_probe: ProviderFailoverAuthProbeConfig = field(
+        default_factory=ProviderFailoverAuthProbeConfig
+    )
+    recovery: ProviderFailoverRecoveryConfig = field(
+        default_factory=ProviderFailoverRecoveryConfig
+    )
+    override: ProviderFailoverOverrideConfig = field(
+        default_factory=ProviderFailoverOverrideConfig
+    )
+    reroute: ProviderFailoverRerouteConfig = field(default_factory=ProviderFailoverRerouteConfig)
+    notify: ProviderFailoverNotifyConfig = field(default_factory=ProviderFailoverNotifyConfig)
+    doctor: ProviderFailoverDoctorConfig = field(default_factory=ProviderFailoverDoctorConfig)
+    evidence: ProviderFailoverEvidenceConfig = field(
+        default_factory=ProviderFailoverEvidenceConfig
+    )
+
+    @property
+    def tracking(self) -> bool:
+        """Evidence is collected and state derived (``observe`` or ``enforce``)."""
+        return self.mode in ("observe", "enforce")
+
+    @property
+    def enforcing(self) -> bool:
+        """An unavailable provider is actually not launched against."""
+        return self.mode == "enforce"
+
+    def validate(self) -> list[ConfigError]:
+        section = "provider_failover"
+        errors: list[ConfigError] = []
+        if self.mode not in PROVIDER_FAILOVER_MODES:
+            errors.append(
+                ConfigError(section, "mode", f"must be one of {', '.join(PROVIDER_FAILOVER_MODES)}")
+            )
+        if self.default_policy not in PROVIDER_FAILOVER_POLICIES:
+            errors.append(
+                ConfigError(
+                    section,
+                    "default_policy",
+                    f"must be one of {', '.join(PROVIDER_FAILOVER_POLICIES)}",
+                )
+            )
+        if not isinstance(self.classes, dict):
+            errors.append(ConfigError(section, "classes", "must be a mapping of class -> policy"))
+        else:
+            for class_id, policy in self.classes.items():
+                if policy not in PROVIDER_FAILOVER_POLICIES:
+                    errors.append(
+                        ConfigError(
+                            section,
+                            f"classes.{class_id}",
+                            f"must be one of {', '.join(PROVIDER_FAILOVER_POLICIES)}",
+                        )
+                    )
+        if not isinstance(self.order, list) or not all(isinstance(p, str) for p in self.order):
+            errors.append(ConfigError(section, "order", "must be a list of provider keys"))
+        elif len(set(self.order)) != len(self.order):
+            errors.append(
+                ConfigError(section, "order", "lists a provider twice", severity="warning")
+            )
+
+        usage = self.usage
+        for key in ("exhausted_percent", "degraded_percent"):
+            value = getattr(usage, key)
+            if not 0 < value <= 100:
+                errors.append(ConfigError(section, f"usage.{key}", "must be in (0, 100]"))
+        if usage.degraded_percent >= usage.exhausted_percent:
+            errors.append(
+                ConfigError(
+                    section, "usage.degraded_percent", "must be below usage.exhausted_percent"
+                )
+            )
+        if not 0 <= usage.hysteresis_percent < usage.degraded_percent:
+            errors.append(
+                ConfigError(
+                    section,
+                    "usage.hysteresis_percent",
+                    "must be >= 0 and below usage.degraded_percent",
+                )
+            )
+
+        counts = {
+            "launch.strong_failures_to_trip": self.launch.strong_failures_to_trip,
+            "launch.generic_failures_to_trip": self.launch.generic_failures_to_trip,
+            "rate_limit.exits_to_trip": self.rate_limit.exits_to_trip,
+            "reroute.max_per_sweep": self.reroute.max_per_sweep,
+            "reroute.max_auto_per_task": self.reroute.max_auto_per_task,
+            "notify.flap_threshold": self.notify.flap_threshold,
+            "evidence.keep": self.evidence.keep,
+        }
+        for key, value in counts.items():
+            if value < 1:
+                errors.append(ConfigError(section, key, "must be >= 1"))
+        largest_trip = max(
+            self.launch.strong_failures_to_trip,
+            self.launch.generic_failures_to_trip,
+            self.rate_limit.exits_to_trip,
+        )
+        if self.evidence.keep < largest_trip + 2:
+            errors.append(
+                ConfigError(
+                    section,
+                    "evidence.keep",
+                    f"must be >= {largest_trip + 2}: the trip rules count over this ring",
+                )
+            )
+
+        durations = {
+            "launch.window_seconds": self.launch.window_seconds,
+            "launch.suspect_backoff_seconds": self.launch.suspect_backoff_seconds,
+            "rate_limit.cooldown_seconds": self.rate_limit.cooldown_seconds,
+            "auth_probe.interval_seconds": self.auth_probe.interval_seconds,
+            "recovery.reset_grace_seconds": self.recovery.reset_grace_seconds,
+            "recovery.auth_probe_interval_seconds": self.recovery.auth_probe_interval_seconds,
+            "recovery.failing_backoff_seconds": self.recovery.failing_backoff_seconds,
+            "recovery.backoff_max_seconds": self.recovery.backoff_max_seconds,
+            "recovery.flap_window_seconds": self.recovery.flap_window_seconds,
+            "override.default_ttl_seconds": self.override.default_ttl_seconds,
+            "override.max_ttl_seconds": self.override.max_ttl_seconds,
+            "reroute.task_cooldown_seconds": self.reroute.task_cooldown_seconds,
+            "notify.escalate_failing_after_seconds": self.notify.escalate_failing_after_seconds,
+            "notify.escalate_all_down_after_seconds": self.notify.escalate_all_down_after_seconds,
+            "doctor.held_warn_seconds": self.doctor.held_warn_seconds,
+        }
+        for key, value in durations.items():
+            if value < 0:
+                errors.append(ConfigError(section, key, "must be >= 0"))
+        for key in ("launch.window_seconds", "recovery.auth_probe_interval_seconds"):
+            if durations[key] <= 0:
+                errors.append(ConfigError(section, key, "must be > 0"))
+        if self.auth_probe.timeout_seconds <= 0:
+            errors.append(ConfigError(section, "auth_probe.timeout_seconds", "must be > 0"))
+        if self.override.default_ttl_seconds > self.override.max_ttl_seconds:
+            errors.append(
+                ConfigError(
+                    section,
+                    "override.default_ttl_seconds",
+                    "must be <= override.max_ttl_seconds",
+                )
+            )
+        if self.reroute.target_backlog_factor <= 0:
+            errors.append(ConfigError(section, "reroute.target_backlog_factor", "must be > 0"))
+        return errors
+
+
+#: ``provider_failover`` sub-blocks, YAML key -> dataclass.  One table so the
+#: loader and the section round-trip test cannot disagree about the shape.
+PROVIDER_FAILOVER_SUBSECTIONS: dict[str, type] = {
+    "usage": ProviderFailoverUsageConfig,
+    "launch": ProviderFailoverLaunchConfig,
+    "rate_limit": ProviderFailoverRateLimitConfig,
+    "auth_probe": ProviderFailoverAuthProbeConfig,
+    "recovery": ProviderFailoverRecoveryConfig,
+    "override": ProviderFailoverOverrideConfig,
+    "reroute": ProviderFailoverRerouteConfig,
+    "notify": ProviderFailoverNotifyConfig,
+    "doctor": ProviderFailoverDoctorConfig,
+    "evidence": ProviderFailoverEvidenceConfig,
+}
+
+
+def load_provider_failover_config(section: object) -> ProviderFailoverConfig:
+    """Build :class:`ProviderFailoverConfig` from a YAML mapping (absent keys keep defaults)."""
+    raw = section if isinstance(section, Mapping) else {}
+    top = {k: v for k, v in raw.items() if k not in PROVIDER_FAILOVER_SUBSECTIONS}
+    kwargs = _dataclass_kwargs(ProviderFailoverConfig, top)
+    for key, cls in PROVIDER_FAILOVER_SUBSECTIONS.items():
+        kwargs[key] = cls(**_dataclass_kwargs(cls, raw.get(key)))
+    if "order" in kwargs:
+        kwargs["order"] = [str(item) for item in (kwargs["order"] or [])]
+    if "classes" in kwargs and isinstance(kwargs["classes"], Mapping):
+        kwargs["classes"] = {str(k): str(v) for k, v in kwargs["classes"].items()}
+    return ProviderFailoverConfig(**kwargs)
+
+
 @dataclass
 class GraphLayoutConfig:
     """Server-side task graph layout (spatial-layout design §8).
@@ -2430,6 +2763,29 @@ class GraphLayoutConfig:
 
 
 DEFAULT_DASHBOARD_SERVER_PORT = 8082
+#: The default when ``mcp_server.port`` already holds :data:`DEFAULT_DASHBOARD_SERVER_PORT`.
+ALTERNATE_DASHBOARD_SERVER_PORT = 8083
+
+
+def default_dashboard_server_port(raw: Mapping[str, object]) -> int:
+    """The port ``dashboard.server`` listens on when it sets none (spec §3.1).
+
+    8082, unless ``mcp_server.port`` is 8082 -- an install that moved the
+    daemon there before the dashboard server existed -- in which case 8083,
+    so upgrading never leaves a config that no longer loads.  The rule reads
+    the config alone, never what is listening, so the URL stays
+    deterministic; a port the operator set is never moved, and setting it
+    to the daemon's is still a validation error.
+    """
+    section = raw.get("mcp_server")
+    port = section.get("port") if isinstance(section, Mapping) else None
+    try:
+        daemon_port = int(port) if port not in (None, "") else None
+    except (TypeError, ValueError):
+        daemon_port = None
+    if daemon_port == DEFAULT_DASHBOARD_SERVER_PORT:
+        return ALTERNATE_DASHBOARD_SERVER_PORT
+    return DEFAULT_DASHBOARD_SERVER_PORT
 
 
 def is_dashboard_server_host(value: object) -> bool:
@@ -2461,6 +2817,9 @@ class DashboardServerConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_SERVER_PORT
+    #: Public dashboard origin used in links sent outside the local machine.
+    #: Empty preserves the local host-and-port URL.
+    public_url: str = ""
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2477,6 +2836,8 @@ class DashboardServerConfig:
             errors.append(ConfigError(
                 "dashboard.server", "port", f"must be between 1 and 65535, got {self.port!r}",
             ))
+        if not isinstance(self.public_url, str):
+            errors.append(ConfigError("dashboard", "public_url", "must be a string"))
         return errors
 
 
@@ -2490,9 +2851,11 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     dashboard = raw.get("dashboard")
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
-    if not isinstance(section, Mapping):
-        return DashboardServerConfig()
-    return DashboardServerConfig(**_dataclass_kwargs(DashboardServerConfig, dict(section)))
+    kwargs = _dataclass_kwargs(DashboardServerConfig, section)
+    if isinstance(dashboard, Mapping) and "public_url" in dashboard:
+        kwargs["public_url"] = dashboard["public_url"]
+    kwargs.setdefault("port", default_dashboard_server_port(raw))
+    return DashboardServerConfig(**kwargs)
 
 
 @dataclass
@@ -2542,7 +2905,6 @@ class AppConfig:
     discord: DiscordConfig = field(default_factory=DiscordConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
-    pause_retry: PauseRetryConfig = field(default_factory=PauseRetryConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
@@ -2573,6 +2935,7 @@ class AppConfig:
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
+    provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
@@ -2764,7 +3127,6 @@ class AppConfig:
 
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
-        errors.extend(self.pause_retry.validate())
         errors.extend(self.llm.validate())
         errors.extend(self.supervisor.validate())
         errors.extend(self.docs.validate())
@@ -2791,6 +3153,7 @@ class AppConfig:
         errors.extend(self.resources.validate())
         errors.extend(self.metrics.validate())
         errors.extend(self.providers.validate())
+        errors.extend(self.provider_failover.validate())
         errors.extend(self.graph_layout.validate())
         errors.extend(self.dashboard_server.validate())
         if self.dashboard_server.port == self.mcp_server.port:
@@ -2863,7 +3226,7 @@ class AppConfig:
         """Return a new AppConfig with non-critical settings refreshed from disk.
 
         Non-critical settings (safe to change at runtime without restart):
-        - scheduling, pause_retry, auto_task, archive, monitoring
+        - scheduling, auto_task, archive, monitoring, provider_failover
         - llm_logging
 
         Critical settings (NOT reloaded — require restart):
@@ -2886,7 +3249,6 @@ class AppConfig:
         # Create a copy of current config and update only non-critical sections
         updated = copy.deepcopy(self)
         updated.scheduling = fresh.scheduling
-        updated.pause_retry = fresh.pause_retry
         updated.auto_task = fresh.auto_task
         updated.archive = fresh.archive
         updated.monitoring = fresh.monitoring
@@ -2902,6 +3264,7 @@ class AppConfig:
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
         updated.providers = fresh.providers
+        updated.provider_failover = fresh.provider_failover
 
         return updated
 
@@ -2927,7 +3290,6 @@ HOT_RELOADABLE_SECTIONS = {
     "monitoring",
     "archive",
     "llm_logging",
-    "pause_retry",
     "agents_config",
     "auto_task",
     "logging",
@@ -2946,6 +3308,10 @@ HOT_RELOADABLE_SECTIONS = {
     # on each request, the probe resolves its binary on each run -- so an edit
     # takes effect without a restart.
     "providers",
+    # Read per use through ``Orchestrator.provider_availability``, which holds
+    # the config getter rather than a copy, so a threshold edit bites on the
+    # next piece of evidence (provider-failover D22).
+    "provider_failover",
     "docs",
     "graph_layout",
     # Read by the dashboard server process when it starts, never by the
@@ -3307,6 +3673,35 @@ def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
         base_url=base_url,
         max_tokens=int(m.get("max_tokens", 4096)),
         default_class=str(m.get("default_class", "") or ""),
+        fallback=_llm_fallback_from_mapping(m.get("fallback")),
+    )
+
+
+_LLM_FALLBACK_KEYS = frozenset(f.name for f in dataclasses.fields(LLMFallbackConfig))
+
+
+def _llm_fallback_from_mapping(raw: object) -> LLMFallbackConfig | None:
+    """``llm.fallback``: absent or ``null`` means no fallback (provider-failover D13a)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        keys = ", ".join(sorted(_LLM_FALLBACK_KEYS))
+        raise ConfigValidationError([f"[llm] fallback: must be a mapping of {keys}, or null"])
+    unknown = sorted(str(key) for key in raw if key not in _LLM_FALLBACK_KEYS)
+    if unknown:
+        # Names only: a mistyped key may be holding a pasted credential.
+        logger.warning(
+            "llm.fallback: ignoring unsupported keys %s (supported: %s)",
+            unknown,
+            sorted(_LLM_FALLBACK_KEYS),
+        )
+    raw_model = raw.get("model", "")
+    return LLMFallbackConfig(
+        provider=normalize_llm_provider(str(raw.get("provider", "") or "")),
+        model=str(raw_model) if raw_model else "",
+        api_key=str(raw.get("api_key", "") or ""),
+        base_url=str(raw.get("base_url", "") or ""),
+        default_class=str(raw.get("default_class", "") or ""),
     )
 
 
@@ -3597,12 +3992,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         )
 
     if "pause_retry" in raw:
-        p = raw["pause_retry"]
-        config.pause_retry = PauseRetryConfig(
-            rate_limit_backoff_seconds=p.get("rate_limit_backoff_seconds", 60),
-            token_exhaustion_retry_seconds=p.get("token_exhaustion_retry_seconds", 300),
-            rate_limit_max_retries=p.get("rate_limit_max_retries", 3),
-            rate_limit_max_backoff_seconds=p.get("rate_limit_max_backoff_seconds", 300),
+        # Retired with the provider-failover design (D7): nothing ever read
+        # it.  Tolerated so an existing config file still loads.
+        logger.warning(
+            "config section 'pause_retry' is deprecated and ignored; provider "
+            "backoff is configured under 'provider_failover' "
+            "(docs/specs/provider-failover.md)"
         )
 
     llm_raw = raw.get("llm")
@@ -3731,6 +4126,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
+                    "fake_script_file": str,
                 },
             )
         )
@@ -3930,6 +4326,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             **_dataclass_kwargs(ProvidersConfig, {k: v for k, v in prov.items() if k != "claude"}),
             claude=ClaudeProviderConfig(**claude_kwargs),
         )
+
+    if "provider_failover" in raw:
+        config.provider_failover = load_provider_failover_config(raw["provider_failover"])
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as

@@ -36,6 +36,7 @@ from typing import Any
 
 from sqlalchemy import and_, delete, insert, or_, select
 
+from src.database.queries.integration_state_queries import session_attached_clause
 from src.database.tables import (
     integration_candidate_resolutions,
     integration_delegate_releases,
@@ -156,14 +157,7 @@ def _stranded_statement(*, operation_ids: list[str] | None, limit: int):
     operation = integration_repair_operations
     attached_session = (
         select(sessions.c.id)
-        .where(
-            sessions.c.task_id == tasks.c.id,
-            or_(
-                sessions.c.state != "stopped",
-                sessions.c.desired_state != "stopped",
-                sessions.c.claim_phase.is_not(None),
-            ),
-        )
+        .where(sessions.c.task_id == tasks.c.id, session_attached_clause())
         .exists()
     )
     statement = (
@@ -245,9 +239,11 @@ async def release_delegates_on(
     post-commit notifications once its own transaction has committed.
 
     The ticket's execution disposition and the cleanup of what it still holds
-    are separate facts.  A delegate with no live session or claim becomes
-    terminal ``FAILED`` -- non-success and never runnable again -- so nothing
-    schedules it, reminds about it or waits on it as paused work.  A retained
+    are separate facts.  A delegate with no session that is anything but fully
+    stopped becomes terminal ``FAILED`` -- non-success and never runnable
+    again -- so nothing schedules it, reminds about it or waits on it as paused
+    work.  A stopped writer's retained claim is history, not a writer
+    (:func:`session_attached_clause`).  A retained
     branch owner or workspace lock does not keep the ticket open: it is
     preserved exactly as found and recorded as a named cleanup blocker, which
     ``aq task explain`` re-reads live.  A live writer still defers the release;

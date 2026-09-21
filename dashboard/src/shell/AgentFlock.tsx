@@ -1,13 +1,13 @@
 import { useId, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronDownIcon, ChevronRightIcon, UsersIcon, PlusIcon } from "@heroicons/react/24/outline";
-import { useAgentFlock, useEditAgent, useFlockSubagents } from "../api/agents";
+import { useAgentFlock, useEditAgent, useFlockSubagents, type FlockAgent } from "../api/agents";
 import { usePoolSetEnabled } from "../api/hooks";
 import EnableToggle from "../pages/agents/EnableToggle";
 import { useAgentSelection } from "../pages/agents/useAgentSelection";
 import { AgentState, AgentEligibility, AgentWaitingQuestion, FlockSubagents } from "../pages/agents/AgentMetadata";
-import { PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
-import { isPoolAgent, useDebouncedBusyPoolEntries, usePoolFlock } from "../pages/agents/pools";
+import { OutsidePoolBadge, PoolBadge, PoolPlacementRow, PoolQuarantine, PoolSupplyRow } from "../pages/agents/PoolMetadata";
+import { isPoolAgent, outsideSessionAgent, useDebouncedBusyPoolEntries, usePoolFlock, type PoolEntry } from "../pages/agents/pools";
 import { useShellPreferences } from "./useShellPreferences";
 
 export default function AgentFlock() {
@@ -17,7 +17,9 @@ export default function AgentFlock() {
   const { entries: poolEntries, poolIds } = usePoolFlock();
   const { busy: pools, hiddenCount } = useDebouncedBusyPoolEntries(poolEntries);
   // Pool members are reachable through their pool entry; listing each
-  // ephemeral instance row here as well would double-count the flock.
+  // ephemeral instance row here as well would double-count the flock. An
+  // agent on a pool profile running a task-lifecycle session is not a member,
+  // but it is filtered here too: its pool entry lists it as an outside row.
   const agents = roster.filter((agent) => !isPoolAgent(agent, poolIds));
   // The user's roaming preference on the daemon, not this browser's.
   const { prefs, update: updatePreferences } = useShellPreferences();
@@ -138,8 +140,8 @@ export default function AgentFlock() {
             const pending = setPoolEnabled.isPending && setPoolEnabled.variables?.profile_id === entry.profileId;
             const failed = setPoolEnabled.variables?.profile_id === entry.profileId ? setPoolEnabled.error : null;
             return (
+              <div key={entry.key}>
               <div
-                key={entry.key}
                 className={"flex items-start gap-1 rounded-lg border px-3 py-1.5 transition-colors "
                   + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
               >
@@ -178,6 +180,13 @@ export default function AgentFlock() {
                 onChange={(next) => setPoolEnabled.mutate({ profile_id: entry.profileId, enabled: next })}
               />
               </div>
+              <OutsidePoolRows
+                entry={entry}
+                roster={roster}
+                selectedIds={selection.selectedIds}
+                onSelect={(agentId, additive) => setLimitAt(selection.select(agentId, additive) ? null : selection.locationKey)}
+              />
+              </div>
             );
           })}
           {hiddenCount > 0 && (
@@ -193,5 +202,73 @@ export default function AgentFlock() {
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * Task-lifecycle sessions running on a pool's route, nested under the pool.
+ *
+ * They are not pool members — typically tasks launched on the profile before
+ * it switched to ``lifecycle: pool`` — so the pool's supply does not count
+ * them and the roster hides their agents with the pool's. Listed here, each
+ * one opens its agent's window like any other row, so its progress can be
+ * watched. A session no roster agent is running is still listed, without a
+ * click target: there is no agent window to open for it.
+ */
+function OutsidePoolRows({ entry, roster, selectedIds, onSelect }: {
+  entry: PoolEntry;
+  roster: FlockAgent[];
+  selectedIds: string[];
+  onSelect: (agentId: string, additive: boolean) => void;
+}) {
+  if (entry.outside.length === 0) return null;
+  return (
+    <ul aria-label={"Sessions outside the " + entry.profileId + " pool"} className="ml-4 mt-1 space-y-1 border-l border-gray-800 pl-2">
+      {entry.outside.map((session) => {
+        const agent = outsideSessionAgent(session, roster);
+        const name = agent?.name || session.name;
+        const task = session.task_title || session.task_id || agent?.current_task_title || "No task";
+        const selected = !!agent && selectedIds.includes(agent.id);
+        const body = (
+          <>
+            <span className="mb-0.5 flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium text-gray-200">{name}</span>
+              <span className={"shrink-0 text-[10px] capitalize "
+                + (agent?.waiting_question ? "text-amber-300" : (agent?.state ?? session.state) === "busy" ? "text-emerald-400" : "text-gray-500")}>
+                {agent ? <AgentState agent={agent} /> : session.state}
+              </span>
+            </span>
+            <span className="block space-y-0.5 text-[10px] leading-tight text-gray-500">
+              <span className="flex min-w-0 items-center gap-2">
+                <OutsidePoolBadge session={session} />
+                <span className="min-w-0 truncate text-gray-400" title={task}>{task}</span>
+              </span>
+              {agent && <AgentWaitingQuestion agent={agent} />}
+            </span>
+          </>
+        );
+        return (
+          <li key={session.session_id}>
+            {agent ? (
+              <button
+                type="button"
+                data-listnav="1"
+                aria-label={"Open " + name + " (outside pool)"}
+                aria-pressed={selected}
+                onClick={(event) => onSelect(agent.id, event.shiftKey)}
+                className={"block w-full rounded-lg border px-2 py-1 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400 "
+                  + (selected ? "border-indigo-500/40 bg-indigo-500/10" : "border-transparent hover:border-gray-700 hover:bg-gray-800/70")}
+              >
+                {body}
+              </button>
+            ) : (
+              <div className="rounded-lg border border-transparent px-2 py-1" title="No agent in the roster is running this session.">
+                {body}
+              </div>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }

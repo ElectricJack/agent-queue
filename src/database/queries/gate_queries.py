@@ -14,6 +14,7 @@ import uuid
 from typing import Iterable
 
 from sqlalchemy import and_, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import gates, task_gates, tasks
@@ -261,6 +262,25 @@ class GateQueriesMixin:
                 orig=None,
             )
         return row[0], False
+
+    async def attach_gate_waiters(
+        self, gate_id: str, task_ids: Iterable[str], *, conn
+    ) -> set[str]:
+        """Make *task_ids* wait on the existing gate *gate_id*, on the caller's transaction.
+
+        Idempotent: a task already waiting is left alone.  Recomputes the
+        waiters' ``is_blocked`` projection in the same transaction and
+        returns the ids that flipped; the caller runs
+        :meth:`log_blocked_flips` on them after its commit.
+        """
+        waiters = {str(t) for t in task_ids}
+        if not waiters:
+            return set()
+        for tid in sorted(waiters):
+            await conn.execute(
+                pg_insert(task_gates).values(task_id=tid, gate_id=gate_id).on_conflict_do_nothing()
+            )
+        return await self.recompute_blocked(waiters, conn=conn)
 
     async def resolve_gate(
         self,

@@ -96,9 +96,12 @@ class IntegrationStatusService:
 
             if project["hierarchical_integration_mode"] == "development":
                 from src.database.tables import development_deliveries, sessions
+                from src.integration.live_operations import live_operations_on
+
                 rows = await self._all(conn, select(development_deliveries).where(
                     development_deliveries.c.project_id == project_id).order_by(
                     development_deliveries.c.created_at.desc()).limit(100))
+                live_operations = await live_operations_on(conn, project_id)
                 owner_rows = await self._all(conn, select(integration_branch_owners,
                     sessions.c.state.label("session_state"),
                     sessions.c.desired_state.label("session_desired_state")).outerjoin(
@@ -118,7 +121,8 @@ class IntegrationStatusService:
                 return {"project_id": project_id, "effective_mode": "development",
                         "desired_mode": "development", "generation": project["hierarchical_integration_generation"],
                         "policy": project["hierarchical_integration_policy"], "deliveries": rows,
-                        "ownership": owners, "blockers": blockers, "ready": not pending, "rollout_ready": True,
+                        "ownership": owners, "live_operations": live_operations,
+                        "blockers": blockers, "ready": not pending, "rollout_ready": True,
                         "pending_publications": [r["id"] for r in rows if r["state"] == "publishing"],
                         "parked": [r["id"] for r in rows if r["state"] == "parked"]}
 

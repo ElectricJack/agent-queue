@@ -96,7 +96,8 @@ thing, and the test passes something else in.
 | `provider.claude-cli` | the provider's own installer script | a runner that records the command |
 | `provider.claude-login` | `claude auth status` and a credential store | the runner and a file under a temporary home |
 | `daemon.start` | `aq start` and an HTTP `/health` probe | a command runner and an HTTP probe |
-| `daemon.dashboard` | an HTTP probe of `/dashboard` | the same probe |
+| `dashboard.serve` | `aq dashboard start`, an HTTP probe of the dashboard server's page and its `/__aq/health` identity | the command runner, the HTTP probe and an identity probe |
+| `daemon.dashboard` | the same page and identity probes | the same probes |
 
 Two properties are asserted mechanically rather than trusted:
 

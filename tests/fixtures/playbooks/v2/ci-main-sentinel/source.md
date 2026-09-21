@@ -16,9 +16,12 @@ Every `timer.15m` event for `project:agent-queue` begins the one
 timer interval is longer than 600 seconds, so it does not suppress any event.
 
 The sentinel owns the health of the default branch. It never edits code
-itself: it observes CI, files one repair task per distinct failure, and hands
-a failure that two repairs could not fix to a human. The design is
-`docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`.
+itself: it observes CI, files one repair task per distinct failure, records
+the failing tests each repair owns, and hands a failure that two repairs could
+not fix to a human. The design is
+`docs/superpowers/specs/2026-09-05-ci-main-sentinel-design.md`, and the
+ownership rule is
+`docs/superpowers/specs/2026-09-16-ci-sentinel-repair-coverage-design.md`.
 
 This is a fallback observer of existing CI results, not a post-merge audit or a
 request to rerun full CI. If the project uses integration trains, its repair PRs
@@ -28,28 +31,37 @@ repair agents never merge independently or compete with candidate repair.
 ## Rule: keep-main-green
 
 There is no guard. The rule reads the default branch's CI verdict and then
-takes exactly one of three paths.
+either ends, files or reuses a repair and records what it owns, or escalates.
 
 1. Call `ci_baseline_status` with `project_id` `agent-queue`. Bind the result
    as `baseline`. It judges the head commit's check runs, names the failing
    checks and tests, and keys the repair by their failure signature. A `green`,
    `pending`, or `unknown` outcome ends the rule: there is nothing to repair,
    or nothing to repair yet, and the next tick looks again. A `red` outcome
-   continues to step 2. A `red_escalated` outcome — the same signature has
-   already spent its repair attempts — continues to step 3. A `rejected` or
+   continues to step 2. A `red_escalated` outcome — the failure has already
+   spent its repair attempts — continues to step 4. A `rejected` or
    `runtime_error` outcome fails the rule.
 2. Call `ensure_task` with `project_id` `agent-queue`, `dedup_key`
    `baseline.dedup_key`, `title` `baseline.title`, `description`
    `baseline.description`, `priority` `5`, `intelligence_class`
    `deep-high`. Bind the resulting task as `repair`. The key is
-   `ci-baseline:<signature>:<attempt>`, so a commit that leaves the same tests
-   red reuses the in-flight repair and a different failure gets its own task.
+   `ci-baseline:<signature>:<n>`. When live repairs already own every failing
+   test it is the in-flight repair's key, so a commit that leaves the same
+   tests red, or fewer of them, reuses that repair; otherwise the new task owns
+   only the tests no live repair owns.
    The repair is created at the project root, never inside a container: its
    whole job is to land on the default branch, and a parent that owns delivery
    would hold its work off that branch until the parent itself settled. A
-   `created` or `reused` outcome ends the rule; a `rejected` or
+   `created` or `reused` outcome continues to step 3; a `rejected` or
    `runtime_error` outcome fails it.
-3. Call `escalation_create` with `project_id` `agent-queue`, source and
+3. Call `ci_repair_adopt` with `project_id` `agent-queue`, `task_id`
+   `repair.task_id`, `ref` `baseline.ref`, `head_sha` `baseline.head_sha`,
+   `failing_tests` `baseline.repair_tests`, and `failing_checks`
+   `baseline.repair_checks`. It records the failure the repair owns, once, so
+   the next tick still recognises the repair after a partial fix shrinks the
+   failing set. An `adopted`, `recorded`, or `unchanged` outcome ends the rule;
+   a `rejected` or `runtime_error` outcome fails it.
+4. Call `escalation_create` with `project_id` `agent-queue`, source and
    incident keys `baseline.escalation_key`, `summary`
    `baseline.escalation_title`, and `investigation`
    `baseline.escalation_question`. Its `source_kind` is `core`; both

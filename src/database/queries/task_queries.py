@@ -22,7 +22,10 @@ from src.database.tables import (
     gates,
     integration_repair_operations,
     integration_repair_stages,
+    projects,
+    repos,
     sessions,
+    task_branch_origins,
     task_comments,
     task_completion_records,
     task_context,
@@ -57,6 +60,41 @@ logger = logging.getLogger(__name__)
 _INTEGRATION_COMPLETION_TOKEN = object()
 _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
+#: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
+_UNSET = object()
+
+
+#: Project integration modes whose publisher collects a task by ``repo_id``.
+REPOSITORY_BOUND_MODES = frozenset({"hierarchy", "train", "development"})
+
+
+def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
+    """The ``repo_id`` a task of a project in *mode* is created with."""
+    return integration_repository_id if mode in REPOSITORY_BOUND_MODES else None
+
+
+class TaskProjectMoveError(ValueError):
+    """A project move would strand task hierarchy or delivery state."""
+
+    def __init__(self, task_id: str, destination: str, blockers: dict[str, object]):
+        self.task_id = task_id
+        self.destination = destination
+        self.blockers = blockers
+        if blockers.get("project_changed"):
+            detail = "its source project changed concurrently; retry the move"
+        else:
+            reasons = []
+            if parent_id := blockers.get("parent_task_id"):
+                reasons.append(f"it has parent task '{parent_id}'")
+            if blockers.get("has_children"):
+                reasons.append("it has child tasks")
+            if blockers.get("has_branch_origin"):
+                reasons.append("it has an active hierarchy/train branch origin")
+            detail = ", ".join(reasons)
+        super().__init__(
+            f"Cannot move task '{task_id}' to project '{destination}': {detail}. "
+            "Detach or settle its hierarchy and delivery state before moving it."
+        )
 
 
 def supports_returning(conn) -> bool:
@@ -93,6 +131,10 @@ _READY_REASONS = {
     "resume_paused": "resumed",
     "slot_reset_failed": "released",
     "prepare_timeout": "released",
+    # provider-failover D13: a launch or session its provider killed hands the
+    # task back; the sweep resumes a provider pause early.
+    "provider_unavailable": "released",
+    "provider_failover_resume": "resumed",
 }
 
 
@@ -241,6 +283,8 @@ class TaskQueryMixin:
                 intelligence_class=task.intelligence_class,
                 created_by_kind=task.created_by_kind,
                 created_by_id=task.created_by_id,
+                provider_intent=task.provider_intent or "class_only",
+                rerouted_from=task.rerouted_from,
                 # A brand-new row has no edges yet, so it starts
                 # unblocked; the edges that follow recompute it
                 # (work-graph implementation spec §4.1).
@@ -412,6 +456,43 @@ class TaskQueryMixin:
             values[key] = value
         return values
 
+    @staticmethod
+    async def _task_project_move_blockers_on(conn, task_id: str) -> dict[str, object] | None:
+        """Return hierarchy state that makes a one-row project move unsafe."""
+        child = tasks.alias("project_move_child")
+        row = (
+            await conn.execute(
+                select(
+                    tasks.c.parent_task_id,
+                    select(child.c.id)
+                    .where(child.c.parent_task_id == task_id)
+                    .limit(1)
+                    .exists()
+                    .label("has_children"),
+                    select(task_branch_origins.c.id)
+                    .where(
+                        task_branch_origins.c.task_id == task_id,
+                        task_branch_origins.c.retired_at.is_(None),
+                    )
+                    .limit(1)
+                    .exists()
+                    .label("has_branch_origin"),
+                ).where(tasks.c.id == task_id)
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            return None
+        return {
+            "parent_task_id": row["parent_task_id"],
+            "has_children": bool(row["has_children"]),
+            "has_branch_origin": bool(row["has_branch_origin"]),
+        }
+
+    async def get_task_project_move_blockers(self, task_id: str) -> dict[str, object] | None:
+        """Read the reasons ``task_id`` cannot be moved as one row."""
+        async with self._engine.connect() as conn:
+            return await self._task_project_move_blockers_on(conn, task_id)
+
     async def update_task(self, task_id: str, **kwargs) -> None:
         """Update arbitrary task fields.
 
@@ -438,19 +519,45 @@ class TaskQueryMixin:
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
-                # Serialize moves with comment append and task deletion on both
-                # SQLite and PostgreSQL before reading the old ownership.
-                await conn.execute(update(tasks).where(tasks.c.id == task_id).values(id=tasks.c.id))
-                comment_source_project = (await conn.execute(
+                # Project moves serialize with hierarchy mutations before
+                # locking the task row.  That makes the root/leaf/origin check
+                # below stable until commit, while the row lock still
+                # serializes comment append and task deletion.
+                initial_project = await conn.scalar(
                     select(tasks.c.project_id).where(tasks.c.id == task_id)
-                )).scalar_one_or_none()
+                )
+                if initial_project is not None:
+                    await self.lock_hierarchy_project(conn, initial_project)
+                source_row = (
+                    await conn.execute(
+                        select(tasks.c.project_id)
+                        .where(tasks.c.id == task_id)
+                        .with_for_update()
+                    )
+                ).one_or_none()
+                comment_source_project = source_row.project_id if source_row else None
+                if (
+                    initial_project is not None
+                    and comment_source_project is not None
+                    and comment_source_project != initial_project
+                ):
+                    raise TaskProjectMoveError(
+                        task_id, values["project_id"], {"project_changed": True}
+                    )
                 if comment_source_project and comment_source_project != values["project_id"]:
+                    blockers = await self._task_project_move_blockers_on(conn, task_id)
+                    if blockers and any(blockers.values()):
+                        raise TaskProjectMoveError(task_id, values["project_id"], blockers)
                     archived_project = (await conn.execute(
                         select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
                     )).scalar_one_or_none()
                     if archived_project in {comment_source_project, values["project_id"]}:
                         raise ValueError(
                             "Cannot move task: its ID is archived in the source or destination project."
+                        )
+                    if "repo_id" not in kwargs:
+                        values["repo_id"] = await self._moved_task_repo_id(
+                            conn, task_id, values["project_id"]
                         )
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
@@ -471,9 +578,36 @@ class TaskQueryMixin:
                     task_comments.c.project_id == comment_source_project,
                 ).values(project_id=values["project_id"]))
             flipped: set[str] = set()
-            if PROJECTION_INPUT_COLUMNS & kwargs.keys():
+            if PROJECTION_INPUT_COLUMNS & values.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+
+    @staticmethod
+    async def _moved_task_repo_id(conn, task_id: str, project_id: str) -> str | None:
+        """The repository a task moved into *project_id* is delivered from.
+
+        Each publisher collects only its own project's tasks, and only those
+        on its repository.  A move that kept the source project's
+        ``repo_id`` left the task collected by nobody, and readiness counted
+        it as delivered: ``fleet-meadow`` and ``smart-orbit.10`` were re-filed
+        from agent-queue-web into agent-queue that way.  A repository the
+        destination owns is kept; any other becomes the repository task
+        creation gives the destination's tasks.
+        """
+        current = await conn.scalar(select(tasks.c.repo_id).where(tasks.c.id == task_id))
+        if current is not None and await conn.scalar(
+            select(repos.c.id).where(repos.c.id == current, repos.c.project_id == project_id)
+        ):
+            return current
+        destination = (
+            await conn.execute(
+                select(
+                    projects.c.hierarchical_integration_mode,
+                    projects.c.integration_repository_id,
+                ).where(projects.c.id == project_id)
+            )
+        ).one_or_none()
+        return task_repository_id(*destination) if destination is not None else None
 
     async def append_task_attachment(self, task_id: str, path: str) -> list[str] | None:
         """Append one attachment path without losing concurrent uploads."""
@@ -1185,6 +1319,19 @@ class TaskQueryMixin:
                     )
                 )
 
+            # ``provider_pause`` describes *this* pause (provider-failover
+            # D17): the re-route sweep reads it to tell a provider pause from
+            # every other automatic one, so it must not outlive the pause and
+            # mislabel the next, unrelated one.  Every way out of PAUSED
+            # passes here, in the write's own transaction.
+            if current_status == TaskStatus.PAUSED:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == "provider_pause",
+                    )
+                )
+
             # A task in flight or terminally completed has resolved the
             # previous operational incident.  Centralising this covers both
             # push and pull execution paths, including callers outside the
@@ -1300,6 +1447,49 @@ class TaskQueryMixin:
         await self._notify_settled(result.settled)
         await self._notify_ready(result.ready)
         return result.flipped
+
+    async def transition_task_with_meta(
+        self,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        meta: dict,
+        context: str = "",
+        from_statuses: tuple[TaskStatus, ...] | None = None,
+        extra_where=None,
+        **kwargs,
+    ) -> bool:
+        """A status write plus ``task_metadata`` rows, in **one** transaction.
+
+        For state that describes the transition itself -- a provider pause's
+        ``provider_pause`` record (provider-failover D17) -- so no reader can
+        see the pause without its cause, or the cause without the pause.
+        *from_statuses* guards the write on the task's current status (a
+        caller that awaited something slow since it read the task must not
+        reopen one an operator closed or paused meanwhile).  Returns False,
+        writing nothing, when the guard matched no row.
+        """
+        if from_statuses is not None:
+            guard = tasks.c.status.in_([status.value for status in from_statuses])
+            extra_where = guard if extra_where is None else and_(extra_where, guard)
+        async with self.immediate() as conn:
+            result = await self._apply_transition(
+                conn,
+                task_id,
+                new_status,
+                context=context,
+                extra_where=extra_where,
+                returning=True,
+                **kwargs,
+            )
+            if result.row is None:
+                return False
+            for key, value in meta.items():
+                await self._upsert_meta(task_id, key, value, conn=conn)
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_settled(result.settled)
+        await self._notify_ready(result.ready)
+        return True
 
     #: Statuses after which a task will not run again, so anything gated on
     #: it can never be satisfied by waiting.
@@ -2001,6 +2191,8 @@ class TaskQueryMixin:
             created_by_id=row.get("created_by_id"),
             claim_epoch=int(row.get("claim_epoch") or 0),
             filed_count=int(row.get("filed_count") or 0),
+            provider_intent=row.get("provider_intent") or "class_only",
+            rerouted_from=row.get("rerouted_from"),
         )
 
     async def update_task_routing(
@@ -2011,18 +2203,28 @@ class TaskQueryMixin:
         intelligence_class: str | None,
         preferred_workspace_id: str | None,
         clear_intelligence_class: bool = False,
+        provider_intent: str | None = None,
+        rerouted_from: str | None | object = _UNSET,
     ) -> bool:
         """Update routing only while no worker holds the task.
 
         The predicate is in the write itself so a claim that wins after the
         command's read cannot be silently retargeted. Nullable values retain
         existing overrides unless editing explicitly clears the class.
+
+        ``provider_intent`` (provider-failover D8) is written when given and
+        left alone otherwise; ``rerouted_from`` likewise, where ``None``
+        clears the marker.  Every routing write rides the same guard.
         """
         vals: dict = {"profile_id": profile_id}
         if intelligence_class is not None or clear_intelligence_class:
             vals["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not None:
             vals["preferred_workspace_id"] = preferred_workspace_id
+        if provider_intent is not None:
+            vals["provider_intent"] = provider_intent
+        if rerouted_from is not _UNSET:
+            vals["rerouted_from"] = rerouted_from
         active_session = select(sessions.c.id).where(
             sessions.c.task_id == tasks.c.id,
             sessions.c.state.in_(("starting", "running", "draining")),

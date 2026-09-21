@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-69 commands are registered.
+72 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -122,8 +122,11 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | Command | Title | Summary |
 |---|---|---|
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
+| [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
+| [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
+| [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
 

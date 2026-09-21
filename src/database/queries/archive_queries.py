@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
@@ -125,8 +126,17 @@ class ArchiveBlockedRoots:
 class ArchiveQueryMixin:
     """Query mixin for archived task operations.  Expects ``self._engine``."""
 
-    async def archive_task(self, task_id: str) -> bool:
+    async def archive_task(self, task_id: str, *, hold_undelivered: bool = False) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
+
+        *hold_undelivered* is for the sweeps (the hourly auto-archive and the
+        bulk "archive everything completed" paths): they refuse a subtree
+        holding a COMPLETED task whose development delivery has not landed on
+        the default branch (``delivery_pending``).  The publisher only
+        collects tasks from ``tasks``, so archiving one of those is how
+        ``fleet-meadow`` and ``nimble-nexus`` lost their delivery and needed
+        re-delivery tasks.  An explicit single-task archive stays the
+        operator's call.
 
         Refuses live sessions or non-terminal tasks anywhere in the subtree.
         Deepest first, root last, so the subtree moves together.
@@ -172,6 +182,14 @@ class ArchiveQueryMixin:
             held = await self._development_integration_hold(ids, project_id, conn=conn)
             if held is not None:
                 raise HierarchyError("integration_owned", held)
+            if hold_undelivered:
+                undelivered = await self._undelivered_development_work(ids, conn=conn)
+                if undelivered:
+                    raise HierarchyError(
+                        "delivery_pending",
+                        "development delivery has not landed "
+                        f"{', '.join(undelivered)} on the default branch",
+                    )
             # Follow the existing sessions-before-tasks lock order. A task
             # can be terminal while its worker is still draining.
             live = await self.live_descendant_sessions(task_id, conn=conn)
@@ -315,6 +333,28 @@ class ArchiveQueryMixin:
         return None
 
     @staticmethod
+    async def _undelivered_development_work(ids, *, conn) -> list[str]:
+        """COMPLETED tasks among *ids* whose work has not reached the default branch.
+
+        Asked with foreign repository ids included: a task that names another
+        project's repository is never collected, so it is undelivered for
+        good, and archiving it would hide that for good too.
+        """
+        return list(
+            (
+                await conn.execute(
+                    select(tasks.c.id)
+                    .where(
+                        tasks.c.id.in_(ids),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        _development_delivery_pending(tasks, include_foreign_repos=True),
+                    )
+                    .order_by(tasks.c.id)
+                )
+            ).scalars()
+        )
+
+    @staticmethod
     def _named_task_ids(manifest, wanted: set[str]) -> list[str]:
         """Return the members of *manifest* that name a task in *wanted*.
 
@@ -374,6 +414,7 @@ class ArchiveQueryMixin:
                 is_plan_subtask=int(task.is_plan_subtask),
                 task_type=task.task_type.value if task.task_type else None,
                 profile_id=task.profile_id,
+                intelligence_class=task.intelligence_class,
                 preferred_workspace_id=task.preferred_workspace_id,
                 attachments=json.dumps(task.attachments) if task.attachments else "[]",
                 skip_verification=int(task.skip_verification),
@@ -386,6 +427,8 @@ class ArchiveQueryMixin:
                 is_blocked=int(task.is_blocked),
                 created_by_kind=task.created_by_kind,
                 created_by_id=task.created_by_id,
+                provider_intent=task.provider_intent or "class_only",
+                rerouted_from=task.rerouted_from,
                 created_at=0.0,
                 updated_at=0.0,
                 archived_at=now,
@@ -461,7 +504,7 @@ class ArchiveQueryMixin:
         archived: list[str] = []
         for tid in task_ids:
             try:
-                await self.archive_task(tid)
+                await self.archive_task(tid, hold_undelivered=True)
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
@@ -521,7 +564,7 @@ class ArchiveQueryMixin:
         unexpected_ids: dict[str, list[str]] = {}
         for tid in task_ids:
             try:
-                await self.archive_task(tid)
+                await self.archive_task(tid, hold_undelivered=True)
             except HierarchyError as exc:
                 await self._note_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
                 logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
@@ -819,6 +862,8 @@ class ArchiveQueryMixin:
             "plan_source": row.get("plan_source"),
             "is_plan_subtask": bool(row.get("is_plan_subtask", 0)),
             "task_type": row.get("task_type"),
+            "profile_id": row.get("profile_id"),
+            "intelligence_class": row.get("intelligence_class"),
             "workflow_id": row.get("workflow_id"),
             "affinity_agent_id": row.get("affinity_agent_id"),
             "affinity_reason": row.get("affinity_reason"),
@@ -826,6 +871,8 @@ class ArchiveQueryMixin:
             "is_blocked": bool(row.get("is_blocked", 0)),
             "created_by_kind": row.get("created_by_kind"),
             "created_by_id": row.get("created_by_id"),
+            "provider_intent": row.get("provider_intent") or "class_only",
+            "rerouted_from": row.get("rerouted_from"),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],

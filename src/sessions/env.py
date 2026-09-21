@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "ADOPTION_MARKER",
     "AQ_MARKER_KEYS",
+    "DAEMON_ENV_STRIP_KEYS",
     "DB_ISOLATION_KEYS",
     "SCRATCH_DB_SENTINEL",
     "STARTUP_PROMPT_DELIVERED",
@@ -95,6 +96,33 @@ DB_ISOLATION_KEYS: tuple[str, ...] = (
     "AQ_DB_SCOPE",
     "AQ_DATABASE_URL",
     "AGENT_QUEUE_DB",
+)
+
+#: Session-owned variables which must not be inherited by a daemon launched
+#: from an enclosing session.  The daemon needs its operator configuration,
+#: not a worker's database fence, credentials, claim, or resource limits.
+#: ``AQ_TASK_ID`` and ``AQ_API_URL`` are included with the identity markers:
+#: although a daemon can determine its API address independently, inheriting
+#: either value makes its process environment falsely look task-scoped.
+DAEMON_ENV_STRIP_KEYS: tuple[str, ...] = tuple(
+    sorted(
+        set(
+            AQ_MARKER_KEYS
+            + DB_ISOLATION_KEYS
+            + (
+                "AQ_SESSION_KIND",
+                "AQ_SESSION_NAME",
+                "AQ_PROFILE_ID",
+                "AQ_AGENT_ID",
+                STARTUP_PROMPT_DELIVERED,
+                "AQ_CLAIM_EPOCH",
+                "AQ_CPU_SHARE",
+                "AQ_CPU_CORES",
+                "AQ_TEST_SLOTS",
+                "AQ_TEST_WORKERS",
+            )
+        )
+    )
 )
 
 # Integration App credentials are daemon-only.  A worker-controlled harness

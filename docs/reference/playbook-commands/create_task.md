@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:7343327f50544bef77e3b2c038fde43501aabd21b5e4520aa0f3f81569c37249` |
+| Contract fingerprint | `sha256:d7858b8ab6ff344efe5de33ec3c618bf10f7fa6afdc923315460463da7d2ee3c` |
 
 ## Parameters
 
@@ -42,6 +42,8 @@
 | `affinity_agent_id` | `string \| null` | no | `null` | Preferred agent |
 | `affinity_reason` | `string \| null` | no | `null` | Preferred-agent reason |
 | `dedup_key` | `string \| null` | no | `null` | Deduplication key |
+| `provider_intent` | `string \| null` | no | `null` | — |
+| `pin` | `boolean \| null` | no | `null` | — |
 
 ## Result
 
@@ -56,6 +58,7 @@
 | `integration_mode` | `string \| null` | — |
 | `task_type` | `string \| null` | — |
 | `profile_id` | `string \| null` | — |
+| `provider_intent` | `string \| null` | — |
 | `intelligence_class` | `string \| null` | — |
 | `preferred_workspace_id` | `string \| null` | — |
 | `affinity_agent_id` | `string \| null` | — |

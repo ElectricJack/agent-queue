@@ -31,6 +31,9 @@ from src.database.tables import (
     dashboard_state_documents,
     development_deliveries,
     digest_windows,
+    doc_review_comments,
+    doc_review_revisions,
+    doc_reviews,
     escalation_actions,
     escalation_deliveries,
     escalation_messages,
@@ -42,6 +45,8 @@ from src.database.tables import (
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
+    integration_delegate_releases,
+    integration_owner_recoveries,
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
@@ -90,6 +95,8 @@ from src.database.tables import (
     project_layout_meta,
     project_onboarding_requests,
     projects,
+    provider_availability,
+    provider_availability_transitions,
     provider_usage_snapshots,
     rate_limits,
     repos,
@@ -111,8 +118,10 @@ from src.database.tables import (
     task_layouts,
     task_metadata,
     task_proposals,
+    task_reroutes,
     task_results,
     task_session_attempts,
+    task_subtasks,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -141,6 +150,8 @@ _ORDERED_TABLES = [
     plugins,
     rate_limits,
     provider_usage_snapshots,
+    provider_availability,
+    provider_availability_transitions,
     events,
     project_onboarding_requests,
     workspace_kinds,
@@ -151,6 +162,17 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    # No FK to tasks: checklist rows survive archive like task_comments.
+    task_subtasks,
+    # Soft-referenced audit of retired integration delegates; no FKs.
+    integration_delegate_releases,
+    # Soft-referenced audit of integration owner recoveries; no FKs.
+    integration_owner_recoveries,
+    # Document reviews: soft task references, no FK to tasks; revisions and
+    # comments reference doc_reviews.
+    doc_reviews,
+    doc_review_revisions,
+    doc_review_comments,
     dashboard_state_documents,
     agent_questions,
     subagent_events,
@@ -218,6 +240,7 @@ _ORDERED_TABLES = [
     # FK → projects, agents, tasks
     token_ledger,
     task_results,
+    task_reroutes,
     # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
     # FK → plugins
     plugin_data,

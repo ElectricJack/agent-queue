@@ -309,6 +309,22 @@ class ProjectCommandsMixin:
         project = await self.db.get_project(pid)
         if not project:
             return {"error": f"Project '{pid}' not found"}
+        if "review_delegate_to" in args:
+            from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+
+            principal = current_principal() or TRUSTED_LOCAL
+            if principal.kind is not PrincipalKind.LOCAL:
+                return {
+                    "success": False,
+                    "error_code": "local_operator_only",
+                    "error": "review delegation requires local operator",
+                }
+            if args["review_delegate_to"] not in {"", "user", "supervisor", None}:
+                return {
+                    "success": False,
+                    "error_code": "local_operator_only",
+                    "error": "review_delegate_to must be user, supervisor, or empty",
+                }
         rollout_fields = {
             "hierarchical_integration_mode",
             "hierarchical_integration_desired_mode",
@@ -382,12 +398,15 @@ class ProjectCommandsMixin:
             updates["assignment_playbook_id"] = playbook_id
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
+        if "review_delegate_to" in args:
+            updates["review_delegate_to"] = args["review_delegate_to"] or None
         if not updates:
             return {
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
-                    "default_profile_id, assignment_playbook_id, or repo_default_branch."
+                    "default_profile_id, assignment_playbook_id, repo_default_branch, or "
+                    "review_delegate_to."
                 )
             }
         await self.db.update_project(pid, **updates)

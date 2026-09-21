@@ -176,12 +176,6 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
             "min_task_guarantee": True,
             "affinity_wait_seconds": _by_size(machine, 300, 120, 120),
         },
-        "pause_retry": {
-            "rate_limit_backoff_seconds": 60,
-            "rate_limit_max_retries": 3,
-            "rate_limit_max_backoff_seconds": 300,
-            "token_exhaustion_retry_seconds": 900,
-        },
         "agents_config": {
             "heartbeat_interval_seconds": 30,
             "stuck_timeout_seconds": _by_size(machine, 3600, 1800, 1800),
@@ -312,32 +306,6 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             "small box because there is no second agent to wait for.",
             "Lower it when throughput matters more than keeping a task on the "
             "agent that already has its context.",
-        ),
-        TuningNote(
-            "pause_retry.rate_limit_backoff_seconds",
-            "A provider 429 clears in seconds to minutes; a minute is long "
-            "enough not to re-trip it and short enough not to idle the fleet.",
-            "Raise on a shared API key where several fleets compete.",
-        ),
-        TuningNote(
-            "pause_retry.rate_limit_max_retries",
-            "Three in-process retries before the task is paused: enough to "
-            "ride out a burst, few enough that a real outage reaches PAUSED "
-            "where an operator can see it.",
-            "0 pauses on the first 429 instead of retrying.",
-        ),
-        TuningNote(
-            "pause_retry.rate_limit_max_backoff_seconds",
-            "Caps the exponential backoff at five minutes so a retry loop "
-            "cannot silently grow into an hour-long stall.",
-            "Raise together with rate_limit_max_retries.",
-        ),
-        TuningNote(
-            "pause_retry.token_exhaustion_retry_seconds",
-            "15 min, not the code default of 5: a spent subscription quota "
-            "window is measured in hours, so retrying every five minutes only "
-            "produces failures to look at.",
-            "Lower it on a pay-as-you-go key, where exhaustion is transient.",
         ),
         TuningNote(
             "agents_config.heartbeat_interval_seconds",

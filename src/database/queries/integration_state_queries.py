@@ -17,6 +17,22 @@ from src.database.tables import (
 )
 
 
+def session_attached_clause():
+    """A ``sessions`` row that may still write for the task it names.
+
+    ``stopped`` is terminal -- ``_SESSION_TRANSITIONS`` never revives the row --
+    and a claim activates only on a running session, so a row stopped in both
+    ``state`` and ``desired_state`` is history.  ``claim_phase`` is deliberately
+    not consulted: ``_terminate_pool_session_locked`` keeps a confirmed-stopped
+    writer's claim as handoff evidence while an integration owner retains its
+    checkout, and reading that leftover as a writer left an ended operation's
+    delegate unreleasable and invisible to ``integration.stranded_delegates``.
+    What the claim protects -- the branch owner and the checkout -- is reported
+    as its own cleanup blocker.
+    """
+    return or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped")
+
+
 class IntegrationStateQueriesMixin:
     """Integration-state reads; state mutations stay caller-transaction owned."""
 
@@ -72,9 +88,7 @@ class IntegrationStateQueriesMixin:
             })
         for row in (await conn.execute(
             select(sessions.c.id, sessions.c.state).where(
-                sessions.c.task_id == task_id,
-                or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped",
-                    sessions.c.claim_phase.is_not(None)),
+                sessions.c.task_id == task_id, session_attached_clause(),
             ).order_by(sessions.c.id)
         )).mappings():
             blockers.append({

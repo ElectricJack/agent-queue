@@ -195,6 +195,12 @@ Stalled tasks climb a ladder, each rung a typed event:
    `needs_attention`. No further automatic action; a human (or the supervisor agent)
    decides.
 
+A session whose CLI is parked on its provider's usage-limit screen is not climbed at all:
+before each rung the ladder checks the pane's tail against a strict set of the CLIs' own
+blocking limit messages and, on a match, stops the process and applies the exit path's
+`rate_limit` verdict instead (provider-failover D13, `src/sessions/usage_limit_screen.py`;
+`provider_failover.mode: enforce` only).
+
 `stuck_timeout_seconds` (config `agents.stuck_timeout_seconds`) stays as the final backstop
 above the ladder, applied by the reconciler rather than `asyncio.wait_for`.
 

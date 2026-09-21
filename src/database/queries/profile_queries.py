@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import case, delete, insert, null, or_, select, update
 
 from src.database.tables import agent_profiles, projects, tasks
 from src.models import AgentProfile
@@ -172,10 +172,28 @@ class ProfileQueryMixin:
             return "created"
 
     async def delete_profile(self, profile_id: str) -> None:
-        """Delete a profile and clear foreign-key references."""
+        """Delete a profile and clear foreign-key references.
+
+        A task that loses its profile loses its provider intent with it
+        (provider-failover D17): ``pinned``/``preferred`` named a provider
+        that no longer has a profile, so the row becomes ``class_only``; and a
+        ``rerouted_from`` naming the deleted profile is cleared, because
+        there is nothing left to undo back to.  One statement, so no reader
+        sees a pinned row with no profile.
+        """
+        named = tasks.c.profile_id == profile_id
         async with self._engine.begin() as conn:
             await conn.execute(
-                update(tasks).where(tasks.c.profile_id == profile_id).values(profile_id=None)
+                update(tasks)
+                .where(or_(named, tasks.c.rerouted_from == profile_id))
+                .values(
+                    profile_id=case((named, null()), else_=tasks.c.profile_id),
+                    provider_intent=case((named, "class_only"), else_=tasks.c.provider_intent),
+                    rerouted_from=case(
+                        (tasks.c.rerouted_from == profile_id, null()),
+                        else_=tasks.c.rerouted_from,
+                    ),
+                )
             )
             await conn.execute(
                 update(projects)

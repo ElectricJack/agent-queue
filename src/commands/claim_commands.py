@@ -310,6 +310,15 @@ class ClaimCommandsMixin:
             # one a long poll is still waiting for.
             if not getattr(profile, "enabled", True):
                 return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is disabled", session)
+            # provider-failover D13: an idle worker whose provider is
+            # unavailable takes no new work.  One snapshot lookup on the
+            # *session's* provider -- never a per-candidate join -- so the
+            # claim frontier's ordered scan is untouched (D14).  Every
+            # provider being down is not a special case: the answer is still
+            # drain, not ``not_admissible`` + wait (D15's recorded decision).
+            drain = self._provider_drain_reason(session)
+            if drain:
+                return self._simple(ClaimResult.DRAIN_REQUESTED, drain, session)
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing
@@ -374,6 +383,17 @@ class ClaimCommandsMixin:
                 return outcome
             finally:
                 waiter.close()
+
+    def _provider_drain_reason(self, session) -> str | None:
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is None:
+            return None
+        provider = availability.provider_for_harness(
+            getattr(session, "harness", None), session.project_id
+        )
+        if not availability.suppresses(provider):
+            return None
+        return f"provider {provider} is {availability.effective_state(provider)}"
 
     def _pool_context_claim_cap(self, profile):
         # A reused global worker must not carry a previous task's conversation.
@@ -440,6 +460,20 @@ class ClaimCommandsMixin:
             None,
         )
 
+    async def _claim_effective_default(self, project, default_profile):
+        """*default_profile*, or its equivalent rung while its provider is down (D13)."""
+        if not default_profile:
+            return default_profile
+        resolver = getattr(self.orchestrator, "_availability_aware_default", None)
+        if resolver is None:
+            return default_profile
+        try:
+            resolved = await resolver(default_profile, getattr(project, "id", None))
+        except Exception:  # never let a derived default break a claim
+            logger.debug("claim: availability-aware default failed", exc_info=True)
+            return default_profile
+        return resolved if isinstance(resolved, str) and resolved else default_profile
+
     async def _attempt_claim(
         self, session, want_id, cap, project, *, routing=None, repaired=False
     ) -> dict:
@@ -457,6 +491,10 @@ class ClaimCommandsMixin:
         """
         now = time.time()
         default_profile = getattr(project, "default_profile_id", None)
+        # While the default's provider is unavailable the widening follows
+        # the default's equivalent rung (provider-failover D13): derived per
+        # call, never persisted.  Read before the transaction opens.
+        default_profile = await self._claim_effective_default(project, default_profile)
         # The frontier query asks the project row two constant questions
         # (hierarchy/train mode, and against which repository).  Reduce the
         # row the outer loop already read, rather than making the statement

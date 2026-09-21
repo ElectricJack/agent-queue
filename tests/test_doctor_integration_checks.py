@@ -59,6 +59,54 @@ async def _completed_with_pr(db, task_id: str, *, pr_url: str, age_s: float = 60
     await _age(db, task_id, age_s)
 
 
+async def _orphaned_batch_operation(db):
+    from sqlalchemy import insert, update
+
+    from src.database.tables import integration_batches, integration_repair_operations, projects
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="development",
+                hierarchical_integration_desired_mode="development",
+            )
+        )
+        await conn.execute(
+            insert(integration_batches).values(
+                id="legacy-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="legacy-request",
+                source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="a" * 40,
+                lifecycle="repairing",
+                integration_branch="aq/integration/legacy",
+                policy_snapshot={},
+                artifact_snapshot={},
+                cleanup_state="pending",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="legacy-operation",
+                target_kind="batch",
+                batch_id="legacy-batch",
+                episode_id="legacy-batch",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+
+
 def _handler_with_pr_state(db, merged):
     """A CommandHandler stand-in whose ``gh`` probe returns *merged*.
 
@@ -89,6 +137,40 @@ async def test_warns_on_completed_task_with_open_pr_and_no_review(db):
     assert finding["task_id"] == "stranded"
     assert finding["pr_url"] == "https://github.com/o/r/pull/1"
     assert finding["pr_open"] is True
+
+
+@pytest.mark.asyncio
+async def test_orphaned_operations_warns_until_the_operation_is_cancelled(db):
+    from sqlalchemy import update
+
+    from src.database.tables import integration_repair_operations
+
+    await _orphaned_batch_operation(db)
+
+    result = await run_check(db, "integration.orphaned_operations")
+
+    assert result.severity is Severity.WARN
+    assert result.data["count"] == 1
+    finding = result.data["operations"][0]
+    assert finding["project_id"] == "p"
+    assert finding["id"] == "legacy-operation"
+    assert finding["target"] == {"kind": "batch", "id": "legacy-batch"}
+    assert finding["cancel_preserving"].startswith(
+        "aq integration cancel-preserving legacy-operation --reason"
+    )
+    assert "legacy-operation" in result.detail
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "legacy-operation")
+            .values(state="cancelled")
+        )
+
+    resolved = await run_check(db, "integration.orphaned_operations")
+
+    assert resolved.severity is Severity.OK
+    assert resolved.data == {"count": 0, "operations": []}
 
 
 @pytest.mark.asyncio

@@ -90,10 +90,11 @@ pattern:
   would wait forever for a routing decision nothing requests.
 - [`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md),
   rule `keep-main-green` step 2: the repair task for a red default branch, keyed
-  `ci-baseline:<signature>:<attempt>` by
+  `ci-baseline:<signature>:<n>` by
   [`ci_baseline_status`](ci_baseline_status.md). A new commit that leaves the
-  same tests red reuses the in-flight repair; a different failure gets its own
-  task.
+  same tests red, or fewer of them, reuses the in-flight repair; tests no live
+  repair owns get their own task. Step 3,
+  [`ci_repair_adopt`](ci_repair_adopt.md), records what the repair owns.
 
 Use it whenever the step can run more than once for the same subject — a timer
 rule, a retried event, or an event type the bus may redeliver. The contract is

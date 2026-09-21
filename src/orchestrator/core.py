@@ -109,6 +109,7 @@ from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.monitoring import MonitoringMixin
 from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.pr_polling import PRPollingMixin
+from src.orchestrator.provider_failover import ProviderFailoverMixin
 
 # Mixin imports — each provides one domain of methods
 from src.orchestrator.route_needed import RouteNeededMixin
@@ -190,6 +191,7 @@ class Orchestrator(
     PoolsMixin,
     LayoutStepMixin,
     RouteNeededMixin,
+    ProviderFailoverMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 
@@ -251,7 +253,12 @@ class Orchestrator(
 
         # Routing policy is the ``default-assignment-routing`` playbook; the
         # orchestrator only reads the class the playbook wrote onto the task.
-        self.assignment_routing = ExplicitRouting()
+        # A pinned task's route also carries its profile's vendor, which arms
+        # the push path's ``required_provider`` check (provider-failover D9).
+        self.assignment_routing = ExplicitRouting(
+            db_getter=lambda: self.db,
+            harness_registry_getter=lambda: getattr(self, "harness_registry", None),
+        )
         self._route_needed_emitted: dict[str, float] = {}
         # Populated before Playbooks V2 subscribes.  The health endpoint uses
         # this durable-policy verdict rather than mistaking an empty trigger
@@ -291,13 +298,6 @@ class Orchestrator(
         # test orchestrators, in which case ``_cmd_doctor`` reports
         # "not configured".  See docs/specs/design/trust-and-ops.md §5.5.
         self.doctor_registry = None
-        # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
-        # Unix timestamp when scheduling should resume.  Set when a session
-        # limit is detected; the scheduler skips agents whose profile is
-        # cooled-down until the cooldown expires.  Supports per-profile limits
-        # so exhausting
-        # one provider doesn't block others.
-        self._provider_cooldowns: dict[str, float] = {}
         # LLM interaction logger — records all LLM API calls (both direct
         # chat provider calls and agent sessions) to JSONL files for cost
         # analysis and prompt optimization.  See ``src/llm_logger.py``.
@@ -388,6 +388,31 @@ class Orchestrator(
         from src.sessions.transcripts.watcher import TranscriptWatcher
 
         self.harness_registry = HarnessRegistry()
+        # Provider availability (docs/specs/provider-failover.md): the
+        # read-through snapshot the scheduler, pool sizing, the pre-launch
+        # check and claim admission consult, and the one writer of its rows.
+        # Replaces the never-written ``_provider_cooldowns`` map.  Reads the
+        # config through a getter so a hot reload bites on the next evidence.
+        from src.providers.availability_service import ProviderAvailabilityService
+        from src.sessions.fake_script import probe_answer, script_file_for
+
+        fake_login_probe = None
+        if script_file_for(config):
+            # The end-to-end kit's fake logins (provider-failover D23): the
+            # scripted harnesses answer from the script file, and nothing
+            # else is probed -- a fake-session daemon never shells out to a
+            # real ``claude`` / ``codex`` login check.
+            async def fake_login_probe(provider: str, timeout: float) -> str | None:
+                return probe_answer(script_file_for(self.config), provider)
+
+        self.provider_availability = ProviderAvailabilityService(
+            db_getter=lambda: self.db,
+            config_getter=lambda: self.config,
+            bus=self.bus,
+            harness_registry=self.harness_registry,
+            probe=fake_login_probe,
+        )
+        self.provider_availability.on_half_change = self._notify_provider_half_change
         from src.task_graph.formulas import FormulaRegistry
 
         self.formula_registry = FormulaRegistry()
@@ -413,6 +438,31 @@ class Orchestrator(
             classes_loader=lambda: self.intelligence_classes.snapshot(),
             llm_logger=self.llm_logger if self.llm_logger._enabled else None,
         )
+        # The direct path's own credential is tracked as provider ``llm``
+        # (provider-failover D13a).
+        self.llm.on_outcome = self.provider_availability.note_llm_outcome
+        # ... and while that key is unavailable, direct-path calls fail fast.
+        self.llm.availability_gate = self.provider_availability.llm_block_reason
+        # The re-route engine (provider-failover D11 policy half, D12-D17):
+        # driven by the ``provider_reroute`` command, which the
+        # ``provider-failover`` playbook calls.  It also answers why a held
+        # task is held (D18) and what an unavailable project default resolves
+        # to (D13), so the availability service holds a reference to it.
+        from src.providers.reroute import ProviderRerouteService
+
+        self.provider_reroute = ProviderRerouteService(
+            db_getter=lambda: self.db,
+            availability=self.provider_availability,
+            config_getter=lambda: self.config,
+            harness_registry=self.harness_registry,
+            # The same registry routing reads (``task_route_options``); in
+            # production it is ``self.intelligence_classes`` by reference.
+            classes_getter=lambda: getattr(
+                self.session_spec_builder, "_intelligence_classes", None
+            ) or self.intelligence_classes,
+            bus=self.bus,
+        )
+        self.provider_availability.reroute = self.provider_reroute
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.
@@ -799,7 +849,11 @@ class Orchestrator(
         suffix that sets the agent's "role" for the task.
         """
         project = await self.db.get_project(task.project_id)
-        profile_id = task.profile_id or (project.default_profile_id if project else None)
+        profile_id = task.profile_id or (
+            await self._availability_aware_default(project.default_profile_id, project.id)
+            if project
+            else None
+        )
         if not profile_id and task.assigned_agent_id:
             agent = await self.db.get_agent(task.assigned_agent_id)
             if agent:
@@ -868,9 +922,33 @@ class Orchestrator(
         raw, which skips rung 3 and can disagree with what a real dispatch
         resolves.
         """
-        if project.default_profile_id:
-            return project.default_profile_id
-        return await self._backfill_default_profile_id(project)
+        raw = project.default_profile_id or await self._backfill_default_profile_id(project)
+        return await self._availability_aware_default(raw, getattr(project, "id", None))
+
+    async def _availability_aware_default(
+        self, default_profile_id: str | None, project_id: str | None = None
+    ) -> str | None:
+        """The default's equivalent rung while its provider is unavailable (D13).
+
+        Derived per call and never persisted -- ``projects.default_profile_id``
+        is not rewritten, so recovery needs no undo.  Reads the profiles only
+        while some provider is actually suppressed, so a healthy box pays
+        nothing.
+        """
+        if not default_profile_id:
+            return default_profile_id
+        availability = getattr(self, "provider_availability", None)
+        reroute = getattr(self, "provider_reroute", None)
+        if availability is None or reroute is None or not availability.suppressed_providers():
+            return default_profile_id
+        try:
+            profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        except Exception:
+            logger.debug("availability-aware default: profiles unreadable", exc_info=True)
+            return default_profile_id
+        return reroute.resolve_default_profile_id(
+            default_profile_id, profiles, project_id=project_id
+        )
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -1369,6 +1447,17 @@ class Orchestrator(
             except Exception:
                 logger.error("Session adoption pass failed", exc_info=True)
         await self._recover_stale_state(skip_task_ids=adopted_task_ids)
+        # Seed provider availability before the first tick (D5, D7): load
+        # what the last run knew -- a restart must not spend its first
+        # minute rediscovering that Codex is logged out -- and probe once.
+        # A session's first authenticated call is ``launch_success``.
+        try:
+            await self.provider_availability.initialize()
+            self.token_store.on_session_seen = (
+                self.provider_availability.note_session_authenticated_soon
+            )
+        except Exception:
+            logger.exception("Provider availability initialisation failed")
 
         # Initialize VaultManager — central path resolution and directory
         # management for the vault.  Must be available before any subsystem
@@ -2528,6 +2617,7 @@ class Orchestrator(
         from src.integration.completion_recovery import stop_ready_owner_recovery
 
         await stop_ready_owner_recovery(self)
+        await self.provider_availability.close()
         await self.wait_for_pool_launches(cancel=True)
         await self.wait_for_running_tasks(timeout=10)
         # A layout publish is one transaction; let an in-flight step land
@@ -2672,6 +2762,15 @@ class Orchestrator(
             await self._check_failed_blocked_tasks()
 
             # ── Phase 2: Scheduling & launch ────────────────────────────────
+
+            # 4c. Provider availability (provider-failover D4-D7): expire
+            #     overrides, run reset clocks and usage snapshots through the
+            #     reducer and start due auth probes -- before scheduling, so
+            #     this cycle's launches see this cycle's state.
+            try:
+                await self.provider_availability.tick()
+            except Exception:
+                logger.exception("Provider availability tick failed")
 
             # 5. Schedule READY tasks onto idle agents (skipped when paused).
             if not self._paused:
@@ -3281,6 +3380,44 @@ class Orchestrator(
             ", ".join(data.get("changed_sections", [])),
         )
 
+    async def _provider_suppression(self) -> tuple[frozenset[str], frozenset[str]]:
+        """``(profile ids, agent ids)`` whose provider nothing may launch against.
+
+        provider-failover D11 mechanism 1.  Reads the database only while some
+        provider is actually suppressed, so a healthy box pays nothing.
+        """
+        availability = self.provider_availability
+        suppressed = availability.suppressed_providers()
+        if not suppressed:
+            return frozenset(), frozenset()
+        profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        profile_ids = frozenset(
+            pid
+            for pid, profile in profiles.items()
+            if availability.provider_for_profile(profile) in suppressed
+        )
+        agent_ids = frozenset(
+            agent.id
+            for agent in await self.db.list_agents()
+            if availability.provider_for_profile(profiles.get(agent.profile_id), agent=agent)
+            in suppressed
+        )
+        return profile_ids, agent_ids
+
+    async def _notify_provider_half_change(self, transition) -> None:
+        """Send the D19 state-change message without blocking the evidence path."""
+        availability = self.provider_availability
+
+        async def _send() -> None:
+            try:
+                await availability.notify_state_change(
+                    transition.provider, transition.generation
+                )
+            except Exception:
+                logger.warning("provider state notification failed", exc_info=True)
+
+        asyncio.get_running_loop().create_task(_send())
+
     async def _schedule(self) -> list[AssignAction]:
         """Build scheduler state snapshot and compute task-to-agent assignments.
 
@@ -3352,8 +3489,10 @@ class Orchestrator(
             and task.id in hierarchy_runnable_task_ids
             and task.id in assignment_routes
         ]
+        suppressed_profile_ids, suppressed_agent_ids = await self._provider_suppression()
         rep = await self._agent_reconciler.reconcile(
-            provider_cooldowns=self._provider_cooldowns,
+            suppressed_profile_ids=suppressed_profile_ids,
+            suppressed_agent_ids=suppressed_agent_ids,
             harness_registry=self.harness_registry,
             intelligence_classes=classes,
             ready_tasks=routed_ready,
@@ -3485,7 +3624,7 @@ class Orchestrator(
             workspace_locks=workspace_locks,
             global_budget=self.budget.global_budget,
             global_tokens_used=total_used,
-            provider_cooldowns=self._provider_cooldowns,
+            suppressed_agent_ids=suppressed_agent_ids,
             project_constraints=constraint_map,
             now=time.time(),
             affinity_wait_seconds=self.config.scheduling.affinity_wait_seconds,

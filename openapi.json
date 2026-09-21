@@ -1257,6 +1257,262 @@
         }
       }
     },
+    "/api/providers/availability": {
+      "get": {
+        "summary": "Get Provider Availability",
+        "operationId": "get_provider_availability_api_providers_availability_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "verbose",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Verbose"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderStatusResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/{provider}/state": {
+      "post": {
+        "summary": "Post Provider State",
+        "operationId": "post_provider_state_api_providers__provider__state_post",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderStateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSetStateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid override"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/reroute": {
+      "post": {
+        "summary": "Post Provider Reroute",
+        "operationId": "post_provider_reroute_api_providers_reroute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/reroute/undo": {
+      "post": {
+        "summary": "Post Provider Reroute Undo",
+        "operationId": "post_provider_reroute_undo_api_providers_reroute_undo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteUndoBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteUndoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "nothing undone"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/{provider}/recheck": {
+      "post": {
+        "summary": "Post Provider Recheck",
+        "operationId": "post_provider_recheck_api_providers__provider__recheck_post",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRecheckResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/graph/extent": {
       "get": {
         "summary": "Get Extent",
@@ -4079,6 +4335,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CiBaselineStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/git/ci-repair-adopt": {
+      "post": {
+        "tags": [
+          "git"
+        ],
+        "summary": "Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of filing another repair, including after a partial fix shrinks the failing set.  Adopt a repair filed by hand with just project_id and task_id: the command reads the branch's CI and adopts its whole failure.  A task already recorded is returned unchanged.",
+        "description": "Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of filing another repair, including after a partial fix shrinks the failing set.  Adopt a repair filed by hand with just project_id and task_id: the command reads the branch's CI and adopts its whole failure.  A task already recorded is returned unchanged.",
+        "operationId": "ci_repair_adopt",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CiRepairAdoptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CiRepairAdoptResponse"
                 }
               }
             }
@@ -9477,6 +9780,711 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/held-tasks": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, ...), the provider's state, since when and the expected recovery -- the same hold `aq task explain` reports.  Empty while every provider is launchable.",
+        "description": "List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, ...), the provider's state, since when and the expected recovery -- the same hold `aq task explain` reports.  Empty while every provider is launchable.",
+        "operationId": "provider_held_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderHeldTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderHeldTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/history": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it (system or an operator).",
+        "description": "List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it (system or an operator).",
+        "operationId": "provider_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/recheck": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state.  An authenticated answer moves an unauthenticated provider to probation; the next successful launch completes recovery.  Operators and supervisors only.",
+        "description": "Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state.  An authenticated answer moves an unauthenticated provider to probation; the next successful launch completes recovery.  Operators and supervisors only.",
+        "operationId": "provider_recheck",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRecheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRecheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/reroute": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Re-route queued work off an unavailable provider (provider failover).  Moves eligible queued and provider-paused tasks to the same intelligence class on an available provider, a pool-width at a time (provider_failover.reroute limits), and records each move on the task (undo with provider_reroute_undo).  Pinned tasks, single-provider classes (astra-*) and classes set to 'hold' stay where they are.  --dry-run plans only.  Naming tasks with --task-id plus --to-profile or --force is an explicit operator move; --force may move a pinned task, target a degraded provider or change the class.  Operators and supervisors only.",
+        "description": "Re-route queued work off an unavailable provider (provider failover).  Moves eligible queued and provider-paused tasks to the same intelligence class on an available provider, a pool-width at a time (provider_failover.reroute limits), and records each move on the task (undo with provider_reroute_undo).  Pinned tasks, single-provider classes (astra-*) and classes set to 'hold' stay where they are.  --dry-run plans only.  Naming tasks with --task-id plus --to-profile or --force is an explicit operator move; --force may move a pinned task, target a degraded provider or change the class.  Operators and supervisors only.",
+        "operationId": "provider_reroute",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/reroute-undo": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Undo provider re-routes: return tasks to the profile they were on before (rerouted_from), by --batch-id or --task-id.  Refused for a running or claimed task, and while the original provider is still unavailable unless --force.  Operators and supervisors only.",
+        "description": "Undo provider re-routes: return tasks to the profile they were on before (rerouted_from), by --batch-id or --task-id.  Refused for a running or claimed task, and while the original provider is still unavailable unless --force.  Operators and supervisors only.",
+        "operationId": "provider_reroute_undo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteUndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteUndoResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/set-state": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Override a provider's availability.  'disabled' stops every launch against it; 'available' forces it launchable against the evidence and always expires; 'auto' clears the override, resets the failure counters and re-derives the state from evidence.  An override lasts --for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else provider_failover.override.default_ttl_seconds, and never longer than override.max_ttl_seconds; --no-expiry is accepted for 'disabled' only.  Operators and supervisors only.",
+        "description": "Override a provider's availability.  'disabled' stops every launch against it; 'available' forces it launchable against the evidence and always expires; 'auto' clears the override, resets the failure counters and re-derives the state from evidence.  An override lasts --for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else provider_failover.override.default_ttl_seconds, and never longer than override.max_ttl_seconds; --no-expiry is accepted for 'disabled' only.  Operators and supervisors only.",
+        "operationId": "provider_set_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSetStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSetStateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/status": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Show each provider's availability: the effective state (available, degraded, exhausted, unauthenticated, failing, disabled), its reason, since when, the expected recovery, any operator override and its expiry, how many queued tasks it is holding, the last successful launch and the newest account-wide usage reading.  A provider is the harness login (claude, codex); a vendor name (openai, anthropic) is accepted as an alias.  --verbose adds the evidence ring and the last ten transitions.",
+        "description": "Show each provider's availability: the effective state (available, degraded, exhausted, unauthenticated, failing, disabled), its reason, since when, the expected recovery, any operator override and its expiry, how many queued tasks it is holding, the last successful launch and the newest account-wide usage reading.  A provider is the harness login (claude, codex); a vendor name (openai, anthropic) is accepted as an alias.  --verbose adds the evidence ring and the last ten transitions.",
+        "operationId": "provider_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/comment": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Add an anchored or section-level comment to a review revision.",
+        "description": "Add an anchored or section-level comment to a review revision.",
+        "operationId": "review_comment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewCommentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/decide": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Approve a review or request changes on its current revision.",
+        "description": "Approve a review or request changes on its current revision.",
+        "operationId": "review_decide",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDecideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDecideResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/delegate": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+        "description": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+        "operationId": "review_delegate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDelegateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDelegateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/import-edits": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+        "description": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+        "operationId": "review_import_edits",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewImportEditsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewImportEditsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/list": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List document reviews in a project.",
+        "description": "List document reviews in a project.",
+        "operationId": "review_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/show": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Read a document-review revision, optionally with comments or a block diff.",
+        "description": "Read a document-review revision, optionally with comments or a block diff.",
+        "operationId": "review_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/submit": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Submit markdown for review, or submit a revision to an open review.",
+        "description": "Submit markdown for review, or submit a revision to an open review.",
+        "operationId": "review_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/withdraw": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Withdraw an open review without approving its gate.",
+        "description": "Withdraw an open review without approving its gate.",
+        "operationId": "review_withdraw",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewWithdrawRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewWithdrawResponse"
+                }
               }
             }
           },
@@ -16334,6 +17342,41 @@
             ],
             "title": "Escalation Question"
           },
+          "in_flight": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "In Flight",
+            "default": []
+          },
+          "repair_signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repair Signature"
+          },
+          "repair_tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Repair Tests",
+            "default": []
+          },
+          "repair_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Repair Checks",
+            "default": []
+          },
           "error": {
             "anyOf": [
               {
@@ -16348,6 +17391,170 @@
         },
         "type": "object",
         "title": "CiBaselineStatusResponse"
+      },
+      "CiRepairAdoptRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project the task belongs to."
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "The live task that repairs the failure."
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref",
+            "description": "Branch the failure is on. Default: the project's default branch."
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha",
+            "description": "Commit the failure was read at, when the caller read it."
+          },
+          "failing_tests": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Tests",
+            "description": "Pytest node ids the repair owns. Omit this and failing_checks to read the branch's CI now."
+          },
+          "failing_checks": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Checks",
+            "description": "Failing check names."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "task_id"
+        ],
+        "title": "CiRepairAdoptRequest"
+      },
+      "CiRepairAdoptResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "default": ""
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "default": ""
+          },
+          "dedup_key": {
+            "type": "string",
+            "title": "Dedup Key",
+            "default": ""
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signature"
+          },
+          "failing_tests": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Tests",
+            "default": []
+          },
+          "failing_checks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failing Checks",
+            "default": []
+          },
+          "in_flight": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "In Flight",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "title": "CiRepairAdoptResponse"
       },
       "ClaimSessionSummary": {
         "properties": {
@@ -18088,6 +19295,30 @@
             "title": "Profile Id",
             "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)"
           },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
+          },
           "intelligence_class": {
             "anyOf": [
               {
@@ -18359,6 +19590,17 @@
               }
             ],
             "title": "Intelligence Class"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent"
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -20555,6 +21797,18 @@
             "title": "Repo Default Branch",
             "description": "Default git branch for the project (e.g. main, dev, master)"
           },
+          "review_delegate_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Delegate To",
+            "description": "LOCAL-only default document-review decider; empty clears it."
+          },
           "integration_repository_id": {
             "anyOf": [
               {
@@ -20746,6 +22000,30 @@
             ],
             "title": "Profile Id",
             "description": "Agent profile ID (optional, set to null to clear)"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
           },
           "intelligence_class": {
             "anyOf": [
@@ -21101,6 +22379,30 @@
             ],
             "title": "Profile Id",
             "description": "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
           },
           "intelligence_class": {
             "anyOf": [
@@ -22350,6 +23652,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AssignmentRouteDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
               },
               {
                 "type": "null"
@@ -25426,6 +26738,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -35174,6 +36522,41 @@
         "title": "PoolProjectStatus",
         "description": "Where one pool's workers actually are, in a single project.\n\nSizing is fleet-wide, but a worker still lives in one project for its\nlifetime, so \"where are my workers running\" has to stay answerable.\nThese are the placement inputs and the per-project share of the pool's\nsupply, for the one project named by ``project_id``."
       },
+      "PoolProviderUnavailable": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "PoolProviderUnavailable",
+        "description": "The pool's provider is unavailable, so it is sized to zero (provider-failover D13).\n\nDistinct from ``placement_starved``: nothing is wrong with the pool, its\nprojects or their workspaces -- the login it draws on is down."
+      },
       "PoolScaleRequest": {
         "properties": {
           "project_id": {
@@ -35604,6 +36987,16 @@
             "type": "array",
             "title": "Outside Pools",
             "default": []
+          },
+          "provider_unavailable": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PoolProviderUnavailable"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -36895,6 +38288,1398 @@
           "task_id"
         ],
         "title": "ProvideInputResponse"
+      },
+      "ProviderAvailabilityStatus": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "half": {
+            "type": "string",
+            "title": "Half"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "derived_state": {
+            "type": "string",
+            "title": "Derived State",
+            "default": ""
+          },
+          "derived_reason": {
+            "type": "string",
+            "title": "Derived Reason",
+            "default": ""
+          },
+          "derived_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Derived Until"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "held": {
+            "type": "integer",
+            "title": "Held",
+            "default": 0
+          },
+          "rerouted": {
+            "type": "integer",
+            "title": "Rerouted",
+            "default": 0
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "level": {
+            "type": "integer",
+            "title": "Level",
+            "default": 0
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation",
+            "default": 0
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures",
+            "default": 0
+          },
+          "last_failure_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failure At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "last_probe_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Probe At"
+          },
+          "probation": {
+            "type": "boolean",
+            "title": "Probation",
+            "default": false
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "enforce"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsageReading"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence",
+            "default": []
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTransition"
+            },
+            "type": "array",
+            "title": "Transitions",
+            "default": []
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state",
+          "half"
+        ],
+        "title": "ProviderAvailabilityStatus",
+        "description": "One provider's availability, as the CLI, API, doctor and cards show it.\n\nEvery field is server-derived; the dashboard never recomputes a state.\n``state`` is the *effective* state (the override while one is active);\n``derived_*`` is what the evidence alone says.  ``until`` is the expected\nrecovery -- the provider's own reset clock or a backoff deadline -- and\n``None`` when nothing is known (``unauthenticated`` needs a human)."
+      },
+      "ProviderHeldTask": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "project_id",
+          "provider",
+          "state",
+          "kind"
+        ],
+        "title": "ProviderHeldTask",
+        "description": "One queued task an unavailable provider is holding (D18, D20).\n\nThe task's own identity plus the derived hold ``aq task explain``\nreports: ``kind`` says why it is not moving, ``ahead`` its place in the\nfailover trickle for ``awaiting_failover_capacity``."
+      },
+      "ProviderHeldTasksRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Only this project's tasks. Default: every project."
+          }
+        },
+        "type": "object",
+        "title": "ProviderHeldTasksRequest"
+      },
+      "ProviderHeldTasksResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHeldTask"
+            },
+            "type": "array",
+            "title": "Tasks",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Kind",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderHeldTasksResponse",
+        "description": "``provider_held_tasks``: every held task, and how many per ``kind``."
+      },
+      "ProviderHistoryRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Most transitions to return. Default 50."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderHistoryRequest"
+      },
+      "ProviderHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTransition"
+            },
+            "type": "array",
+            "title": "Transitions",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderHistoryResponse"
+      },
+      "ProviderHoldDetail": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state",
+          "kind"
+        ],
+        "title": "ProviderHoldDetail",
+        "description": "Why a queued task is held by its provider (provider-failover D18).\n\n``kind`` is one of ``provider_pinned``, ``class_policy_hold``,\n``no_equivalent_rung``, ``no_available_target``,\n``awaiting_failover_capacity``, ``reroute_limit_reached``,\n``all_providers_unavailable``, ``failover_inactive`` or\n``priority_policy_hold``.  ``ahead`` is the queue position for\n``awaiting_failover_capacity`` and ``None`` otherwise; ``detail`` says it\nin words."
+      },
+      "ProviderOverride": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ProviderOverride",
+        "description": "An operator override (D6).  ``until`` is ``None`` only for ``disabled``."
+      },
+      "ProviderRecheckRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderRecheckRequest"
+      },
+      "ProviderRecheckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "probe": {
+            "type": "string",
+            "title": "Probe"
+          },
+          "probe_detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Probe Detail",
+            "default": {}
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "probe",
+          "state"
+        ],
+        "title": "ProviderRecheckResponse",
+        "description": "``provider_recheck``: the probe's answer and the resulting state.\n\n``probe`` is ``authenticated``, ``not_authenticated``, ``cannot_tell`` or\n``not_probeable`` (the provider has no login probe)."
+      },
+      "ProviderRerouteBody": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "to_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile"
+          },
+          "include_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Paused"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteBody",
+        "description": "``POST /api/providers/reroute`` (D20)."
+      },
+      "ProviderRerouteRequest": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Limit the sweep to one provider key or vendor alias."
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id(s) to move explicitly."
+          },
+          "to_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile",
+            "description": "Target profile for the named tasks."
+          },
+          "include_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Paused",
+            "description": "Also resume and move tasks paused before failover recorded a cause (listed first with --dry-run)."
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run",
+            "description": "Plan only; write nothing."
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Operator override for named tasks: move a pinned task, target a degraded provider, or change the class with --to-profile."
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteRequest"
+      },
+      "ProviderRerouteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied",
+            "default": false
+          },
+          "disabled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled Reason"
+          },
+          "unavailable_providers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unavailable Providers",
+            "default": []
+          },
+          "moved": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Moved",
+            "default": []
+          },
+          "held": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Held",
+            "default": []
+          },
+          "held_by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Held By Kind",
+            "default": {}
+          },
+          "resumed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resumed",
+            "default": []
+          },
+          "lost": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Lost",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Batch Ids",
+            "default": []
+          },
+          "notices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notices",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "ProviderRerouteResponse",
+        "description": "``provider_reroute``: one sweep's plan and what it applied (D11).\n\n``outcome`` is ``rerouted``, ``held``, ``idle`` or ``disabled``.  With\n``dry_run`` (or while re-routing is off) ``applied`` is false and ``moved``\nlists what a live sweep would move."
+      },
+      "ProviderRerouteUndoBody": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteUndoBody",
+        "description": "``POST /api/providers/reroute/undo`` (D16): a batch or tasks."
+      },
+      "ProviderRerouteUndoRequest": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id",
+            "description": "A re-route batch (prb-<provider>-<generation> or prf-...)."
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id(s) to undo."
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Undo even while the original provider is unavailable."
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteUndoRequest"
+      },
+      "ProviderRerouteUndoResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "undone": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteUndone"
+            },
+            "type": "array",
+            "title": "Undone",
+            "default": []
+          },
+          "refused": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteUndoRefusal"
+            },
+            "type": "array",
+            "title": "Refused",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "ProviderRerouteUndoResponse",
+        "description": "``provider_reroute_undo`` (D16): which tasks went back, and which were refused."
+      },
+      "ProviderSetStateRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "disabled | available | auto (clear the override)."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why; required for disabled and available."
+          },
+          "for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "For",
+            "description": "How long the override lasts: 90s, 30m, 4h, 2d, or seconds."
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until",
+            "description": "When the override expires: epoch seconds or ISO-8601."
+          },
+          "no_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Expiry",
+            "description": "Never expire (disabled only)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "ProviderSetStateRequest"
+      },
+      "ProviderSetStateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "ProviderSetStateResponse"
+      },
+      "ProviderStateRequest": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "For"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "no_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Expiry"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ProviderStateRequest",
+        "description": "``POST /api/providers/{provider}/state`` (D6).\n\n``for`` is a duration (``90s``, ``30m``, ``4h``, ``2d``, or seconds);\n``until`` an epoch or ISO-8601 time.  Give at most one of ``for``,\n``until`` and ``no_expiry``."
+      },
+      "ProviderStatusRequest": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Only this provider (key or vendor alias). Default: every tracked provider."
+          },
+          "verbose": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verbose",
+            "description": "Include the evidence ring and the last ten transitions."
+          }
+        },
+        "type": "object",
+        "title": "ProviderStatusRequest"
+      },
+      "ProviderStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "enforce"
+          },
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+            },
+            "type": "array",
+            "title": "Providers",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderStatusResponse",
+        "description": "``provider_status`` and ``GET /api/providers/availability``."
+      },
+      "ProviderTransition": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "from_state": {
+            "type": "string",
+            "title": "From State"
+          },
+          "to_state": {
+            "type": "string",
+            "title": "To State"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor",
+            "default": "system"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "default": {}
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "from_state",
+          "to_state",
+          "generation",
+          "at"
+        ],
+        "title": "ProviderTransition",
+        "description": "One change of effective state, from the audit trail."
+      },
+      "ProviderUsageReading": {
+        "properties": {
+          "window": {
+            "type": "string",
+            "title": "Window"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "used_percent": {
+            "type": "number",
+            "title": "Used Percent"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resets At"
+          },
+          "observed_at": {
+            "type": "number",
+            "title": "Observed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window",
+          "used_percent",
+          "observed_at"
+        ],
+        "title": "ProviderUsageReading",
+        "description": "The newest fresh account-wide usage window (the fullest one)."
       },
       "ProviderUsageResponse": {
         "properties": {
@@ -38466,6 +41251,216 @@
         ],
         "title": "ReparentTaskResponse"
       },
+      "RerouteDecision": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "from_profile_id": {
+            "type": "string",
+            "title": "From Profile Id"
+          },
+          "from_provider": {
+            "type": "string",
+            "title": "From Provider",
+            "default": ""
+          },
+          "provider_state": {
+            "type": "string",
+            "title": "Provider State",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "to_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Provider"
+          },
+          "to_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Class"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "resume": {
+            "type": "boolean",
+            "title": "Resume",
+            "default": false
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "intent": {
+            "type": "string",
+            "title": "Intent",
+            "default": "class_only"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "provider_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Generation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "project_id",
+          "from_profile_id",
+          "action"
+        ],
+        "title": "RerouteDecision",
+        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, ...)."
+      },
+      "RerouteUndoRefusal": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "RerouteUndoRefusal"
+      },
+      "RerouteUndone": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "from_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Profile Id"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "reroute_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reroute Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "RerouteUndone"
+      },
       "RestartDaemonRequest": {
         "properties": {
           "reason": {
@@ -38674,6 +41669,660 @@
         "additionalProperties": false,
         "type": "object",
         "title": "RetryPolicyDTO"
+      },
+      "ReviewCommentRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote",
+            "description": ""
+          },
+          "heading_path": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heading Path",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "title": "Body",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "body"
+        ],
+        "title": "ReviewCommentRequest"
+      },
+      "ReviewCommentResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "comment_id": {
+            "type": "string",
+            "title": "Comment Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "comment_id"
+        ],
+        "title": "ReviewCommentResponse"
+      },
+      "ReviewDecideRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision",
+            "description": ""
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "decision"
+        ],
+        "title": "ReviewDecideRequest"
+      },
+      "ReviewDecideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "unblocked_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unblocked Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "state"
+        ],
+        "title": "ReviewDecideResponse"
+      },
+      "ReviewDelegateRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "to": {
+            "type": "string",
+            "title": "To",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "to"
+        ],
+        "title": "ReviewDelegateRequest"
+      },
+      "ReviewDelegateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "decider": {
+            "type": "string",
+            "title": "Decider"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "decider"
+        ],
+        "title": "ReviewDelegateResponse"
+      },
+      "ReviewImportEditsRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewImportEditsRequest"
+      },
+      "ReviewImportEditsResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision"
+        ],
+        "title": "ReviewImportEditsResponse"
+      },
+      "ReviewListRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": ""
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "ReviewListRequest"
+      },
+      "ReviewListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reviews": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewRecord"
+            },
+            "type": "array",
+            "title": "Reviews",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ReviewListResponse"
+      },
+      "ReviewRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "current_revision": {
+            "type": "integer",
+            "title": "Current Revision"
+          },
+          "author_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Task Id"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          },
+          "gate_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gate Id"
+          },
+          "decider": {
+            "type": "string",
+            "title": "Decider",
+            "default": "user"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "title",
+          "kind",
+          "state",
+          "current_revision",
+          "vault_path"
+        ],
+        "title": "ReviewRecord"
+      },
+      "ReviewShowRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision",
+            "description": ""
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments",
+            "description": ""
+          },
+          "diff_from": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff From",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewShowRequest"
+      },
+      "ReviewShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review": {
+            "$ref": "#/components/schemas/ReviewRecord"
+          },
+          "revision": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Revision"
+          },
+          "revisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Revisions",
+            "default": []
+          },
+          "vault_state": {
+            "type": "string",
+            "title": "Vault State"
+          },
+          "comments": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comments"
+          },
+          "diff": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diff"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "review",
+          "revision",
+          "vault_state"
+        ],
+        "title": "ReviewShowResponse"
+      },
+      "ReviewSubmitRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id",
+            "description": ""
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind",
+            "description": ""
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": ""
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": ""
+          },
+          "changes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changes",
+            "description": ""
+          },
+          "resolves": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolves",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ReviewSubmitRequest"
+      },
+      "ReviewSubmitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "vault_path": {
+            "type": "string",
+            "title": "Vault Path"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "vault_path"
+        ],
+        "title": "ReviewSubmitResponse"
+      },
+      "ReviewWithdrawRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "reason"
+        ],
+        "title": "ReviewWithdrawRequest"
+      },
+      "ReviewWithdrawResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "flagged_task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Flagged Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "ReviewWithdrawResponse"
       },
       "RightSurface": {
         "properties": {
@@ -43990,6 +47639,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -44390,6 +48075,110 @@
         "title": "TaskRef",
         "description": "Minimal task reference used in dependency lists, unblocked lists, etc."
       },
+      "TaskReroute": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "from_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Profile Id"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "from_provider": {
+            "type": "string",
+            "title": "From Provider",
+            "default": ""
+          },
+          "to_provider": {
+            "type": "string",
+            "title": "To Provider",
+            "default": ""
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
+          },
+          "provider_state": {
+            "type": "string",
+            "title": "Provider State",
+            "default": ""
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor",
+            "default": ""
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undone At"
+          },
+          "undoable": {
+            "type": "boolean",
+            "title": "Undoable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "reason_code",
+          "at"
+        ],
+        "title": "TaskReroute",
+        "description": "The newest ``task_reroutes`` row for a task (provider-failover D17).\n\n``undoable`` is true while the task carries an un-undone re-route and no\nworker holds it -- what ``aq provider reroute-undo --task-id`` would accept."
+      },
       "TaskRouteRequest": {
         "properties": {
           "task_id": {
@@ -44401,6 +48190,30 @@
             "type": "string",
             "title": "Profile Id",
             "description": "Eligible worker profile ID that should execute the task (never supervisor)"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
           },
           "intelligence_class": {
             "anyOf": [
@@ -45010,6 +48823,42 @@
             ],
             "title": "Needs Attention"
           },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -45327,6 +49176,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "items": {

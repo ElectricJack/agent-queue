@@ -8,7 +8,7 @@ docs/specs/implementation/work-graph.md §6.3.  Two sources of reasons:
   :mod:`src.database.queries.task_queries` and
   :mod:`src.database.queries.gate_queries`.
 * **Capacity reasons** (transient, from the last scheduler tick): no idle
-  agent, workspace locked, budget exhausted, provider cooldown.  These
+  agent, workspace locked, budget exhausted.  These
   come from :func:`build_capacity_reasons` reading the orchestrator's
   cached ``SchedulerState``.
 * **Integration reasons** (persistent read projections) are appended by the
@@ -39,7 +39,7 @@ class Reason(TypedDict):
     ``code`` is a stable machine-readable identifier — one of
     ``blocked_dependency``, ``blocked_gate``, ``no_idle_agent``,
     ``no_compatible_agent``, ``awaiting_intelligence_route``,
-    ``workspace_locked``, ``budget_exhausted``, ``rate_limited``,
+    ``workspace_locked``, ``budget_exhausted``, ``provider_hold``,
     ``held``, ``project_paused``, ``awaiting_pool_session``, ``pool_disabled``, and
     ``supervisor_profile``. The last three are
     the pull path's answer and *replaces* the capacity codes rather than
@@ -139,7 +139,7 @@ def build_capacity_reasons(
                 ref=task.project_id,
             )
         )
-    candidates = idle_workers(state, include_cooldown=True)
+    candidates = idle_workers(state, include_suppressed=True)
     compatible = [agent for agent in candidates if routing_mismatch(task, agent, state) is None]
     if candidates and not compatible:
         mismatches = list(
@@ -171,16 +171,4 @@ def build_capacity_reasons(
                 ref=None,
             )
         )
-    # Several idle agents may share a profile; a cooldown is a provider-level
-    # constraint, so reporting it once is both stable and actionable.
-    for profile_id in dict.fromkeys(agent.profile_id for agent in compatible):
-        cool = (state.provider_cooldowns or {}).get(profile_id, 0)
-        if cool > state.now:
-            reasons.append(
-                Reason(
-                    code="rate_limited",
-                    detail=(f"provider '{profile_id}' in cooldown for {int(cool - state.now)}s"),
-                    ref=profile_id,
-                )
-            )
     return reasons

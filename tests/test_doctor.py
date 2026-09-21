@@ -74,8 +74,10 @@ class TestRegistry:
     def test_default_registry_has_all_builtins(self):
         from src.doctor.capability_checks import capability_checks
         from src.doctor.db_checks import db_checks
+        from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
         from src.doctor.formula_checks import formula_checks
+        from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
         from src.doctor.integration_checks import integration_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
@@ -85,6 +87,7 @@ class TestRegistry:
         from src.doctor.project_checks import project_checks
         from src.doctor.provider_checks import provider_checks
         from src.doctor.resource_checks import resource_checks
+        from src.doctor.review_checks import review_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.skill_checks import skill_checks
         from src.doctor.task_checks import task_checks
@@ -102,15 +105,17 @@ class TestRegistry:
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
+            | {c.id for c in git_checks()}
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}
             | {c.id for c in profile_checks()}
             | {c.id for c in db_checks()}
             | {c.id for c in dashboard_state_checks()}
+            | {c.id for c in dashboard_server_checks()}
             | {c.id for c in playbook_v2_checks()}
             | {c.id for c in project_checks()}
             | {c.id for c in provider_checks()}
-            | {c.id for c in session_checks()}
+            | {c.id for c in review_checks()}
         )
         assert set(reg.ids()) == expected
 

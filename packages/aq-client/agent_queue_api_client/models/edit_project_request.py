@@ -31,6 +31,7 @@ class EditProjectRequest:
         assignment_playbook_id (None | str | Unset): Project-scoped assignment-routing playbook ID (optional, null to
             use the system default)
         repo_default_branch (None | str | Unset): Default git branch for the project (e.g. main, dev, master)
+        review_delegate_to (None | str | Unset): LOCAL-only default document-review decider; empty clears it.
         integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
         hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
             only complete typed hierarchical integration policy.
@@ -46,6 +47,7 @@ class EditProjectRequest:
     default_profile_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
     repo_default_branch: None | str | Unset = UNSET
+    review_delegate_to: None | str | Unset = UNSET
     integration_repository_id: None | str | Unset = UNSET
     hierarchical_integration_policy: EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset = UNSET
     expected_integration_generation: int | None | Unset = UNSET
@@ -101,6 +103,12 @@ class EditProjectRequest:
         else:
             repo_default_branch = self.repo_default_branch
 
+        review_delegate_to: None | str | Unset
+        if isinstance(self.review_delegate_to, Unset):
+            review_delegate_to = UNSET
+        else:
+            review_delegate_to = self.review_delegate_to
+
         integration_repository_id: None | str | Unset
         if isinstance(self.integration_repository_id, Unset):
             integration_repository_id = UNSET
@@ -148,6 +156,8 @@ class EditProjectRequest:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
         if repo_default_branch is not UNSET:
             field_dict["repo_default_branch"] = repo_default_branch
+        if review_delegate_to is not UNSET:
+            field_dict["review_delegate_to"] = review_delegate_to
         if integration_repository_id is not UNSET:
             field_dict["integration_repository_id"] = integration_repository_id
         if hierarchical_integration_policy is not UNSET:
@@ -231,6 +241,15 @@ class EditProjectRequest:
 
         repo_default_branch = _parse_repo_default_branch(d.pop("repo_default_branch", UNSET))
 
+        def _parse_review_delegate_to(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        review_delegate_to = _parse_review_delegate_to(d.pop("review_delegate_to", UNSET))
+
         def _parse_integration_repository_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -292,6 +311,7 @@ class EditProjectRequest:
             default_profile_id=default_profile_id,
             assignment_playbook_id=assignment_playbook_id,
             repo_default_branch=repo_default_branch,
+            review_delegate_to=review_delegate_to,
             integration_repository_id=integration_repository_id,
             hierarchical_integration_policy=hierarchical_integration_policy,
             expected_integration_generation=expected_integration_generation,

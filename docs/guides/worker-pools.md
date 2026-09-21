@@ -274,7 +274,12 @@ bootstrap prompt, after the startup dialog pass has finished. The session
 reconciler recycles such a worker (termination reason `claim_loop_stalled`,
 fenced against a claim that lands at the same moment), returning its agent row
 and workspace, and `aq task explain` names the count
-(`… 0 idle, 0 starting, 2 unresponsive`) instead of calling them idle.
+(`… 0 idle, 0 starting, 2 unresponsive`) instead of calling them idle. When
+provider availability is tracked (`provider_failover.mode` `observe` or
+`enforce`) the reconciler reads the pane first: a worker parked on its CLI's
+usage-limit screen ends with reason `usage_limit_screen` instead and records a
+rate-limit exit against the provider, so two such workers trip it and pool
+sizing stops relaunching into the limit (provider-failover D13).
 
 **Scale-down** is deliberately reluctant. It only ever drains *idle* sessions,
 only after the pool has been continuously in surplus for

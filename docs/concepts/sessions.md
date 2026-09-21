@@ -289,7 +289,7 @@ four values, checked in this order:
 | Verdict | Trigger | What happens |
 |---|---|---|
 | `drained` | the task is already closed | normal teardown |
-| `rate_limit` | rate-limit wording in the final screen | task paused with a cooldown; the session is not restarted straight back into the limit |
+| `rate_limit` | rate-limit wording in the final screen | provider evidence: the work is checkpointed and pushed, and the task is paused briefly or re-routed by provider failover (D13) — a 15-minute cooldown only outside enforce mode; the session is not restarted straight back into the limit |
 | `rapid_crash` | died inside `sessions.restart_window_seconds` of starting (600 s default) | restart with backoff — a launch or config problem, not work |
 | `productive_death` | ran a while, then exited with the task open | never silently re-queued; flagged for attention |
 
@@ -316,6 +316,19 @@ kill ([`_step_stall_ladder`](../../src/sessions/reconciler.py)):
 Providers with no input channel skip the nudge rungs entirely rather than
 spending three cycles talking to nobody. A session parked on a human question
 is exempt from the ladder for as long as the question is open.
+
+**A CLI parked on its usage-limit screen leaves the ladder at once.** Claude
+Code and Codex do not exit when they hit a usage limit mid-task; they print the
+limit line and sit at their prompt, where no nudge can help. Before each rung
+the ladder peeks the pane, and when its last lines hold one of the CLIs' own
+blocking limit messages (`You've hit your session limit · resets …`,
+`You’ve hit your usage limit. … try again at …`) it stops the process and
+applies the exit classifier's `rate_limit` verdict — provider evidence, then
+provider failover's checkpoint and re-route — without spending a restart
+([`src/sessions/usage_limit_screen.py`](../../src/sessions/usage_limit_screen.py)).
+The match is deliberately strict: the CLI's own `⎿`/`■` gutter at the left
+margin, then the exact wording, so output that merely quotes it does not
+count. `provider_failover.mode: enforce` only.
 
 **Agents can stop the ladder from climbing.** Anything that will be quiet for
 more than a few minutes — a long build, a full test run — should call
@@ -365,7 +378,10 @@ Not every session is working on a task, and the three kinds idle differently.
   and that has its own bounded check
   ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)),
   which recycles the session behind a database compare-and-set so a late claim
-  can never lose a race with its own teardown.
+  can never lose a race with its own teardown. The same check catches a worker
+  that never reached its loop because its CLI is parked on the usage-limit
+  screen; before recycling it reads the pane, and a limit screen is recorded as
+  a rate-limit exit against the provider (`end_reason = usage_limit_screen`).
 
 Draining a pool session is cooperative. `aq task close --claim-next` returns
 `drain_requested` or `session_exhausted` when the daemon wants the worker to

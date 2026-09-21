@@ -68,6 +68,7 @@ a peek-diff fallback. Three shapes are common:
 | An idle prompt with the work apparently done | the agent finished and never ran `aq task close` | the ladder's first nudge asks exactly this; wait one rung, or nudge by hand |
 | A long-running command | not stalled at all; the agent should have heartbeated | nothing — but see the note below |
 | A prompt waiting for an answer | the agent is blocked | answer it, or resolve the question through the normal escalation path |
+| `You've hit your … limit` / `You’ve hit your usage limit` above an idle prompt | the provider's usage limit, mid-task | nothing: in `provider_failover.mode: enforce` the first stall rung stops the session and takes it out as a `rate_limit` exit (`session.exited` with reason `usage-limit screen on a stalled session: …`), so provider failover checkpoints and re-routes the task. Outside enforce the ladder nudges and restarts as usual |
 
 > **Note for agent authors.** Anything that will run quiet for more than a few
 > minutes should call `aq task heartbeat <task-id>` first. On providers without
@@ -131,7 +132,7 @@ deliberately **quarantine** instead, because keystrokes cannot fix them:
 
 | Rule | Harness | Meaning | Fix |
 |---|---|---|---|
-| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | nothing on the host — the launch is retried every 60 s until the provider's window resets (see below) |
+| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | nothing on the host — the provider is marked `exhausted` and its work is re-routed or held until the window resets (see below) |
 | `login-required` | [codex](../../src/sessions/default_harnesses/codex.md) | the CLI is not authenticated | run `codex login` on the host |
 | `login-required` | [gemini](../../src/sessions/default_harnesses/gemini.md) | the CLI is not authenticated | run `gemini` interactively once, or set `GEMINI_API_KEY` in the daemon environment |
 
@@ -140,21 +141,32 @@ A quarantine rule kills the session *before* it is ever `running`
 handled as a failed launch, not as an exit. The session row ends `stopped`
 with `end_reason: startup_exit` — never `quarantined` — and the pane's last
 screen is saved to `<data_dir>/sessions/<session-name>/start-stderr.log`. The
-task is `PAUSED` with context `session_launch_failed` for a flat 60 s
+task's fate depends on whether the death is the *provider's*
 (`_fail_session_launch` in
-[`src/orchestrator/execution.py`](../../src/orchestrator/execution.py)), a
-**Session launch failed … Retrying in 60s** notice names the rule and that log,
-and the launch is tried again. A pool worker holds no task at that point and
-its session row is not written until the start succeeds, so there is nothing
-to pause: the `(project, profile)` pool key is quarantined for the same 60 s
-and `aq pool status` reports it as `quarantined_until` / `quarantined_reason`,
-with the tail of that log in the reason.
+[`src/orchestrator/execution.py`](../../src/orchestrator/execution.py), deciding
+through [`src/providers/inflight.py`](../../src/providers/inflight.py);
+[provider failover](../specs/provider-failover.md) D13):
 
-The exit classifier's 900 s `rate_limit` cooldown does **not** apply here. It
-only judges a session that reached `running` and then exited, so a provider
-that is already refusing work at startup is retried once a minute, not once
-every fifteen. To stop the churn while the window resets, `aq task pause` the
-task or `aq task route` it to a profile on another provider.
+* A rule that declares a `signal` (`auth`/`usage` — the three above), or any
+  startup death while the provider is already unavailable, is **provider
+  evidence**. It never spends the task's retry budget. The first such death
+  pauses the task for `provider_failover.launch.suspect_backoff_seconds` (30 s)
+  with context `provider_suspect` and a `provider_pause` record; once the
+  provider trips (usually on the second death, or on the first when the auth
+  probe confirms a logout) the task goes straight back to `READY` and the
+  `provider-failover` playbook's sweep moves it to the same class on another
+  provider, or holds it with a reason `aq task explain` shows.
+* Any other startup death is paused with context `session_launch_failed` for a
+  flat 60 s, and a **Session launch failed … Retrying in 60s** notice names the
+  rule and that log.
+
+Outside `provider_failover.mode: enforce` every startup death takes the flat
+60 s path. A pool worker holds no task at that point and its session row is
+not written until the start succeeds, so there is nothing to pause: an
+unattributed death quarantines the `(project, profile)` pool key for 60 s
+(`aq pool status` reports it as `quarantined_until` / `quarantined_reason`, with
+the tail of that log), while a provider-attributed one quarantines nothing —
+the provider's own state sizes its pools to zero.
 
 If the pane is empty and the session died immediately, the executable is
 probably not on the daemon's `PATH`. That failure is diagnosed before any file
@@ -344,12 +356,21 @@ anything.
 
 **What AQ does.** A healthy worker may sit in one server-side long poll for
 `swarm.claim_wait_max` seconds and then need a scheduler tick before the next
-one, so silence alone is not evidence. The check requires *both* a stale
-`prepare_failed` result and no later claim for a bounded grace — two full poll
+one, so silence alone is not evidence. The check requires an idle worker (no
+task, no claim in progress) with no claim for a bounded grace — two full poll
 windows, and never less than `swarm.prepare_timeout`
 ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)). The
 session is then recycled behind a database compare-and-set, so a late claim
 cannot lose a race with its own teardown.
+
+Two shapes reach it: a worker that stopped looping after a `prepare_failed`, and
+one that never reached its loop because its CLI answered the bootstrap prompt
+with a provider screen. When that screen is the usage limit
+(`You've hit your … limit` / `You’ve hit your usage limit`) and
+`provider_failover.mode` is `observe` or `enforce`, the session ends with
+`end_reason = usage_limit_screen` rather than `claim_loop_stalled` and a
+rate-limit exit is recorded against the provider — `aq provider status` shows
+it degraded after one such worker and unavailable after two.
 
 **Check the pool rather than the session:**
 
@@ -489,6 +510,8 @@ reason above is resolved by the subsystem that owns it.
   and interactive terminal, and what the claim file guarantees.
 * [Worker pools](worker-pools.md) — sizing, placement and drain policy for
   `p-` sessions.
+* [A provider ran out of usage](provider-outage.md) — the provider side of a
+  usage-limit or login death: its state, where the task went, and how to undo it.
 * [Migrations](migrations.md) — why a worker may never run Alembic, and what
   the refusal message means.
 

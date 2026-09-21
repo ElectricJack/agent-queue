@@ -115,6 +115,7 @@ async def test_hash_mismatched_reviewed_bundle_is_a_readiness_diagnostic(tmp_pat
         activations = await db.list_playbook_activations(enabled_only=True)
         assert {activation["playbook_id"] for activation in activations} == {
             "provider-usage-probe",
+            "provider-failover",
             *DEFAULT_SYSTEM_PLAYBOOK_IDS,
         }
     finally:
@@ -587,8 +588,9 @@ async def test_the_runtime_required_inactive_set_is_rebuilt_not_accumulated():
         "active_artifact_sha256": "sha256:" + "a" * 64,
     }
     probe_row = {**ready_row, "playbook_id": "provider-usage-probe"}
+    failover_row = {**ready_row, "playbook_id": "provider-failover"}
     runtime._db = SimpleNamespace(
-        list_playbook_activations=AsyncMock(return_value=[ready_row, probe_row])
+        list_playbook_activations=AsyncMock(return_value=[ready_row, probe_row, failover_row])
     )
     broken = {
         "ok": False,

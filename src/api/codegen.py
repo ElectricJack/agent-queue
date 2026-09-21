@@ -63,6 +63,8 @@ API_EXCLUDED = {
     # Daemon-internal failure-event hook for the recovery incident; only the
     # blocked-task-escalation playbook calls it.  ``task_recover`` decides.
     "task_recovery_notify",
+    # Provider state-change notice; the daemon and its playbook call it.
+    "provider_availability_notify",
 }
 
 

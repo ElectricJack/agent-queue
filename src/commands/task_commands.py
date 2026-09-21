@@ -22,7 +22,11 @@ from src.commands.helpers import (
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY, HierarchyError
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import (
+    TERMINAL_BLOCKED_META_KEY,
+    TaskProjectMoveError,
+    task_repository_id,
+)
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.models import (
@@ -62,7 +66,7 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
@@ -129,6 +133,53 @@ def parent_key_format_refusal(parent_key: str) -> dict | None:
             "characters matching [a-z0-9][a-z0-9_-]*"
         ),
     }
+
+
+def provider_intent_refusal(value) -> dict | None:
+    """Refuse a ``provider_intent`` outside the three values, or ``None``."""
+    from src.providers.intent import intent_error
+
+    error = intent_error(value)
+    if error is None:
+        return None
+    return {"success": False, "code": "provider_intent.invalid", "error": error}
+
+
+def pin_not_permitted_refusal(scope: dict | None, field: str) -> dict | None:
+    """Refuse a pin from a task-scoped worker token (provider-failover D9).
+
+    ``pinned`` is a human's statement.  It is accepted from human principals,
+    elevated supervisor sessions, vault formulas and reviewed playbooks --
+    every caller except a non-elevated session, which is what a pool or task
+    worker's token is.  *field* names the argument that asked for the pin.
+    """
+    scope = scope or {}
+    if scope.get("kind") != "session" or scope.get("elevated"):
+        return None
+    return {
+        "success": False,
+        "code": "provider_intent.pin_not_permitted",
+        "error": (
+            f"'{field}' pins the task to its provider, which only a human, a supervisor, "
+            "a vault formula or a reviewed playbook may do; a worker token may name a "
+            "profile (a preference) but not pin it"
+        ),
+    }
+
+
+def provider_intent_actor() -> str:
+    """The principal an intent write is attributed to (``provider_intent_audit``)."""
+    from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+
+    principal = current_principal() or TRUSTED_LOCAL
+    if principal.kind is PrincipalKind.LOCAL:
+        return "human:local-operator"
+    if principal.kind is PrincipalKind.SESSION:
+        return f"session:{principal.session_id or '-'}"
+    if principal.kind is PrincipalKind.SERVICE:
+        name = principal.service_name or "-"
+        return f"human:{name}" if ":" in name else f"service:{name}"
+    return principal.describe()
 
 
 def _fmt_epoch(ts: float) -> str:
@@ -700,6 +751,8 @@ class TaskCommandsMixin:
                 "assigned_agent": t.assigned_agent_id,
                 "profile_id": t.profile_id,
                 "intelligence_class": t.intelligence_class,
+                "provider_intent": t.provider_intent,
+                "rerouted_from": t.rerouted_from,
                 "parent_task_id": t.parent_task_id,
                 "is_plan_subtask": t.is_plan_subtask,
                 "task_type": t.task_type.value if t.task_type else None,
@@ -1081,6 +1134,36 @@ class TaskCommandsMixin:
 
         return dep_map
 
+    async def _task_provider_view(self, task: Task, project) -> tuple[dict | None, dict | None]:
+        """``(reroute, provider_hold)`` for ``get_task`` (provider-failover D17, D18).
+
+        ``reroute`` is the newest ``task_reroutes`` row plus ``undoable``;
+        ``provider_hold`` the derived hold, ``None`` unless the task's
+        provider is unavailable.  Decoration: a failure reads as absent.
+        """
+        reroute = None
+        try:
+            latest = (await self.db.latest_task_reroutes([task.id])).get(task.id)
+        except Exception:
+            logger.debug("get_task: reroute history unreadable", exc_info=True)
+            latest = None
+        if latest is not None:
+            reroute = dict(latest)
+            reroute["undoable"] = bool(
+                task.rerouted_from
+                and task.assigned_agent_id is None
+                and task.status
+                in (TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED)
+            )
+        hold = None
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is not None:
+            try:
+                hold = await availability.hold_for(task, project=project)
+            except Exception:
+                logger.debug("get_task: provider hold unreadable", exc_info=True)
+        return reroute, hold
+
     @staticmethod
     def _task_to_dict(t: Task) -> dict:
         """Serialize a :class:`Task` to the standard dict used in list
@@ -1096,6 +1179,8 @@ class TaskCommandsMixin:
             "assigned_agent": t.assigned_agent_id,
             "profile_id": t.profile_id,
             "intelligence_class": t.intelligence_class,
+            "provider_intent": t.provider_intent,
+            "rerouted_from": t.rerouted_from,
             "parent_task_id": t.parent_task_id,
             "is_plan_subtask": t.is_plan_subtask,
             "task_type": t.task_type.value if t.task_type else None,
@@ -2150,6 +2235,20 @@ class TaskCommandsMixin:
                 "success": False,
                 "error": "--root and parent_id are mutually exclusive",
             }
+        # Provider intent (provider-failover D9).  Validated and permission-
+        # checked before anything else reads the scope, so a worker's pin is
+        # refused however the rest of the request would have gone.
+        requested_intent = args.get("provider_intent")
+        pin_requested = bool(args.get("pin"))
+        refusal = provider_intent_refusal(requested_intent)
+        if refusal is not None:
+            return refusal
+        if pin_requested or requested_intent == "pinned":
+            refusal = pin_not_permitted_refusal(
+                self._current_scope, "pin" if pin_requested else "provider_intent"
+            )
+            if refusal is not None:
+                return refusal
 
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
@@ -2544,6 +2643,27 @@ class TaskCommandsMixin:
         )
         if class_error:
             return {"success": False, "error": class_error}
+        # D9: a profile the caller supplied is a preference; one a resolver
+        # supplied (class match, project default, inheritance), or none, is
+        # ``class_only``.  A pin or an explicit preference needs a profile.
+        from src.providers.intent import CLASS_ONLY, resolve_intent
+
+        if (pin_requested or requested_intent in ("pinned", "preferred")) and not profile_id:
+            return {
+                "success": False,
+                "code": "provider_intent.profile_required",
+                "error": (
+                    f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
+                    "names a provider, so it needs a profile_id; pass profile_id (or omit "
+                    "the intent and let routing place the task)"
+                ),
+            }
+        provider_intent = resolve_intent(
+            requested_intent,
+            pin=pin_requested,
+            profile_supplied=profile_source == "explicit",
+            profile_id=profile_id,
+        )
         # Validate optional preferred_workspace_id
         preferred_workspace_id = args.get("preferred_workspace_id")
         if preferred_workspace_id:
@@ -2770,10 +2890,12 @@ class TaskCommandsMixin:
             parent_task_id=None,
             dedup_key=args.get("dedup_key"),
             intelligence_class=args.get("intelligence_class"),
+            provider_intent=provider_intent,
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
-            repo_id=project.integration_repository_id if (hierarchy_enabled or
-                project.hierarchical_integration_mode == "development") else None,
+            repo_id=task_repository_id(
+                project.hierarchical_integration_mode, project.integration_repository_id
+            ),
         )
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
@@ -2911,6 +3033,37 @@ class TaskCommandsMixin:
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements and not hierarchy_created:
             await self.db.add_task_workspace_requirements(task_id, normalized_requirements)
+
+        # A review is a durable gate over downstream work, not a task
+        # dependency. Attach the task only after it has a row of its own so
+        # the task_gates relation and its blocked-state projection can be
+        # updated atomically.
+        after_review = args.get("after_review")
+        if after_review is not None:
+            review = await self.db.get_review(str(after_review))
+            if review is None:
+                return {
+                    "success": False,
+                    "error_code": "not_found",
+                    "error": f"review '{after_review}' not found",
+                }
+            if review["state"] == "withdrawn":
+                return {
+                    "success": False,
+                    "error_code": "review_closed",
+                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
+                }
+            if review["state"] != "approved":
+                async with self.db.immediate() as conn:
+                    flipped = await self.db.attach_gate_waiters(
+                        review["gate_id"], [task_id], conn=conn
+                    )
+                await self.db.log_blocked_flips(flipped)
+
+        # D9: who meant the provider, and when.  Only a meaningful intent is
+        # audited -- a routed ``class_only`` row is the default and costs no write.
+        if provider_intent != CLASS_ONLY or requested_intent is not None or pin_requested:
+            await self._record_provider_intent_audit(task_id, provider_intent, previous=None)
 
         # Graph edges and labels, now that the FK target exists.  Each
         # ``add_dependency`` recomputes the blocked-state projection, so the
@@ -3052,6 +3205,8 @@ class TaskCommandsMixin:
             result["profile_id"] = profile_id
         if profile_source:
             result["profile_source"] = profile_source
+        if profile_id:
+            result["provider_intent"] = provider_intent
         if task.intelligence_class:
             result["intelligence_class"] = task.intelligence_class
         if preferred_workspace_id:
@@ -3252,9 +3407,19 @@ class TaskCommandsMixin:
         if phases_refusal is not None:
             return phases_refusal
 
+        # An inline graph from a worker token may name profiles (preferences)
+        # but may not pin them (provider-failover D9); a vault spec is
+        # operator-owned, like a formula.
+        if any(node.pin for node in graph.nodes) and raw_graph:
+            refusal = pin_not_permitted_refusal(self._current_scope, "pin")
+            if refusal is not None:
+                return refusal
+
         for node in graph.nodes:
             if node.profile is None and args.get("profile_id"):
                 node.profile = args["profile_id"]
+                # The caller supplied it, so it is a preference (D9).
+                node.profile_source = "fill_in"
             if node.intelligence_class is None and args.get("intelligence_class"):
                 node.intelligence_class = args["intelligence_class"]
 
@@ -3289,6 +3454,7 @@ class TaskCommandsMixin:
                     ))
                 elif routed is not None:
                     node.profile = routed.id
+                    node.profile_source = "class_match"
                     class_matched[node.key] = routed.id
 
         findings = await validate_graph(
@@ -3382,6 +3548,9 @@ class TaskCommandsMixin:
             "parent_task_id": task.parent_task_id,
             "profile_id": task.profile_id,
             "intelligence_class": task.intelligence_class,
+            # Provider intent and the re-route marker (provider-failover D8, D17).
+            "provider_intent": task.provider_intent,
+            "rerouted_from": task.rerouted_from,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
             "affinity_agent_id": task.affinity_agent_id,
@@ -3414,6 +3583,7 @@ class TaskCommandsMixin:
         info["integration_mode_source"] = mode_source
 
         info["needs_attention"] = await self.db.get_task_meta(task.id, "needs_attention")
+        info["reroute"], info["provider_hold"] = await self._task_provider_view(task, project)
         completion = await self.db.get_task_completion(task.id)
         info["completion"] = asdict(completion) if completion else None
 
@@ -3730,12 +3900,45 @@ class TaskCommandsMixin:
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
 
+        after_review = args.get("after_review")
+        review = None
+        if after_review is not None:
+            review = await self.db.get_review(str(after_review))
+            if review is None:
+                return {
+                    "success": False,
+                    "error_code": "not_found",
+                    "error": f"review '{after_review}' not found",
+                }
+            if review["state"] == "withdrawn":
+                return {
+                    "success": False,
+                    "error_code": "review_closed",
+                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
+                }
+
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
             return {"error": "Task is manually paused; use resume_task."}
 
         routing_fields = {"profile_id", "intelligence_class"} & args.keys()
+        # Provider intent rides the routing guard (provider-failover D8/D9).
+        # ``pin`` counts only when set: a CLI that always sends ``pin: false``
+        # must not make every edit a routing edit.
+        if args.get("provider_intent") is not None:
+            routing_fields.add("provider_intent")
+        if args.get("pin"):
+            routing_fields.add("pin")
         if routing_fields and (task.status == TaskStatus.IN_PROGRESS or task.assigned_agent_id):
             return {"error": "Task is running or claimed; stop the task before changing its routing."}
+        refusal = provider_intent_refusal(args.get("provider_intent"))
+        if refusal is not None:
+            return refusal
+        if args.get("pin") or args.get("provider_intent") == "pinned":
+            refusal = pin_not_permitted_refusal(
+                self._current_scope, "pin" if args.get("pin") else "provider_intent"
+            )
+            if refusal is not None:
+                return refusal
 
         VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
 
@@ -3757,6 +3960,10 @@ class TaskCommandsMixin:
             project = await self.db.get_project(new_pid)
             if not project:
                 return {"error": f"Project '{new_pid}' not found"}
+            if new_pid != task.project_id:
+                blockers = await self.db.get_task_project_move_blockers(task.id)
+                if blockers and any(blockers.values()):
+                    return {"error": str(TaskProjectMoveError(task.id, new_pid, blockers))}
             updates["project_id"] = new_pid
         if "title" in args:
             updates["title"] = args["title"]
@@ -3795,6 +4002,42 @@ class TaskCommandsMixin:
             updates["profile_id"] = pid  # None clears the profile
         if "intelligence_class" in args:
             updates["intelligence_class"] = args["intelligence_class"]
+        # D9: naming a profile is a preference (``pin`` makes it a pin);
+        # clearing it clears the intent; ``provider_intent`` alone sets it.
+        new_intent: str | None = None
+        if {"profile_id", "provider_intent", "pin"} & routing_fields:
+            from src.providers.intent import CLASS_ONLY, resolve_intent
+
+            requested_intent = args.get("provider_intent")
+            pin_requested = bool(args.get("pin"))
+            routed_profile_id = updates.get("profile_id", task.profile_id)
+            if (pin_requested or requested_intent in ("pinned", "preferred")) and not routed_profile_id:
+                return {
+                    "success": False,
+                    "code": "provider_intent.profile_required",
+                    "error": (
+                        f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
+                        "names a provider, so the task needs a profile_id; set one in the "
+                        "same edit"
+                    ),
+                }
+            if "profile_id" in updates and updates["profile_id"] is None:
+                new_intent = CLASS_ONLY
+            elif "profile_id" in updates:
+                new_intent = resolve_intent(
+                    requested_intent,
+                    pin=pin_requested,
+                    profile_supplied=True,
+                    profile_id=updates["profile_id"],
+                )
+            else:
+                new_intent = resolve_intent(
+                    requested_intent,
+                    pin=pin_requested,
+                    profile_supplied=False,
+                    profile_id=task.profile_id,
+                )
+            updates["provider_intent"] = new_intent
         if routing_fields:
             routed_profile_id = updates.get("profile_id", task.profile_id)
             routed_profile = await self.db.get_profile(routed_profile_id) if routed_profile_id else None
@@ -3854,14 +4097,33 @@ class TaskCommandsMixin:
                 clear_intelligence_class=(
                     "intelligence_class" in updates and updates["intelligence_class"] is None
                 ),
+                provider_intent=new_intent,
             )
             if not updated:
                 return {"error": "Task is running or claimed; stop the task before changing its routing."}
-        other_updates = {key: value for key, value in updates.items() if key not in routing_fields}
+            if new_intent is not None:
+                await self._record_provider_intent_audit(
+                    task.id, new_intent, previous=task.provider_intent
+                )
+        other_updates = {
+            key: value
+            for key, value in updates.items()
+            if key not in routing_fields and key != "provider_intent"
+        }
         if other_updates:
-            await self.db.update_task(args["task_id"], **other_updates)
+            try:
+                await self.db.update_task(args["task_id"], **other_updates)
+            except TaskProjectMoveError as exc:
+                return {"error": str(exc)}
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
+
+        if review is not None and review["state"] != "approved":
+            async with self.db.immediate() as conn:
+                flipped = await self.db.attach_gate_waiters(
+                    review["gate_id"], [task.id], conn=conn
+                )
+            await self.db.log_blocked_flips(flipped)
 
         needs_attention_cleared = (
             args.get("needs_attention") is not None and args["needs_attention"].strip() == ""
@@ -3886,6 +4148,8 @@ class TaskCommandsMixin:
         all_fields = list(updates.keys())
         if status_changed:
             all_fields.append("status")
+        if after_review is not None:
+            all_fields.append("after_review")
         if args.get("clear_needs_attention"):
             all_fields.append("clear_needs_attention")
         elif args.get("needs_attention") is not None:
@@ -3897,7 +4161,8 @@ class TaskCommandsMixin:
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
                     "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
-                    "affinity_reason, workspace_mode, needs_attention, or clear_needs_attention."
+                    "affinity_reason, workspace_mode, provider_intent, pin, after_review, needs_attention, or "
+                    "clear_needs_attention."
                 )
             }
 
@@ -4448,7 +4713,9 @@ class TaskCommandsMixin:
         skipped: list[dict] = []
         for task, result, deps in task_data:
             try:
-                success = await self.db.archive_task(task.id)
+                # A bulk sweep never archives work the development publisher
+                # has not delivered yet (``hierarchy.delivery_pending``).
+                success = await self.db.archive_task(task.id, hold_undelivered=True)
             except HierarchyError as exc:
                 skipped.append(
                     {
@@ -4887,6 +5154,28 @@ class TaskCommandsMixin:
         if route_reason is not None:
             reasons.append(route_reason)
 
+        # 4b. Provider hold (provider-failover D18): a persistent reason read
+        # from the task row and the availability snapshot, beside the gate
+        # and dependency reasons -- not a capacity reason, which would be
+        # stripped for pool-routed work, where most tasks live.
+        provider_hold = None
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is not None and not retirement:
+            provider_hold = await availability.hold_for(task)
+        if provider_hold is not None:
+            until = provider_hold.get("until")
+            reasons.append(Reason(
+                code="provider_hold",
+                detail=(
+                    f"provider {provider_hold['provider']} is {provider_hold['state']}"
+                    + (f" ({provider_hold['reason']})" if provider_hold.get("reason") else "")
+                    + (f" until {_fmt_epoch(until)}" if until else "")
+                    + f"; held: {provider_hold['kind']}"
+                    + (f" -- {provider_hold['detail']}" if provider_hold.get("detail") else "")
+                ),
+                ref=provider_hold["provider"],
+            ))
+
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
         # question this task never asks. Say what it is actually waiting on.
@@ -4940,6 +5229,7 @@ class TaskCommandsMixin:
             "reasons": reasons,
             "reason_codes": [reason["code"] for reason in reasons],
             "assignment_route": assignment_route,
+            "provider_hold": provider_hold,
         }
 
     async def _assignment_route_state(self, task):
@@ -5379,6 +5669,12 @@ class TaskCommandsMixin:
         # the default pipeline pins 'triage' on the triage task).
         if args.get("profile_id"):
             create_args["profile_id"] = args["profile_id"]
+        # Provider intent is create-time routing intent like the profile
+        # (provider-failover D9); ``_create_task`` validates and permission-checks it.
+        if args.get("provider_intent") is not None:
+            create_args["provider_intent"] = args["provider_intent"]
+        if args.get("pin"):
+            create_args["pin"] = True
         # Validated by ``_cmd_create_task`` against the pinned profile, so an
         # unknown class or one with no model mapping fails the node loudly
         # instead of silently producing an unroutable task.
@@ -5430,6 +5726,46 @@ class TaskCommandsMixin:
                 continue
             out.append({"id": t.id, "title": t.title, "status": t.status.value})
         return {"success": True, "tasks": out}
+
+    async def _record_provider_intent_audit(
+        self, task_id: str, intent: str, *, previous: str | None
+    ) -> None:
+        """``task_metadata['provider_intent_audit']`` for the last intent write (D9).
+
+        Bookkeeping: a failed write is logged, never allowed to fail the
+        routing change it describes.
+        """
+        from src.providers.intent import INTENT_AUDIT_KEY
+
+        try:
+            await self.db.set_task_meta(
+                task_id,
+                INTENT_AUDIT_KEY,
+                {
+                    "intent": intent,
+                    "by": provider_intent_actor(),
+                    "at": time.time(),
+                    "previous": previous,
+                },
+            )
+        except Exception:
+            logger.warning("could not record provider_intent_audit for %s", task_id, exc_info=True)
+
+    def _profile_provider_key(self, profile, project_id: str | None = None) -> str:
+        """The availability provider key *profile*'s harness draws on (D0)."""
+        from src.providers.availability import provider_key
+
+        harness_id = str(getattr(profile, "harness", "") or "").strip()
+        if not harness_id:
+            return ""
+        registry = getattr(getattr(self, "orchestrator", None), "harness_registry", None)
+        harness = None
+        if registry is not None:
+            try:
+                harness = registry.get(harness_id, project_id)
+            except Exception:  # noqa: BLE001 - an unreadable registry falls back to the bare id
+                harness = None
+        return provider_key(harness) if harness is not None else harness_id
 
     async def _cmd_task_route(self, args: dict) -> dict:
         """Route a task: assign profile + intelligence class (+ workspace).
@@ -5501,17 +5837,58 @@ class TaskCommandsMixin:
                     ),
                 }
 
+        # Provider intent (provider-failover D9).  A caller naming the profile
+        # means it as a preference unless it says otherwise; the routing
+        # playbook passes ``class_only`` explicitly.  ``task_route`` never
+        # downgrades: a row already pinned/preferred keeps its intent when the
+        # routed profile is on the same provider.
+        from src.providers.intent import (
+            CLASS_ONLY,
+            PINNED,
+            PREFERRED,
+            effective_intent,
+            resolve_intent,
+        )
+
+        requested_intent = args.get("provider_intent")
+        pin_requested = bool(args.get("pin"))
+        refusal = provider_intent_refusal(requested_intent)
+        if refusal is not None:
+            return refusal
+        if pin_requested or requested_intent == PINNED:
+            refusal = pin_not_permitted_refusal(
+                self._current_scope, "pin" if pin_requested else "provider_intent"
+            )
+            if refusal is not None:
+                return refusal
+        provider_intent = resolve_intent(
+            requested_intent, pin=pin_requested, profile_supplied=True, profile_id=str(profile_id)
+        )
+        current_intent = effective_intent(task)
+        rank = {CLASS_ONLY: 0, PREFERRED: 1, PINNED: 2}
+        if rank[provider_intent] < rank[current_intent]:
+            current_profile = await self.db.get_profile(task.profile_id)
+            if current_profile is not None and self._profile_provider_key(
+                current_profile, task.project_id
+            ) == self._profile_provider_key(profile, task.project_id):
+                provider_intent = current_intent
+
         updated = await self.db.update_task_routing(
             str(task_id),
             profile_id=str(profile_id),
             intelligence_class=cls_id,
             preferred_workspace_id=str(workspace_id) if workspace_id else None,
+            provider_intent=provider_intent,
         )
         if not updated:
             return {
                 "success": False,
                 "error": "Task is running or claimed; stop the task before changing its routing.",
             }
+        if provider_intent != task.provider_intent or provider_intent != CLASS_ONLY:
+            await self._record_provider_intent_audit(
+                str(task_id), provider_intent, previous=task.provider_intent
+            )
 
         reason = args.get("reason")
         if reason:
@@ -5532,6 +5909,7 @@ class TaskCommandsMixin:
         return {
             "success": True,
             "task_id": str(task_id),
+            "provider_intent": provider_intent,
             "resolved_gate_ids": resolved,
         }
 

@@ -43,11 +43,11 @@ can never disagree with the daemon. When a table here and `--help` differ,
 | `aq logs` | `—` | hand | Tail and filter daemon logs. |
 | `aq prime` | `prime` | hand | Print this task's startup prime document (design §5). |
 | `aq reply` | `—` | hand | Reply to a message (alias for `aq message reply`). |
-| `aq restart` | `—` | hand | Restart the agent-queue daemon. |
+| `aq restart` | `—` | hand | Restart the agent-queue daemon and the dashboard server. |
 | `aq schema` | `—` | hand | Print the system's enum catalog (task statuses, types, dependency types, gate types/statuses, ...) so scripts and agents never guess magic strings. |
-| `aq start` | `—` | hand | Start the agent-queue daemon. |
-| `aq status` | `get_status` | hand | Show system status overview. |
-| `aq stop` | `—` | hand | Stop the agent-queue daemon and its agent sessions. |
+| `aq start` | `—` | hand | Start the agent-queue daemon, then the dashboard server. |
+| `aq status` | `get_status` | hand | Show system status overview, and whether the dashboard server is up. |
+| `aq stop` | `—` | hand | Stop the agent-queue daemon, its agent sessions and the dashboard server. |
 | `aq test` | `—` | hand | Run pytest under the box-wide test semaphore. |
 
 ### `aq agent`
@@ -86,6 +86,35 @@ a *live* worker and reports the delivery status.
 | `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. Pass `--grants-only` to instead merge in just the missing `## Capabilities` grants, keeping every other edit. |
 | `aq agent show-effective-profile` | `show_effective_profile` | gen | Run the orchestrator's profile resolution cascade for a (project_id, agent_type) pair and return the merged profile the next task launch would use. |
 | `aq agent start-terminal` | `start_agent_terminal` | gen | Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. |
+
+### `aq dashboard`
+
+The dashboard server process, and the durable dashboard state documents. The
+dashboard server is a separate local process that serves the verified bundle
+and proxies the daemon's API, so the browser stays same-origin and the daemon
+serves no dashboard ([guide](../../guides/dashboard.md#opening-the-dashboard),
+[design](../../specs/dashboard-server.md)). `serve` runs it in
+the foreground; `start` / `stop` / `restart` / `status` manage it in the
+background (`~/.agent-queue/dashboard-server.pid` and `.log`) and work while
+the daemon is down. `aq start`, `aq stop` and `aq restart` call them when a
+bundle is installed: `--no-dashboard` only skips the Vite prompt of a source
+checkout, and `--no-dashboard-server` leaves the server alone. `aq status`
+reports it as `dashboard_server` under `--json`, and `aq doctor` checks
+`dashboard.server.running`, `.bundle`, `.port` and `.exposure`. The `state-*`
+leaves are generated from the dashboard-state commands.
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq dashboard restart` | `—` | hand | Restart the dashboard server, picking up changed settings or a rebuilt bundle. |
+| `aq dashboard serve` | `—` | hand | Serve the verified dashboard and proxy the daemon, in the foreground. |
+| `aq dashboard start` | `—` | hand | Start the dashboard server in the background (idempotent). |
+| `aq dashboard state-get` | `dashboard_state_get` | gen | Read one dashboard state document by namespace and optional subject. |
+| `aq dashboard state-list` | `dashboard_state_list` | gen | List every shared and caller-owned dashboard state document. |
+| `aq dashboard state-put` | `dashboard_state_put` | gen | Replace one validated dashboard state document. |
+| `aq dashboard state-reset` | `dashboard_state_reset` | gen | Reset one dashboard state document to its typed default. |
+| `aq dashboard status` | `—` | hand | Show whether the dashboard server is running, and where. |
+| `aq dashboard stop` | `—` | hand | Stop the background dashboard server (SIGTERM, then SIGKILL after 10s). |
 
 ### `aq db`
 
@@ -201,8 +230,9 @@ task's branch only**, verified against persisted state
 are not worker capabilities — merging belongs to the reviewing authority. Five
 leaves (`checkout-branch`, `commit-changes`, `create-branch`, `merge-branch`,
 `push-branch`) are alias spellings of a neighbour and say so in their help.
-`ci-baseline-status` is core, not plugin: it reads the CI verdict for a
-project's default branch head.
+`ci-baseline-status` and `ci-repair-adopt` are core, not plugin: the first
+reads the CI verdict for a project's default branch head, the second makes a
+task the repair that owns a red failure.
 
 
 | Command | Daemon command | Kind | What it does |
@@ -212,6 +242,7 @@ project's default branch head.
 | `aq git checkout` | `git_checkout` | gen | Switch to an existing branch. |
 | `aq git checkout-branch` | `checkout_branch` | gen | Check out an existing branch (alias for git_checkout). |
 | `aq git ci-baseline-status` | `ci_baseline_status` | gen | Read the CI verdict for a project's default branch head (or ``ref``): green / red / pending / unknown, the failing checks and pytest node ids, and… |
+| `aq git ci-repair-adopt` | `ci_repair_adopt` | gen | Make a live task the repair for a red branch: key it ``ci-baseline:<signature>:<n>`` and record the failing tests it owns, so ci_baseline_status reuses it instead of… |
 | `aq git commit` | `git_commit` | gen | Stage all changes and create a commit. |
 | `aq git commit-changes` | `commit_changes` | gen | Stage all changes and commit (alias for git_commit). |
 | `aq git create-branch` | `create_branch` | gen | Create and switch to a new branch (alias for git_create_branch). |
@@ -482,6 +513,26 @@ orphaned worktree slots.
 | `aq project set-constraint` | `set_project_constraint` | gen | Set a temporary scheduling constraint on a project. |
 | `aq project workspace-doctor` | `workspace_doctor` | gen | Diagnose worktree inventory. |
 | `aq project workspace-reap` | `workspace_reap` | gen | Explicitly reap a retired worktree slot (removes its directory + row). |
+
+### `aq provider`
+
+Provider availability and failover. A **provider** is a harness login
+(`claude`, `codex`, `gemini`, plus `llm` for the direct path); a vendor name is
+accepted as an alias. `status`, `history` and `held-tasks` read; `recheck`,
+`set-state`, `reroute` and `reroute-undo` change state. None of them is in an
+ordinary worker token's scope: they belong to operators and supervisors. See
+[a provider ran out of usage](../../guides/provider-outage.md).
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq provider held-tasks` | `provider_held_tasks` | gen | List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, …). |
+| `aq provider history` | `provider_history` | gen | List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it. |
+| `aq provider recheck` | `provider_recheck` | gen | Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state. |
+| `aq provider reroute` | `provider_reroute` | gen | Re-route queued work off an unavailable provider to the same intelligence class on an available one; `--dry-run` plans only. |
+| `aq provider reroute-undo` | `provider_reroute_undo` | gen | Undo provider re-routes: return tasks to the profile they were on before, by `--batch-id` or `--task-id`. |
+| `aq provider set-state` | `provider_set_state` | gen | Override a provider's availability: `disabled`, `available` (always expires) or `auto` (clear the override). |
+| `aq provider status` | `provider_status` | gen | Show each provider's availability: the effective state, its reason, since when, the expected recovery, any override, held tasks and the newest usage reading. |
 
 ### `aq question`
 

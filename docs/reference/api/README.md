@@ -57,7 +57,7 @@ Clients resolve the base URL in this order
 4. `http://127.0.0.1:8081`.
 
 Three things share that port: this API under `/api` (plus `/health`, `/ready`,
-`/plans/{task_id}`, `/docs`, `/redoc`, `/openapi.json`), the WebSocket
+`/plans/{task_id}` and `/openapi.json`), the WebSocket
 endpoints under `/ws`, and the MCP streamable-HTTP server mounted beneath
 `/mcp` ([`src/embedded_mcp.py`](../../../src/embedded_mcp.py)).
 
@@ -256,20 +256,19 @@ OpenAPI describes request/response operations, not sockets — so no client is
 generated for them and both the dashboard and this documentation describe them
 by hand. See [streaming](events.md).
 
-## Browsing the surface live
+## Reading the schema
 
-FastAPI's own documentation is mounted on the same port:
+The daemon serves the full schema as JSON at `/openapi.json` and no HTML API
+reference. Neither the schema URL nor `/health`, `/ready` or `/api/health`
+require a token.
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/docs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/openapi.json
 ```
 
 ```text
 200
 ```
-
-`/docs` (Swagger UI) and `/redoc` render the same schema the daemon serves at
-`/openapi.json`. None of the three require a token.
 
 ## Source of truth, and how it is generated
 

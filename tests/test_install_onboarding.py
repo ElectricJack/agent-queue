@@ -29,6 +29,12 @@ from src.install.command import CommandOutput
 from src.install.onboarding import (
     CAPABILITY_DAEMON,
     CAPABILITY_DISCORD,
+    DASHBOARD_DISABLED,
+    DASHBOARD_MISCONFIGURED,
+    DASHBOARD_PORT_CONFLICT,
+    DASHBOARD_SERVER,
+    DASHBOARD_STOPPED,
+    DASHBOARD_UNBUILT,
     STEP_CHECK,
     STEP_CONFIG,
     STEP_DAEMON,
@@ -75,13 +81,31 @@ WSL2 = SupportVerdict(host_path="windows-wsl2", tier="supported", facts=_facts()
 VALID_DSN = "postgresql+asyncpg://agent_queue:${AQ_DB_PASSWORD}@localhost:5432/agent_queue"
 
 
-class FakeDaemon:
-    """A daemon that is down until ``aq start`` is run, then answers /health."""
+#: Where the dashboard server answers under a default configuration.
+DASHBOARD_URL = "http://127.0.0.1:8082/"
 
-    def __init__(self, *, up: bool = False, starts: bool = True, dashboard: int | None = 200):
+
+class FakeDaemon:
+    """A daemon that is down until ``aq start`` is run, then answers /health.
+
+    It also plays the dashboard server, which ``aq start`` brings up with the
+    daemon when a bundle is installed -- as the real one does.  ``dashboard``
+    is what the dashboard server answers for its page.  The daemon itself
+    serves no page, so a probe of its old ``/dashboard`` mount is an error.
+    """
+
+    def __init__(
+        self,
+        *,
+        up: bool = False,
+        starts: bool = True,
+        dashboard: int | None = 200,
+        server_up: bool | None = None,
+    ):
         self.up = up
         self.starts = starts
         self.dashboard = dashboard
+        self.server_up = up if server_up is None else server_up
         self.commands: list[tuple[str, ...]] = []
 
     def run(self, argv, **kwargs) -> CommandOutput:
@@ -90,16 +114,37 @@ class FakeDaemon:
         if command[1] == "start":
             if not self.starts:
                 return CommandOutput(argv=command, returncode=1, stderr="database is unreachable")
-            self.up = True
+            self.up = self.server_up = True
             return CommandOutput(argv=command, returncode=0, stdout="Daemon started")
+        if command[1:] == ("--json", "dashboard", "start"):
+            self.server_up = True
+            return CommandOutput(argv=command, returncode=0, stdout="{}")
         raise AssertionError(f"unexpected command: {command}")
 
     def probe(self, url: str) -> int | None:
         if url.endswith("/health"):
             return 200 if self.up else None
-        if url.endswith(("/dashboard", "/dashboard/")):
-            return self.dashboard if self.up else None
+        if url == DASHBOARD_URL:
+            return self.dashboard if self.server_up else None
         raise AssertionError(f"unexpected probe: {url}")
+
+    def identify(self, url: str):
+        if url == DASHBOARD_URL and self.server_up:
+            return "ours", {
+                "service": "aq-dashboard-server",
+                "bundle": {"version": "0.1.0", "verified": True},
+                "upstream_ok": self.up,
+            }
+        return "none", None
+
+
+def release_root(home: Path) -> Path:
+    """A release-shaped installation: nothing to build, a bundle to serve."""
+    root = home.parent / "site-packages"
+    dist = root / "src" / "dashboard_assets" / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    (dist / "aq-dashboard-manifest.json").write_text("{}", encoding="utf-8")
+    return root
 
 
 def home_with_config(tmp_path: Path, *, body: str | None = None) -> Path:
@@ -132,8 +177,9 @@ def registry_for(
             runner=daemon.run,
             which=which,
             probe=daemon.probe,
+            identify=daemon.identify,
             # Release-shaped: nothing to build.  test_install_dashboard.py owns the build.
-            dashboard_root=home,
+            dashboard_root=release_root(home),
         )
     )
     return registry
@@ -210,9 +256,11 @@ def test_a_default_run_reaches_a_ready_daemon_and_a_dashboard_url(tmp_path):
     # unattended install then reported "the daemon did not come up: Aborted!"
     # after the daemon had actually started (native macOS 14/15, noble-apex.18).
     assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")]
+    # The dashboard is the dashboard server's, never the API-only daemon's.
     board = step(result, STEP_DASHBOARD).detail["dashboard"]
     assert board["reachable"] is True
-    assert board["url"].endswith("/dashboard/")
+    assert board["url"] == DASHBOARD_URL
+    assert board["source"] == DASHBOARD_SERVER
 
 
 def test_the_configuration_step_tunes_for_this_machine_and_keeps_what_exists(tmp_path):
@@ -624,25 +672,93 @@ def test_the_daemon_is_not_started_unless_it_was_selected(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_release_install_reports_the_bundled_dashboard_url():
-    info = inspect_dashboard("http://127.0.0.1:8081", lambda url: 200)
-    assert info.url == "http://127.0.0.1:8081/dashboard/"
+def _inspect(tmp_path, *, identity=("none", None), status=None, bundle=True, config=""):
+    path = tmp_path / "config.yaml"
+    path.write_text(config, encoding="utf-8")
+    seen: list[str] = []
+
+    def probe(url):
+        seen.append(url)
+        return status
+
+    info = inspect_dashboard(
+        path, probe=probe, identify=lambda url: identity, bundle_present=lambda: bundle
+    )
+    return info, seen
+
+
+OURS = ("ours", {"service": "aq-dashboard-server", "bundle": {"verified": True}})
+
+
+def test_a_served_dashboard_is_reported_at_the_dashboard_server_url(tmp_path):
+    info, seen = _inspect(tmp_path, identity=OURS, status=200)
+
+    assert info.url == DASHBOARD_URL
     assert info.reachable is True
-    assert info.source == "bundled"
+    assert info.source == DASHBOARD_SERVER
+    assert info.hint == ""
+    # The daemon serves no page, so it is never asked for one.
+    assert seen == [DASHBOARD_URL]
 
 
-def test_an_unbuilt_dashboard_is_told_to_rerun_the_install_not_to_run_vite():
+def test_a_dashboard_server_whose_daemon_is_down_says_to_start_it(tmp_path):
+    down = ("ours", {**OURS[1], "upstream_ok": False})
+    info, _ = _inspect(tmp_path, identity=down, status=200)
+
+    assert info.reachable is True
+    assert "aq start" in info.hint
+
+
+def test_the_dashboard_url_follows_the_dashboard_server_configuration(tmp_path):
+    info, _ = _inspect(tmp_path, config="dashboard:\n  server:\n    port: 9191\n")
+    assert info.url == "http://127.0.0.1:9191/"
+
+
+def test_an_unbuilt_dashboard_is_told_to_rerun_the_install_not_to_run_vite(tmp_path):
     """A newcomer must never be sent to keep a Vite dev server running by hand.
 
-    `dashboard.build` builds the bundle and restarts the daemon to serve it, so
-    a 404 at /dashboard means that step has not completed, and rerunning the
-    install is the fix.
+    `dashboard.build` builds the bundle and `dashboard.serve` starts the
+    dashboard server on it, so no bundle means those steps have not completed,
+    and rerunning the install is the fix.
     """
-    info = inspect_dashboard("http://127.0.0.1:8081", lambda url: 404)
-    assert info.source == "unbuilt"
-    assert info.url == "http://127.0.0.1:8081/dashboard/"
+    info, _ = _inspect(tmp_path, bundle=False)
+
+    assert info.source == DASHBOARD_UNBUILT
+    assert info.url == DASHBOARD_URL
     assert "Rerun the install command" in info.hint
     assert "npm" not in info.hint and "5173" not in info.url
+
+
+def test_a_stopped_dashboard_server_names_the_command_that_starts_it(tmp_path):
+    info, _ = _inspect(tmp_path)
+
+    assert info.source == DASHBOARD_STOPPED
+    assert info.reachable is False
+    assert "aq dashboard start" in info.hint
+
+
+def test_a_port_held_by_another_program_is_named_with_the_key_that_moves_it(tmp_path):
+    info, _ = _inspect(tmp_path, identity=("foreign", None), status=404)
+
+    assert info.source == DASHBOARD_PORT_CONFLICT
+    assert "8082" in info.hint and "dashboard.server.port" in info.hint
+
+
+def test_a_disabled_dashboard_server_points_at_serving_it_by_hand(tmp_path):
+    info, _ = _inspect(tmp_path, config="dashboard:\n  server:\n    enabled: false\n")
+
+    assert info.source == DASHBOARD_DISABLED
+    assert "dashboard.server.enabled" in info.hint and "aq dashboard serve" in info.hint
+
+
+def test_a_dashboard_server_setting_that_does_not_load_is_named(tmp_path):
+    info, _ = _inspect(
+        tmp_path, config="mcp_server:\n  port: 8082\ndashboard:\n  server:\n    port: 8082\n"
+    )
+
+    assert info.source == DASHBOARD_MISCONFIGURED
+    assert info.url == ""
+    assert "dashboard.server" in info.hint
 
 
 def test_a_daemon_that_is_not_answering_says_so_without_failing_the_run(tmp_path):

@@ -129,7 +129,7 @@ the digest layer; every rule in D3–D5 is a unit test with a fake clock.
 | `usage_snapshot` | Newest non-stale row per `(provider, window, scope)` in `provider_usage_snapshots` — staleness per the existing `providers.*stale_after_seconds` horizons | `used_percent`, `resets_at` | **Structured** — the provider's own number |
 | `auth_probe` | `probe_login` (`src/install/logins.py`) run off the event loop with a short timeout (D5) | `authenticated` / `not_authenticated` / `cannot_tell` | **Structured**. `cannot_tell` (timeout, `OSError`) is never evidence of anything. |
 | `startup_dialog` | `SessionDiedDuringStartup.detail` names the quarantine dialog; the rule's new `signal` field says what it means | `auth` / `usage` | **Strong** — a typed match during startup |
-| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT` | `usage` | **Medium** — pane text. `RATE_LIMIT_PATTERNS` includes a bare `429` and `resets at`, so one match proves little. |
+| `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage` | **Medium** — pane text. `RATE_LIMIT_PATTERNS` includes a bare `429` and `resets at`, so one match proves little. The usage-limit screen's pattern set is far stricter, but it is still pane text and records the same kind. |
 | `launch_failure` | Any other `SessionDiedDuringStartup` (`end_reason = startup_exit`) | — | **Weak** — may be the repository, not the provider |
 | `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first | — | **Structured** |
 | `llm_call` | Direct path only: adapter outcome mapped to `ok` / `auth` (401/403) / `usage` (429 with a quota body, `insufficient_quota`) / `error` | as named | **Structured** |
@@ -210,7 +210,11 @@ While on probation:
 
 * at most **one** launch may be in flight for the provider (the canary) until
   the first `launch_success` — eight pool workers do not stampede a login that
-  may still be dead;
+  may still be dead. A canary that never started, or whose session row stops
+  without launch evidence (killed, reaped, died after startup), is no longer in
+  flight: the next availability tick frees the slot and records nothing, since
+  a kill proves nothing about the provider. Only a canary with no session to
+  watch waits out the 10-minute presumed-lost timeout;
 * a single strong or medium failure signal returns it to the state it came from
   **without corroboration**, with `level + 1` (so the next backoff doubles);
 * the first `launch_success` makes it `available`. `level` decays to 0 after
@@ -537,9 +541,71 @@ policy == "same_class":
 | **PAUSED before this shipped** (the seven tasks of 2026-09-20) | No recorded cause, so never touched automatically. `aq provider reroute --provider codex --include-paused` handles them by hand, listing what it will move first. | same |
 | **Mid-retry / in-flight** (`.4`) | A failure *attributed to the provider* — a `startup_dialog` signal, a `RATE_LIMIT` exit, or any startup death while the provider is already unavailable — does **not** consume `retry_count` and does **not** pause into the dead provider. If the provider has tripped, the task returns to `READY` and the sweep decides. If this was the first signal and the trip awaits corroboration, the task pauses for `launch.suspect_backoff_seconds` (30) with context `provider_suspect`, which is what lets the second launch confirm or clear it. Unattributed startup deaths behave exactly as today. | Same accounting; the task then holds. |
 | **A session that dies mid-task on a usage limit** (`.4`) | Before the workspace is released the daemon (1) commits uncommitted changes on the task branch as `aq-wip: provider failover checkpoint` through the async `GitManager` API, (2) pushes the branch, (3) writes a **hand-off note** as a task comment and `task_metadata['provider_failover_handoff']`: previous profile, provider and model, session id and `aq session logs <id>` pointer, exit verdict, branch and head SHA, whether a WIP commit was made, and the subtask checklist state. The next worker's `aq prime` shows it. If the push fails the task **holds in place** with the workspace kept — nothing is discarded to make a re-route possible. | Same preservation; then holds. |
+| **A session parked mid-task on a usage-limit screen** (`.8`) | Claude Code and Codex usually do not exit on a mid-task usage limit: they print the limit line and sit at the prompt, so nothing above sees them until the stall ladder does, which would nudge a CLI that cannot answer and restart it ~23 minutes in. Instead, once the session is stalled (`sessions.lease_ttl_seconds`), before each ladder rung the reconciler peeks the pane and matches its last 15 non-blank lines against a **strict** set of the CLIs' own blocking messages (`src/sessions/usage_limit_screen.py` — the CLI's `⎿`/`■` gutter at the margin, then `You've hit your … limit`, `You’ve hit your usage limit`, `You're out of usage credits`, …; never `RATE_LIMIT_PATTERNS`, whose bare `429` ordinary output hits). A match stops the process and applies `RATE_LIMIT` with reason `usage-limit screen on a stalled session: <line>`, which is `exit_rate_limit` evidence and then exactly the row above. No restart is spent; the rung counter resets. `mode: enforce` only; `observe`/`off` keep the ladder. A failed stop leaves the session to the ladder. | Same; then holds. |
+| **A pool worker parked on a usage-limit screen before its first claim** (`azure-ridge`) | The bootstrap prompt itself is answered with the limit, so the worker never reaches its claim loop and holds no task: the row above never sees it (the stall ladder only walks sessions holding a task). The abandoned-claim-loop step recycles it once it has not claimed for `max(swarm.prepare_timeout, 2 × swarm.claim_wait_max)`; after the recycle fence and before teardown it peeks the pane with the same strict matcher, and on a match records `exit_rate_limit` with reason `usage-limit screen on an idle pool worker: <line>` and ends the session with `end_reason = usage_limit_screen` instead of `claim_loop_stalled`. Two such workers trip the provider (D3), so pool sizing stops relaunching into the limit. No task is held, so nothing is checkpointed or requeued, and no pool-key quarantine is armed — suppression is the provider state's job. `mode: observe` and `enforce` (evidence is only recorded where it is tracked); `off` keeps the plain `claim_loop_stalled` recycle. | Same — no task is held, so no pin is involved. |
 | **Pool sessions** | Target size 0 for every pool on the provider; `aq pool status` shows `provider_unavailable` with the state and `until` — distinct from `placement_starved`. Idle sessions get `drain_requested` on their next claim. **Busy sessions are left alone**: a session still making turns is recovery evidence (D4), not something to kill. Startup deaths attributed to provider evidence do **not** arm the `(project, profile)` key quarantine or count toward `sessions.max_restarts`. Demand follows the tasks: re-routed work raises demand on the target rung, inside that rung's own bounds. | Pinned tasks add no demand anywhere while held. |
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
+
+**As built (`bold-rapids.4`).** The decision is one pure function,
+`decide(availability, failure)` in `src/providers/inflight.py`, read *after*
+the failure's evidence is recorded: `tripped` when the provider is now in the
+unavailable half (so a death that trips it is attributed to it), `suspect`
+when the failure carries the provider's own signal (a typed startup dialog, a
+`RATE_LIMIT` exit, a pre-launch refusal) but the trip awaits corroboration,
+`unattributed` otherwise and always outside `mode: enforce`. The launch path
+passes a `ProviderFailure` (kind, provider, harness, profile, dialog, signal,
+detail) into `_fail_session_launch`; the exit path is
+`SessionReconciler._apply_provider_failover`, and the orchestrator half
+(`provider_failover_checkpoint` / `provider_failover_hold`) is
+`src/orchestrator/provider_failover.py`. Details the table leaves open:
+
+* **Which exits count.** A `RATE_LIMIT` exit always; a `rapid_crash` or
+  `productive_death` only while the provider is unavailable. A task session's
+  `provider_suspect` pause and its `provider_pause` record are written by
+  `transition_task_with_meta` in one transaction; a pool session's go through
+  `terminate_pool_session(resume_after=…, task_meta=…)`, same transaction as
+  the claim release. `_apply_transition` deletes `provider_pause` whenever a
+  task leaves `PAUSED`, by any route, so a stale record can never label a
+  later, unrelated pause as the provider's.
+* **The pool key quarantine** is no longer armed by an attributed exit either
+  (it was already not armed by an attributed startup death): the provider's
+  own state sizes its pools to zero once it trips. `observe` mode keeps the
+  old 900 s key quarantine and the 15-minute pause.
+* **The checkpoint** is `acommit_all(…, no_verify=True)` then
+  `stranded_work.preserve_unpushed_work` (never forced; `aq/<task>-wip` when a
+  diverged remote branch holds the name), recording `unmerged_branch` /
+  `unmerged_commit` like a failing close does. It touches only the workspace
+  locked by the task, never a pool claim still `preparing` (`not_started`),
+  and plan files -- left out of every task commit -- do not count as work at
+  risk. It runs in the orchestrator cycle, so each is bounded by
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
+  hierarchy/train branch is left to its integration owner (`checkpoint:
+  integration_managed`), and a tripped task there takes a short provider pause
+  instead of READY, as the launch path does when the integration release is
+  unconfirmed.
+* **Order on the exit path:** checkpoint while the session row is still live
+  (a daemon that dies mid-push re-runs the failover next tick, where a row
+  already marked non-live would have let the orphan sweep BLOCK the task),
+  then the session row, then the claim's resources are released *before* the
+  task becomes claimable, then a status-guarded transition (`from_statuses`:
+  a task an operator closed or paused meanwhile is left alone), then the
+  hand-off note -- only for an outcome that was actually written.
+* **"Holds in place with the workspace kept"** is an operator pause through
+  the existing manual-pause machinery (`needs_attention:
+  provider_failover_push_failed`): the dead session is confirmed stopped, a
+  local Git checkpoint (`task_checkpoint.capture_checkpoint`) is taken before
+  the slot is released, and whichever slot the task lands in after
+  `aq task resume` restores it. The sweep never touches an operator hold. The
+  checkpoint also covers `no_remote`, `dirty` (work the WIP commit could not
+  take) and `unknown`, because none of them proves the work is safe.
+* **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
+  system comment (`system:provider-failover`), and `aq prime` renders it in
+  the task-context section on its own, so a later re-route comment cannot push
+  it out of the five recent comments.
+* **A move to another provider drops `session_resume_key`**
+  (`ProviderRerouteService._move`): the carried conversation id belongs to the
+  old CLI, and a harness without a transcript reader would take it unchecked.
 
 ### D13a — the direct path: tracked, fail-fast, optional fallback
 
@@ -565,6 +631,16 @@ So:
   their class against the fallback's provider slice and use it; a class with no
   slice there returns `provider_error`. Rejected: borrowing a session harness's
   login for the direct path — AQ never holds those credentials.
+  As built (`LLMFallbackConfig`, `resolve_fallback_call` in `src/llm/spec.py`):
+  the block is self-contained — a call naming no class uses
+  `fallback.default_class`, else `fallback.model`, and only `max_tokens` is
+  shared with the primary. An explicit model id is honoured only when the
+  fallback is the same vendor (a second key); otherwise it is `provider_error`
+  too. The gate is read on every call, so a tool loop moves between the two
+  credentials turn by turn. Fallback calls are **not** `llm` evidence: they say
+  nothing about the primary credential, and the primary's recovery is still
+  its own canary after `until`. A fallback that repeats the primary's provider,
+  `api_key` and `base_url` is a validation error — it is the same credential.
 * Knock-on effect, stated so nobody is surprised: `default-assignment-routing`
   uses an `llm` step to choose a class for *undecided* tasks. With `llm` down and
   no fallback, undecided tasks stay unrouted (`awaiting_intelligence_route`) and
@@ -638,14 +714,49 @@ Further limits, all per sweep or per task:
 | `reroute.max_auto_per_task` | 2 | After two automatic moves a task holds for a human: `reroute_limit_reached`. Two providers flapping in turn cannot ping-pong a task. |
 
 **Every provider unavailable.** There is no target, so the sweep moves nothing;
-everything holds with `all_providers_unavailable`; launches are suppressed; pool
-workers' claims answer `not_admissible` with reason `provider_unavailable` and a
-wait hint of the earliest `until`, which the pool loop already handles. One
-notification says so (D19), and it becomes a human escalation when no provider
-has an `until` at all (every one needs a login) or the earliest `until` is more
-than `notify.escalate_all_down_after_seconds` away. The `llm` key does not count
-toward "every provider" — the direct path being down strands routing of
-undecided tasks, not execution.
+everything holds with `all_providers_unavailable`; launches are suppressed; and
+an idle pool worker's claim answers `drain_requested`, exactly as it does when
+only its own provider is down (D13, *Pool sessions*) — the claim path has no
+all-down case. One notification says so (D19), and it becomes a human
+escalation when no provider has an `until` at all (every one needs a login) or
+the earliest `until` is more than `notify.escalate_all_down_after_seconds` away.
+The `llm` key does not count toward "every provider" — the direct path being
+down strands routing of undecided tasks, not execution.
+
+*Decision (`solid-pinnacle`, 2026-09-21): drain, not wait.* An earlier draft of
+this paragraph had the claim answer `not_admissible` with reason
+`provider_unavailable` and a wait hint of the earliest `until`, so that a worker
+would wait out a short outage instead of draining. The end-to-end run
+(`bold-rapids.5`, S16) found the code answering `drain_requested`
+(`ClaimCommandsMixin._provider_drain_reason`, checked before admission). The
+code was kept and this text amended, because waiting buys nothing the return
+path (D16) does not already give, and costs three things:
+
+* **The worker cannot wait on its own provider.** A claim long-polls for at most
+  `swarm.claim_wait_max` (60 s); every re-claim after that is a model turn, and
+  every state in the unavailable half is a statement about that same model API.
+  The turn either fails — the CLI parks on its usage-limit screen, which the
+  idle-worker recycle (D13, `azure-ridge` row) ends anyway, later and with
+  noisier evidence — or it spends tokens polling an outage whose `until` is
+  typically hours away. "The pool loop already handles" a wait only for
+  admission reasons that leave the model reachable.
+* **Sizing overrules it.** `_measure_pools` gives every pool on a suppressed
+  provider bounds `(0, 0)`, so once `swarm.scale_down_grace` (120 s) passes the
+  sizer marks idle workers `desired_state = stopped` and their next claim answers
+  `drain_requested` ("pool is draining") regardless. Keeping them would need an
+  all-down carve-out in sizing as well — a second rule in D13, not a claim-path
+  tweak.
+* **Parked workers would bypass the canary.** On recovery D4 admits one launch
+  at a time until one succeeds, so eight workers do not stampede a login that
+  may still be dead. Workers parked in a claim loop would all resume against a
+  provider that is only on probation. Drained, the fleet re-forms through the
+  canary.
+
+What draining costs is small: with `swarm.fresh_context_per_task` (the default)
+a worker retires after one task anyway, so a drained idle worker is one session
+start per rung on recovery. The all-down case keeps its own treatment where a
+human needs it — the `critical` escalation above (D19) and `providers.availability`
+reporting `ERROR` (D21) — not on the claim path.
 
 ## 5. Return path
 
@@ -741,7 +852,47 @@ replay and the five-minute timer never notify twice:
 | Global supervisor and the human | `message_send` to `session:supervisor-global` and `user:dashboard`, from `system/playbook:provider-failover` | a provider changes **half** (either direction) | state, reason, since, expected recovery, remediation, moved/held counts by kind, affected role profiles, and the exact commands: `aq provider status`, `aq provider reroute --dry-run`, `aq provider set-state` |
 | Project supervisors | `message_send` to `session:supervisor-<pid>` | first sweep of a batch that moved or held a task **in that project** | that project's moved and held tasks by id. One per batch per project — never one per task, never one per top-up. |
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
-| Discord, actively | `escalation_create`, `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+| Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+
+**As built (`bold-rapids.6`).** The escalation half lives in
+`ProviderAvailabilityService.reconcile_escalations`
+(`src/providers/availability_service.py`), run by
+`provider_availability_notify` for its provider and by the service's own tick
+— at once after any transition, otherwise once a minute, and not at all while
+nothing is unavailable and nothing is open. Four details the table leaves open:
+
+* **The incident key carries the generation.** `uq_escalations_incident` is
+  unique per project for all time, so a bare `provider:<provider>` would refuse
+  the provider's second outage in the same project forever. One outage is still
+  one thread: an open incident is found by `source_kind` wherever it was filed
+  and kept while the condition holds, even as the state moves inside the
+  unavailable half (`unauthenticated` → `failing` is the same outage). A
+  generation whose incident a human or the supervisor already closed is never
+  filed again.
+* **Affected tasks** are the queued (`READY`, unassigned) tasks routed to the
+  provider — `affected()`, the same count the state-change message reports.
+  `llm` strands no queued task, so it is never filed.
+* **Every provider down** escalates each unavailable session provider whose
+  own state would not (so `exhausted`-with-`until` does page, but only under
+  D15's threshold), all at `critical`; open incidents' severity follows the
+  fleet (`critical` while everything is down, `high` again after). `disabled`
+  never escalates — an operator chose it.
+* **Resolution** is `resolved`, not `stale`/`cancelled`: the recorded outcome is
+  the provider's new state, carried as `terminal_outcome` and
+  `terminal_evidence`. It goes through `resolve_escalation_on_recovery`, the
+  second narrow path from an open state straight to `resolved` (the first is
+  the Discord cutover's), which compares the revision *and* the source kind, so
+  it can close only its own producer's incidents and loses to a concurrent
+  human reply rather than overwriting it.
+
+The digest half is `provider_fact` in `src/database/queries/digest_queries.py`:
+a `system` fact of kind `provider` per half change, with an empty project and
+task — a *fleet* fact, visible whatever `discord.digest.project_ids` selects
+(an outage affects every project and is nobody's private work) and still
+subject to the category filter. Its highlight wording is remembered against
+its own key, so a provider failing the same way next week is still news.
+`provider_failover.notify.digest: false` (or `mode: off`) leaves them out. The
+`reroute:<batch_id>` facts arrive with `task_reroutes` in `bold-rapids.3`.
 
 AQ's Discord surface is deliberately one digest plus one thread per human
 decision, and this keeps to it. If the dead provider is the one the supervisor
@@ -966,9 +1117,11 @@ sessions per profile ≤ `max_active` and fleet-wide ≤ `global_max_active`**;
 provider-paused tasks move and resume, legacy pauses are untouched without
 `--include-paused`; the availability-aware project default is derived and never
 persisted; undo restores the route and refuses a running task; force moves a pin
-and records the actor; every provider down ⇒ nothing moves, claims answer
-`not_admissible`; recovery releases holds, leaves moved tasks, routes new work
-home. A guard asserts the claim SQL references no provider table, and the existing
+and records the actor; every provider down ⇒ nothing moves; recovery releases
+holds, leaves moved tasks, routes new work home. That every provider down drains
+an idle pool worker (`drain_requested`, never `not_admissible`) and sizes every
+pool to `(0, 0)` is pinned in `tests/test_provider_suppression.py` (D15's
+decision). A guard asserts the claim SQL references no provider table, and the existing
 claim-frontier perf test must still pass unchanged.
 
 **In-flight** (`tests/test_provider_inflight.py`, `.4`): a startup death on a
@@ -994,8 +1147,8 @@ launches, no further launches, moves inside `provb`'s `max_active: 1`, holds wit
 their kinds, one supervisor message, one escalation, `aq provider status`; restore
 `prova` and `aq provider recheck` ⇒ probation ⇒ `available` after one launch; held
 tasks run on `prova`, moved-and-queued tasks stay on `provb`, `reroute-undo`
-returns one; then both providers down ⇒ holds, `not_admissible`, a critical
-escalation, no moves. The transcript is attached to `.5`. Every wall-clock
+returns one; then both providers down ⇒ holds, idle workers answer
+`drain_requested` (D15), a critical escalation, no moves. The transcript is attached to `.5`. Every wall-clock
 assertion takes `perf_strict`.
 
 ## 9. Non-goals and known limits
@@ -1025,8 +1178,11 @@ assertion takes `perf_strict`.
 | Task | Ships | Decisions |
 |---|---|---|
 | `bold-rapids.2` | Tables, reducer, collectors, snapshot, launch suppression, the derived hold and its explain reason, `provider_status` / `set_state` / `recheck`, API read, the four doctor checks, `provider.state_changed`, `provider_availability_notify` for state changes, config, removal of `provider_cooldowns` and `pause_retry:`. Can run in `observe` first. | D0–D7, D11 (mechanism), D18, D19 (state half), D21, D22 |
+| `bold-rapids.6` | D19's Discord half, split out of `.2`: the provider outage escalation (file, keep severity current, resolve on recovery) and the digest's provider facts. No schema change. | D19 (Discord half) |
 | `bold-rapids.3` | `provider_intent` and its migration, every D9 surface, `provider_reroute` / `reroute-undo`, the playbook and its reviewed bundle, catalog filter and the `held` outcome, the availability-aware project default, `task_reroutes`, batch notifications. | D8–D10, D11 (policy), D12–D17, D19 (batch half) |
 | `bold-rapids.4` | Structured launch-failure fields, provider-attributed failure accounting, `provider_pause`, WIP checkpoint and hand-off note, pool drain, no key quarantine for attributed deaths. | D2 (collector inputs), D13 (in-flight rows) |
+| `bold-rapids.8` | The stall ladder's usage-limit screen: a live CLI parked on its limit is taken out as a `RATE_LIMIT` exit instead of being nudged. | D13 (parked-session row) |
+| `azure-ridge` | The same screen on an idle pool worker that never reached its claim loop: its recycle records `exit_rate_limit` and ends with `usage_limit_screen`. | D2 (`exit_rate_limit` row), D13 (idle pool worker row) |
 | `bold-rapids.5` | Dashboard, operator runbook, concept and reference pages, supervisor guidance on when to pin, end-to-end scenario and transcript. | D20, D23 (end to end) |
 
 ### The epic's acceptance criteria, mapped

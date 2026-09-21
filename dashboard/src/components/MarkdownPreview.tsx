@@ -19,6 +19,8 @@ export interface MarkdownPreviewProps {
   className?: string;
   /** Documentation URLs keyed by inline command name. */
   inlineCodeLinks?: ReadonlyMap<string, string>;
+  /** Optional review/document controls rendered inside h2 and h3 elements. */
+  headingComponents?: Pick<Components, "h2" | "h3">;
 }
 
 // react-markdown's code component receives the same element shape for inline
@@ -54,7 +56,16 @@ function commandCodeComponents(inlineCodeLinks: ReadonlyMap<string, string>): Co
   };
 }
 
-export default function MarkdownPreview({ source, className, inlineCodeLinks }: MarkdownPreviewProps) {
+export default function MarkdownPreview({
+  source,
+  className,
+  inlineCodeLinks,
+  headingComponents,
+}: MarkdownPreviewProps) {
+  const components = {
+    ...(inlineCodeLinks ? commandCodeComponents(inlineCodeLinks) : {}),
+    ...(headingComponents ?? {}),
+  };
   return (
     <div
       className={
@@ -65,7 +76,7 @@ export default function MarkdownPreview({ source, className, inlineCodeLinks }: 
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeSlug]}
-        components={inlineCodeLinks ? commandCodeComponents(inlineCodeLinks) : undefined}
+        components={Object.keys(components).length > 0 ? components : undefined}
       >
         {source}
       </ReactMarkdown>

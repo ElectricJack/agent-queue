@@ -223,11 +223,30 @@ class CiBaselineStatusResponse(BaseModel):
     escalation_key: str | None = None
     escalation_title: str | None = None
     escalation_question: str | None = None
+    in_flight: list[str] = []
+    repair_signature: str | None = None
+    repair_tests: list[str] = []
+    repair_checks: list[str] = []
+    error: str | None = None
+
+
+class CiRepairAdoptResponse(BaseModel):
+    success: bool = True
+    outcome: str = ""
+    task_id: str = ""
+    dedup_key: str = ""
+    ref: str | None = None
+    head_sha: str | None = None
+    signature: str | None = None
+    failing_tests: list[str] = []
+    failing_checks: list[str] = []
+    in_flight: list[str] = []
     error: str | None = None
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ci_baseline_status": CiBaselineStatusResponse,
+    "ci_repair_adopt": CiRepairAdoptResponse,
     "checkout_branch": CheckoutBranchResponse,
     "commit_changes": CommitChangesResponse,
     "create_branch": CreateBranchResponse,

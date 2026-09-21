@@ -2,6 +2,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Outlet, useSearchParams } from "react-router-dom";
 import LeftRail from "./LeftRail";
 import TopBar from "./TopBar";
+import ProviderAvailabilityBanner from "./ProviderAvailabilityBanner";
 import RightSurface from "./RightSurface";
 import { RightSurfaceProvider, useRightSurface } from "./useRightSurface";
 import { ShortcutsProvider, useShortcut } from "./hotkeys/useShortcuts";
@@ -13,6 +14,8 @@ import { PaletteStateProvider } from "./palette/paletteState";
 import { Palette } from "./palette/Palette";
 import { useAgentPushBridge } from "../panes/agentPush";
 import { useNavigate } from "react-router-dom";
+import { NavigationHistoryProvider } from "./navigationHistory";
+import ReviewToasts from "./ReviewToasts";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -176,7 +179,12 @@ function ShellBody() {
 
   return (
     <div className="grid h-screen w-screen grid-cols-[auto_1fr_auto] grid-rows-[auto_1fr] bg-gray-950 text-gray-100">
-      <TopBar />
+      {/* The outage banner rides in the header row so it spans every page
+          without shifting the rail/main/surface grid beneath it. */}
+      <div className="col-span-3 row-start-1 flex min-w-0 flex-col">
+        <TopBar />
+        <ProviderAvailabilityBanner />
+      </div>
       <LeftRail />
       <main className="col-start-2 row-start-2 min-h-0 min-w-0 overflow-hidden">
         <Suspense
@@ -191,6 +199,7 @@ function ShellBody() {
       </main>
       <RightSurface />
       <Palette />
+      <ReviewToasts />
       <CheatSheetModal open={cheat} onClose={() => setCheat(false)} />
       {gotoPending && (
         <div className="pointer-events-none fixed bottom-4 left-1/2 -translate-x-1/2 rounded bg-gray-800/90 px-3 py-1.5 text-xs text-gray-200 shadow">
@@ -213,7 +222,9 @@ export default function AppShellV2() {
       <PaletteStateProvider>
         <ActionRegistryProvider>
           <RightSurfaceProvider>
-            <ShellBody />
+            <NavigationHistoryProvider>
+              <ShellBody />
+            </NavigationHistoryProvider>
           </RightSurfaceProvider>
         </ActionRegistryProvider>
       </PaletteStateProvider>

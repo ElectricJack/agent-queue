@@ -82,6 +82,13 @@ def _class_model(class_id: str, harness, classes: Mapping | None) -> str:
     if cls is None:
         return ""
     provider = _value(harness, "provider") or _infer_provider_from_harness(harness)
+    if not provider:
+        # A vendorless harness resolves its model from a slice keyed by its
+        # own id -- the fallback ``SessionSpecBuilder`` launches with.  Without
+        # it the router would refuse a worker the builder can launch.
+        harness_id = _value(harness, "id")
+        config = resolve_class(cls, harness_id) if harness_id else {}
+        return str(config.get("model") or "").strip()
     config = resolve_class(cls, "codex") if provider == "openai" and _is_codex_cli(harness) else {}
     if not config:
         config = resolve_class(cls, provider)

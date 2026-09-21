@@ -147,7 +147,7 @@ def question_plan(
             prompt="Start the AQ daemon when setup finishes?",
             capability=CAPABILITY_DAEMON,
             default=True,
-            detail="this is what serves the dashboard and runs your tasks",
+            detail="this runs your tasks, and the dashboard server shows them",
             advanced=True,
         )
     )

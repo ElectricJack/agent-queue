@@ -87,6 +87,15 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    # document reviews
+    "review_submit": "review",
+    "review_show": "review",
+    "review_list": "review",
+    "review_withdraw": "review",
+    "review_decide": "review",
+    "review_comment": "review",
+    "review_delegate": "review",
+    "review_import_edits": "review",
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
@@ -284,6 +293,15 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # review policy — dv2 phase 2
     "pr_merge": "git",
     "ci_baseline_status": "git",
+    "ci_repair_adopt": "git",
+    # provider availability — state, overrides, recheck (provider-failover D20)
+    "provider_status": "provider",
+    "provider_history": "provider",
+    "provider_held_tasks": "provider",
+    "provider_recheck": "provider",
+    "provider_set_state": "provider",
+    "provider_reroute": "provider",
+    "provider_reroute_undo": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -358,7 +376,10 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             },
             "gate_type": {
                 "type": "string",
-                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "enum": [
+                    "human", "timer", "pr-merged", "ci-run", "event", "task", "routing",
+                    "review",
+                ],
                 "description": "Filter by gate kind",
             },
         },
@@ -797,6 +818,11 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Default git branch for the project (e.g. main, dev, master)",
                 },
+                "review_delegate_to": {
+                    "type": "string",
+                    "enum": ["", "user", "supervisor"],
+                    "description": "LOCAL-only default document-review decider; empty clears it.",
+                },
                 "integration_repository_id": {
                     "type": ["string", "null"],
                     "description": "LOCAL-only designated integration repository ID.",
@@ -1133,6 +1159,22 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)",
                 },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
+                },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
@@ -1328,6 +1370,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "Idempotency key for find-or-create semantics (see ensure_task)."
                     ),
                 },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach this task to the named document review's gate until the review "
+                        "is approved."
+                    ),
+                },
             },
             "required": ["title"],
         },
@@ -1370,6 +1419,22 @@ _ALL_TOOL_DEFINITIONS = [
                         "Tasks created via ensure_task skip triage, so the "
                         "ensuring pipeline pins the executing profile directly."
                     ),
+                },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -1433,6 +1498,22 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": "Eligible worker profile ID that should execute the task (never supervisor)",
+                },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -2017,6 +2098,22 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": ["string", "null"],
                     "description": "Agent profile ID (optional, set to null to clear)",
                 },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
+                },
                 "intelligence_class": {
                     "type": ["string", "null"],
                     "description": "Intelligence class id; change only while unassigned. Null clears it.",
@@ -2052,6 +2149,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "Workspace lock mode. Set to null to clear (optional). "
                         "'branch-isolated' is DEPRECATED and behaves as "
                         "'exclusive' — see create_task."
+                    ),
+                },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach this task to the named document review's gate until the review "
+                        "is approved."
                     ),
                 },
                 "needs_attention": {
@@ -5359,6 +5463,53 @@ _ALL_TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "ci_repair_adopt",
+        "description": (
+            "Make a live task the repair for a red branch: key it "
+            "``ci-baseline:<signature>:<n>`` and record the failing tests it owns, "
+            "so ci_baseline_status reuses it instead of filing another repair, "
+            "including after a partial fix shrinks the failing set.  Adopt a repair "
+            "filed by hand with just project_id and task_id: the command reads the "
+            "branch's CI and adopts its whole failure.  A task already recorded is "
+            "returned unchanged."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Project the task belongs to.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "The live task that repairs the failure.",
+                },
+                "ref": {
+                    "type": "string",
+                    "description": "Branch the failure is on. Default: the project's default branch.",
+                },
+                "head_sha": {
+                    "type": "string",
+                    "description": "Commit the failure was read at, when the caller read it.",
+                },
+                "failing_tests": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Pytest node ids the repair owns. Omit this and failing_checks to "
+                        "read the branch's CI now."
+                    ),
+                },
+                "failing_checks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Failing check names.",
+                },
+            },
+            "required": ["project_id", "task_id"],
+        },
+    },
     # provider usage — the Claude quota probe (provider-usage design T4)
     {
         "name": "provider_usage_probe",
@@ -5381,6 +5532,220 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "enum": ["claude"],
                     "description": "Provider to probe. Default: claude.",
+                },
+            },
+            "required": [],
+        },
+    },
+    # provider availability — docs/specs/provider-failover.md D6, D20
+    {
+        "name": "provider_status",
+        "description": (
+            "Show each provider's availability: the effective state (available, "
+            "degraded, exhausted, unauthenticated, failing, disabled), its reason, "
+            "since when, the expected recovery, any operator override and its "
+            "expiry, how many queued tasks it is holding, the last successful "
+            "launch and the newest account-wide usage reading.  A provider is the "
+            "harness login (claude, codex); a vendor name (openai, anthropic) is "
+            "accepted as an alias.  --verbose adds the evidence ring and the last "
+            "ten transitions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Only this provider (key or vendor alias). Default: every tracked provider.",
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "Include the evidence ring and the last ten transitions.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_held_tasks",
+        "description": (
+            "List the queued tasks an unavailable provider is holding, each with "
+            "why it is not moving (provider_pinned, no_equivalent_rung, "
+            "awaiting_failover_capacity with how many are ahead, ...), the "
+            "provider's state, since when and the expected recovery -- the same "
+            "hold `aq task explain` reports.  Empty while every provider is "
+            "launchable."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Only this project's tasks. Default: every project.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_history",
+        "description": (
+            "List a provider's effective-state transitions, newest first: from/to "
+            "state, reason, expected recovery, generation and who caused it "
+            "(system or an operator)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Most transitions to return. Default 50.",
+                },
+            },
+            "required": ["provider"],
+        },
+    },
+    {
+        "name": "provider_recheck",
+        "description": (
+            "Run the provider's login probe now (e.g. `codex login status`) and "
+            "fold the answer into its state.  An authenticated answer moves an "
+            "unauthenticated provider to probation; the next successful launch "
+            "completes recovery.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+            },
+            "required": ["provider"],
+        },
+    },
+    {
+        "name": "provider_set_state",
+        "description": (
+            "Override a provider's availability.  'disabled' stops every launch "
+            "against it; 'available' forces it launchable against the evidence and "
+            "always expires; 'auto' clears the override, resets the failure "
+            "counters and re-derives the state from evidence.  An override lasts "
+            "--for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else "
+            "provider_failover.override.default_ttl_seconds, and never longer than "
+            "override.max_ttl_seconds; --no-expiry is accepted for 'disabled' "
+            "only.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["disabled", "available", "auto"],
+                    "description": "disabled | available | auto (clear the override).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why; required for disabled and available.",
+                },
+                "for": {
+                    "type": "string",
+                    "description": "How long the override lasts: 90s, 30m, 4h, 2d, or seconds.",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "When the override expires: epoch seconds or ISO-8601.",
+                },
+                "no_expiry": {
+                    "type": "boolean",
+                    "description": "Never expire (disabled only).",
+                },
+            },
+            "required": ["provider", "state"],
+        },
+    },
+    {
+        "name": "provider_reroute",
+        "description": (
+            "Re-route queued work off an unavailable provider (provider failover).  "
+            "Moves eligible queued and provider-paused tasks to the same "
+            "intelligence class on an available provider, a pool-width at a time "
+            "(provider_failover.reroute limits), and records each move on the task "
+            "(undo with provider_reroute_undo).  Pinned tasks, single-provider "
+            "classes (astra-*) and classes set to 'hold' stay where they are.  "
+            "--dry-run plans only.  Naming tasks with --task-id plus --to-profile "
+            "or --force is an explicit operator move; --force may move a pinned "
+            "task, target a degraded provider or change the class.  Operators and "
+            "supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Limit the sweep to one provider key or vendor alias.",
+                },
+                "task_id": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task id(s) to move explicitly.",
+                },
+                "to_profile": {
+                    "type": "string",
+                    "description": "Target profile for the named tasks.",
+                },
+                "include_paused": {
+                    "type": "boolean",
+                    "description": (
+                        "Also resume and move tasks paused before failover recorded a "
+                        "cause (listed first with --dry-run)."
+                    ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Plan only; write nothing.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Operator override for named tasks: move a pinned task, target "
+                        "a degraded provider, or change the class with --to-profile."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_reroute_undo",
+        "description": (
+            "Undo provider re-routes: return tasks to the profile they were on "
+            "before (rerouted_from), by --batch-id or --task-id.  Refused for a "
+            "running or claimed task, and while the original provider is still "
+            "unavailable unless --force.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "batch_id": {
+                    "type": "string",
+                    "description": "A re-route batch (prb-<provider>-<generation> or prf-...).",
+                },
+                "task_id": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task id(s) to undo.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Undo even while the original provider is unavailable.",
                 },
             },
             "required": [],
@@ -5937,6 +6302,128 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "reason": {"type": "string", "minLength": 1, "maxLength": 4000},
                 },
                 "required": ["question_id", "reason"],
+            },
+        },
+    ]
+)
+
+# Document-review command surface.  ``review_submit`` has a hand-written CLI
+# because the document bytes must be read locally, not by the daemon.
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "review_submit",
+            "description": "Submit markdown for review, or submit a revision to an open review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "review_id": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
+                    "title": {"type": "string", "maxLength": 200},
+                    "content": {"type": "string", "maxLength": 262144},
+                    "changes": {"type": "string"},
+                    "resolves": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["content"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_show",
+            "description": "Read a document-review revision, optionally with comments or a block diff.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "comments": {"type": "boolean"},
+                    "diff_from": {"type": "integer", "minimum": 1},
+                },
+                "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_list",
+            "description": "List document reviews in a project.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "state": {
+                        "type": "string",
+                        "enum": ["in_review", "changes_requested", "approved", "withdrawn"],
+                    },
+                    "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
+                    "task_id": {"type": "string"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_withdraw",
+            "description": "Withdraw an open review without approving its gate.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["review_id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_decide",
+            "description": "Approve a review or request changes on its current revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes"]},
+                    "note": {"type": "string"},
+                },
+                "required": ["review_id", "revision", "decision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_comment",
+            "description": "Add an anchored or section-level comment to a review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "quote": {"type": "string"},
+                    "heading_path": {"type": "array", "items": {"type": "string"}},
+                    "body": {"type": "string", "minLength": 1, "maxLength": 16000},
+                },
+                "required": ["review_id", "revision", "body"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_delegate",
+            "description": "LOCAL-only: delegate one review's decision to the supervisor or revoke it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "to": {"type": "string", "enum": ["user", "supervisor"]},
+                },
+                "required": ["review_id", "to"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_import_edits",
+            "description": "LOCAL-only: import an out-of-band vault edit as the next review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}},
+                "required": ["review_id"],
+                "additionalProperties": False,
             },
         },
     ]

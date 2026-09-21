@@ -155,6 +155,22 @@ def format_task_detail(
         fields.append(("PR", task.pr_url))
     if task.parent_task_id:
         fields.append(("Parent", task.parent_task_id))
+    # Provider intent, the re-route marker and the derived hold
+    # (provider-failover D8, D17, D18).  ``class_only`` is the unremarkable
+    # default and stays quiet; a generated client model may carry UNSET.
+    intent = getattr(task, "provider_intent", None)
+    if isinstance(intent, str) and intent and intent != "class_only":
+        fields.append(("Provider intent", intent))
+    rerouted = getattr(task, "rerouted_from", None)
+    if isinstance(rerouted, str) and rerouted:
+        fields.append(("Re-routed from", rerouted))
+    hold = getattr(task, "provider_hold", None)
+    hold_get = hold.get if isinstance(hold, dict) else (lambda k: getattr(hold, k, None))
+    hold_kind = hold_get("kind") if hold is not None else None
+    if isinstance(hold_kind, str) and hold_kind:
+        fields.append(
+            ("Held", f"{hold_kind} (provider {hold_get('provider')} is {hold_get('state')})")
+        )
 
     for label, value in fields:
         line = Text()
@@ -1277,8 +1293,178 @@ def format_pool_table(pools: list[dict]):
             _pool_project_summary(row),
         )
 
-    notes = _pool_quarantine_notes(pools)
-    return table if notes is None else Group(table, Text(), notes)
+    notes = [n for n in (_pool_provider_notes(pools), _pool_quarantine_notes(pools)) if n]
+    return table if not notes else Group(table, *(part for n in notes for part in (Text(), n)))
+
+
+def _pool_provider_notes(pools: list[dict]) -> Text | None:
+    """Pools sized to zero because their provider is unavailable (provider-failover D13).
+
+    Kept apart from quarantine and ``placement_starved``: nothing is wrong
+    with the pool or its projects -- the login it draws on is down.
+    """
+    notes = Text()
+    for row in pools:
+        down = row.get("provider_unavailable")
+        if not down:
+            continue
+        if notes:
+            notes.append("\n")
+        until = down.get("until")
+        notes.append(
+            "  {} — provider {} {}{}".format(
+                row.get("profile_id", "?"),
+                down.get("provider", "?"),
+                down.get("state", "unavailable"),
+                (
+                    " until " + time.strftime("%H:%M:%S", time.localtime(until))
+                    if until
+                    else ""
+                ),
+            ),
+            style="red",
+        )
+        if down.get("reason"):
+            notes.append(f" — {down['reason']}", style="dim red")
+    if not notes:
+        return None
+    return Text("Provider unavailable (sized to zero)\n", style="bold red") + notes
+
+
+#: Effective provider state -> Rich style for ``aq provider status``.
+_PROVIDER_STATE_STYLES = {
+    "available": "bold green",
+    "degraded": "bold yellow",
+    "exhausted": "bold red",
+    "unauthenticated": "bold red",
+    "failing": "bold red",
+    "disabled": "bold bright_black",
+}
+
+
+def _until_text(ts: float | None) -> str:
+    """``in 42m`` for an expected recovery, ``—`` when none is known."""
+    if not ts:
+        return "—"
+    delta = ts - time.time()
+    if delta <= 0:
+        return "due"
+    if delta < 3600:
+        return f"in {max(1, int(delta / 60))}m"
+    if delta < 86400:
+        return f"in {delta / 3600:.1f}h"
+    return f"in {delta / 86400:.1f}d"
+
+
+def format_provider_table(providers: list[dict]):
+    """Format ``provider_status`` rows (one per provider) for ``aq provider status``.
+
+    The evidence ring and transitions of ``--verbose`` follow the table per
+    provider, newest first.
+    """
+    table = Table(
+        title="Provider availability",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Provider", style="bold cyan", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Since", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Held", justify="right")
+    table.add_column("Moved", justify="right")
+    table.add_column("Last OK", no_wrap=True)
+    table.add_column("Usage", no_wrap=True)
+    table.add_column("Reason", overflow="fold")
+
+    extras: list = []
+    for row in providers:
+        state = str(row.get("state") or "")
+        label = Text(state, style=_PROVIDER_STATE_STYLES.get(state, ""))
+        override = row.get("override")
+        if override:
+            label.append(f" (override, {_until_text(override.get('until'))})", style="magenta")
+        usage = row.get("usage")
+        usage_text = (
+            f"{usage.get('window')} {float(usage.get('used_percent') or 0):g}%" if usage else "—"
+        )
+        vendor = row.get("vendor")
+        name = f"{row.get('provider', '')}" + (f" ({vendor})" if vendor else "")
+        table.add_row(
+            name,
+            label,
+            _relative_time(row.get("since")),
+            _until_text(row.get("until")),
+            str(row.get("held", 0)),
+            str(row.get("rerouted", 0)),
+            _relative_time(row.get("last_success_at")),
+            usage_text,
+            str(row.get("reason") or "—"),
+        )
+        if row.get("remediation") and state not in ("available", "degraded"):
+            extras.append(
+                Text(f"{row.get('provider')}: ", style="bold")
+                + Text(str(row["remediation"]), style="yellow")
+            )
+        for entry in row.get("evidence") or []:
+            signal = f"/{entry['signal']}" if entry.get("signal") else ""
+            where = entry.get("project_id") or ""
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} evidence {_relative_time(entry.get('at'))}: "
+                    f"{entry.get('kind')}{signal} {where}".rstrip(),
+                    style="dim",
+                )
+            )
+        for tr in row.get("transitions") or []:
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} {_relative_time(tr.get('at'))}: "
+                    f"{tr.get('from_state')} -> {tr.get('to_state')} "
+                    f"({tr.get('actor')}) {tr.get('reason') or ''}".rstrip(),
+                    style="dim",
+                )
+            )
+    return table if not extras else Group(table, Text(), *extras)
+
+
+def format_provider_held_tasks(tasks: list[dict]) -> Table:
+    """Format ``provider_held_tasks`` rows for ``aq provider held-tasks`` (D18, D20)."""
+    table = Table(
+        title="Held by provider",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Task", style="bold cyan", no_wrap=True)
+    table.add_column("Pri", justify="right")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Profile", no_wrap=True)
+    table.add_column("Provider", no_wrap=True)
+    table.add_column("Hold", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Title", overflow="fold")
+
+    for row in tasks:
+        state = str(row.get("state") or "")
+        kind = str(row.get("kind") or "")
+        if row.get("ahead") is not None:
+            kind += f" ({row['ahead']} ahead)"
+        table.add_row(
+            str(row.get("task_id") or ""),
+            str(row.get("priority", "")),
+            str(row.get("status") or ""),
+            str(row.get("profile_id") or "—"),
+            Text(
+                f"{row.get('provider', '')} {state}".strip(),
+                style=_PROVIDER_STATE_STYLES.get(state, ""),
+            ),
+            kind,
+            _until_text(row.get("until")),
+            _truncate(str(row.get("title") or ""), 60),
+        )
+    return table
 
 
 def format_formula_list(data: dict) -> Table:

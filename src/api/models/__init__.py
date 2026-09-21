@@ -65,6 +65,8 @@ def _category_modules() -> tuple[object, ...]:
         plugin,
         project,
         project_onboarding,
+        review,
+        provider,
         session,
         system,
         task,
@@ -74,6 +76,7 @@ def _category_modules() -> tuple[object, ...]:
         task,
         project,
         project_onboarding,
+        review,
         agent,
         dashboard,
         git,
@@ -91,6 +94,7 @@ def _category_modules() -> tuple[object, ...]:
         digest,
         escalation,
         graph,
+        provider,
     )
 
 

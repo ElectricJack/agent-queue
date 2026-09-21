@@ -8,6 +8,7 @@ import TaskComments from "../components/TaskComments";
 import TaskSubtaskList from "../components/TaskSubtaskList";
 import TaskSessions from "../components/TaskSessions";
 import TaskAttention from "../components/TaskAttention";
+import TaskProviderRouting, { ProviderIntentChip } from "../components/TaskProviderRouting";
 import TaskDescription from "../components/TaskDescription";
 import TaskFieldsEditor, { ReadField, type EditableTask } from "../components/TaskFieldsEditor";
 import TaskGraph, { TaskExplain } from "./task/TaskGraph";
@@ -58,6 +59,7 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
                 {task.task_type}
               </span>
             )}
+            <ProviderIntentChip intent={task.provider_intent} />
             {task.is_plan_subtask && (
               <span className="rounded bg-indigo-500/10 px-2 py-0.5 text-xs text-indigo-400">
                 subtask
@@ -71,6 +73,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       <TaskActions task={task} />
 
       <TaskAttention task={task as typeof task & { needs_attention?: string | null }} />
+
+      <TaskProviderRouting task={task} />
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-800">

@@ -88,7 +88,8 @@ class AgentReconciler:
         self._bus = bus
 
     async def reconcile(
-        self, *, provider_cooldowns: dict[str, float] | None = None,
+        self, *, suppressed_profile_ids: frozenset[str] | None = None,
+        suppressed_agent_ids: frozenset[str] | None = None,
         harness_registry=None, intelligence_classes: dict | None = None,
         ready_tasks=None, launching_agent_ids: set[str] | None = None,
     ) -> ReconcileReport:
@@ -98,8 +99,10 @@ class AgentReconciler:
         from src.models import Agent, AgentState, ProjectStatus, TaskStatus
 
         report = ReconcileReport()
-        cooldowns = provider_cooldowns or {}
-        now = time.time()
+        # Workers and profiles whose provider is unavailable
+        # (provider-failover D11): neither idle supply nor grown here.
+        suppressed_profiles = suppressed_profile_ids or frozenset()
+        suppressed_agents = suppressed_agent_ids or frozenset()
         projects = await self._db.list_projects()
         tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
@@ -141,7 +144,8 @@ class AgentReconciler:
             and agent.current_task_id is None
             and agent.enabled
             and agent.role == "worker"
-            and cooldowns.get(agent.profile_id, 0) <= now
+            and agent.profile_id not in suppressed_profiles
+            and agent.id not in suppressed_agents
             and agent.id not in live_agents
             and agent.profile_id in profiles
         ]
@@ -212,7 +216,7 @@ class AgentReconciler:
                         (project.id, f"profile {profile_id} is unavailable; rerun aq install after provider setup")
                     )
                     continue
-                if max(cooldowns.get(profile_id, 0), cooldowns.get(profile.id, 0)) > now:
+                if profile_id in suppressed_profiles or profile.id in suppressed_profiles:
                     continue
                 # The named supervisor is seeded separately; no per-project
                 # or task-demand duplicates of that global identity.

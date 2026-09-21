@@ -43,8 +43,9 @@ from src.install import (
     load_state,
     plan_uninstall,
 )
+from src.install.dashboard import STEP_DASHBOARD_SERVE
 from src.install.logins import probe_all
-from src.install.onboarding import CAPABILITY_DAEMON, STEP_CONFIG, STEP_DAEMON
+from src.install.onboarding import CAPABILITY_DAEMON, STEP_CONFIG, STEP_DAEMON, STEP_DASHBOARD
 from src.install.postgres_steps import (
     CAPABILITY_MANAGED,
     STEP_CONNECTION,
@@ -58,6 +59,7 @@ from src.install.redaction import find_secrets
 from src.install.results import StepState
 from src.install.steps import StepContext
 from tests.installer_machine import (
+    DASHBOARD_URL,
     WSL2,
     Database,
     Machine,
@@ -114,6 +116,12 @@ def test_a_fresh_machine_reaches_a_ready_daemon_through_every_adapter(tmp_path):
     assert host.daemon_up is True
     kinds = {record.kind for record in result.resources}
     assert {"postgres-role", "postgres-database", "postgres-credential", "daemon"} <= kinds
+    # ...and it ends at a dashboard, served by the dashboard server: the daemon
+    # is API-only, and the machine fails any probe of its old /dashboard mount.
+    assert states(result)[STEP_DASHBOARD_SERVE] == "succeeded"
+    assert host.dashboard_server_up is True
+    board = step(result, STEP_DASHBOARD).detail["dashboard"]
+    assert (board["url"], board["reachable"]) == (DASHBOARD_URL, True)
 
 
 def test_the_daemon_is_only_started_after_the_database_answers(tmp_path):

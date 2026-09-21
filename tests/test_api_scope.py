@@ -46,6 +46,10 @@ EXPECTED_AGENT_COMMANDS = {
     "reparent_task",
     "integration_status",
     "integration_resolve_candidate_member",
+    "review_submit",
+    "review_show",
+    "review_list",
+    "review_withdraw",
 }
 
 
@@ -83,6 +87,13 @@ class TestCheckCommandScope:
         assert "local operator" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, elevated
         )
+        for command in ("review_delegate", "review_import_edits"):
+            assert "local operator" in check_command_scope(command, {}, elevated)
+
+    def test_review_decision_commands_remain_outside_worker_scope(self):
+        """Supervisor delegation is checked by the command handler, not workers."""
+        for command in ("review_decide", "review_comment"):
+            assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
 
     def test_integration_status_is_same_project_agent_read(self):
         args = {"project_id": "p1"}

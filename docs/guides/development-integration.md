@@ -244,6 +244,11 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
 * Tasks are closed leaf-first, with a completion record whose verification
   reads *"Operator adoption; not CI attested"*. The evidence is recorded as
   `operator_accepted` — never as a CI result.
+* That completion reports the adopted head, while the manifest names each
+  task by its branch head, so the row also binds the two in
+  `evidence.completion_sources`. The adopted tasks therefore count as
+  delivered at once, and their `blocks` dependents are released. An adoption
+  journaled before this binding existed gets it on the next sweep.
 
 ## Cancel repair scheduling you no longer want
 

@@ -73,6 +73,16 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
         "draining",
         "ready",
     ),
+    "provider": (
+        "provider",
+        "vendor",
+        "state",
+        "reason",
+        "since",
+        "until",
+        "held",
+        "override",
+    ),
     "integration": (
         "outcome",
         "project_id",

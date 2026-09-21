@@ -29,9 +29,11 @@ Then, for the fleet-wide view:
 aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
 aq doctor --check integration.stranded_delegates
+aq doctor --check integration.finished_branch_owners
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
+aq doctor --check git.stale_branches
 ```
 
 ## Symptom index
@@ -51,6 +53,9 @@ aq doctor --check integration.development_publisher_stalled
 | Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
+| A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
+| Stale `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
+| `hierarchy.delivery_pending` when archiving | The work has not reached `main` | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
 | Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
@@ -224,7 +229,49 @@ It is a **report, not a repair**, and deliberately so: nothing it can see proves
 the old writer's process is stopped, its checkout clean, or its work published.
 The repair is the guarded integration recovery path, which takes those proofs —
 in a development-mode project, `preserve_stopped_owners` does exactly that on
-each sweep, once the session provider confirms the process is really gone.
+each sweep, once the session provider confirms the process is really gone. It
+only covers a writer still attached to its own checkout, though: when the task
+has finished or been deleted and its slot was reused, see
+[A finished task still owns its branch](#a-finished-task-still-owns-its-branch).
+
+## A finished task still owns its branch
+
+Branch cleanup keeps any branch an `integration_branch_owners` row still names
+unless that row is `released`. In the hierarchy modes a row is released when its
+task is deleted or archived; nothing in development mode releases one, and
+development claims create none. So a project that left `hierarchy`/`train` kept
+one row per task it had claimed — `reserved`, or `attached` when a stopped
+writer's slot was later reused — and every one of them pins that task's branch
+on the remote after it is delivered.
+
+```bash
+aq doctor --check integration.finished_branch_owners          # what is held, and why
+aq doctor --check integration.finished_branch_owners --fix    # release what is safe
+```
+
+A row is released only when all of these hold:
+
+- its owner is a task (`worker`/`repair`; a `collector` row belongs to an
+  operation and is never touched) that is `COMPLETED`/`FAILED`, archived, or
+  gone from both task tables;
+- no hierarchy/train project integrates the repository, as its mode or its
+  desired mode — there a finished child's branch is still its parent's to
+  transfer;
+- no live session names the task, no workspace is locked by it, no candidate ref
+  mutation is in flight on the branch and no running integration operation owns
+  the task;
+- for an `attached`/`handoff_pending` row, its writer session is stopped in both
+  `state` and `desired_state` and the session provider confirms, by a fresh
+  probe, that the process is gone — the proof `preserve_stopped_owners` takes.
+  Run the check through the daemon (the plain `aq doctor` does); without the
+  provider such a row is kept, naming why.
+
+Each row is re-proved under the project's hierarchy lock and its own row lock
+before the write, so anything that changed after the scan keeps the row. The fix
+changes the ownership row only — no checkout, workspace lock, session or task —
+gives a released writer's row a fresh fence, and records one
+`integration.branch_owner_released` event per row. It is safe to repeat. Once it
+has run, re-run whatever branch cleanup was keeping the branches.
 
 ## A task will not delete, archive, resume or restart
 
@@ -349,6 +396,72 @@ remote moved — never retries on its own, because it is a statement about the
 repository rather than about the network. `--fix` re-arms parked discards for
 another attempt.
 
+## Delivered branches are still on the remote
+
+Delivery pushes a branch per task (`aq/<task-id>`), a candidate per batch
+(`aq/development/<project>/<head>`), parent assemblies
+(`aq/development/parent/…`) and a branch per repair. Once a batch is confirmed
+on the default branch, the publisher deletes what it made obsolete on the next
+tick: each member's branch (still at the delivered revision, or on `main`), a
+`-wip` sibling that is on `main`, every assembly whose members have all landed,
+and the branch of a failed repair whose sources reached `main` on their own.
+
+What happened is recorded on the batch's journal row, under
+`evidence.branch_cleanup`: `deleted` (branch, sha, kind, and `backup` when it
+was bundled), `kept` (branch and why), `missing`, `attempts`, `log`, and
+`state` — `pending`, `complete`, or `exhausted` after eight unconfirmed
+attempts. Each run that deletes something also logs a
+`development.branches_deleted` event.
+
+Everything else is `git.stale_branches` — the supervisor's stall sweep runs it:
+
+```bash
+aq doctor --check git.stale_branches        # what is stale, and what holds the rest
+aq doctor --check git.stale_branches --fix  # back up and delete the stale ones
+```
+
+An `aq/` branch is stale by exactly one rule:
+
+| Rule | When |
+|---|---|
+| `landed` | Its head is on `main`, or every commit beyond `main` has a twin there with the same author e-mail, author time and subject (a rebased or cherry-picked copy) and every merge beyond `main` is exactly Git's own merge of its parents. |
+| `integration` | An `aq/integration/*` ref with at least one `integration_branch_owners` row, all `released`, and every operation tied to it finished. Nothing else lets one go. |
+| `expired` | The branch of a FAILED or abandoned (`work_outcome: abandoned`) task, 14 days after it went terminal (the later of its last update and its last close). |
+
+A stale branch stays when anything still references it: a task that can still
+run or has a live session, COMPLETED work not delivered yet, an unsettled batch
+(and every assembly carrying one of its members), an open repair's sources, an
+`integration_branch_owners` row that is not `released`, a live legacy
+operation, batch or promotion intent, a live hierarchy branch origin, or a
+pending branch discard. `data.projects[].held_examples` names the reference;
+on older installs the common one is an owner row left `reserved` by the
+hierarchy era. Nothing outside `aq/`, the default branch, `main` or `gh-pages`
+is ever deleted — the delete itself refuses.
+
+### Every deletion is restorable
+
+Before anything is pushed, each branch is appended to
+`<data_dir>/backups/branch-deletions/<yyyy-mm>.tsv` as
+`branch, sha, reason, bundle, recorded_at, repository` (the first two columns
+match the supervisor's 2026-09-21 `deleted-branches-*.tsv`), and every tip the
+default branch cannot reach is written to a new, verified bundle
+`<data_dir>/backups/branch-deletions/<yyyy-mm>/<utc>-<repository>.bundle`. To
+put one back, from any clone of the repository:
+
+```bash
+git bundle unbundle <bundle>                 # skip when the log says "-": it is on main
+git push origin <sha>:refs/heads/<branch>
+```
+
+### Undelivered work is not archived
+
+The archive sweeps (hourly auto-archive, and bulk `aq task archive --project-id`)
+refuse a COMPLETED task whose delivery has not landed with
+`hierarchy.delivery_pending`, including a task whose `repo_id` names another
+project's repository, which the publisher never collects.
+`aq doctor --check tasks.archive_blocked` lists them. An explicit single-task
+archive is not held.
+
 ## Slot reset keeps failing
 
 A claim that cannot prepare its worktree slot releases the claim and records
@@ -434,8 +547,11 @@ this delegate). The record keeps the previous status, the previous
 `needs_attention` code and any cancellation hold as evidence; retry counters,
 branches and stage evidence are untouched, and nothing claims the delegate
 passed. A delegate an earlier release left `PAUSED` rolls forward on the next
-reconciler tick. Only a live session or claim defers retirement: the writer's
-authority is never taken from it. Active operations and operations waiting for a
+reconciler tick. Only a session that is not fully stopped defers retirement: the
+writer's authority is never taken from it. A pool writer whose process was
+confirmed stopped can keep its claim (`claim_phase`) on the stopped session row
+as handoff evidence; that row is history, not a writer, and does not defer
+retirement. Active operations and operations waiting for a
 human decision are unchanged.
 
 Retirement and cleanup are separate. A retained branch-owner row (an attached
@@ -477,9 +593,11 @@ refused.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 [`src/integration/branch_discard.py`](../../src/integration/branch_discard.py),
+[`src/integration/delivery_branches.py`](../../src/integration/delivery_branches.py),
 [`src/doctor/integration_checks.py`](../../src/doctor/integration_checks.py),
+[`src/doctor/git_checks.py`](../../src/doctor/git_checks.py),
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py).
 
 ```bash
-aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py
+aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
 ```

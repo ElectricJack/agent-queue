@@ -170,7 +170,10 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 * It does not lint. Ruff runs in [pre-commit](checks.md#lint) if you install
   the hooks, and nowhere else.
 * It does not build or test the dashboard. `npm run lint`, `typecheck` and
-  `vitest` are local-only ([checks](checks.md#frontend)).
+  `vitest` are local-only ([checks](checks.md#frontend)). The dashboard
+  *server*'s Python suites (`tests/test_dashboard_server_*.py`) do run, in the
+  default arm like any other test file; they stage a small synthetic bundle
+  rather than building the real one.
 * It does not run the [end-to-end kit](scripts.md#supported-end-to-end-kit).
 * It does not publish anything. There is no release workflow and no
   documentation deploy — see [builds and releases](releases.md) and

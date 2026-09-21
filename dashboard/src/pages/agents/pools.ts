@@ -16,7 +16,18 @@ export interface PoolEntry {
    */
   projects: PoolProjectStatus[];
   instances: SessionSummary[];
+  /**
+   * Live *task*-lifecycle sessions on a route this pool serves — e.g. tasks
+   * launched on the profile before it switched to ``lifecycle: pool``. They
+   * are not pool members and are not in ``pool``'s supply numbers, but they
+   * are holding work the operator wants to watch. Oldest first, like
+   * ``instances``.
+   */
+  outside: OutsidePoolSession[];
 }
+
+/** One ``pool_status`` ``outside_pools`` row. */
+export type OutsidePoolSession = NonNullable<PoolStatusRow["outside_pools"]>[number];
 
 export const POOL_PREFIX = "pool:";
 
@@ -48,6 +59,7 @@ export function poolEntries(pools: PoolStatusRow[], sessions: SessionSummary[]):
       pool,
       projects: [...(pool.projects ?? [])].sort((a, b) => a.project_id.localeCompare(b.project_id)),
       instances: [...(byProfile.get(pool.profile_id) ?? [])].sort((a, b) => (a.started_at ?? 0) - (b.started_at ?? 0)),
+      outside: [...(pool.outside_pools ?? [])].sort((a, b) => a.started_at - b.started_at),
     }));
 }
 
@@ -56,15 +68,20 @@ export interface BusyPoolEntries {
   hiddenCount: number;
 }
 
-/** Pools with a task-holding worker are the only pools shown in the flock rail. */
+/**
+ * Pools holding work are the only pools shown in the flock rail: a busy pool
+ * member, or a task-lifecycle session running on the pool's route. The latter
+ * are invisible anywhere else in the rail — their agents are on a pool
+ * profile, so the roster leaves them to the pool entry.
+ */
 export function splitBusyPoolEntries(entries: PoolEntry[]): BusyPoolEntries {
-  const busy = entries.filter((entry) => entry.pool.running_busy > 0);
+  const busy = entries.filter((entry) => entry.pool.running_busy > 0 || entry.outside.length > 0);
   return { busy, hiddenCount: entries.length - busy.length };
 }
 
-/** What the rail actually shows for a split — the debounce compares this, not array identity. */
+/** Which pools the rail shows for a split — the debounce compares this, not array identity. */
 function busySignature(split: BusyPoolEntries): string {
-  return split.busy.map((entry) => entry.key + "=" + entry.pool.running_busy).join("|") + "#" + split.hiddenCount;
+  return split.busy.map((entry) => entry.key).join("|") + "#" + split.hiddenCount;
 }
 
 /**
@@ -79,6 +96,10 @@ function busySignature(split: BusyPoolEntries): string {
  * Now a render whose target matches the pending one leaves the timer alone,
  * a render that reverts to the visible state cancels it, and only a genuinely
  * new target restarts the hold.
+ *
+ * Only *which* pools are shown is held. Each shown pool renders its latest
+ * entry, so its supply and the outside-pool sessions nested under it keep up
+ * with the fleet while the set of pools stays put.
  */
 export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000): BusyPoolEntries {
   const next = useMemo(() => splitBusyPoolEntries(entries), [entries]);
@@ -122,7 +143,10 @@ export function useDebouncedBusyPoolEntries(entries: PoolEntry[], delay = 1_000)
 
   useEffect(() => () => { if (pending.current) window.clearTimeout(pending.current.timer); }, []);
 
-  return visible;
+  return useMemo(() => {
+    const latest = new Map(entries.map((entry) => [entry.key, entry]));
+    return { busy: visible.busy.map((entry) => latest.get(entry.key) ?? entry), hiddenCount: visible.hiddenCount };
+  }, [entries, visible]);
 }
 
 /**
@@ -154,6 +178,19 @@ export function isPoolProfile(profile: Profile): boolean {
  */
 export function isPoolAgent(agent: FlockAgent, poolIds: Set<string>): boolean {
   return poolIds.has(agent.profile_id);
+}
+
+/**
+ * The roster agent running an outside-pool session, or null.
+ *
+ * The live session id is the exact join; the task id is the fallback both
+ * sides always carry (``current_task_id == task_id``). A session holding no
+ * task never matches through a null id.
+ */
+export function outsideSessionAgent(session: OutsidePoolSession, roster: FlockAgent[]): FlockAgent | null {
+  return roster.find((agent) => !!agent.session_id && agent.session_id === session.session_id)
+    ?? (session.task_id ? roster.find((agent) => agent.current_task_id === session.task_id) : undefined)
+    ?? null;
 }
 
 /**

@@ -946,6 +946,7 @@
           "timeout_seconds": 3600,
           "retry": null,
           "save_result_as": "escalation",
+          "pin_provider": null,
           "transitions": {
             "completed": "await-approval",
             "failed": "review-unavailable",

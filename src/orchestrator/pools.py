@@ -362,6 +362,16 @@ class PoolsMixin:
                 # the same semantics as scaling max down to 0.
                 measurement.bounds[key] = (0, 0)
                 continue
+            availability = getattr(self, "provider_availability", None)
+            if availability is not None and availability.suppresses(
+                availability.provider_for_profile(profile)
+            ):
+                # Its provider is unavailable (provider-failover D13): target
+                # zero, exactly like a disabled pool.  Busy sessions keep
+                # running -- one still making turns is recovery evidence --
+                # and idle ones get ``drain_requested`` on their next claim.
+                measurement.bounds[key] = (0, 0)
+                continue
             # A ``min_per_project`` the global ``min_active`` cannot fund
             # raises the effective floor rather than being silently ignored
             # — but only for projects that could actually host the worker,
@@ -827,6 +837,26 @@ class PoolsMixin:
             await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
             self._quarantine_pool(project.id, profile.id, f"unknown harness {harness_name!r}")
             return None
+        # Pre-launch check (provider-failover D11): sizing already targets
+        # zero for an unavailable provider; this closes the race, and admits
+        # one canary at a time while the provider is recovering (D4).  A
+        # refusal is not the key's fault, so it quarantines nothing.
+        availability = getattr(self, "provider_availability", None)
+        launch_provider = (
+            availability.provider_for_harness(harness_name, project.id)
+            if availability is not None
+            else ""
+        )
+        if availability is not None:
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=launch.session_id
+            )
+            if not admitted:
+                logger.debug(
+                    "pool %s/%s: launch refused: %s", project.id, profile.id, refusal_reason
+                )
+                await self.db.update_agent(agent.id, state=AgentState.IDLE, current_task_id=None)
+                return None
 
         token_store = getattr(self, "token_store", None)
         # Claude accepts only canonical UUIDs for ``--session-id``. Keep the
@@ -837,6 +867,10 @@ class PoolsMixin:
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
+            if availability is not None:
+                # A launch that never ran proves nothing either way: let the
+                # next one be the probation canary (provider-failover D4).
+                availability.release_canary(launch_provider, session_id=session_id)
             if not quarantine:
                 # A starved pool is expected; ``_quarantine_pool`` does the
                 # logging for the failures that are not.
@@ -943,10 +977,34 @@ class PoolsMixin:
                 await provider.start(spec)
             except SessionDiedDuringStartup as exc:
                 excerpt = read_stderr_excerpt(exc.start_stderr_path)
+                # A death the provider explains (a login/usage dialog, or any
+                # death while it is already unavailable) is the provider's
+                # fault, not this key's: it must not arm the (project,
+                # profile) quarantine (D13) -- provider state stops the
+                # launches instead, fleet-wide.
+                attributed = availability is not None and availability.attributes_startup_death(
+                    exc, harness_name, project.id
+                )
+                if availability is not None:
+                    await availability.record_startup_death(
+                        exc,
+                        harness=harness_name,
+                        project_id=project.id,
+                        session_id=session_id,
+                        profile_id=profile.id,
+                    )
+                    # A death that just tripped the provider (attributable
+                    # generic failures -> ``failing``) was the provider's
+                    # too, and pool sizing now stops the launches fleet-wide
+                    # -- in enforce mode only; observe mode sizes nothing,
+                    # so the key quarantine is all that stops a relaunch.
+                    attributed = attributed or (
+                        availability.enforcing and availability.is_unavailable(launch_provider)
+                    )
                 await _rollback(
                     f"session died during startup: {exc}"
                     + (f" | startup output: {excerpt}" if excerpt else ""),
-                    quarantine=True,
+                    quarantine=not attributed,
                 )
                 return None
 
@@ -1037,16 +1095,37 @@ class PoolsMixin:
         return locks.setdefault(session_id, asyncio.Lock())
 
     async def _terminate_pool_session(
-        self, session, *, reason: str, task_status=TaskStatus.READY
+        self,
+        session,
+        *,
+        reason: str,
+        task_status=TaskStatus.READY,
+        resume_after: float | None = None,
+        task_meta: dict | None = None,
     ) -> None:
-        """Serialize teardown so late callers cannot clear a reused worker."""
+        """Serialize teardown so late callers cannot clear a reused worker.
+
+        *resume_after* / *task_meta* pause the held task with a backoff and
+        record why in the same transaction (a provider-caused pause,
+        provider-failover D13); by default it simply goes back to READY.
+        """
         async with self._pool_teardown_lock(session.id):
             await self._terminate_pool_session_locked(
-                session, reason=reason, task_status=task_status
+                session,
+                reason=reason,
+                task_status=task_status,
+                resume_after=resume_after,
+                task_meta=task_meta,
             )
 
     async def _terminate_pool_session_locked(
-        self, session, *, reason: str, task_status=TaskStatus.READY
+        self,
+        session,
+        *,
+        reason: str,
+        task_status=TaskStatus.READY,
+        resume_after: float | None = None,
+        task_meta: dict | None = None,
     ) -> None:
         """Stop the process before making its durable worker or workspace reusable.
 
@@ -1111,7 +1190,11 @@ class PoolsMixin:
         still_owned = agent is None or agent.current_task_id in (None, session.task_id)
         if not other_live and still_owned:
             release = await self.db.terminate_pool_session(
-                session.id, reason=reason, task_status=task_status
+                session.id,
+                reason=reason,
+                task_status=task_status,
+                resume_after=resume_after,
+                task_meta=task_meta,
             )
             # An attached or pending integration owner retains this exact
             # session/workspace binding.  It is not safe to mark the worker

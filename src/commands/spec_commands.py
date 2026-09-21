@@ -70,6 +70,17 @@ class SpecCommandsMixin:
                 "error": f"frontmatter YAML error: {exc}",
             }
 
+        if fm.get("review"):
+            return {
+                "success": False,
+                "error_code": "review_gate",
+                "error": (
+                    "reviewed specs are decided in the review: "
+                    f"aq review decide --review-id {fm['review']} "
+                    "--revision <n> --decision approve"
+                ),
+            }
+
         fm["status"] = "approved"
         buf = io.StringIO()
         rt.dump(fm, buf)

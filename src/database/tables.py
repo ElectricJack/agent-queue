@@ -80,6 +80,9 @@ projects = Table(
         nullable=False,
         server_default="0",
     ),
+    # Who decides this project's new document reviews: 'user' | 'supervisor'
+    # (NULL = 'user').  Document-review spec §6.
+    Column("review_delegate_to", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
@@ -92,6 +95,10 @@ projects = Table(
     CheckConstraint(
         "hierarchical_integration_generation >= 0",
         name="ck_projects_hierarchical_integration_generation",
+    ),
+    CheckConstraint(
+        "review_delegate_to IS NULL OR review_delegate_to IN ('user', 'supervisor')",
+        name="ck_projects_review_delegate_to",
     ),
 )
 
@@ -202,6 +209,17 @@ tasks = Table(
     Column("claim_epoch", Integer, nullable=False, server_default="0"),
     # Worker-filing quota counter (swarm-work-model §12).  Plan 2 reserves it.
     Column("filed_count", Integer, nullable=False, server_default="0"),
+    # Provider intent (provider-failover D8): did anyone mean the provider
+    # ``profile_id`` names?  ``pinned`` holds while its provider is
+    # unavailable; ``preferred`` and ``class_only`` fail over (D12).
+    Column("provider_intent", Text, nullable=False, server_default="class_only"),
+    # The profile the task was on before its first automatic re-route that
+    # has not been undone (D17).  NULL means "where it was put".
+    Column("rerouted_from", Text, nullable=True),
+    CheckConstraint(
+        "provider_intent IN ('pinned','preferred','class_only')",
+        name="ck_tasks_provider_intent",
+    ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -262,6 +280,14 @@ tasks = Table(
     # ``aq task list --status``) had no index leading with status and
     # seq-scanned ``tasks`` as completed history grew.
     Index("idx_tasks_status_project", "status", "project_id"),
+    # What the re-route trickle counts (provider-failover D15): the moved and
+    # not-yet-started tasks per target rung.  Partial because a re-route is
+    # the exception.
+    Index(
+        "idx_tasks_rerouted",
+        "profile_id",
+        postgresql_where=text("rerouted_from IS NOT NULL"),
+    ),
 )
 
 task_criteria = Table(
@@ -509,7 +535,7 @@ task_metadata = Table(
 # Substrate only — no query layer or command surface reads these yet.
 # ---------------------------------------------------------------------------
 
-GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing")
+GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing", "review")
 GATE_STATUSES = ("open", "resolved", "expired")
 
 gates = Table(
@@ -517,7 +543,7 @@ gates = Table(
     metadata,
     Column("id", Text, primary_key=True),  # "gate-" + uuid4[:12]
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("gate_type", Text, nullable=False),  # human|timer|pr-merged|ci-run|event|task
+    Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
     Column("await_id", Text, nullable=True),
@@ -558,6 +584,84 @@ task_gates = Table(
     Column("gate_id", Text, ForeignKey("gates.id"), primary_key=True),
     # resolve → find waiters.
     Index("idx_task_gates_gate", "gate_id"),
+)
+
+# ---------------------------------------------------------------------------
+# Document reviews (document-review spec §3.2).
+#
+# A review is a spec, plan or other markdown document an agent submits for a
+# human decision; its ``review`` gate (``gate_id``, ``await_id`` = review id)
+# holds the work that depends on it.  Task ids here are soft references with
+# no ForeignKey to ``tasks``, like ``task_session_attempts``: a review must
+# never be the reason a task cannot be archived or deleted.
+# ---------------------------------------------------------------------------
+
+DOC_REVIEW_KINDS = ("spec", "plan", "other")
+DOC_REVIEW_STATES = ("in_review", "changes_requested", "approved", "withdrawn")
+DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
+
+
+def _in(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
+doc_reviews = Table(
+    "doc_reviews",
+    metadata,
+    Column("id", Text, primary_key=True),  # "rev-<adjective>-<noun>"
+    Column("project_id", Text, nullable=False),
+    Column("author_task_id", Text, nullable=True),
+    Column("kind", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("vault_path", Text, nullable=False),  # relative to the vault root
+    Column("current_revision", Integer, nullable=False, server_default="1"),
+    Column("state", Text, nullable=False),
+    Column("gate_id", Text, nullable=True),
+    Column("decider", Text, nullable=False, server_default="user"),
+    Column("decided_by", Text, nullable=True),
+    Column("decided_at", Float, nullable=True),
+    Column("decision_note", Text, nullable=True),
+    # The last revision announced on Discord: the review outbox (spec §9).
+    Column("notified_revision", Integer, nullable=False, server_default="0"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(_in("kind", DOC_REVIEW_KINDS), name="ck_doc_reviews_kind"),
+    CheckConstraint(_in("state", DOC_REVIEW_STATES), name="ck_doc_reviews_state"),
+    CheckConstraint(_in("decider", DOC_REVIEW_DECIDERS), name="ck_doc_reviews_decider"),
+    CheckConstraint("current_revision >= 1", name="ck_doc_reviews_revision"),
+    UniqueConstraint("vault_path", name="uq_doc_reviews_vault_path"),
+    Index("idx_doc_reviews_project_state", "project_id", "state"),
+    Index("idx_doc_reviews_author_task", "author_task_id"),
+)
+
+doc_review_revisions = Table(
+    "doc_review_revisions",
+    metadata,
+    Column("review_id", Text, ForeignKey("doc_reviews.id", ondelete="CASCADE"), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    # The submitted markdown with any leading frontmatter stripped.
+    Column("content", Text, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("submitted_by", Text, nullable=False),  # principal label
+    Column("submitted_task_id", Text, nullable=True),
+    Column("changes_note", Text, nullable=True),
+    Column("submitted_at", Float, nullable=False),
+)
+
+doc_review_comments = Table(
+    "doc_review_comments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("review_id", Text, ForeignKey("doc_reviews.id", ondelete="CASCADE"), nullable=False),
+    Column("revision", Integer, nullable=False),  # the revision commented on
+    Column("quote", Text, nullable=True),  # NULL = a whole-section comment
+    Column("heading_path", JSON, nullable=False),  # heading texts, top down
+    Column("body", Text, nullable=False),
+    Column("author", Text, nullable=False),  # principal label
+    Column("resolved_in_revision", Integer, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_doc_review_comments_body"),
+    Index("idx_doc_review_comments_review", "review_id", "revision"),
 )
 
 task_labels = Table(
@@ -1498,9 +1602,16 @@ archived_tasks = Table(
     Column("intelligence_class", Text, nullable=True),
     Column("created_by_kind", Text, nullable=True),
     Column("created_by_id", Text, nullable=True),
+    # Mirrors tasks.provider_intent / tasks.rerouted_from (provider-failover D8, D17).
+    Column("provider_intent", Text, nullable=False, server_default="class_only"),
+    Column("rerouted_from", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
+    CheckConstraint(
+        "provider_intent IN ('pinned','preferred','class_only')",
+        name="ck_archived_tasks_provider_intent",
+    ),
 )
 
 project_constraints = Table(
@@ -2087,6 +2198,130 @@ Index(
     provider_usage_snapshots.c.window,
     provider_usage_snapshots.c.scope,
     provider_usage_snapshots.c.observed_at.desc(),
+)
+
+# ---------------------------------------------------------------------------
+# Provider availability (docs/specs/provider-failover.md D7).
+#
+# One row per provider key (the harness login: ``claude``, ``codex``, ...),
+# written only by the daemon's availability service.  ``state`` is the
+# *derived* state and never holds ``disabled``: an operator's override lives
+# in the ``override_*`` columns and the effective state is computed from both,
+# so "evidence says exhausted until 14:00; overridden until 13:10" is
+# representable.  ``evidence`` is the bounded ring the reducer counts over.
+# ---------------------------------------------------------------------------
+
+PROVIDER_AVAILABILITY_STATES = (
+    "available",
+    "degraded",
+    "exhausted",
+    "unauthenticated",
+    "failing",
+    "disabled",
+)
+
+provider_availability = Table(
+    "provider_availability",
+    metadata,
+    Column("provider", Text, primary_key=True),
+    Column("vendor", Text, nullable=False, server_default=""),
+    Column("state", Text, nullable=False, server_default="available"),
+    Column("reason_code", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False, server_default=""),
+    Column("since", Float, nullable=False),
+    Column("until", Float, nullable=True),
+    Column("level", Integer, nullable=False, server_default="0"),
+    Column("last_trip_at", Float, nullable=True),
+    Column("consecutive_failures", Integer, nullable=False, server_default="0"),
+    Column("last_failure_at", Float, nullable=True),
+    Column("last_success_at", Float, nullable=True),
+    Column("evidence", JSON, nullable=False, server_default="[]"),
+    Column("override_state", Text, nullable=True),
+    Column("override_until", Float, nullable=True),
+    Column("override_by", Text, nullable=True),
+    Column("override_reason", Text, nullable=True),
+    Column("override_set_at", Float, nullable=True),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    # The unavailable state a ``recovering`` provider came from (D4).
+    Column("probation_from", Text, nullable=True),
+    # Evidence at or before this instant no longer counts toward a trip
+    # (``aq provider set-state <p> auto``, D6).
+    Column("counters_reset_at", Float, nullable=True),
+    Column("last_probe_at", Float, nullable=True),
+    # The generation a state-change notification last went out for, so an
+    # event, its replay and the timer never notify twice (D19).
+    Column("notified_generation", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "state IN ('available','degraded','exhausted','unauthenticated','failing','disabled')",
+        name="ck_provider_availability_state",
+    ),
+    CheckConstraint(
+        "override_state IS NULL OR override_state IN ('disabled','available')",
+        name="ck_provider_availability_override_state",
+    ),
+)
+
+# Append-only audit trail of *effective* state changes: the dashboard card's
+# history and ``aq provider history``.
+provider_availability_transitions = Table(
+    "provider_availability_transitions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("provider", Text, nullable=False),
+    Column("from_state", Text, nullable=False),
+    Column("to_state", Text, nullable=False),
+    Column("reason_code", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False, server_default=""),
+    Column("until", Float, nullable=True),
+    Column("generation", Integer, nullable=False),
+    # ``system`` or a principal (``human:cli``, ``session:supervisor-global``).
+    Column("actor", Text, nullable=False, server_default="system"),
+    Column("detail", JSON, nullable=False, server_default="{}"),
+    Column("at", Float, nullable=False),
+)
+
+Index(
+    "idx_provider_availability_transitions_provider_at",
+    provider_availability_transitions.c.provider,
+    provider_availability_transitions.c.at.desc(),
+)
+
+# Append-only history of provider re-routes (provider-failover D17).
+# ``tasks.rerouted_from`` is only its cheap current projection.  ``batch_id``
+# is derived from ``(provider, generation)`` so every trickle top-up during
+# one outage lands in the same batch (D19).
+TASK_REROUTE_REASONS = ("provider_unavailable", "operator_forced", "operator_undo")
+
+task_reroutes = Table(
+    "task_reroutes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "task_id",
+        Text,
+        ForeignKey("tasks.id", ondelete="CASCADE", name="fk_task_reroutes_task"),
+        nullable=False,
+    ),
+    Column("project_id", Text, nullable=False),
+    Column("from_profile_id", Text, nullable=True),
+    Column("to_profile_id", Text, nullable=True),
+    Column("from_provider", Text, nullable=False, server_default=""),
+    Column("to_provider", Text, nullable=False, server_default=""),
+    Column("intelligence_class", Text, nullable=True),
+    Column("reason_code", Text, nullable=False),
+    Column("provider_state", Text, nullable=False, server_default=""),
+    Column("provider_generation", Integer, nullable=True),
+    Column("batch_id", Text, nullable=True),
+    Column("actor", Text, nullable=False, server_default="system"),
+    Column("at", Float, nullable=False),
+    Column("undone_at", Float, nullable=True),
+    CheckConstraint(
+        "reason_code IN ('provider_unavailable','operator_forced','operator_undo')",
+        name="ck_task_reroutes_reason_code",
+    ),
+    Index("idx_task_reroutes_task_at", "task_id", "at"),
+    Index("idx_task_reroutes_batch", "batch_id"),
 )
 
 message_discord_receipts = Table(
@@ -3211,6 +3446,33 @@ integration_delegate_releases = Table(
         "role IN ('verifier', 'repair_stage', 'candidate_member')",
         name="ck_integration_delegate_releases_role",
     ),
+)
+
+#: One row per non-dry ``OwnerRecovery`` run on an integration branch owner.
+#:
+#: The audit trail for docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md
+#: §3: what the check saw (origin and local tips, the checkout, any preserved
+#: ref and the writer's stop proof), what it did, and who ran it.  Like
+#: ``integration_delegate_releases`` it carries only soft references, so the
+#: record outlives the owner row's task and the row itself.
+integration_owner_recoveries = Table(
+    "integration_owner_recoveries",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("owner_row_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("ref", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("outcome", Text, nullable=False),
+    Column("reason", Text, nullable=True),
+    Column("evidence", JSON, nullable=False),
+    Column("principal", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "outcome IN ('released', 'preserved_and_released', 'not_eligible')",
+        name="ck_integration_owner_recoveries_outcome",
+    ),
+    Index("idx_integration_owner_recoveries_owner", "owner_row_id", "created_at"),
 )
 
 integration_check_evidence = Table(

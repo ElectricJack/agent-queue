@@ -18,7 +18,7 @@ from src.config import (
     LLMLoggingConfig,
     McpServerConfig,
     MemoryConfig,
-    PauseRetryConfig,
+    ProviderFailoverConfig,
     SchedulingConfig,
     ScratchProbeConfig,
     load_config,
@@ -395,32 +395,98 @@ class TestSchedulingConfigValidation:
         assert errors[0].field == "rolling_window_hours"
 
 
-# ── PauseRetryConfig ──────────────────────────────────────────────────
+# ── ProviderFailoverConfig (provider-failover D22) ────────────────
 
 
-class TestPauseRetryConfigValidation:
+class TestProviderFailoverConfigValidation:
     def test_valid_defaults(self):
-        assert PauseRetryConfig().validate() == []
+        assert ProviderFailoverConfig().validate() == []
 
-    def test_backoff_zero(self):
-        cfg = PauseRetryConfig(rate_limit_backoff_seconds=0)
-        errors = cfg.validate()
-        assert any("rate_limit_backoff" in e.field for e in errors)
+    def test_defaults_enforce(self):
+        cfg = ProviderFailoverConfig()
+        assert cfg.mode == "enforce" and cfg.enforcing and cfg.tracking
 
-    def test_token_exhaustion_zero(self):
-        cfg = PauseRetryConfig(token_exhaustion_retry_seconds=0)
-        errors = cfg.validate()
-        assert any("token_exhaustion" in e.field for e in errors)
+    def test_unknown_mode(self):
+        errors = ProviderFailoverConfig(mode="loud").validate()
+        assert [e.field for e in errors] == ["mode"]
 
-    def test_max_retries_negative(self):
-        cfg = PauseRetryConfig(rate_limit_max_retries=-1)
-        errors = cfg.validate()
-        assert any("rate_limit_max_retries" in e.field for e in errors)
+    def test_unknown_policy(self):
+        errors = ProviderFailoverConfig(default_policy="cross_class").validate()
+        assert [e.field for e in errors] == ["default_policy"]
 
-    def test_max_backoff_zero(self):
-        cfg = PauseRetryConfig(rate_limit_max_backoff_seconds=0)
-        errors = cfg.validate()
-        assert any("rate_limit_max_backoff" in e.field for e in errors)
+    def test_class_policy_checked(self):
+        errors = ProviderFailoverConfig(classes={"deep-high": "swap"}).validate()
+        assert [e.field for e in errors] == ["classes.deep-high"]
+
+    def test_percent_bounds(self):
+        cfg = ProviderFailoverConfig()
+        cfg.usage.exhausted_percent = 101
+        assert any(e.field == "usage.exhausted_percent" for e in cfg.validate())
+
+    def test_degraded_below_exhausted(self):
+        cfg = ProviderFailoverConfig()
+        cfg.usage.degraded_percent = 99
+        assert any(e.field == "usage.degraded_percent" for e in cfg.validate())
+
+    def test_counts_at_least_one(self):
+        cfg = ProviderFailoverConfig()
+        cfg.launch.strong_failures_to_trip = 0
+        assert any(e.field == "launch.strong_failures_to_trip" for e in cfg.validate())
+
+    def test_evidence_ring_holds_the_largest_trip(self):
+        cfg = ProviderFailoverConfig()
+        cfg.evidence.keep = cfg.launch.generic_failures_to_trip
+        assert any(e.field == "evidence.keep" for e in cfg.validate())
+
+    def test_negative_duration(self):
+        cfg = ProviderFailoverConfig()
+        cfg.recovery.reset_grace_seconds = -1
+        assert any(e.field == "recovery.reset_grace_seconds" for e in cfg.validate())
+
+    def test_default_ttl_within_max(self):
+        cfg = ProviderFailoverConfig()
+        cfg.override.default_ttl_seconds = cfg.override.max_ttl_seconds + 1
+        assert any(e.field == "override.default_ttl_seconds" for e in cfg.validate())
+
+    def test_duplicate_order_is_a_warning(self):
+        errors = ProviderFailoverConfig(order=["codex", "codex"]).validate()
+        assert [(e.field, e.severity) for e in errors] == [("order", "warning")]
+
+    def test_nested_sections_load_from_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "data_dir: " + str(tmp_path / "data") + "\n"
+            "messaging_platform: none\n"
+            "database:\n  url: postgresql+asyncpg://u:p@localhost/db\n"
+            "provider_failover:\n"
+            "  mode: observe\n"
+            "  order: [claude, codex]\n"
+            "  classes: {deep-high: hold}\n"
+            "  usage: {degraded_percent: 80}\n"
+            "  launch: {generic_failures_to_trip: 4}\n"
+            "  recovery: {reset_grace_seconds: 5}\n"
+        )
+        cfg = load_config(str(path)).provider_failover
+        assert cfg.mode == "observe"
+        assert cfg.order == ["claude", "codex"]
+        assert cfg.classes == {"deep-high": "hold"}
+        assert cfg.usage.degraded_percent == 80.0
+        assert cfg.usage.exhausted_percent == 99.0
+        assert cfg.launch.generic_failures_to_trip == 4
+        assert cfg.recovery.reset_grace_seconds == 5
+
+    def test_retired_pause_retry_section_still_loads(self, tmp_path, caplog):
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "data_dir: " + str(tmp_path / "data") + "\n"
+            "messaging_platform: none\n"
+            "database:\n  url: postgresql+asyncpg://u:p@localhost/db\n"
+            "pause_retry:\n  rate_limit_backoff_seconds: 60\n"
+        )
+        with caplog.at_level("WARNING"):
+            cfg = load_config(str(path))
+        assert not hasattr(cfg, "pause_retry")
+        assert "pause_retry" in caplog.text
 
 
 # ── AutoTaskConfig ────────────────────────────────────────────────────

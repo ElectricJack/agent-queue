@@ -18,6 +18,7 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [Integration troubleshooting](integration-troubleshooting.md) | A finished branch is not reaching your default branch. |
 | [Troubleshooting worker sessions](session-troubleshooting.md) | A worker is running but nothing is happening, or it stopped and left something behind. |
 | [Worker pools](worker-pools.md) | Operating `lifecycle: pool` profiles — bounds, quarantine, doctor checks, cutover. |
+| [A provider ran out of usage](provider-outage.md) | Claude, Codex or Gemini is out of usage, logged out or failing — reading its state, forcing or undoing moves, recovery. |
 | [Resource gating](resource-gating.md) | Keeping N concurrent agents from taking the machine down. |
 | [Default tuning](default-tuning.md) | The resource-aware defaults a fresh install gets, why each value, and how to override. |
 | [Install, move defaults, or recover AQ](../tutorials/install.md#platform-quickstarts) | Choose the supported Windows/WSL2 or macOS path; export/import portable policy; repair, upgrade, or safely inspect uninstall. |

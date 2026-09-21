@@ -59,6 +59,9 @@ from .checkout_branch_response_422 import CheckoutBranchResponse422
 from .ci_baseline_status_request import CiBaselineStatusRequest
 from .ci_baseline_status_response import CiBaselineStatusResponse
 from .ci_baseline_status_response_422 import CiBaselineStatusResponse422
+from .ci_repair_adopt_request import CiRepairAdoptRequest
+from .ci_repair_adopt_response import CiRepairAdoptResponse
+from .ci_repair_adopt_response_422 import CiRepairAdoptResponse422
 from .claim_session_summary import ClaimSessionSummary
 from .claimed_by import ClaimedBy
 from .claude_usage_request import ClaudeUsageRequest
@@ -782,6 +785,7 @@ from .plugin_update_response_422 import PluginUpdateResponse422
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
+from .pool_provider_unavailable import PoolProviderUnavailable
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -841,6 +845,43 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_availability_status import ProviderAvailabilityStatus
+from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
+from .provider_held_task import ProviderHeldTask
+from .provider_held_tasks_request import ProviderHeldTasksRequest
+from .provider_held_tasks_response import ProviderHeldTasksResponse
+from .provider_held_tasks_response_422 import ProviderHeldTasksResponse422
+from .provider_held_tasks_response_by_kind import ProviderHeldTasksResponseByKind
+from .provider_history_request import ProviderHistoryRequest
+from .provider_history_response import ProviderHistoryResponse
+from .provider_history_response_422 import ProviderHistoryResponse422
+from .provider_hold_detail import ProviderHoldDetail
+from .provider_override import ProviderOverride
+from .provider_recheck_request import ProviderRecheckRequest
+from .provider_recheck_response import ProviderRecheckResponse
+from .provider_recheck_response_422 import ProviderRecheckResponse422
+from .provider_recheck_response_probe_detail import ProviderRecheckResponseProbeDetail
+from .provider_recheck_response_transition_type_0 import ProviderRecheckResponseTransitionType0
+from .provider_reroute_body import ProviderRerouteBody
+from .provider_reroute_request import ProviderRerouteRequest
+from .provider_reroute_response import ProviderRerouteResponse
+from .provider_reroute_response_422 import ProviderRerouteResponse422
+from .provider_reroute_response_held_by_kind import ProviderRerouteResponseHeldByKind
+from .provider_reroute_undo_body import ProviderRerouteUndoBody
+from .provider_reroute_undo_request import ProviderRerouteUndoRequest
+from .provider_reroute_undo_response import ProviderRerouteUndoResponse
+from .provider_reroute_undo_response_422 import ProviderRerouteUndoResponse422
+from .provider_set_state_request import ProviderSetStateRequest
+from .provider_set_state_response import ProviderSetStateResponse
+from .provider_set_state_response_422 import ProviderSetStateResponse422
+from .provider_set_state_response_transition_type_0 import ProviderSetStateResponseTransitionType0
+from .provider_state_request import ProviderStateRequest
+from .provider_status_request import ProviderStatusRequest
+from .provider_status_response import ProviderStatusResponse
+from .provider_status_response_422 import ProviderStatusResponse422
+from .provider_transition import ProviderTransition
+from .provider_transition_detail import ProviderTransitionDetail
+from .provider_usage_reading import ProviderUsageReading
 from .provider_usage_response import ProviderUsageResponse
 from .provider_usage_response_series import ProviderUsageResponseSeries
 from .provider_usage_snapshot import ProviderUsageSnapshot
@@ -906,6 +947,9 @@ from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
+from .reroute_decision import RerouteDecision
+from .reroute_undo_refusal import RerouteUndoRefusal
+from .reroute_undone import RerouteUndone
 from .restart_daemon_request import RestartDaemonRequest
 from .restart_daemon_response import RestartDaemonResponse
 from .restart_daemon_response_422 import RestartDaemonResponse422
@@ -921,6 +965,35 @@ from .resume_project_response_422 import ResumeProjectResponse422
 from .resume_task_request import ResumeTaskRequest
 from .resume_task_response_422 import ResumeTaskResponse422
 from .retry_policy_dto import RetryPolicyDTO
+from .review_comment_request import ReviewCommentRequest
+from .review_comment_response import ReviewCommentResponse
+from .review_comment_response_422 import ReviewCommentResponse422
+from .review_decide_request import ReviewDecideRequest
+from .review_decide_response import ReviewDecideResponse
+from .review_decide_response_422 import ReviewDecideResponse422
+from .review_delegate_request import ReviewDelegateRequest
+from .review_delegate_response import ReviewDelegateResponse
+from .review_delegate_response_422 import ReviewDelegateResponse422
+from .review_import_edits_request import ReviewImportEditsRequest
+from .review_import_edits_response import ReviewImportEditsResponse
+from .review_import_edits_response_422 import ReviewImportEditsResponse422
+from .review_list_request import ReviewListRequest
+from .review_list_response import ReviewListResponse
+from .review_list_response_422 import ReviewListResponse422
+from .review_record import ReviewRecord
+from .review_show_request import ReviewShowRequest
+from .review_show_response import ReviewShowResponse
+from .review_show_response_422 import ReviewShowResponse422
+from .review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
+from .review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
+from .review_show_response_revision import ReviewShowResponseRevision
+from .review_show_response_revisions_item import ReviewShowResponseRevisionsItem
+from .review_submit_request import ReviewSubmitRequest
+from .review_submit_response import ReviewSubmitResponse
+from .review_submit_response_422 import ReviewSubmitResponse422
+from .review_withdraw_request import ReviewWithdrawRequest
+from .review_withdraw_response import ReviewWithdrawResponse
+from .review_withdraw_response_422 import ReviewWithdrawResponse422
 from .right_surface import RightSurface
 from .right_surface_activity_tab import RightSurfaceActivityTab
 from .right_surface_kind_type_0 import RightSurfaceKindType0
@@ -1124,6 +1197,7 @@ from .task_recover_request import TaskRecoverRequest
 from .task_recover_response_422 import TaskRecoverResponse422
 from .task_recovery_response import TaskRecoveryResponse
 from .task_ref import TaskRef
+from .task_reroute import TaskReroute
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422
@@ -1270,6 +1344,9 @@ __all__ = (
     "CiBaselineStatusRequest",
     "CiBaselineStatusResponse",
     "CiBaselineStatusResponse422",
+    "CiRepairAdoptRequest",
+    "CiRepairAdoptResponse",
+    "CiRepairAdoptResponse422",
     "ClaimedBy",
     "ClaimSessionSummary",
     "ClaudeUsageRequest",
@@ -1985,6 +2062,7 @@ __all__ = (
     "PoolInstanceStatus",
     "PoolProjectCap",
     "PoolProjectStatus",
+    "PoolProviderUnavailable",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
@@ -2042,6 +2120,43 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAvailabilityStatus",
+    "ProviderAvailabilityStatusEvidenceItem",
+    "ProviderHeldTask",
+    "ProviderHeldTasksRequest",
+    "ProviderHeldTasksResponse",
+    "ProviderHeldTasksResponse422",
+    "ProviderHeldTasksResponseByKind",
+    "ProviderHistoryRequest",
+    "ProviderHistoryResponse",
+    "ProviderHistoryResponse422",
+    "ProviderHoldDetail",
+    "ProviderOverride",
+    "ProviderRecheckRequest",
+    "ProviderRecheckResponse",
+    "ProviderRecheckResponse422",
+    "ProviderRecheckResponseProbeDetail",
+    "ProviderRecheckResponseTransitionType0",
+    "ProviderRerouteBody",
+    "ProviderRerouteRequest",
+    "ProviderRerouteResponse",
+    "ProviderRerouteResponse422",
+    "ProviderRerouteResponseHeldByKind",
+    "ProviderRerouteUndoBody",
+    "ProviderRerouteUndoRequest",
+    "ProviderRerouteUndoResponse",
+    "ProviderRerouteUndoResponse422",
+    "ProviderSetStateRequest",
+    "ProviderSetStateResponse",
+    "ProviderSetStateResponse422",
+    "ProviderSetStateResponseTransitionType0",
+    "ProviderStateRequest",
+    "ProviderStatusRequest",
+    "ProviderStatusResponse",
+    "ProviderStatusResponse422",
+    "ProviderTransition",
+    "ProviderTransitionDetail",
+    "ProviderUsageReading",
     "ProviderUsageResponse",
     "ProviderUsageResponseSeries",
     "ProviderUsageSnapshot",
@@ -2107,6 +2222,9 @@ __all__ = (
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",
+    "RerouteDecision",
+    "RerouteUndone",
+    "RerouteUndoRefusal",
     "RestartDaemonRequest",
     "RestartDaemonResponse",
     "RestartDaemonResponse422",
@@ -2122,6 +2240,35 @@ __all__ = (
     "ResumeTaskRequest",
     "ResumeTaskResponse422",
     "RetryPolicyDTO",
+    "ReviewCommentRequest",
+    "ReviewCommentResponse",
+    "ReviewCommentResponse422",
+    "ReviewDecideRequest",
+    "ReviewDecideResponse",
+    "ReviewDecideResponse422",
+    "ReviewDelegateRequest",
+    "ReviewDelegateResponse",
+    "ReviewDelegateResponse422",
+    "ReviewImportEditsRequest",
+    "ReviewImportEditsResponse",
+    "ReviewImportEditsResponse422",
+    "ReviewListRequest",
+    "ReviewListResponse",
+    "ReviewListResponse422",
+    "ReviewRecord",
+    "ReviewShowRequest",
+    "ReviewShowResponse",
+    "ReviewShowResponse422",
+    "ReviewShowResponseCommentsType0Item",
+    "ReviewShowResponseDiffType0Item",
+    "ReviewShowResponseRevision",
+    "ReviewShowResponseRevisionsItem",
+    "ReviewSubmitRequest",
+    "ReviewSubmitResponse",
+    "ReviewSubmitResponse422",
+    "ReviewWithdrawRequest",
+    "ReviewWithdrawResponse",
+    "ReviewWithdrawResponse422",
     "RightSurface",
     "RightSurfaceActivityTab",
     "RightSurfaceKindType0",
@@ -2323,6 +2470,7 @@ __all__ = (
     "TaskRecoverResponse422",
     "TaskRecoveryResponse",
     "TaskRef",
+    "TaskReroute",
     "TaskRouteRequest",
     "TaskRouteResponse",
     "TaskRouteResponse422",

@@ -382,9 +382,23 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
         }
         return;
       }
+      // Provider availability (provider-failover D19/D20): a state change, a
+      // re-route batch or a half change refetches the availability read the
+      // outage banner and the Metrics cards share, and the held-task list.
+      if (type.startsWith("provider.") || (type as string) === "notify.provider_state") {
+        queryClient.invalidateQueries({ queryKey: ["providers", "availability"] });
+        queryClient.invalidateQueries({ queryKey: ["providers", "held-tasks"] });
+        return;
+      }
       if (type === "proposal.status_changed") {
         const pid = (event as ProposalStatusChangedEvent).proposal_id;
         queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
+        return;
+      }
+      if (type.startsWith("review.")) {
+        const reviewId = (event as { review_id?: string }).review_id;
+        queryClient.invalidateQueries({ queryKey: ["reviews"] });
+        if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
         return;
       }
 

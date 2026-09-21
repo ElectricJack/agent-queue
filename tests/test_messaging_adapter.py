@@ -211,7 +211,6 @@ class TestAppConfigMessagingPlatform:
         )
         config.agents_config = MagicMock(validate=MagicMock(return_value=[]))
         config.scheduling = MagicMock(validate=MagicMock(return_value=[]))
-        config.pause_retry = MagicMock(validate=MagicMock(return_value=[]))
         config.llm = MagicMock(validate=MagicMock(return_value=[]))
         config.supervisor = MagicMock(validate=MagicMock(return_value=[]))
         config.auto_task = MagicMock(validate=MagicMock(return_value=[]))

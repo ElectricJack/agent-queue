@@ -3,6 +3,8 @@ import { ExclamationTriangleIcon, PencilIcon } from "@heroicons/react/24/outline
 import { useEditTask, useIntelligenceClasses, useProfiles } from "../api/hooks";
 import { groupIntelligenceClasses } from "./intelligence-classes/mapping";
 import { dedupeProfileOptions } from "../pages/project/Config";
+import { PROVIDER_INTENTS, intentHint, intentLabel } from "../pages/metrics/providerAvailabilityFormat";
+import { ProviderIntentChip } from "./TaskProviderRouting";
 
 /**
  * The editable field set shared by the full task page and the task pane.
@@ -10,8 +12,15 @@ import { dedupeProfileOptions } from "../pages/project/Config";
  * One "Edit" toggles every field at once; Save sends only the fields whose
  * value differs from the snapshot taken when editing started, so a task
  * refreshed under the editor never overwrites untouched fields with stale
- * values.  Routing fields (profile, intelligence class) are locked while the
- * task is running or claimed because the daemon refuses them then.
+ * values.  Routing fields (profile, intelligence class, provider intent) are
+ * locked while the task is running or claimed because the daemon refuses
+ * them then.
+ *
+ * Provider intent (provider-failover D8/D9) follows the daemon's own rule for
+ * a route change: naming a profile makes it *preferred*, so choosing a new
+ * profile resets *Pin to this provider* to unchecked, and a pin has to be
+ * asked for again.  Clearing the profile leaves nothing to have meant, so
+ * the intent becomes *class only*.
  */
 
 export const STATUS_OPTIONS = [
@@ -38,6 +47,7 @@ export interface EditableTask {
   priority?: number | null;
   task_type?: string | null;
   profile_id?: string | null;
+  provider_intent?: string | null;
   intelligence_class?: string | null;
   max_retries?: number | null;
   retry_count?: number | null;
@@ -48,12 +58,14 @@ export interface EditableTask {
   assigned_agent?: string | null;
 }
 
-interface FormState {
+export interface FormState {
   title: string;
   status: string;
   priority: string;
   task_type: string;
   profile_id: string;
+  /** ``pinned`` | ``preferred`` | ``class_only`` (D8). */
+  provider_intent: string;
   intelligence_class: string;
   max_retries: string;
   integration_mode: string;
@@ -67,6 +79,7 @@ function taskToForm(t: EditableTask | null | undefined): FormState {
     priority: t?.priority != null ? String(t.priority) : "",
     task_type: t?.task_type ?? "",
     profile_id: t?.profile_id ?? "",
+    provider_intent: t?.profile_id ? (t?.provider_intent || "class_only") : "class_only",
     intelligence_class: t?.intelligence_class ?? "",
     max_retries: t?.max_retries != null ? String(t.max_retries) : "",
     integration_mode: t?.integration_mode ?? "",
@@ -91,6 +104,46 @@ export function integrationModeDisplay(task: {
   return source === "task" ? effective : `${effective} (from ${source} policy)`;
 }
 
+/**
+ * The intent a profile choice starts with: the daemon stores *preferred* for
+ * a profile the caller names (D9), so the pin checkbox starts unchecked for a
+ * new route; returning to the original profile restores the original intent.
+ */
+function intentForProfile(profileId: string, baseline: FormState): string {
+  if (!profileId) return "class_only";
+  if (profileId === baseline.profile_id) return baseline.provider_intent;
+  return "preferred";
+}
+
+/** What unticking *Pin to this provider* leaves behind. */
+function intentWithoutPin(form: FormState, baseline: FormState): string {
+  if (!form.profile_id) return "class_only";
+  if (form.profile_id === baseline.profile_id && baseline.provider_intent !== "pinned") {
+    return baseline.provider_intent;
+  }
+  return "preferred";
+}
+
+/**
+ * The intent fields of an edit_task body.
+ *
+ * Only what the daemon would not do by itself is sent: a new profile is
+ * already *preferred* server-side, and a cleared profile is already *class
+ * only*.  A pin is always sent as ``pin: true`` — the route picker's
+ * checkbox and the intent select mean the same thing by it.
+ */
+function intentDiff(form: FormState, baseline: FormState): Record<string, unknown> {
+  if (!form.profile_id) return {};
+  const profileChanged = form.profile_id !== baseline.profile_id;
+  const unchanged = profileChanged
+    ? form.provider_intent === "preferred"
+    : form.provider_intent === baseline.provider_intent;
+  if (unchanged) return {};
+  return form.provider_intent === "pinned"
+    ? { pin: true }
+    : { provider_intent: form.provider_intent };
+}
+
 /** Build the edit_task body from a form diff; exported so tests can pin the contract. */
 export function diffTaskForm(
   task: EditableTask,
@@ -105,6 +158,7 @@ export function diffTaskForm(
   if (priorityNum !== parseOptionalInt(baseline.priority)) body.priority = priorityNum;
   if (form.task_type !== baseline.task_type) body.task_type = form.task_type || null;
   if (form.profile_id !== baseline.profile_id) body.profile_id = form.profile_id || null;
+  Object.assign(body, intentDiff(form, baseline));
   if (form.intelligence_class !== baseline.intelligence_class)
     body.intelligence_class = form.intelligence_class || null;
   const retriesNum = parseOptionalInt(form.max_retries);
@@ -248,9 +302,58 @@ export default function TaskFieldsEditor({
           optionLabel={(v) =>
             v === "" ? "— inherit / none —" : profileOptions.find((p) => p.id === v)?.name ?? v
           }
-          onChange={(v) => setForm({ ...form, profile_id: v })}
+          onChange={(v) =>
+            setForm({ ...form, profile_id: v, provider_intent: intentForProfile(v, baseline.current) })
+          }
           hint={routingHint}
+          extra={
+            <label className="mt-1 flex items-center gap-2 text-xs text-gray-300">
+              <input
+                type="checkbox"
+                checked={form.provider_intent === "pinned"}
+                disabled={routingLocked || !form.profile_id}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    provider_intent: e.target.checked
+                      ? "pinned"
+                      : intentWithoutPin(form, baseline.current),
+                  })
+                }
+                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-700 bg-gray-900 accent-indigo-500 disabled:cursor-not-allowed"
+              />
+              <span title="A pinned task holds while its provider is unavailable instead of failing over.">
+                Pin to this provider
+              </span>
+            </label>
+          }
         />
+        <div>
+          <span className="text-gray-500">Provider intent</span>
+          {editing ? (
+            <>
+              <select
+                aria-label="Provider intent"
+                value={form.provider_intent}
+                disabled={routingLocked}
+                onChange={(e) => setForm({ ...form, provider_intent: e.target.value })}
+                className="mt-0.5 w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none disabled:opacity-50"
+              >
+                {PROVIDER_INTENTS.map((intent) => (
+                  // Pinned and preferred name a provider, so they need a profile.
+                  <option key={intent} value={intent} disabled={intent !== "class_only" && !form.profile_id}>
+                    {intentLabel(intent)}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-gray-500">{routingHint ?? intentHint(form.provider_intent)}</p>
+            </>
+          ) : (
+            <p className="mt-0.5">
+              <ProviderIntentChip intent={task.provider_intent} />
+            </p>
+          )}
+        </div>
         <EditableSelect
           label="Task type"
           editing={editing}
@@ -361,7 +464,7 @@ function EditableInput({
 }
 
 function EditableSelect({
-  label, editing, disabled = false, value, displayValue, options, optionLabel, onChange, hint,
+  label, editing, disabled = false, value, displayValue, options, optionLabel, onChange, hint, extra,
 }: {
   label: string;
   editing: boolean;
@@ -372,6 +475,8 @@ function EditableSelect({
   optionLabel?: (v: string) => string;
   onChange: (v: string) => void;
   hint?: string;
+  /** Rendered under the select while editing (the route picker's pin checkbox). */
+  extra?: React.ReactNode;
 }) {
   return (
     <div>
@@ -391,6 +496,7 @@ function EditableSelect({
               </option>
             ))}
           </select>
+          {extra}
           {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
         </>
       ) : (

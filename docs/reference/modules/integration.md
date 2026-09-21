@@ -1,6 +1,6 @@
 # Module catalog — integration
 
-Development integration and the optional strict modes: the 29 production
+Development integration and the optional strict modes: the 30 production
 modules that decide whether a finished task branch reaches your default branch,
 and what is recorded about it.
 
@@ -47,6 +47,7 @@ configures; **strict** marks a module that only runs in the optional
 | [`src/integration/branch_materialization.py`](../../../src/integration/branch_materialization.py) | Cuts the child branches a hierarchical project reserved but never created, draining the reservations from the integration loop rather than through an outbox event nothing consumes. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Strict. Exists because claiming is gated on `materialized`; unmaterialized reservations made tasks permanently unclaimable. `tests/test_integration_hierarchy.py`, `tests/test_integration_service.py` |
 | [`src/integration/branch_discard.py`](../../../src/integration/branch_discard.py) | Removes task branches an operator explicitly asked to discard when deleting a task, compare-and-swapping on the observed head and refusing a live owner or the default branch. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Any mode. Transport failures back off toward an hour over at most 8 attempts; a conflict never retries. Parked rows surface in `aq doctor --check integration.branch_discards`. `tests/test_branch_discard.py` |
 | [`src/integration/hierarchy.py`](../../../src/integration/hierarchy.py) | The project-locked writer for hierarchical delivery: atomic child filing, branch-origin reservation and materialization, parent checkpoints, workspace-checkpoint and repair-commit proofs, and mutation fencing. | [concepts/integration.md](../../concepts/integration.md) | Strict. `hierarchy_mode_enabled` is the single predicate that decides whether a project takes this path. `tests/test_integration_hierarchy.py` |
+| [`src/integration/finished_owners.py`](../../../src/integration/finished_owners.py) | Lists, and releases, the branch-owner rows a task that finished, was archived or was deleted still holds in a repository no hierarchy/train project integrates — the rows a switch to development mode left behind, which pin delivered branches against cleanup. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Development (and disabled). Behind `aq doctor --check integration.finished_branch_owners --fix`; re-proves each row under the hierarchy and row locks, releases an attached writer only with the session provider's stop proof, and changes the ownership row only. `tests/test_integration_finished_owners.py` |
 | [`src/integration/completion_recovery.py`](../../../src/integration/completion_recovery.py) | Repairs delivery links a close path lost — ended attachments before a reopened task retries, stopped writers whose close already freed the slot, interrupted pool-claim cleanup and missing root PR links. | [guides/integration-troubleshooting.md](../../guides/integration-troubleshooting.md) | Any mode. Recovers links without manufacturing review evidence; network probes stay off the scheduler. `tests/test_integration_completion_recovery.py` |
 
 ## Collection and promotion
@@ -87,7 +88,7 @@ These are not integration modules, but you will land in them from here.
 |---|---|---|
 | [`src/commands/integration_commands.py`](../../../src/commands/integration_commands.py) | `cli` | The command handlers behind every `aq integration …` call, including the authority checks. |
 | [`src/cli/integration.py`](../../../src/cli/integration.py) | `cli` | Flags, defaults and choices for the CLI group. |
-| [`src/doctor/integration_checks.py`](../../../src/doctor/integration_checks.py) | `operations` | `integration.operational`, `integration.stranded_fences`, `integration.stranded_delegates`, `integration.branch_discards`, `integration.unreviewed_prs`. |
+| [`src/doctor/integration_checks.py`](../../../src/doctor/integration_checks.py) | `operations` | `integration.operational`, `integration.stranded_fences`, `integration.stranded_delegates`, `integration.finished_branch_owners`, `integration.branch_discards`, `integration.unreviewed_prs`. |
 | [`src/database/tables.py`](../../../src/database/tables.py) | `database` | Every `integration_*` table plus `development_deliveries` and `task_branch_origins`. |
 | [`src/git/manager.py`](../../../src/git/manager.py) | `workspaces` | The async Git API every module here uses. |
 

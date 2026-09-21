@@ -224,6 +224,7 @@ OWNED_PAGES: list[tuple[str, str]] = [
     ("docs/guides/dashboard.md", "dashboard"),
     ("docs/guides/plugins-and-mcp.md", "plugins"),
     ("docs/guides/escalations.md", "communications"),
+    ("docs/guides/provider-outage.md", "providers"),
     ("docs/guides/operations.md", "operations"),
     ("docs/contributing/**", "contributing"),
     ("docs/reference/README.md", "reference"),
@@ -504,6 +505,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Backend half of the dashboard file editor."),
     ("src/dashboard_state/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
      "Registry of the durable, server-backed dashboard state namespaces."),
+    ("src/dashboard_server/**", "dashboard", "docs/guides/dashboard.md", PRODUCTION,
+     "The dashboard server process: verified bundle plus same-origin proxy to the "
+     "daemon (docs/specs/dashboard-server.md)."),
 
     ("src/database/queries/**", "database", "docs/reference/database/queries.md",
      PRODUCTION, "Query module: the durable reads and writes for one area."),

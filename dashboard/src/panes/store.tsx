@@ -18,6 +18,16 @@ export type PaneState =
 
 type OpenPane = { kind: "closed" } | { kind: "open"; view: string; args: unknown };
 
+/**
+ * Why the pane last changed: the server restoring the user's last pane when
+ * the dashboard loads, or a call to `open` / `close` / `setArgs`. Navigation
+ * history records the first against the current entry and lets only the
+ * second create one.
+ */
+export type PaneChangeOrigin = "restore" | "call";
+
+type Snapshot = { pane: OpenPane; origin: PaneChangeOrigin };
+
 const DEFAULT_WIDTH = 480;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 800;
@@ -39,6 +49,7 @@ function storedArgs(args: unknown): Record<string, unknown> {
 
 interface StoreShape {
   state: PaneState;
+  origin: PaneChangeOrigin;
   open: (view: string, args: unknown) => void;
   close: () => void;
   setArgs: (next: unknown) => void;
@@ -64,7 +75,7 @@ interface Props {
 export function ShellPaneProvider({ children, registryOverride }: Props) {
   const registry = registryOverride ?? DEFAULT_REGISTRY;
   const { prefs, status, update } = useShellPreferences();
-  const stateRef = useRef<OpenPane>({ kind: "closed" });
+  const stateRef = useRef<Snapshot>({ pane: { kind: "closed" }, origin: "restore" });
   const listeners = useRef(new Set<() => void>());
   // Once the user, a URL or an agent has chosen a pane, a restore that
   // arrives later must not replace it.
@@ -80,7 +91,7 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
     };
   }, []);
   const getSnapshot = useCallback(() => stateRef.current, []);
-  const pane = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const { pane, origin } = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
   const persistPane = useCallback(
     (next: { view: string; args: Record<string, unknown> } | null) => {
@@ -99,7 +110,7 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
     // An unregistered view or args its manifest now rejects: stay closed, and
     // the next pane change overwrites the stale value.
     if (args === INVALID) return;
-    stateRef.current = { kind: "open", view: saved.pane.view, args };
+    stateRef.current = { pane: { kind: "open", view: saved.pane.view, args }, origin: "restore" };
     emit();
   }, [status, prefs.right_surface, registry, emit]);
 
@@ -122,7 +133,7 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
         args = parsed.data;
       }
       touched.current = true;
-      stateRef.current = { kind: "open", view, args };
+      stateRef.current = { pane: { kind: "open", view, args }, origin: "call" };
       emit();
       persistPane({ view, args: storedArgs(args) });
     },
@@ -131,14 +142,14 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
 
   const close = useCallback(() => {
     touched.current = true;
-    stateRef.current = { kind: "closed" };
+    stateRef.current = { pane: { kind: "closed" }, origin: "call" };
     emit();
     persistPane(null);
   }, [emit, persistPane]);
 
   const setArgs = useCallback(
     (next: unknown) => {
-      const current = stateRef.current;
+      const current = stateRef.current.pane;
       if (current.kind !== "open") return;
       const entry = registry[current.view];
       if (!entry) return;
@@ -150,7 +161,7 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
         next = parsed.data;
       }
       touched.current = true;
-      stateRef.current = { ...current, args: next };
+      stateRef.current = { pane: { ...current, args: next }, origin: "call" };
       emit();
       persistPane({ view: current.view, args: storedArgs(next) });
     },
@@ -175,8 +186,8 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
   );
 
   const value = useMemo<StoreShape>(
-    () => ({ state, open, close, setArgs, setWidth, registry }),
-    [state, open, close, setArgs, setWidth, registry],
+    () => ({ state, origin, open, close, setArgs, setWidth, registry }),
+    [state, origin, open, close, setArgs, setWidth, registry],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

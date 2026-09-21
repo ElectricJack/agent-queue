@@ -32,6 +32,7 @@ run at the end of a task, never during.
 | A `@click` command or command contract | `python scripts/generate-cli-command-inventory.py`, `python scripts/gen-command-docs.py`, `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py tests/test_command_docs.py` |
 | `src/playbooks/definition.py` | `python scripts/generate-playbook-schema.py --check`, `aq test tests/test_playbook_v2_definition.py` |
 | Anything under `dashboard/src/` | `npm -w dashboard run lint`, `npm -w dashboard run typecheck`, `npm -w dashboard run test` |
+| `src/dashboard_server/`, the daemon's `/dashboard` pointer, or how the bundle is built and staged | `aq test tests/test_dashboard_server_app.py tests/test_dashboard_server_bundle.py tests/test_dashboard_server_edge.py tests/test_dashboard_server_proxy.py tests/test_cli_dashboard_server.py tests/test_doctor_dashboard_server.py tests/test_api_dashboard_pointer.py tests/test_install_dashboard.py tests/test_release_artifact.py` |
 | Claims, pools, formulas or the task hierarchy | `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` |
 | Any page under `docs/` | `python3 docs/plans/documentation-overhaul/refresh_inventory.py --check` and the [style checklist](documentation-style.md#checking-your-page-before-you-push) |
 | Added or removed **any** tracked file | `python3 docs/plans/documentation-overhaul/refresh_inventory.py --check` — the same coverage check. Do **not** regenerate the manifest; it is [foundation-owned](../documentation-map.md#who-runs-which-half). |

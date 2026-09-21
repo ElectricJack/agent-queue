@@ -12,6 +12,8 @@ const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
 
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
 const Metrics = lazy(() => import("./pages/metrics/Metrics"));
+const ReviewsInbox = lazy(() => import("./pages/reviews/ReviewsInbox"));
+const ReviewPage = lazy(() => import("./pages/reviews/ReviewPage"));
 
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const SystemPlaybooks = lazy(() => import("./pages/system/Playbooks"));
@@ -145,6 +147,8 @@ export default function App() {
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="metrics" element={<Metrics />} />
+            <Route path="reviews" element={<ReviewsInbox />} />
+            <Route path="reviews/:reviewId" element={<ReviewPage />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
 
             <Route path="command-center/agents" element={<Navigate to="/agents" replace />} />

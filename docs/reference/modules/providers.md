@@ -51,6 +51,16 @@ Prose for everything here lives on three pages:
 | [`src/providers/claude_usage.py`](../../../src/providers/claude_usage.py) | Pure parser for `claude -p "/usage"` output: one regex per limit line, plus year-less reset-clause resolution. | [concepts/providers.md](../../concepts/providers.md) | Text with no limit line yields zero snapshots and `unparsed=True` — except the API-key preamble, which is an answer, not a fault. `tests/test_claude_usage_parser.py` |
 | [`src/providers/probe.py`](../../../src/providers/probe.py) | Runs the probe subprocess under a 20-second ceiling and turns every failure mode into a typed `ProbeResult` instead of an exception. | [guides/llm-providers.md](../../guides/llm-providers.md) | Never passes `--bare` (it would read a different account); a timed-out child is killed *and reaped*, or a ten-minute timer accumulates zombies. `tests/test_provider_usage_probe.py` |
 
+## Provider availability and failover
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [`src/providers/availability.py`](../../../src/providers/availability.py) | The pure state machine: folds one piece of typed evidence (or the clock) into a provider's row — six states in two halves, trip rules with hysteresis, the probation canary, operator overrides. | [concepts/scheduling.md](../../concepts/scheduling.md#provider-availability-and-failover) | No clock, database or subprocess: every rule is a function of the row, the evidence, the newest usage reading and an injected `now`. `tests/test_provider_availability.py` |
+| [`src/providers/availability_service.py`](../../../src/providers/availability_service.py) | `ProviderAvailabilityService` (`Orchestrator.provider_availability`): the in-memory snapshot, the evidence collectors, the per-cycle tick and login probe, launch admission, derived holds, state-change messages and provider escalations. | [guides/provider-outage.md](../../guides/provider-outage.md) | The only writer of `provider_availability`; reads `provider_failover` through a getter, so edits hot-reload. `tests/test_provider_evidence.py`, `tests/test_provider_suppression.py`, `tests/test_provider_escalation.py` |
+| [`src/providers/intent.py`](../../../src/providers/intent.py) | `tasks.provider_intent` semantics — `pinned`, `preferred`, `class_only` — and the default a write stores. | [concepts/scheduling.md](../../concepts/scheduling.md#pin-semantics) | Pure. A `pinned`/`preferred` row with no profile reads as `class_only`. `tests/test_provider_intent.py` |
+| [`src/providers/reroute.py`](../../../src/providers/reroute.py) | The re-route engine: the pure `plan_sweep` (same class on the next available provider or hold, the trickle, per-task limits) and `ProviderRerouteService` (apply under the routing guard, record, notify, undo, explain a hold, resolve a project default). | [concepts/scheduling.md](../../concepts/scheduling.md#the-fallback-rule) | Runs only when the `provider-failover` playbook calls `provider_reroute`; `--dry-run` returns the plan verbatim. `tests/test_provider_reroute.py` |
+| [`src/providers/inflight.py`](../../../src/providers/inflight.py) | Decides whether a failed launch or dead session is its provider's fault (`tripped`, `suspect`, `unattributed`) and builds the WIP checkpoint and hand-off note. | [guides/provider-outage.md](../../guides/provider-outage.md) | An attributed failure spends no retry and never pauses a task into a dead provider; a failed push holds the task instead of moving it. `tests/test_provider_inflight.py` |
+
 ## Token accounting and budgets
 
 | Module | Purpose | Component | Notes |
@@ -68,9 +78,12 @@ follow without knowing they exist:
 |---|---|---|
 | `src/sessions/transcripts/watcher.py` | [sessions](sessions.md) | The only routine writer of `token_ledger`, and the passive source of Codex quota snapshots. |
 | `src/database/queries/token_queries.py`, `provider_usage_queries.py` | `database.md` — **planned** | The ledger and snapshot readers and writers, including the duplicate-reading rule. |
+| `src/database/queries/provider_availability_queries.py`, `task_reroute_queries.py` | [database](database.md) | The availability rows and transition log, and the guarded re-route write plus its history. |
+| `src/orchestrator/provider_failover.py` | [scheduler](scheduler.md) | The WIP checkpoint, hand-off note and hold for a session that died on its provider. |
+| `src/sessions/usage_limit_screen.py` | [sessions](sessions.md) | Recognises a CLI parked on its usage-limit screen so the stall ladder takes it out at once. |
 | `src/api/providers.py`, `src/api/metrics.py` | `api.md` — **planned** | Server-side staleness verdicts and the per-model token rates. |
-| `src/commands/provider_commands.py`, `ops_commands.py` | `cli.md` — **planned** | `provider_usage_probe` and `get_costs`. |
-| `src/doctor/provider_checks.py` | `operations.md` — **planned** | `providers.claude_usage`, the report-only health check. |
+| `src/commands/provider_commands.py`, `ops_commands.py` | `cli.md` — **planned** | `provider_usage_probe`, `get_costs`, and the `aq provider` commands (`status`, `history`, `held-tasks`, `recheck`, `set-state`, `reroute`, `reroute-undo`). |
+| `src/doctor/provider_checks.py`, `provider_availability_checks.py` | [operations](operations.md) | `providers.claude_usage`, and the four availability checks (`providers.availability`, `.recovery_stuck`, `.failover_playbook`, `.held_tasks`); all report-only. |
 | `src/playbooks/executors/llm.py` | `playbooks.md` — **planned** | The only place a token budget is enforced. |
 | `src/intelligence_classes/` | `vault.md` — **planned** | The class files that decide which model a tier means. |
 

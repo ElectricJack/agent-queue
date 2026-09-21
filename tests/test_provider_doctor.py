@@ -143,9 +143,19 @@ async def _run(db, cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_the_catalog_holds_exactly_the_claude_usage_check():
-    assert {c.id for c in provider_checks.CHECKS} == {CHECK_ID}
-    assert all(c.owner == "provider-usage" for c in provider_checks.CHECKS)
+def test_the_catalog_holds_the_claude_usage_check_and_the_availability_checks():
+    # The ``providers.`` namespace also carries provider-failover's four
+    # availability checks (D21), owned by that workstream.
+    by_id = {c.id: c for c in provider_checks.CHECKS}
+    assert set(by_id) == {
+        CHECK_ID,
+        "providers.availability",
+        "providers.recovery_stuck",
+        "providers.failover_playbook",
+        "providers.held_tasks",
+    }
+    assert by_id[CHECK_ID].owner == "provider-usage"
+    assert {c.owner for c in by_id.values() if c.id != CHECK_ID} == {"provider-failover"}
 
 
 def test_the_check_is_report_only():

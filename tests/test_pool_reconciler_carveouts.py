@@ -205,9 +205,28 @@ class TestExits:
         assert orch._pool_quarantine[(PROJECT_ID, "worker")] > time.time()
         assert await db.get_task_meta("t1", "needs_attention") == "rapid_crash"
 
-    async def test_rate_limit_quarantines_pool_key_and_keeps_task_ready(
+    async def test_rate_limit_pauses_the_task_briefly_and_quarantines_nothing(
         self, db, reconciler, provider, orch
     ):
+        """provider-failover D13 (``mode: enforce``): a rate-limit exit is the
+        provider's, so its state -- not a 900 s key quarantine -- decides what
+        launches next; one uncorroborated exit pauses the task
+        ``launch.suspect_backoff_seconds`` with its ``provider_pause``."""
+        sid = await held_pool_session(db)
+        provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
+        live, now = await observe(reconciler)
+        await reconciler._step_exits(live, now)
+        t = await db.get_task("t1")
+        assert (t.status, t.assigned_agent_id, t.retry_count) == (TaskStatus.PAUSED, None, 0)
+        assert t.resume_after is not None and t.resume_after <= time.time() + 31
+        assert (await db.get_task_meta("t1", "provider_pause"))["context"] == "provider_suspect"
+        assert orch._pool_quarantine == {}
+        assert (await db.get_session(sid)).state == "stopped"
+
+    async def test_observe_mode_rate_limit_quarantines_pool_key_and_keeps_task_ready(
+        self, db, reconciler, provider, orch
+    ):
+        orch.config.provider_failover.mode = "observe"
         sid = await held_pool_session(db)
         provider.peek = AsyncMock(return_value="rate limit exceeded, please retry later")
         live, now = await observe(reconciler)

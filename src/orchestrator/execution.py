@@ -21,6 +21,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.review_keys import is_review_completion
+from src.providers.inflight import LAUNCH_REFUSED, ProviderFailure
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -215,6 +216,8 @@ class ExecutionMixin:
             resolve_agent_profile, resolve_task_profile, task_agent_mismatch,
         )
 
+        from dataclasses import replace
+
         if agent is None or not agent.enabled or agent.role != "worker":
             return "worker is unavailable"
         if effective_route is None:
@@ -222,11 +225,21 @@ class ExecutionMixin:
             if task is None:
                 return "awaiting intelligence route"
         else:
-            from dataclasses import replace
-
             task = replace(task, intelligence_class=effective_route.intelligence_class)
         profiles = {profile.id: profile for profile in await self.db.list_profiles()}
         project = await self.db.get_project(task.project_id)
+        resolver = getattr(self, "_availability_aware_default", None)
+        if (
+            resolver is not None
+            and not task.profile_id
+            and project is not None
+            and project.default_profile_id
+        ):
+            # An unrouted task follows the project default's equivalent rung
+            # while the default's provider is unavailable (provider-failover D13).
+            effective = await resolver(project.default_profile_id, project.id)
+            if isinstance(effective, str) and effective != project.default_profile_id:
+                project = replace(project, default_profile_id=effective)
         task_profile = resolve_task_profile(task, project, profiles)
         if task.profile_id and task_profile is None:
             return f"required profile '{task.profile_id}' is not configured"
@@ -778,15 +791,61 @@ class ExecutionMixin:
             )
             return
 
+        # Pre-launch check (provider-failover D11 mechanism 1): nothing starts
+        # against an unavailable provider, and a recovering one admits one
+        # canary at a time (D4).  The scheduler already skips suppressed
+        # workers; this closes the race with a state change since its tick.
+        availability = getattr(self, "provider_availability", None)
+        launch_provider = availability.provider_for_harness(harness_name, task.project_id) if (
+            availability is not None
+        ) else ""
+        # Canonical dashed form: this id rides the harness's session-id flag
+        # (``claude --session-id``) and Claude Code rejects a dashless hex
+        # string with "Invalid session ID. Must be a valid UUID."  Minted
+        # here so a probation canary is admitted as this session (D4).
+        session_id = str(_uuid.uuid4())
+        if availability is not None:
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=session_id
+            )
+            if not admitted:
+                # A refusal is the provider's, never the task's (D13): an
+                # unavailable provider sends the task back to READY for the
+                # failover sweep; a recovering one whose canary is in flight
+                # pauses it briefly with its provider_pause record.
+                await self._fail_session_launch(
+                    action,
+                    task,
+                    refusal_reason or f"provider {launch_provider} unavailable",
+                    backoff=float(availability.config.launch.suspect_backoff_seconds),
+                    notify=False,
+                    failure=ProviderFailure(
+                        kind=LAUNCH_REFUSED,
+                        provider=launch_provider,
+                        harness=harness_name,
+                        profile_id=getattr(profile, "id", None),
+                        detail=refusal_reason or "",
+                    ),
+                )
+                return
+
+        def release_canary() -> None:
+            # A launch that never ran proves nothing either way: let the next
+            # one be the probation canary (D4), as the pool path's rollback does.
+            if availability is not None:
+                availability.release_canary(launch_provider, session_id=session_id)
+
         provider_name = self.config.sessions.provider
         try:
             provider = self.session_providers.create(provider_name, self.config)
         except ValueError as exc:
+            release_canary()
             await self._fail_session_launch(action, task, str(exc))
             return
 
         work_dir = workspace or ""
         if not work_dir:
+            release_canary()
             await self._fail_session_launch(
                 action, task, "session launch needs a work_dir but none was prepared"
             )
@@ -801,13 +860,10 @@ class ExecutionMixin:
             self.db, work_dir, profile, project_id=task.project_id
         )
         if refusal:
+            release_canary()
             await self._fail_session_launch(action, task, refusal)
             return
 
-        # Canonical dashed form: this id rides the harness's session-id flag
-        # (``claude --session-id``) and Claude Code rejects a dashless hex
-        # string with "Invalid session ID. Must be a valid UUID."
-        session_id = str(_uuid.uuid4())
         instance_token = _uuid.uuid4().hex
         # A per-session bearer token.  aq-surface Phase S2 wired real
         # session-scoped mint via :class:`SessionTokenStore`; the sha256
@@ -934,6 +990,7 @@ class ExecutionMixin:
                         workspace_id=ws_row.id,
                     )
                 )
+                release_canary()
                 await self._fail_session_launch(
                     action,
                     task,
@@ -978,15 +1035,39 @@ class ExecutionMixin:
                 await provider.start(spec)
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
+            failure = None
+            if availability is not None:
+                # Only a startup death is provider evidence (D2): a typed
+                # login/usage dialog is strong, anything else is weak.
+                await availability.record_startup_death(
+                    exc,
+                    harness=harness_name,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=session_id,
+                    profile_id=getattr(profile, "id", None),
+                )
+                # The dialog, its signal, harness and profile travel as
+                # fields, not only as the formatted reason (D2): they decide
+                # whether this death is the provider's (D13).
+                failure = ProviderFailure.from_startup_death(
+                    exc,
+                    provider=launch_provider,
+                    harness=harness_name,
+                    profile_id=getattr(profile, "id", None),
+                    session_id=session_id,
+                )
             await self._fail_session_launch(
                 action,
                 task,
                 f"session died during startup: {exc}",
                 stderr_path=exc.start_stderr_path,
+                failure=failure,
             )
             return
         except Exception as exc:
             await record_failed_launch("launch_failed")
+            release_canary()
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
@@ -1022,6 +1103,7 @@ class ExecutionMixin:
                         spec.session_name,
                         exc_info=True,
                     )
+                release_canary()
                 await self._fail_session_launch(
                     action, task, f"session started but its row could not be written: {exc}"
                 )
@@ -1056,23 +1138,50 @@ class ExecutionMixin:
         stderr_path: str | None = None,
         *,
         integration_resources_released: bool = False,
+        backoff: float = 60,
+        notify: bool = True,
+        failure: ProviderFailure | None = None,
     ) -> None:
-        """Pause the task with a backoff after a failed session launch."""
-        backoff = 60
-        logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        """Pause the task with a backoff after a failed session launch.
+
+        ``notify=False`` is for a launch the daemon refused on purpose (an
+        unavailable provider, provider-failover D11): the task is held, not
+        broken, and a "launch failed" notice would be noise.
+
+        *failure* carries the structured fields of a provider-shaped failure
+        (the startup dialog, its signal, harness, profile, provider -- D2).
+        When :func:`src.providers.inflight.decide` attributes it to the
+        provider (D13) the task spends no retry and is never paused into the
+        dead provider: ``tripped`` returns it to READY for the failover sweep,
+        ``suspect`` pauses it ``launch.suspect_backoff_seconds`` with its
+        ``provider_pause`` record.  Anything unattributed keeps the flat
+        ``session_launch_failed`` backoff below.
+        """
+        from src.providers import inflight
+
+        availability = getattr(self, "provider_availability", None)
+        disposition = inflight.decide(availability, failure)
+        if disposition == inflight.TRIPPED:
+            notify = False
+            logger.warning(
+                "Task %s: session launch failed on unavailable provider %s -- %s; "
+                "returning it to the queue for re-routing",
+                task.id,
+                failure.provider,
+                reason,
+            )
+        elif notify:
+            logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        else:
+            logger.info("Task %s: session launch refused -- %s", task.id, reason)
         integration_released = integration_resources_released or (
             await self.arelease_integration_writer_for_retry(
                 task, reason="session_launch_failed"
             )
         )
-        await self.db.transition_task(
-            action.task_id,
-            TaskStatus.PAUSED,
-            context="session_launch_failed",
-            resume_after=time.time() + backoff,
-            assigned_agent_id=None,
-        )
-        if integration_released is not False:
+        now = time.time()
+
+        async def release_launch_claim() -> None:
             if integration_released is None:
                 # Preserve the legacy unmanaged launch cleanup contract.
                 await self.db.update_agent(
@@ -1081,10 +1190,69 @@ class ExecutionMixin:
             else:
                 await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
+
+        held_claim = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+        if disposition == inflight.UNATTRIBUTED:
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="session_launch_failed",
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+            )
+            if integration_released is not False:
+                await release_launch_claim()
+        elif disposition == inflight.TRIPPED and integration_released is not False:
+            # Release *before* the task becomes claimable again: the release
+            # frees every workspace locked by this task id, and a READY task
+            # can be reassigned the moment it is written.
+            await release_launch_claim()
+            await self.db.transition_task_with_meta(
+                action.task_id,
+                TaskStatus.READY,
+                meta={},
+                context=inflight.CONTEXT_UNAVAILABLE,
+                from_statuses=held_claim,
+                resume_after=None,
+                assigned_agent_id=None,
+            )
+        else:
+            # ``suspect``, or ``tripped`` while an integration owner keeps the
+            # workspace: a short provider pause, which the failover sweep
+            # resumes at once when the provider is down.  Released first too
+            # -- the sweep can make the task claimable at any moment.
+            backoff = float(availability.config.launch.suspect_backoff_seconds)
+            if disposition == inflight.TRIPPED:
+                context = inflight.CONTEXT_UNAVAILABLE
+            elif failure.kind == inflight.LAUNCH_REFUSED:
+                context = inflight.CONTEXT_RECOVERING
+            else:
+                context = inflight.CONTEXT_SUSPECT
+            if integration_released is not False:
+                await release_launch_claim()
+            await self.db.transition_task_with_meta(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context=context,
+                from_statuses=held_claim,
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+                meta={
+                    inflight.PROVIDER_PAUSE_META: inflight.provider_pause_record(
+                        availability,
+                        failure,
+                        context=context,
+                        resume_after=now + backoff,
+                        now=now,
+                    )
+                },
+            )
+        if not notify:
+            return
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
         await self._emit_text_notify(
             f"**Session launch failed:** task `{task.id}` -- {reason}. "
-            f"Retrying in {backoff}s.{detail}",
+            f"Retrying in {backoff:g}s.{detail}",
             project_id=action.project_id,
         )
 

@@ -8,10 +8,13 @@ asked to do.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +30,7 @@ from src.install.update import (
     OUTCOME_ROLLED_BACK,
     OUTCOME_UPDATED,
     Host,
+    UpdatePlan,
     UpdateRefused,
     apply_update,
     backup_database,
@@ -102,6 +106,8 @@ class Repo:
 
 
 FINISH = ("-m", "src.install.update_finish")
+#: Where the default `dashboard.server` settings put the dashboard server.
+DASHBOARD_URL = "http://127.0.0.1:8082/"
 
 
 class FakeHost:
@@ -113,20 +119,36 @@ class FakeHost:
     ``real_finisher`` runs it as the subprocess it is in production.
     """
 
-    def __init__(self, state_dir: Path, *, running: bool = True, real_finisher: bool = False):
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        running: bool = True,
+        dashboard_running: bool = False,
+        real_finisher: bool = False,
+    ):
         self.state_dir = state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "config.yaml").write_text("messaging_platform: none\n", encoding="utf-8")
         self.running = running
         self.start_results: list[bool] = []
+        #: The dashboard server on the default dashboard.server URL.  `aq stop`
+        #: stops it with the daemon; `aq start` brings it up unless the next
+        #: ``dashboard_start_results`` entry says it fails to.
+        self.dashboard_running = dashboard_running
+        self.dashboard_start_results: list[bool] = []
+        self.dashboard_stops = True
+        #: Every URL that was probed, so a test can prove what was never asked.
+        self.probed: list[str] = []
         self.fail_pip = False
         self.calls: list[tuple[str, ...]] = []
         self.pip_cwds: list[str | None] = []
         self.builds = 0
         self.real_finisher = real_finisher
         self.finishes: list[tuple[tuple[str, ...], str | None]] = []
-        #: What successive probes of the served dashboard answer, while running.
-        self.dashboard_statuses: list[int] = []
+        #: Per dashboard server start: does its identity report a verified bundle?
+        self.dashboard_verified: list[bool] = []
+        self._verified = True
         self.heads_at_finish: list[str] = []
 
     def execute(self, argv, **kwargs) -> CommandOutput:
@@ -138,13 +160,22 @@ class FakeHost:
         self.calls.append(command)
         if command[1:] == ("stop", "--keep-sessions"):
             self.running = False
+            self.dashboard_running = self.dashboard_running and not self.dashboard_stops
             return CommandOutput(argv=command, returncode=0)
         if command[1:] == ("start", "--no-dashboard"):
             ok = self.start_results.pop(0) if self.start_results else True
             self.running = ok
+            if ok:
+                self._start_dashboard()
             return CommandOutput(
                 argv=command, returncode=0 if ok else 1, stderr="" if ok else "boot failed"
             )
+        if command[1:] == ("dashboard", "stop"):
+            self.dashboard_running = self.dashboard_running and not self.dashboard_stops
+            return CommandOutput(argv=command, returncode=0 if self.dashboard_stops else 1)
+        if command[1:] == ("dashboard", "start"):
+            ok = self._start_dashboard()
+            return CommandOutput(argv=command, returncode=0 if ok else 1)
         if "pip" in command:
             self.pip_cwds.append(kwargs.get("cwd"))
             return CommandOutput(argv=command, returncode=1 if self.fail_pip else 0)
@@ -164,6 +195,7 @@ class FakeHost:
                 Host(**fields),
                 execute=self.execute,
                 probe=self.probe,
+                identify=self.identify,
                 build=self.build,
                 sleep=lambda seconds: None,
             ),
@@ -171,10 +203,29 @@ class FakeHost:
         )
         return CommandOutput(argv=command, returncode=code, stdout=out.getvalue())
 
+    def _start_dashboard(self) -> bool:
+        if self.dashboard_running:
+            return True  # `aq start` leaves a running dashboard server alone
+        ok = self.dashboard_start_results.pop(0) if self.dashboard_start_results else True
+        self.dashboard_running = ok
+        self._verified = self.dashboard_verified.pop(0) if self.dashboard_verified else True
+        return ok
+
     def probe(self, url: str) -> int | None:
-        if self.running and url.endswith("/dashboard/") and self.dashboard_statuses:
-            return self.dashboard_statuses.pop(0)
+        self.probed.append(url)
+        if url.startswith(DASHBOARD_URL):
+            return 200 if self.dashboard_running else None
         return 200 if self.running else None
+
+    def identify(self, url: str) -> dict | None:
+        self.probed.append(f"{url}__aq/health")
+        if url != DASHBOARD_URL or not self.dashboard_running:
+            return None
+        return {
+            "service": "aq-dashboard-server",
+            "pid": 4242,
+            "bundle": {"version": "2", "files": 3, "verified": self._verified},
+        }
 
     def build(self, checkout, **kwargs) -> BuildOutcome:
         self.builds += 1
@@ -184,6 +235,7 @@ class FakeHost:
         return Host(
             execute=self.execute,
             probe=self.probe,
+            identify=self.identify,
             python=sys.executable if self.real_finisher else "/venv/bin/python",
             aq="/venv/bin/aq",
             system="darwin",
@@ -497,6 +549,7 @@ def test_the_pulled_code_is_finished_by_a_fresh_process_from_the_new_checkout(
         "Reinstall Python dependencies",
         "Rebuild the dashboard",
         "Start the daemon",
+        "Start the dashboard server",
     ]
 
 
@@ -551,7 +604,7 @@ def test_a_new_daemon_that_came_up_is_stopped_before_the_code_moves_back(repo, f
     monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
     before = repo.head()
     repo.push("README.md", "AQ 2\n")
-    fake.dashboard_statuses = [404]  # the new daemon is up but fails its own validation
+    fake.dashboard_start_results = [False]  # the new code's dashboard server never comes up
     heads_at_stop: list[str] = []
     execute = fake.execute
 
@@ -568,6 +621,228 @@ def test_a_new_daemon_that_came_up_is_stopped_before_the_code_moves_back(repo, f
     assert [call[1] for call in fake.calls] == ["stop", "start", "stop", "start"]
     assert heads_at_stop[1] != before  # stopped while still on the new code
     assert repo.head() == before and fake.running is True
+
+
+def _watch(fake: FakeHost, repo: Repo, *tails: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
+    """Record, for each command in *tails*, the commit the checkout was on when it ran."""
+    seen: list[tuple[tuple[str, ...], str]] = []
+    execute = fake.execute
+
+    def watching(argv, **kwargs):
+        tail = tuple(str(part) for part in argv)[1:]
+        if tail in tails:
+            seen.append((tail, repo.head()))
+        return execute(argv, **kwargs)
+
+    fake.execute = watching
+    return seen
+
+
+def test_the_dashboard_server_is_validated_and_the_daemon_never_probed_for_pages(
+    repo, fake, monkeypatch
+):
+    """Spec §6.2: /health on the daemon, /__aq/health and GET / on the dashboard server."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    repo.push("README.md", "AQ 2\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert ("Start the dashboard server", True, DASHBOARD_URL) in report.steps
+    assert f"{DASHBOARD_URL}__aq/health" in fake.probed and DASHBOARD_URL in fake.probed
+    assert not [url for url in fake.probed if "/dashboard" in url]
+
+
+def _pre_change_http_status(url: str, timeout: float = 2.0) -> int | None:
+    """``http_status`` exactly as a pre-change updater holds it in memory.
+
+    Frozen from ``src/install/onboarding.py`` at 4ccbb90d3 (the last commit
+    before the updater stopped probing the daemon for pages): it is what an
+    install older than that runs after its own pull, whatever the new code says.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as error:
+        code = int(error.code)
+        error.close()
+        return code
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _pre_change_start_daemon_probes(base: str) -> str | None:
+    """The checks the pre-change ``_start_daemon`` makes after ``aq start --no-dashboard``.
+
+    Frozen from ``src/install/update.py`` at 4ccbb90d3 (lines 508-515, with the
+    bundle present): ``None`` when it would pass, else the failure it reports.
+    """
+    if _pre_change_http_status(f"{base}/health") not in (200, 503):
+        return "it did not answer /health"
+    status = _pre_change_http_status(f"{base}/dashboard/")
+    if status is None or status >= 400:
+        return "the daemon is up but not serving the dashboard"
+    return None
+
+
+async def test_a_pre_change_updaters_dashboard_probe_passes_against_the_new_daemon(tmp_path):
+    """Spec §6.2 item 3 (smart-meadow.9): the old probe of ``/dashboard/`` still passes.
+
+    The real daemon app and the real dashboard server run on real sockets; the
+    daemon answers ``307`` and the pre-change probe, which is plain ``urllib``,
+    follows it to the dashboard server's ``200``.  With the ``404`` the daemon
+    first shipped, this is the exit 20 every pre-change install hit once.
+    """
+    from src.config import DashboardServerConfig
+    from src.dashboard_server.app import create_app as create_dashboard_server
+    from src.dashboard_server.settings import DashboardServerSettings
+    from tests.dashboard_server_helpers import serve_asgi, unused_port
+    from tests.test_api_dashboard_pointer import daemon_app
+    from tests.test_dashboard_server_app import INDEX_HTML, stage_bundle
+
+    settings = DashboardServerSettings(
+        bundle_directory=stage_bundle(tmp_path / "bundle"),
+        api_url=f"http://127.0.0.1:{unused_port()}",
+    )
+    async with serve_asgi(create_dashboard_server(settings, version="1.2.3")) as dashboard:
+        port = int(dashboard.rsplit(":", 1)[1])
+        server = DashboardServerConfig(enabled=True, host="127.0.0.1", port=port)
+        async with (
+            daemon_app(tmp_path, dashboard_server=server) as app,
+            serve_asgi(app) as daemon,
+        ):
+            assert await asyncio.to_thread(_pre_change_start_daemon_probes, daemon) is None
+
+            def landed(url: str) -> tuple[str, str]:
+                with urllib.request.urlopen(url, timeout=2.0) as response:
+                    return response.geturl(), response.read().decode("utf-8")
+
+            # Where the probe (and an old bookmark) actually ends up.
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/") == (
+                f"{dashboard}/",
+                INDEX_HTML,
+            )
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/tasks/abc?tab=log") == (
+                f"{dashboard}/tasks/abc?tab=log",
+                INDEX_HTML,
+            )
+
+
+def test_a_running_dashboard_server_is_stopped_before_the_code_moves(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", dashboard_running=True)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("stop", "--keep-sessions"),
+                  ("start", "--no-dashboard"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    assert seen == [
+        (("dashboard", "stop"), before),
+        (("stop", "--keep-sessions"), before),
+        (("start", "--no-dashboard"), target),
+    ]
+    assert fake.dashboard_running and fake.running
+    assert [name for name, ok, _ in report.steps if ok][:2] == [
+        "Stop the dashboard server", "Stop the daemon",
+    ]
+
+
+def test_a_dashboard_server_that_will_not_stop_changes_nothing(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", dashboard_running=True)
+    fake.dashboard_stops = False
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+
+    with pytest.raises(UpdateRefused, match="dashboard server did not stop"):
+        apply_update(plan_update(repo.checkout), fake.host())
+
+    assert repo.head() == before
+    assert fake.running, "the daemon was not stopped"
+    assert not fake.ran("stop", "--keep-sessions")
+
+
+def test_a_dashboard_server_running_alone_is_restarted_on_the_new_code(repo, tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    fake = FakeHost(tmp_path / "aq", running=False, dashboard_running=True)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("dashboard", "start"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [(command, _cwd)] = fake.finishes
+    assert "--start-dashboard-server" in command and "--start-daemon" not in command
+    assert seen == [(("dashboard", "stop"), before), (("dashboard", "start"), target)]
+    assert fake.dashboard_running and not fake.running
+
+
+def test_a_rollback_stops_the_new_dashboard_server_before_the_code_moves_back(
+    repo, fake, monkeypatch
+):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    target = repo.push("README.md", "AQ 2\n")
+    # The new code's dashboard server comes up but serves no verified bundle.
+    fake.dashboard_verified = [False]
+    seen = _watch(fake, repo, ("dashboard", "stop"), ("stop", "--keep-sessions"),
+                  ("start", "--no-dashboard"))
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert "reports no verified bundle" in report.remediation
+    assert seen == [
+        (("stop", "--keep-sessions"), before),
+        (("start", "--no-dashboard"), target),
+        (("dashboard", "stop"), target),  # still on the code it runs
+        (("stop", "--keep-sessions"), target),
+        (("start", "--no-dashboard"), before),
+    ]
+    assert repo.head() == before and fake.running and fake.dashboard_running
+
+
+def test_a_rollback_does_not_demand_a_dashboard_server_that_was_not_running(
+    repo, fake, monkeypatch
+):
+    """Before the update it was not up (say, its port was taken); restoring that is success."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    fake.dashboard_start_results = [False, False]
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert "nothing answers as the dashboard server" in report.remediation
+    assert repo.head() == before and fake.running and not fake.dashboard_running
+
+
+def test_the_plan_says_the_dashboard_server_is_restarted():
+    from src.install.update import describe
+
+    plan = UpdatePlan(
+        checkout=Path("/aq"), branch="main", upstream="origin/main",
+        current="a" * 40, target="b" * 40, shallow=False,
+    )
+
+    lines = describe(plan, backup=True, daemon_running=True, dashboard_server_running=True)
+
+    assert "Stops the dashboard server for the update and starts it again" in lines
 
 
 def test_an_unexpected_error_in_the_old_process_after_the_pull_rolls_back(repo, fake, monkeypatch):

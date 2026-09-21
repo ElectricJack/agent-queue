@@ -161,12 +161,22 @@ Root scripts, from [`package.json`](../../package.json):
 
 Dashboard unit tests are Vitest: `npm -w dashboard run test`.
 
+A contributor checkout runs the dashboard from Vite: `npm run dev` serves it on
+`http://localhost:5173` and proxies `/api`, `/health`, `/ready` and `/ws` to the
+daemon on `http://127.0.0.1:8081` (`AQ_API_TARGET` overrides the target). An
+*installed* AQ serves a built bundle from the dashboard server on
+`http://127.0.0.1:8082/` instead; the two coexist, and the daemon serves no
+dashboard in either case. To try the installed path from a checkout, build and stage
+a bundle with `aq install --restart-from dashboard.build` (or
+`python scripts/build_release_artifact.py`) and run `aq dashboard serve` — see
+the [dashboard guide](../guides/dashboard.md#architecture-and-api-boundary).
+
 ## Editor and agent configuration
 
 | File | What it configures |
 |---|---|
 | [`.pre-commit-config.yaml`](../../.pre-commit-config.yaml) | Two hooks, both `ruff` (`ruff-format`, then `ruff --fix`). Enable with `pre-commit install`. |
-| [`.mcp.json`](../../.mcp.json) | Offers a single MCP server, `agent-queue`, over HTTP at `localhost:8082/mcp`, to MCP-aware editors and agent CLIs working in this repository. Only useful with a daemon running. |
+| [`.mcp.json`](../../.mcp.json) | Offers a single MCP server, `agent-queue`, over HTTP at `localhost:8082/mcp`, to MCP-aware editors and agent CLIs working in this repository. Only useful with a daemon listening there: the daemon's default `mcp_server.port` is 8081, and on a default install 8082 is the dashboard server, which answers `/mcp` with `404`. |
 | [`.vibecop.yml`](../../.vibecop.yml) | Ignore list for the `aq-vibecop` plugin's scans: generated clients, `docs/`, `scripts/` and vendored trees. |
 | [`.gitattributes`](../../.gitattributes) | Forces LF line endings for `*.sh`, `*.py` and, by default, every text file — the repository is developed on Linux, macOS and WSL. |
 | [`.gitignore`](../../.gitignore) | Keeps build output, `node_modules/`, the generated TS client source, per-checkout `/.aq/` agent state, coverage output and local logs out of Git. |

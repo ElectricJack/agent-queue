@@ -254,14 +254,24 @@ def _parse_dialogs(raw, errors: list[str], warnings: list[str]) -> tuple[DialogR
                 "it is matched as a literal substring and will never fire; "
                 'set "is_regex": true'
             )
+        signal = entry.get("signal")
+        if signal is not None and signal not in ("auth", "usage"):
+            errors.append(f"dialogs[{i}] '{name}': signal must be 'auth' or 'usage'")
+            continue
+        quarantine = bool(entry.get("quarantine", False))
+        if signal is not None and not quarantine:
+            warnings.append(
+                f"dialogs[{i}] '{name}': signal only has meaning on a quarantine dialog"
+            )
         rules.append(
             DialogRule(
                 name=name,
                 pattern=pattern,
                 keys=tuple(str(k) for k in keys),
                 is_regex=is_regex,
-                quarantine=bool(entry.get("quarantine", False)),
+                quarantine=quarantine,
                 once=bool(entry.get("once", True)),
+                signal=signal,
             )
         )
     return tuple(rules)

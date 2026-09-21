@@ -6,12 +6,16 @@ Covers:
 - Discord bot channel context includes other projects hint
 """
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+from sqlalchemy import insert
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
+from src.database.queries.task_queries import TaskProjectMoveError
+from src.database.tables import task_branch_origins
 from src.models import Project, Task
 from tests.db_fixtures import lease_dsn
 
@@ -178,6 +182,74 @@ class TestEditTaskProjectId:
         )
         assert "error" in result
         assert "not found" in result["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("moved_task", "error_fragment"),
+        [("parent", "it has child tasks"), ("child", "it has parent task 'parent'")],
+    )
+    async def test_move_refuses_tasks_in_a_hierarchy(
+        self, handler, db, moved_task, error_fragment
+    ):
+        await db.create_task(
+            Task(id="parent", project_id="agent-queue", title="Parent", description="")
+        )
+        await db.create_task(
+            Task(id="child", project_id="agent-queue", title="Child", description="")
+        )
+        await db.add_dependency("child", "parent", "parent-child")
+
+        result = await handler.execute(
+            "edit_task",
+            {"task_id": moved_task, "project_id": "mech-fighters"},
+        )
+
+        assert error_fragment in result["error"]
+        assert (await db.get_task(moved_task)).project_id == "agent-queue"
+        assert (await db.get_task("child")).parent_task_id == "parent"
+
+    @pytest.mark.asyncio
+    async def test_move_refuses_task_with_active_hierarchy_branch_origin(self, handler, db):
+        await db.create_task(
+            Task(id="branch-task", project_id="agent-queue", title="Branch", description="")
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(task_branch_origins).values(
+                    id="origin",
+                    task_id="branch-task",
+                    repository_id="repo",
+                    parent_ref="main",
+                    base_sha="a" * 40,
+                    creation_generation=0,
+                    reserved=True,
+                    materialized=False,
+                    created_at=1.0,
+                )
+            )
+
+        result = await handler.execute(
+            "edit_task",
+            {"task_id": "branch-task", "project_id": "mech-fighters"},
+        )
+
+        assert "active hierarchy/train branch origin" in result["error"]
+        assert (await db.get_task("branch-task")).project_id == "agent-queue"
+
+    @pytest.mark.asyncio
+    async def test_database_project_move_guard_cannot_be_bypassed(self, db):
+        await db.create_task(
+            Task(id="parent", project_id="agent-queue", title="Parent", description="")
+        )
+        await db.create_task(
+            Task(id="child", project_id="agent-queue", title="Child", description="")
+        )
+        await db.add_dependency("child", "parent", "parent-child")
+
+        with pytest.raises(TaskProjectMoveError, match="has parent task 'parent'"):
+            await db.update_task("child", project_id="mech-fighters")
+
+        assert (await db.get_task("child")).project_id == "agent-queue"
 
 
 # ---------------------------------------------------------------------------

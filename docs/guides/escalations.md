@@ -231,6 +231,18 @@ reflex:
   ([`src/escalations/supervisor.py`](../../src/escalations/supervisor.py)). It
   reports unavailability only — its source kind is deliberately not applicable
   as approval for anything.
+* **A provider outage.** When a provider needs a human — its CLI is logged
+  out, it has been `failing` longer than
+  `provider_failover.notify.escalate_failing_after_seconds`, or every provider
+  is down with none due back soon — the daemon files one incident per outage
+  (`source_kind` `provider_availability`) under the project whose queued work
+  it strands most, and resolves it itself when the provider recovers
+  ([`src/providers/availability_service.py`](../../src/providers/availability_service.py),
+  `docs/specs/provider-failover.md` D19). An `exhausted` provider with a known
+  reset time never pages anyone. Like the watchdog's, this source kind is not
+  approval for anything: reply to tell the supervisor what you did (for
+  example, that you ran `codex login`), and the recovery closes it. The
+  [provider outage runbook](provider-outage.md) covers what to do on the host.
 
 Dependency waits, in-flight retries and unchanged queue state never create an
 incident.

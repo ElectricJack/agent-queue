@@ -157,10 +157,30 @@ class GraphNode:
     priority: int = 100
     profile: str | None = None
     intelligence_class: str | None = None
+    #: ``pin: true`` -- the node's ``profile`` is a pinned provider, not a
+    #: preference (provider-failover D9).  Meaningless without a profile.
+    pin: bool = False
+    #: How ``profile`` was chosen: ``document`` (written on the node or in
+    #: ``defaults``), ``fill_in`` (``create_task_graph``'s ``profile_id``) or
+    #: ``class_match`` (resolved from the class).  Decides the task's
+    #: ``provider_intent``; not part of the document, so never serialised.
+    profile_source: str | None = None
     task_type: str | None = None
     #: Present only when the author (wrongly) scoped a node to a project —
     #: graphs are single-project, so the validator rejects it.
     project: str | None = None
+
+    @property
+    def provider_intent(self) -> str:
+        """The ``tasks.provider_intent`` this node's task is written with (D9).
+
+        A profile the document or the caller named is ``preferred`` --
+        ``pinned`` with ``pin: true``; one resolved from the class, or none,
+        is ``class_only``.
+        """
+        if not self.profile or self.profile_source == "class_match":
+            return "class_only"
+        return "pinned" if self.pin else "preferred"
 
     def to_dict(self) -> dict:
         return {
@@ -178,6 +198,9 @@ class GraphNode:
             "profile": self.profile,
             "intelligence_class": self.intelligence_class,
             "task_type": self.task_type,
+            # Only when set, so every document written before the key existed
+            # keeps its exact serialised shape (formula snapshots, reports).
+            **({"pin": True} if self.pin else {}),
         }
 
 

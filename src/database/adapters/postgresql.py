@@ -55,9 +55,12 @@ from src.database.queries.playbook_run_queries import PlaybookRunQueryMixin
 from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
+from src.database.queries.provider_availability_queries import ProviderAvailabilityQueryMixin
+from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
+from src.database.queries.review_queries import ReviewQueriesMixin
 from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.subagent_queries import SubagentQueriesMixin
 from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
@@ -97,6 +100,7 @@ class PostgreSQLDatabaseAdapter(
     DependencyQueryMixin,
     BlockedStateMixin,
     GateQueriesMixin,
+    ReviewQueriesMixin,
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
     WorkspaceQueryMixin,
@@ -119,6 +123,8 @@ class PostgreSQLDatabaseAdapter(
     MessageQueriesMixin,
     MetricsQueryMixin,
     ProviderUsageQueryMixin,
+    ProviderAvailabilityQueryMixin,
+    TaskRerouteQueryMixin,
     OnboardingQueryMixin,
     PluginQueryMixin,
     PlaybookArtifactQueryMixin,

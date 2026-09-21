@@ -341,18 +341,43 @@ def cli(
 @click.pass_context
 @_handle_errors
 def status(ctx: click.Context) -> None:
-    """Show system status overview."""
+    """Show system status overview, and whether the dashboard server is up.
+
+    The dashboard server's state (``dashboard_server`` under ``--json``) is
+    read locally from its PID file and identity probe, so it is reported even
+    while the daemon is down -- then as the details of the
+    ``daemon_unreachable`` error.
+    """
     from .adapters import project_proxy
+    from .dashboard import dashboard_server_status, render_status_line
+    from .exceptions import DaemonNotRunningError
     from .formatters import format_status_overview
 
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    dashboard = dashboard_server_status()
 
     async def _run_status():
         async with _get_client(api_url) as client:
             result = await client.execute("get_status")
             return result
 
-    result = _run(_run_status())
+    try:
+        result = _run(_run_status())
+    except DaemonNotRunningError as exc:
+        if _json_mode():
+            from .envelope import emit_error
+
+            emit_error(
+                exc.code,
+                str(exc),
+                {"daemon": {"state": "unreachable", "url": exc.url},
+                 "dashboard_server": dashboard.to_dict()},
+            )
+            raise SystemExit(exc.exit_code) from exc
+        render_status_line(dashboard)
+        raise
+    if isinstance(result, dict):
+        result = {**result, "dashboard_server": dashboard.to_dict()}
 
     def _render(data):
         # Adapt get_status response for format_status_overview.  The command
@@ -379,6 +404,7 @@ def status(ctx: click.Context) -> None:
             for i in range(num_projects)
         ]
         console.print(format_status_overview(proj_list, task_counts))
+        render_status_line(dashboard)
 
     from .envelope import emit
 
@@ -406,6 +432,7 @@ from . import sessions as _sessions_cli  # noqa: E402, F401
 from . import messages as _messages_cli  # noqa: E402, F401
 from . import agent_messages as _agent_messages_cli  # noqa: E402, F401
 from . import questions as _questions_cli  # noqa: E402, F401
+from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401

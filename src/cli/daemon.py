@@ -3,11 +3,19 @@
 Manages the agent-queue daemon process using PID file tracking and
 signal-based shutdown, replicating the logic from ``run.sh`` in Python
 so the CLI is fully self-contained.
+
+The dashboard server (docs/specs/dashboard-server.md §1) rides along: when a
+verified bundle is installed, ``aq start`` starts it once the daemon answers,
+``aq stop`` stops it before the daemon, and ``aq restart`` restarts both.  The
+process itself is :mod:`src.dashboard_server.process`; the CLI glue is in
+:mod:`src.cli.dashboard`.  A source checkout with no bundle keeps the
+interactive offer to launch the Vite dev server instead.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -18,6 +26,7 @@ import click
 
 from .app import cli, console
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
+from src.sessions.env import DAEMON_ENV_STRIP_KEYS
 
 CONFIG_DIR = os.path.expanduser("~/.agent-queue")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
@@ -25,9 +34,15 @@ LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
 LOCK_DIR = os.path.join(CONFIG_DIR, "daemon.lock")
 
-DASHBOARD_PORT = 5173  # Vite default; matches dashboard/vite.config.ts
+#: The Vite dev server a source checkout runs (dashboard/vite.config.ts).  The
+#: dashboard *server*'s port is configuration -- ``dashboard.server.port``.
+DASHBOARD_PORT = 5173
 DASHBOARD_PID_FILE = os.path.join(CONFIG_DIR, "dashboard.pid")
 DASHBOARD_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard.log")
+#: The managed dashboard server.  Its own names, not Vite's: an older release's
+#: ``dashboard.pid`` is a Vite process and must never be mistaken for it.
+DASHBOARD_SERVER_PID_FILE = os.path.join(CONFIG_DIR, "dashboard-server.pid")
+DASHBOARD_SERVER_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard-server.log")
 
 
 # ---------------------------------------------------------------------------
@@ -58,10 +73,13 @@ def _find_daemon_pid() -> int | None:
     pid = _read_pid()
     if pid:
         return pid
-    # Fallback: search for process
+    # A dashboard server receives the same config path, so matching only the
+    # checkout name and config can mistake it for the daemon. The daemon is
+    # always launched as ``agent-queue <config>`` in ``start_daemon``; require
+    # that exact argv suffix when recovering without a PID file.
     try:
         result = subprocess.run(
-            ["pgrep", "-f", f"agent-queue.*{CONFIG_PATH}"],
+            ["pgrep", "-f", rf"(^|/)agent-queue {re.escape(CONFIG_PATH)}$"],
             capture_output=True,
             text=True,
         )
@@ -346,17 +364,38 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
             path_parts.append(candidate)
     env["PATH"] = os.pathsep.join(path_parts)
     strip_harness_session_markers(env)
+    for key in DAEMON_ENV_STRIP_KEYS:
+        env.pop(key, None)
     return env
 
 
 def _warn_harness_environment(command: str) -> None:
     """Explain that a daemon launched from a harness will be sanitized."""
-    markers = harness_session_markers(os.environ)
+    markers = sorted(
+        set(harness_session_markers(os.environ)).union(DAEMON_ENV_STRIP_KEYS).intersection(os.environ)
+    )
     if markers:
         console.print(
-            f"[yellow]aq {command} detected enclosing harness marker(s): "
+            f"[yellow]aq {command} detected enclosing harness marker(s) and/or AQ session marker(s): "
             f"{', '.join(markers)}. The daemon will be launched with them removed.[/]"
         )
+
+
+def _is_worker_session_environment() -> bool:
+    """Whether this environment belongs to a worker that cannot manage AQ."""
+    return os.environ.get("AQ_SESSION_KIND") in {"pool", "task"} or (
+        os.environ.get("AQ_DB_SCOPE") == "worker" and bool(os.environ.get("AQ_SESSION_ID"))
+    )
+
+
+def _refuse_worker_daemon_management() -> None:
+    """Stop workers before a lifecycle command can change operator state."""
+    if _is_worker_session_environment():
+        console.print(
+            "[bold red]Refused:[/] a worker must never manage the operator's daemon; "
+            "report the need to the operator instead."
+        )
+        raise SystemExit(10)
 
 
 def start_daemon() -> bool:
@@ -710,8 +749,14 @@ def _start_dashboard() -> bool:
     return True
 
 
+def _bundle_installed() -> bool:
+    from src.dashboard_server.process import bundle_installed
+
+    return bundle_installed()
+
+
 def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
-    """If the dashboard isn't running, prompt the user to launch it."""
+    """If the Vite dev server isn't running, offer to launch it (source checkouts only)."""
     if no_dashboard:
         return
     if not sys.stdin.isatty():
@@ -725,9 +770,9 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
     if _repo_root() is None:
         # Not running from a source checkout; nothing to launch.
         return
-    if (_repo_root() / "src" / "dashboard_assets" / "dist" / "aq-dashboard-manifest.json").is_file():
-        # `aq install` built the dashboard and the daemon serves it at
-        # /dashboard; offering a Vite dev server as well would only confuse.
+    if _bundle_installed():
+        # `aq install` built the dashboard and the dashboard server serves it;
+        # offering a Vite dev server as well would only confuse.
         return
     console.print("")
     if click.confirm(
@@ -742,13 +787,46 @@ def _maybe_prompt_dashboard(no_dashboard: bool) -> None:
 # ---------------------------------------------------------------------------
 
 
+_NO_DASHBOARD_HELP = (
+    "Skip the interactive offer to launch the Vite dev server (source checkouts). "
+    "Does not stop the dashboard server from starting; see --no-dashboard-server."
+)
+_NO_DASHBOARD_SERVER_HELP = "Leave the dashboard server alone: manage the daemon only."
+
+
+def _after_daemon_started(*, no_dashboard: bool, no_dashboard_server: bool) -> None:
+    """Bring up the dashboard: the managed server when a bundle exists, else offer Vite.
+
+    ``--no-dashboard`` keeps its historical meaning -- skip the Vite prompt --
+    and deliberately does *not* suppress the dashboard server: an updater runs
+    ``aq start --no-dashboard`` and then expects the dashboard to be served
+    (docs/specs/dashboard-server.md §6.2).  Neither path can block a caller
+    with no terminal: the server start never prompts, and the Vite prompt
+    returns at once without one.
+    """
+    if not no_dashboard_server:
+        from .dashboard import ensure_dashboard_server
+
+        ensure_dashboard_server()
+    _maybe_prompt_dashboard(no_dashboard)
+
+
 @cli.command("start")
-@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
+@click.option("--no-dashboard", is_flag=True, help=_NO_DASHBOARD_HELP)
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
 @click.pass_context
-def daemon_start(ctx: click.Context, no_dashboard: bool) -> None:
-    """Start the agent-queue daemon."""
+def daemon_start(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool) -> None:
+    """Start the agent-queue daemon, then the dashboard server.
+
+    The dashboard server starts once the daemon answers (also when the daemon
+    was already running) if dashboard.server.enabled is true and a verified
+    dashboard bundle is installed.  A dashboard server that fails to start is
+    reported as a warning; the daemon stays up and `aq status` / `aq doctor`
+    show the problem.
+    """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq start",
@@ -757,7 +835,7 @@ def daemon_start(ctx: click.Context, no_dashboard: bool) -> None:
     _warn_harness_environment("start")
     if not start_daemon():
         raise SystemExit(1)
-    _maybe_prompt_dashboard(no_dashboard)
+    _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)
 
 
 @cli.command("stop")
@@ -766,22 +844,29 @@ def daemon_start(ctx: click.Context, no_dashboard: bool) -> None:
     is_flag=True,
     help="Leave agent tmux sessions running (they are re-adopted on next start).",
 )
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
 @click.pass_context
-def daemon_stop(ctx: click.Context, keep_sessions: bool) -> None:
-    """Stop the agent-queue daemon and its agent sessions.
+def daemon_stop(ctx: click.Context, keep_sessions: bool, no_dashboard_server: bool) -> None:
+    """Stop the agent-queue daemon, its agent sessions and the dashboard server.
 
     Agent sessions are stopped too: they outlive the daemon by design so a
     *restart* can re-adopt them, but leaving them running after an explicit
     stop means agents working against a dead API with no way to report back.
-    Pass ``--keep-sessions`` to preserve them.
+    Pass ``--keep-sessions`` to preserve them.  The dashboard server is
+    stopped first, with or without ``--keep-sessions``.
     """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq stop",
         "daemon lifecycle output is local process and tmux progress",
     )
+    if not no_dashboard_server:
+        from .dashboard import stop_dashboard_server
+
+        stop_dashboard_server()
     stopped = stop_daemon()
     if keep_sessions:
         if stopped:
@@ -793,25 +878,32 @@ def daemon_stop(ctx: click.Context, keep_sessions: bool) -> None:
 
 
 @cli.command("restart")
-@click.option("--no-dashboard", is_flag=True, help="Skip the dashboard prompt.")
+@click.option("--no-dashboard", is_flag=True, help=_NO_DASHBOARD_HELP)
+@click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
 @click.pass_context
-def daemon_restart(ctx: click.Context, no_dashboard: bool) -> None:
-    """Restart the agent-queue daemon.
+def daemon_restart(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool) -> None:
+    """Restart the agent-queue daemon and the dashboard server.
 
     Agent sessions are deliberately left running — ``sessions.adopt_on_start``
     re-adopts them, so in-flight work survives the restart. Use ``aq stop`` to
-    end them.
+    end them.  Both processes restart, so a changed dashboard.server setting
+    or a rebuilt bundle needs no second command.
     """
     from .envelope import reject_json_mode
 
+    _refuse_worker_daemon_management()
     reject_json_mode(
         ctx,
         "aq restart",
         "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
     )
     _warn_harness_environment("restart")
+    if not no_dashboard_server:
+        from .dashboard import stop_dashboard_server
+
+        stop_dashboard_server(quiet=True)
     stop_daemon(quiet=True)
     time.sleep(1)
     if not start_daemon():
         raise SystemExit(1)
-    _maybe_prompt_dashboard(no_dashboard)
+    _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)

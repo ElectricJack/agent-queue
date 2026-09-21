@@ -399,6 +399,9 @@ class Project:
     hierarchical_integration_desired_mode: str = "disabled"
     hierarchical_integration_draining: bool = False
     hierarchical_integration_generation: int = 0
+    # Who decides this project's new document reviews: "user" | "supervisor"
+    # (None = "user").  Document-review spec §6.
+    review_delegate_to: str | None = None
 
 
 @dataclass
@@ -491,6 +494,11 @@ class Task:
     created_by_id: str | None = None
     claim_epoch: int = 0
     filed_count: int = 0
+    # Provider intent (provider-failover D8): ``pinned`` | ``preferred`` |
+    # ``class_only``.  Whether anyone meant the provider ``profile_id`` names.
+    provider_intent: str = "class_only"
+    # The profile before the first automatic re-route not yet undone (D17).
+    rerouted_from: str | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached
     # gate is unresolved.  Recomputed in-transaction by the query layer —

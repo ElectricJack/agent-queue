@@ -287,8 +287,14 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
 def provider_checks() -> list[DoctorCheck]:
     # Report-only: no ``fix``.  See the module docstring — a stalled timer and
     # a moved CLI wording both need a human, and an automatic probe would hide
-    # the former.
-    return [DoctorCheck(id=CHECK_ID, run=_check_claude_usage, owner=OWNER)]
+    # the former.  The availability checks (provider-failover D21) share the
+    # ``providers.`` namespace and live beside the state they read.
+    from src.doctor.provider_availability_checks import provider_availability_checks
+
+    return [
+        DoctorCheck(id=CHECK_ID, run=_check_claude_usage, owner=OWNER),
+        *provider_availability_checks(),
+    ]
 
 
 #: Snapshot for call-sites (tests, ad-hoc scripts) that want the list without

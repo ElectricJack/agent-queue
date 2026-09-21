@@ -100,9 +100,6 @@ quota.
 
 | Key | Value | Reason |
 | --- | --- | --- |
-| `pause_retry.rate_limit_backoff_seconds` | 60 | A provider 429 clears in seconds to minutes. |
-| `pause_retry.rate_limit_max_retries` | 3 | Enough to ride out a burst; few enough that a real outage reaches `PAUSED` where an operator sees it. |
-| `pause_retry.token_exhaustion_retry_seconds` | 900 | Raised from the code default of 300. A spent subscription quota window is measured in hours; retrying every five minutes only produces failures to look at. |
 | `auto_task.max_verification_retries` | 2 | One reopen for a genuine flake, then a stop. |
 | `swarm.prepare_timeout` | 120 | An abandoned preparation becomes eligible for recovery after two minutes. A live preparation request remains protected while its Git operations run under their own timeouts. |
 | `agents_config.stuck_timeout_seconds` | 1800 (3600 on a small box) | A long tool call on a contended small box legitimately takes longer. |

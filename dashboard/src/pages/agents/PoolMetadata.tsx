@@ -1,5 +1,5 @@
 import type { PoolProjectStatus, PoolStatusRow } from "../../api/hooks";
-import { poolPlacement, poolSupply, projectLiveCount, projectQuarantineSeconds, quarantinedProjects } from "./pools";
+import { poolPlacement, poolSupply, projectLiveCount, projectQuarantineSeconds, quarantinedProjects, type OutsidePoolSession } from "./pools";
 
 /** Distinguishes a pull-based pool profile from a fixed push worker. */
 export function PoolBadge({ className = "" }: { className?: string }) {
@@ -9,6 +9,19 @@ export function PoolBadge({ className = "" }: { className?: string }) {
       className={"shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-300 " + className}
     >
       Pool
+    </span>
+  );
+}
+
+/** Marks a task-lifecycle session listed under a pool it is not a member of. */
+export function OutsidePoolBadge({ session }: { session: OutsidePoolSession }) {
+  return (
+    <span
+      title={"Task-lifecycle session on this pool's route (profile " + session.profile_id
+        + "): it is not a pool member, so the pool's supply numbers do not count it."}
+      className="shrink-0 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300"
+    >
+      Outside pool
     </span>
   );
 }

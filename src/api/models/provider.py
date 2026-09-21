@@ -1,4 +1,4 @@
-"""Response models for ``GET /api/providers/usage``.
+"""Response models for ``/api/providers/*`` -- usage and availability.
 
 A snapshot is one observation of one provider limit window --- ``(provider,
 window, scope) -> used_percent, resets_at``.  The endpoint's whole job is to
@@ -17,7 +17,7 @@ would report a healthy account as stale (spec amendment A3).
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ProviderUsageSnapshot(BaseModel):
@@ -59,3 +59,284 @@ class ProviderUsageResponse(BaseModel):
     now: float
     snapshots: list[ProviderUsageSnapshot] = []
     series: dict[str, list[ProviderUsageSnapshot]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Provider availability (docs/specs/provider-failover.md D7, D20)
+# ---------------------------------------------------------------------------
+
+
+class ProviderOverride(BaseModel):
+    """An operator override (D6).  ``until`` is ``None`` only for ``disabled``."""
+
+    state: str
+    until: float | None = None
+    by: str | None = None
+    reason: str | None = None
+    set_at: float | None = None
+
+
+class ProviderUsageReading(BaseModel):
+    """The newest fresh account-wide usage window (the fullest one)."""
+
+    window: str
+    scope: str = ""
+    used_percent: float
+    resets_at: float | None = None
+    observed_at: float
+
+
+class ProviderTransition(BaseModel):
+    """One change of effective state, from the audit trail."""
+
+    id: int | None = None
+    provider: str
+    from_state: str
+    to_state: str
+    reason_code: str = ""
+    reason: str = ""
+    until: float | None = None
+    generation: int
+    actor: str = "system"
+    detail: dict = {}
+    at: float
+
+
+class ProviderAvailabilityStatus(BaseModel):
+    """One provider's availability, as the CLI, API, doctor and cards show it.
+
+    Every field is server-derived; the dashboard never recomputes a state.
+    ``state`` is the *effective* state (the override while one is active);
+    ``derived_*`` is what the evidence alone says.  ``until`` is the expected
+    recovery -- the provider's own reset clock or a backoff deadline -- and
+    ``None`` when nothing is known (``unauthenticated`` needs a human).
+    """
+
+    provider: str
+    vendor: str = ""
+    state: str
+    half: str
+    reason_code: str = ""
+    reason: str = ""
+    since: float | None = None
+    until: float | None = None
+    derived_state: str = ""
+    derived_reason: str = ""
+    derived_until: float | None = None
+    override: ProviderOverride | None = None
+    held: int = 0
+    #: Tasks the current outage's batch moved off this provider and not
+    #: undone (provider-failover D20); ``batch_id`` names that batch.
+    rerouted: int = 0
+    batch_id: str | None = None
+    level: int = 0
+    generation: int = 0
+    consecutive_failures: int = 0
+    last_failure_at: float | None = None
+    last_success_at: float | None = None
+    last_probe_at: float | None = None
+    probation: bool = False
+    remediation: str = ""
+    mode: str = "enforce"
+    usage: ProviderUsageReading | None = None
+    #: Only with ``verbose``: the evidence ring, newest first.
+    evidence: list[dict] = []
+    #: Only with ``verbose``: the last ten transitions.
+    transitions: list[ProviderTransition] = []
+    updated_at: float | None = None
+
+
+class ProviderStatusResponse(BaseModel):
+    """``provider_status`` and ``GET /api/providers/availability``."""
+
+    success: bool = True
+    mode: str = "enforce"
+    now: float
+    providers: list[ProviderAvailabilityStatus] = []
+
+
+class ProviderHeldTask(BaseModel):
+    """One queued task an unavailable provider is holding (D18, D20).
+
+    The task's own identity plus the derived hold ``aq task explain``
+    reports: ``kind`` says why it is not moving, ``ahead`` its place in the
+    failover trickle for ``awaiting_failover_capacity``.
+    """
+
+    task_id: str
+    project_id: str
+    title: str = ""
+    status: str = ""
+    priority: int = 100
+    provider: str
+    vendor: str = ""
+    state: str
+    since: float | None = None
+    until: float | None = None
+    kind: str
+    ahead: int | None = None
+    detail: str = ""
+    profile_id: str | None = None
+    reason: str = ""
+    remediation: str = ""
+
+
+class ProviderHeldTasksResponse(BaseModel):
+    """``provider_held_tasks``: every held task, and how many per ``kind``."""
+
+    success: bool = True
+    now: float
+    tasks: list[ProviderHeldTask] = []
+    total: int = 0
+    by_kind: dict[str, int] = {}
+
+
+class ProviderHistoryResponse(BaseModel):
+    success: bool = True
+    provider: str
+    transitions: list[ProviderTransition] = []
+
+
+class ProviderRecheckResponse(BaseModel):
+    """``provider_recheck``: the probe's answer and the resulting state.
+
+    ``probe`` is ``authenticated``, ``not_authenticated``, ``cannot_tell`` or
+    ``not_probeable`` (the provider has no login probe).
+    """
+
+    success: bool = True
+    provider: str
+    probe: str
+    probe_detail: dict = {}
+    state: str
+    transition: dict | None = None
+    status: ProviderAvailabilityStatus | None = None
+
+
+class ProviderSetStateResponse(BaseModel):
+    success: bool = True
+    provider: str
+    state: str
+    transition: dict | None = None
+    status: ProviderAvailabilityStatus | None = None
+
+
+class ProviderStateRequest(BaseModel):
+    """``POST /api/providers/{provider}/state`` (D6).
+
+    ``for`` is a duration (``90s``, ``30m``, ``4h``, ``2d``, or seconds);
+    ``until`` an epoch or ISO-8601 time.  Give at most one of ``for``,
+    ``until`` and ``no_expiry``.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    state: str
+    reason: str | None = None
+    for_: str | None = Field(default=None, alias="for")
+    until: str | None = None
+    no_expiry: bool | None = None
+
+
+class RerouteDecision(BaseModel):
+    """What one re-route sweep did (or would do) with one task (D12-D15).
+
+    ``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held
+    task is not moving (``provider_pinned``, ``no_equivalent_rung``,
+    ``awaiting_failover_capacity`` with ``ahead``, ...).
+    """
+
+    task_id: str
+    project_id: str
+    from_profile_id: str
+    from_provider: str = ""
+    provider_state: str = ""
+    action: str
+    kind: str | None = None
+    to_profile_id: str | None = None
+    to_provider: str | None = None
+    to_class: str | None = None
+    ahead: int | None = None
+    detail: str = ""
+    resume: bool = False
+    intelligence_class: str | None = None
+    intent: str = "class_only"
+    priority: int = 100
+    title: str = ""
+    status: str = ""
+    provider_generation: int | None = None
+
+
+class ProviderRerouteResponse(BaseModel):
+    """``provider_reroute``: one sweep's plan and what it applied (D11).
+
+    ``outcome`` is ``rerouted``, ``held``, ``idle`` or ``disabled``.  With
+    ``dry_run`` (or while re-routing is off) ``applied`` is false and ``moved``
+    lists what a live sweep would move.
+    """
+
+    success: bool = True
+    outcome: str
+    dry_run: bool = False
+    applied: bool = False
+    disabled_reason: str | None = None
+    unavailable_providers: list[str] = []
+    moved: list[RerouteDecision] = []
+    held: list[RerouteDecision] = []
+    held_by_kind: dict[str, int] = {}
+    resumed: list[str] = []
+    lost: list[str] = []
+    skipped: list[RerouteDecision] = []
+    batch_ids: list[str] = []
+    notices: list[str] = []
+
+
+class ProviderRerouteBody(BaseModel):
+    """``POST /api/providers/reroute`` (D20)."""
+
+    provider: str | None = None
+    task_id: list[str] | None = None
+    to_profile: str | None = None
+    include_paused: bool | None = None
+    dry_run: bool | None = None
+    force: bool | None = None
+
+
+class RerouteUndone(BaseModel):
+    task_id: str
+    from_profile_id: str | None = None
+    to_profile_id: str | None = None
+    reroute_id: int | None = None
+
+
+class RerouteUndoRefusal(BaseModel):
+    task_id: str
+    reason: str
+
+
+class ProviderRerouteUndoResponse(BaseModel):
+    """``provider_reroute_undo`` (D16): which tasks went back, and which were refused."""
+
+    success: bool = True
+    outcome: str
+    undone: list[RerouteUndone] = []
+    refused: list[RerouteUndoRefusal] = []
+
+
+class ProviderRerouteUndoBody(BaseModel):
+    """``POST /api/providers/reroute/undo`` (D16): a batch or tasks."""
+
+    batch_id: str | None = None
+    task_id: list[str] | None = None
+    force: bool | None = None
+
+
+RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "provider_status": ProviderStatusResponse,
+    "provider_history": ProviderHistoryResponse,
+    "provider_held_tasks": ProviderHeldTasksResponse,
+    "provider_recheck": ProviderRecheckResponse,
+    "provider_set_state": ProviderSetStateResponse,
+    "provider_reroute": ProviderRerouteResponse,
+    "provider_reroute_undo": ProviderRerouteUndoResponse,
+}

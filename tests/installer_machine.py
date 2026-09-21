@@ -64,6 +64,9 @@ BASE_EXECUTABLES: tuple[str, ...] = (
     "npm",
 )
 
+#: Where the dashboard server answers under a default configuration.
+DASHBOARD_URL = "http://127.0.0.1:8082/"
+
 
 def facts(**overrides: Any) -> PlatformFacts:
     base: dict[str, Any] = {
@@ -218,7 +221,10 @@ class Machine:
         self.boot_enabled = boot_enabled
         self.daemon_up = daemon_up
         self.daemon_starts = daemon_starts
+        #: What the dashboard server answers for its page once it runs.  The
+        #: daemon itself is API-only and serves no page at all.
         self.dashboard_status = dashboard_status
+        self.dashboard_server_up = False
 
         self.user_home = root / "home"
         self.aq_home = self.user_home / ".agent-queue"
@@ -269,9 +275,28 @@ class Machine:
     def http(self, url: str) -> int | None:
         if url.endswith("/health"):
             return 200 if self.daemon_up else None
-        if url.endswith(("/dashboard", "/dashboard/")):
-            return self.dashboard_status if self.daemon_up else None
+        if url == DASHBOARD_URL:
+            return self.dashboard_status if self.dashboard_server_up else None
         raise AssertionError(f"unexpected probe: {url}")
+
+    def identify(self, url: str) -> tuple[str, dict[str, Any] | None]:
+        """``/__aq/health`` at *url*: the dashboard server, once something started it."""
+        if url == DASHBOARD_URL and self.dashboard_server_up:
+            return "ours", {
+                "service": "aq-dashboard-server",
+                "bundle": {"version": "1.2.3", "verified": True},
+                "upstream_ok": self.daemon_up,
+            }
+        return "none", None
+
+    @property
+    def release_root(self) -> Path:
+        """The installation's ``site-packages``: a release wheel ships its bundle there."""
+        root = self.root / "site-packages"
+        dist = root / "src" / "dashboard_assets" / "dist"
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / "aq-dashboard-manifest.json").write_text("{}", encoding="utf-8")
+        return root
 
     # -- providers ----------------------------------------------------------
     def store_path(self, provider_id: str) -> Path:
@@ -392,8 +417,13 @@ class Machine:
         if argv[1] == "start":
             if not self.daemon_starts:
                 return CommandOutput(argv=argv, returncode=1, stderr="database is unreachable")
-            self.daemon_up = True
+            # `aq start` brings the dashboard server up with the daemon when a
+            # bundle is installed, and a release always has one.
+            self.daemon_up = self.dashboard_server_up = True
             return CommandOutput(argv=argv, returncode=0, stdout="Daemon started")
+        if argv[1:] == ("--json", "dashboard", "start"):
+            self.dashboard_server_up = True
+            return CommandOutput(argv=argv, returncode=0, stdout="{}")
         raise AssertionError(f"unexpected daemon command: {argv}")
 
     @staticmethod
@@ -428,9 +458,10 @@ class Machine:
             provider_runner=self.run_provider,
             daemon_runner=self.run_daemon,
             http_probe=self.http,
+            dashboard_identify=self.identify,
             # Not a source checkout: this machine installs a release, whose
             # dashboard ships built.  tests/test_install_dashboard.py owns the build.
-            dashboard_root=self.aq_home,
+            dashboard_root=self.release_root,
         )
 
     def install(

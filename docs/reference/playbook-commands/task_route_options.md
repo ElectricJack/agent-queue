@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:3fc6f54c3541409ee70cf3eca52e4bd65cf7b8191fa122855d851aac7794b06f` |
+| Contract fingerprint | `sha256:67af1ad2a7be97be88103b60b6ab8d5f8dc39a25c9fce8bfab8491811a909adf` |
 
 ## Parameters
 
@@ -37,6 +37,7 @@
 | `default_profile_id` | `string \| null` | — |
 | `explicit_profile_id` | `string \| null` | Profile serving the class |
 | `options` | `object[]` | Routing options |
+| `unavailable_options` | `object[]` | Options on an unavailable provider |
 
 ## Outcomes
 
@@ -44,6 +45,7 @@
 |---|---|---|
 | `already_routed` | success | Already routed |
 | `explicit` | success | Explicit class |
+| `held` | success | Held: every option's provider is unavailable |
 | `no_options` | success | Nothing can run it |
 | `rejected` | failure | Rejected |
 | `undecided` | success | Needs a decision |
@@ -83,6 +85,7 @@ rule's whole shape:
 | `explicit` | Goes to step 3 — [`task_route`](task_route.md) with `routing.explicit_profile_id`. |
 | `undecided` | Goes to step 2 — an LLM step picks a row from `options`. |
 | `no_options` | Fails the rule; nothing configured can execute the task. |
+| `held` | Ends the rule quietly; options exist, but every one is on a provider that is unavailable right now ([provider failover](../../specs/provider-failover.md) D13a). |
 
 Policy lives in the playbook, mechanism in the command — the module docstring
 ([`src/commands/routing_commands.py:1`](../../../src/commands/routing_commands.py))
@@ -151,6 +154,7 @@ reason to change the required class.
 | Outcome | Cause |
 |---|---|
 | `no_options` (success) | Nothing configured can execute the task: no worker profile maps the explicit class, or — with no explicit class — no worker profile is enabled at all. `disabled_options` tells you whether the answer would change by enabling a pool. |
+| `held` (success) | Every option is on an unavailable provider (`unavailable_options` lists them, each row annotated with `provider_key`, `provider_state` and `launchable`). `aq provider status` says when it is expected back. |
 | `rejected` | Missing `task_id`, no task with that id, or the task's project row is missing. |
 | `unauthorized` | The capability gate refused `task_route_options`. |
 | `contract_violation` | The dict did not satisfy `TaskRouteOptionsValue`, or the outcome has no transition and there is no `runtime_error` edge. |
@@ -184,6 +188,7 @@ open routing gate the task is waiting on.
   "save_result_as": "routing",
   "transitions": {
     "already_routed": "route-task--done",
+    "held": "route-task--done",
     "explicit": "route-task--apply_explicit",
     "undecided": "route-task--choose_route",
     "no_options": "route-task--failed",

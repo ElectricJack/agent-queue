@@ -26,6 +26,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from typing import Any
 
 from src.config import (
     MAX_DIGEST_CATCHUP_HOURS,
@@ -145,6 +146,21 @@ def schedule_for(config: DiscordConfig) -> DigestSchedule:
         project_ids=tuple(sorted(digest.project_ids)),
         categories=frozenset(digest.categories),
     )
+
+
+def provider_facts_enabled(app_config: Any) -> bool:
+    """Whether provider half changes belong in the digest (provider-failover D19).
+
+    ``provider_failover.notify.digest``, and never with availability tracking
+    ``off``.  Read off the whole application config: a caller holding only the
+    ``discord`` section gets the default, which is on.
+    """
+    failover = getattr(app_config, "provider_failover", None)
+    if failover is None:
+        return True
+    if getattr(failover, "mode", "enforce") == "off":
+        return False
+    return bool(getattr(getattr(failover, "notify", None), "digest", True))
 
 
 def validate_settings(config: DiscordConfig, known_project_ids: frozenset[str]) -> list[str]:

@@ -30,6 +30,8 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S12 MCP registry           CRUD plus an unavailable optional endpoint
     S13 plugin extensions      installed entry point present and absent
     S14 graph + vault          layout mutations and isolated vault dry-run
+    S15 development delivery   local validation and exact Git publication
+    S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
 """
 
 from __future__ import annotations
@@ -1546,6 +1548,431 @@ def s15_development_delivery(state: dict) -> str:
     return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
 
 
+# ---------------------------------------------------------------------------
+# S16 — provider failover (docs/specs/provider-failover.md D23, bold-rapids.5)
+# ---------------------------------------------------------------------------
+
+#: The fake providers of ``tests/fixtures/provider_failover`` and their rungs.
+PROVA, PROVB = "prova", "provb"
+STD_A, STD_B, SOLO_A = "std-high-prova", "std-high-provb", "solo-high-prova"
+FAILOVER_PROFILES = (STD_A, STD_B, SOLO_A)
+
+
+def note(message: str) -> None:
+    """One line of a long scenario's narrative, printed as it happens.
+
+    S16 is the end-to-end transcript bold-rapids.5 attaches, so it says what
+    it is doing at each step rather than only how it finished.
+    """
+    print(f"     · {message}", flush=True)
+
+
+def fake_script(**modes: str) -> None:
+    """Rewrite the fake session provider's script (``sessions.fake_script_file``).
+
+    Re-read on every fake start and by the fake login probe, so this is how
+    the scenario logs a provider out, exhausts it, or restores it.
+    """
+    path = os.environ.get("E2E_FAKE_SCRIPT") or os.path.join(
+        os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")),
+        "fake-provider-script.json",
+    )
+    script = {PROVA: "ok", PROVB: "ok", **modes}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(script, fh)
+    note(f"fake script: {json.dumps(script)}")
+
+
+def provider(key: str) -> dict:
+    """*key*'s availability row, or ``{}`` before the daemon tracks it.
+
+    Tracked providers are re-read from the profiles once a minute, so a
+    daemon started moments ago may not list one yet; callers poll.
+    """
+    rows = collection_rows(aq("provider", "status", "--provider", key), "providers")
+    return rows[0] if rows else {}
+
+
+def provider_state(key: str) -> str:
+    return str(provider(key).get("state") or "")
+
+
+def wait_provider(key: str, states: tuple[str, ...], *, what: str) -> dict:
+    return wait_for(
+        lambda: (row if (row := provider(key)).get("state") in states else None),
+        what=f"{key} to become {'/'.join(states)} ({what})",
+    )
+
+
+def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
+    args = ["provider", "set-state", "--provider", key, "--state", state]
+    if state != "auto":
+        args += ["--reason", reason, "--for", "30m"]
+    return aq(*args)
+
+
+def held_tasks() -> dict[str, dict]:
+    rows = collection_rows(aq("provider", "held-tasks", "--project-id", PROJECT), "tasks")
+    return {row["task_id"]: row for row in rows}
+
+
+def reroute(*extra: str) -> dict:
+    return aq("provider", "reroute", *extra)
+
+
+def login_deaths(key: str, *, since: float) -> list[dict]:
+    """Launches that died on *key*'s login dialog since *since*, from its evidence ring.
+
+    A startup death leaves no session row ``aq session list`` shows, but
+    every one is ``startup_dialog`` evidence on the provider.
+    """
+    rows = collection_rows(
+        aq("provider", "status", "--provider", key, "--verbose"), "providers"
+    )
+    return [
+        e for e in rows[0].get("evidence") or []
+        if e.get("kind") == "startup_dialog" and float(e.get("at") or 0) >= since
+    ]
+
+
+def live_sessions_for(profile_id: str) -> list[dict]:
+    return [
+        s for s in pool_sessions(None)
+        if s.get("profile_id") == profile_id
+    ]
+
+
+def failover_task(title: str, profile: str, cls: str, *, priority: int, **extra) -> str:
+    args = {
+        "project_id": PROJECT,
+        "title": title,
+        "description": f"e2e S16: {title}",
+        "profile_id": profile,
+        "intelligence_class": cls,
+        "priority": priority,
+        **extra,
+    }
+    result = api("create_task", args)
+    task_id = result.get("created") or result.get("task_id")
+    check(task_id, f"create_task({title}) returned no id: {result}")
+    return task_id
+
+
+def provider_escalations() -> list[dict]:
+    payload = aq("escalation", "list", "--project-id", PROJECT)
+    rows = payload.get("escalations", []) if isinstance(payload, dict) else payload
+    return [row for row in rows if row.get("source_kind") == "provider_availability"]
+
+
+def _quiesce_failover() -> None:
+    """Start from a clean fleet: no open e2e tasks, no live pool sessions."""
+
+    def _quiet():
+        _delete_open_pool_tasks(PROJECT)
+        live = pool_sessions(None)
+        for s in live:
+            aq("session", "kill", s["id"], check_ok=False)
+        return not live and not _open_pool_tasks(PROJECT)
+
+    wait_for(_quiet, what="the fleet to quiesce before S16")
+
+
+def _restore_providers() -> None:
+    """Leave every provider launchable again, whatever S16 got up to.
+
+    The fleet is quiesced *first*: ``auto`` puts a still-unavailable provider
+    on probation, and probation admits one canary launch -- which queued S16
+    work would spend on a session nobody ever works, holding the provider's
+    launches for ``CANARY_TIMEOUT_SECONDS``.
+    """
+    _quiesce_failover()
+    fake_script()
+    for key in ("claude", "codex", PROVB, PROVA):
+        set_provider_state(key, "auto")
+
+
+def s16_provider_failover(state: dict) -> str:
+    """A provider runs out: detect, suppress, re-route, hold, recover, undo, all-down."""
+    state["s16_started"] = True
+    try:
+        return _s16(state)
+    finally:
+        try:
+            _restore_providers()
+        except Exception as exc:  # noqa: BLE001 — cleanup failure belongs in the report
+            print(f"     ! S16 cleanup could not restore providers: {exc}")
+
+
+def _s16(state: dict) -> str:
+    _quiesce_failover()
+    fake_script()  # both fake providers healthy
+    for key in ("claude", "codex", PROVB, PROVA):
+        set_provider_state(key, "auto")
+    for key in (PROVA, PROVB):
+        row = wait_provider(key, ("available", "degraded"), what="S16 baseline")
+        note(f"baseline: {key} {row['state']}")
+
+    # -- 1. prova logs out; queue the mix -------------------------------------
+    t0 = time.time()
+    fake_script(prova="login_required")
+    pref = [
+        failover_task(f"S16 preferred {n}", STD_A, "std-high", priority=p)
+        for n, p in ((1, 10), (2, 20), (3, 30))
+    ]
+    pinned = failover_task("S16 pinned", STD_A, "std-high", priority=15, pin=True)
+    solo = failover_task("S16 solo-high", SOLO_A, "solo-high", priority=40)
+    class_only = []
+    for n, p in ((1, 25), (2, 35)):
+        task_id = failover_task(f"S16 class-only {n}", STD_A, "std-high", priority=p)
+        edited = api("edit_task", {"task_id": task_id, "provider_intent": "class_only"})
+        check(edited.get("updated") == task_id, f"could not make {task_id} class_only: {edited}")
+        class_only.append(task_id)
+    intents = {tid: task_show(tid)["provider_intent"] for tid in pref + [pinned, solo] + class_only}
+    check(all(intents[t] == "preferred" for t in pref + [solo]), f"explicit profile != preferred: {intents}")
+    check(intents[pinned] == "pinned", f"--pin did not pin: {intents[pinned]}")
+    check(all(intents[t] == "class_only" for t in class_only), f"class_only edit lost: {intents}")
+    note(f"queued 3 preferred {pref}, pinned {pinned}, solo-high {solo}, class_only {class_only}")
+
+    # -- 2. detected within two launches; nothing further launches ------------
+    down = wait_provider(PROVA, ("unauthenticated",), what="the login dialog on launch")
+    prova_launches = login_deaths(PROVA, since=t0)
+    check(
+        1 <= len(prova_launches) <= 2,
+        f"prova should trip within two launches, saw {len(prova_launches)}",
+    )
+    note(
+        f"prova {down['state']} ({down['reason_code']}): {down['reason']} — after "
+        f"{len(prova_launches)} launch(es); remediation: {down['remediation']}"
+    )
+    time.sleep(12)  # two more cascades: a suppressed provider launches nothing
+    after = login_deaths(PROVA, since=t0)
+    check(
+        len(after) == len(prova_launches),
+        f"launches continued against unavailable prova: {len(prova_launches)} -> {len(after)}",
+    )
+    note(f"no further prova launches in 12s ({len(after)} total)")
+
+    # -- 3. every hold names its reason ----------------------------------------
+    held = held_tasks()
+    check(set(held) == set(pref + [pinned, solo] + class_only), f"held set: {sorted(held)}")
+    check(held[pinned]["kind"] == "provider_pinned", f"pinned hold: {held[pinned]}")
+    check(held[solo]["kind"] == "no_equivalent_rung", f"solo-high hold: {held[solo]}")
+    note("held-tasks: " + ", ".join(f"{t}={held[t]['kind']}" for t in held))
+    explained = api("explain_task", {"task_id": pinned})
+    check("provider_hold" in (explained.get("reason_codes") or []), f"explain: {explained}")
+    check(
+        (explained.get("provider_hold") or {}).get("kind") == "provider_pinned",
+        f"explain names no pin: {explained.get('provider_hold')}",
+    )
+    note(f"explain {pinned}: {explained['provider_hold']['kind']} on {explained['provider_hold']['provider']}")
+
+    # -- 4. the sweep: same class on provb, one pool-width at a time -----------
+    plan = reroute("--dry-run")
+    check(plan["outcome"] == "rerouted" and plan["applied"] is False, f"dry run: {plan}")
+    planned = [d["task_id"] for d in plan["moved"]]
+    check(planned == [pref[0]], f"dry run should move only the most urgent task: {planned}")
+    check(task_show(pref[0])["profile_id"] == STD_A, "a dry run moved a task")
+    note(f"dry run: would move {planned}, hold {plan['held_by_kind']}")
+
+    first = reroute()
+    check(first["outcome"] == "rerouted" and first["applied"], f"sweep: {first}")
+    check([d["task_id"] for d in first["moved"]] == [pref[0]], f"sweep moved {first['moved']}")
+    kinds = {d["task_id"]: d["kind"] for d in first["held"]}
+    check(kinds[pinned] == "provider_pinned" and kinds[solo] == "no_equivalent_rung", str(kinds))
+    check(
+        all(kinds[t] == "awaiting_failover_capacity" for t in pref[1:] + class_only),
+        f"the rest should await capacity: {kinds}",
+    )
+    batch = first["batch_ids"][0]
+    moved = task_show(pref[0])
+    check(moved["profile_id"] == STD_B, f"moved task is on {moved['profile_id']}")
+    check(moved["rerouted_from"] == STD_A, f"rerouted_from: {moved['rerouted_from']}")
+    check(moved["provider_intent"] == "preferred", "a re-route changed the intent")
+    check(moved["intelligence_class"] == "std-high", "a re-route changed the class")
+    comments = aq("task", "comments", pref[0])
+    bodies = [c.get("body", "") for c in collection_rows(comments, "comments")]
+    check(any("Re-routed from" in b for b in bodies), f"no re-route comment: {bodies}")
+    note(f"sweep: moved {pref[0]} {STD_A} -> {STD_B} (batch {batch}); held {first['held_by_kind']}")
+
+    # provb's pool starts at most max_active=1 session; this runner works it.
+    peak = 0
+
+    def _provb_session():
+        nonlocal peak
+        live = live_sessions_for(STD_B)
+        peak = max(peak, len(live))
+        return live[0] if live else None
+
+    sess = wait_for(_provb_session, what="a provb pool session for the moved task")
+    worker = Worker.adopt(sess["id"])
+    claimed = worker.claim_next()
+    check(claimed.get("result") == "claimed", f"provb worker claim: {claimed}")
+    check(worker.task_id == pref[0], f"provb worker claimed {worker.task_id}, not {pref[0]}")
+    worker.close(summary="S16 moved task done on provb")
+    worker.drain_ack()
+    note(f"provb session {sess['id']} claimed and closed {pref[0]}")
+
+    second = reroute()
+    check([d["task_id"] for d in second["moved"]] == [pref[1]], f"top-up moved {second['moved']}")
+    check(second["batch_ids"] == [batch], f"a top-up opened a new batch: {second['batch_ids']}")
+    note(f"top-up sweep: moved {pref[1]} into the same batch {batch}")
+    for _ in range(3):
+        _provb_session()
+        time.sleep(2)
+    check(peak <= 1, f"provb ran {peak} sessions at once; max_active is 1")
+    note(f"provb never exceeded max_active=1 (peak {peak})")
+
+    # -- 5. notifications: one per half change, one per batch per project ------
+    global_notes = collection_rows(
+        aq("message", "list", "--to-kind", "user", "--to-id", "dashboard", "--since", str(t0)),
+        "messages",
+    )
+    prova_notes = [
+        m for m in global_notes if m.get("subject") == f"Provider {PROVA}: unauthenticated"
+    ]
+    check(len(prova_notes) == 1, f"expected one prova outage notice to the human: {prova_notes}")
+    project_notes = [
+        m for m in collection_rows(
+            aq(
+                "message", "list", "--to-kind", "session", "--to-id", f"supervisor-{PROJECT}",
+                "--since", str(t0),
+            ),
+            "messages",
+        )
+        if batch in (m.get("body") or "")
+    ]
+    check(len(project_notes) == 1, f"expected one batch notice for {PROJECT}: {project_notes}")
+    note(f"notices: 1 to user:dashboard ({prova_notes[0]['subject']!r}), 1 to supervisor-{PROJECT} for {batch}")
+    incidents = [e for e in provider_escalations() if e.get("source_identity", "").startswith(f"{PROVA}:")]
+    open_incidents = [e for e in incidents if e.get("terminal_at") is None]
+    check(len(open_incidents) == 1, f"expected one open prova escalation: {incidents}")
+    incident = open_incidents[0]
+    check(incident["severity"] == "high", f"escalation severity {incident['severity']}")
+    note(f"escalation {incident['id']} ({incident['severity']}, {incident['state']}): {incident['summary']}")
+    status = provider(PROVA)
+    check(status["rerouted"] == 2 and status["batch_id"] == batch, f"status counts: {status}")
+    note(
+        f"aq provider status prova: {status['state']} since {status['since']:.0f}, "
+        f"held {status['held']}, rerouted {status['rerouted']} (batch {status['batch_id']})"
+    )
+
+    # -- 6. recovery: log in, recheck, probation, one launch -------------------
+    fake_script()  # prova's login works again
+    recheck = aq("provider", "recheck", "--provider", PROVA)
+    check(recheck.get("probe") == "authenticated", f"recheck probe: {recheck}")
+    probation = provider(PROVA)
+    check(
+        probation["state"] == "degraded" and probation.get("probation"),
+        f"recheck should put prova on probation: {probation}",
+    )
+    note(f"recheck: probe authenticated -> {probation['state']} ({probation['reason_code']}), probation")
+    # Probation admits one launch -- whichever prova pool asks first.  Its
+    # first authenticated call is the success that completes recovery, and
+    # the task it claims is a held one, running on prova.
+    canary = wait_for(
+        lambda: next(iter(live_sessions_for(STD_A) + live_sessions_for(SOLO_A)), None),
+        what="prova's canary launch",
+    )
+    expected = pinned if canary["profile_id"] == STD_A else solo
+    worker_a = Worker.adopt(canary["id"])
+    claimed = worker_a.claim_next()
+    check(claimed.get("result") == "claimed", f"prova canary claim: {claimed}")
+    check(worker_a.task_id == expected, f"canary claimed {worker_a.task_id}, not {expected}")
+    recovered = wait_provider(PROVA, ("available",), what="the canary's first authenticated call")
+    note(
+        f"canary {canary['id']} ({canary['profile_id']}) claimed held {expected}; "
+        f"prova {recovered['state']}"
+    )
+    worker_a.close(summary="S16 held task done on prova")
+    worker_a.drain_ack()
+    if expected != pinned:
+        sess_a = wait_for(
+            lambda: next(iter(live_sessions_for(STD_A)), None),
+            what="a std-high-prova session for the pinned task",
+        )
+        worker_p = Worker.adopt(sess_a["id"])
+        claimed = worker_p.claim_next()
+        check(worker_p.task_id == pinned, f"prova claimed {worker_p.task_id}, not the pin")
+        worker_p.close(summary="S16 pinned task done on prova")
+        worker_p.drain_ack()
+        note(f"{sess_a['id']} claimed and closed the pinned task {pinned} on prova")
+    still = task_show(pref[1])
+    check(still["profile_id"] == STD_B, f"moved-and-queued work went home: {still['profile_id']}")
+    check(not held_tasks(), f"holds outlived the outage: {sorted(held_tasks())}")
+    resolved = wait_for(
+        lambda: next(
+            (e for e in provider_escalations()
+             if e["id"] == incident["id"] and e.get("terminal_at") is not None),
+            None,
+        ),
+        what=f"escalation {incident['id']} to resolve on recovery",
+    )
+    note(
+        f"moved {pref[1]} stayed on {STD_B}; holds cleared; escalation {resolved['state']} "
+        f"({resolved.get('terminal_outcome')})"
+    )
+
+    undone = aq("provider", "reroute-undo", "--task-id", pref[1])
+    check(undone.get("outcome") == "undone", f"undo: {undone}")
+    back = task_show(pref[1])
+    check(back["profile_id"] == STD_A and back["rerouted_from"] is None, f"undo: {back}")
+    note(f"reroute-undo returned {pref[1]} to {STD_A}")
+
+    # -- 7. every provider down: holds, no moves, drain, critical --------------
+    # Both fakes go dark first.  Idle sessions the recovery started hold the
+    # prova/provb pools at their bounds (and the project at its session
+    # cap); stopping them makes prova relaunch into the login dialog and
+    # frees a slot for the claude session this phase keeps across the outage.
+    fake_script(prova="login_required", provb="usage_limit")
+    for sess in live_sessions_for(STD_A) + live_sessions_for(SOLO_A) + live_sessions_for(STD_B):
+        aq("session", "kill", sess["id"], check_ok=False)
+    wait_provider(PROVA, ("unauthenticated",), what="the second logout")
+    filler = create_task("S16 claude worker", profile=POOL_PROFILE)
+    claude_sess = wait_for(
+        lambda: next(iter(live_sessions_for(POOL_PROFILE)), None),
+        what="a claude pool session to hold across the outage",
+    )
+    claude_worker = Worker.adopt(claude_sess["id"])
+    for key in ("claude", "codex", PROVB):
+        set_provider_state(key, "disabled", "e2e S16: every provider down")
+    note("prova logged out again; claude, codex and provb disabled by override")
+    sweep = reroute()
+    check(not sweep["moved"], f"moved work with every provider down: {sweep['moved']}")
+    check(sweep["outcome"] == "held", f"all-down sweep outcome {sweep['outcome']}")
+    check(
+        "all_providers_unavailable" in sweep["held_by_kind"],
+        f"no all_providers_unavailable hold: {sweep['held_by_kind']}",
+    )
+    note(f"all-down sweep: moved none, held {sweep['held_by_kind']}")
+    refused = claude_worker.claim_next(check_ok=False)
+    result = refused.get("result") if isinstance(refused, dict) else None
+    if result is None and isinstance(refused, dict) and refused.get("_error"):
+        result = refused["_error"].result
+    check(result in ("drain_requested", "not_admissible"), f"claim while all down: {refused}")
+    note(f"claude session claim while every provider is down: {result}")
+    critical = wait_for(
+        lambda: next(
+            (
+                e for e in provider_escalations()
+                if e.get("terminal_at") is None and e.get("severity") == "critical"
+            ),
+            None,
+        ),
+        what="a critical provider escalation",
+    )
+    note(f"escalation {critical['id']} is {critical['severity']}: {critical['summary']}")
+    doctor = aq("doctor", "--check", "providers.availability", check_ok=False)
+    [check_row] = [c for c in doctor.get("checks", []) if c["id"] == "providers.availability"]
+    check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
+    note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
+    aq("task", "delete", "--task-id", filler, check_ok=False)
+    return (
+        f"prova tripped in {len(prova_launches)} launch(es); moved {pref[0]},{pref[1]} to provb "
+        f"within max_active=1 (batch {batch}); pin/solo held; recheck→probation→available; "
+        f"undo returned {pref[1]}; all-down held everything, claim={result}, critical escalation"
+    )
+
+
 @dataclass
 class Scenario:
     key: str
@@ -1579,6 +2006,9 @@ SCENARIOS: list[Scenario] = [
     Scenario("S13", "plugin extensions", s13_plugin_extensions, ("plugin extension startup",)),
     Scenario("S14", "graph + vault", s14_graph_and_vault, ("graph/vault",)),
     Scenario("S15", "development integration", s15_development_delivery, ("integration",)),
+    Scenario(
+        "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
+    ),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.

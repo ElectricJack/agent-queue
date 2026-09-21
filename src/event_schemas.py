@@ -643,6 +643,21 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "message", "embed_data"],
     },
+    # -- Provider availability (provider-failover D19): one per change of
+    # *half* (launchable <-> unavailable); the dashboard toast and banner.
+    "notify.provider_state": {
+        "required": [*_NOTIFY_BASE_FIELDS, "provider", "from_state", "to_state", "generation"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "remediation",
+            "message",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -778,6 +793,39 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
             "attempt_count": int,
             "generation": int,
         },
+    },
+}
+
+# Document-review lifecycle.  The database is authoritative; these payloads
+# are compact invalidation/audit hints for the dashboard and playbooks.
+_REVIEW_SCHEMAS: dict[str, EventSchema] = {
+    "review.submitted": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "vault_path", "seq"],
+    },
+    "review.revised": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "changes_note", "vault_path", "seq"
+        ],
+    },
+    "review.decided": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "decision", "decided_by", "author_task_id",
+            "note", "unblocked_task_ids", "seq",
+        ],
+    },
+    "review.withdrawn": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
+            "flagged_task_ids", "seq",
+        ],
+    },
+    "review.commented": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "comment_id", "seq"],
     },
 }
 
@@ -1149,6 +1197,43 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 # Swarm claims (swarm-work-model §10) — admission events a blocked
 # ``task_claim`` long-poll wakes on, plus the scheduler-tick heartbeat.
 # ---------------------------------------------------------------------------
+
+_PROVIDER_SCHEMAS: dict[str, EventSchema] = {
+    # provider-failover D7: once per change of *effective* state.  Evidence
+    # that does not change the state emits nothing -- evidence is not news.
+    "provider.state_changed": {
+        "required": ["provider", "from_state", "to_state", "generation"],
+        "optional": [
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "actor",
+            "override",
+        ],
+    },
+    # provider-failover D19: one per task moved, forced or undone.
+    "task.rerouted": {
+        "required": ["task_id", "project_id", "reason_code"],
+        "optional": [
+            "title",
+            "from_profile_id",
+            "to_profile_id",
+            "from_provider",
+            "to_provider",
+            "batch_id",
+            "actor",
+        ],
+    },
+    # provider-failover D19: once per sweep that moved or newly held anything.
+    # ``batch_id`` is derived from ``(provider, generation)``, so every trickle
+    # top-up during one outage appends to the same batch.
+    "provider.reroute_batch": {
+        "required": ["batch_id", "provider", "moved"],
+        "optional": ["generation", "held", "targets", "projects"],
+    },
+}
 
 _SWARM_SCHEMAS: dict[str, EventSchema] = {
     "snapshot.refreshed": {
@@ -1635,6 +1720,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
     **_ESCALATION_SCHEMAS,
+    **_REVIEW_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
     **_MERGE_SCHEMAS,
@@ -1646,6 +1732,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
     **_SWARM_SCHEMAS,
+    **_PROVIDER_SCHEMAS,
     **_COMMAND_SCHEMAS,
     **_FORMULA_SCHEMAS,
     **_METRICS_SCHEMAS,

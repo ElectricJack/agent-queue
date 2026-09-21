@@ -142,6 +142,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "review": CategoryMeta(
+        name="review",
+        description="Document reviews: submit specs and plans for Jack's approval",
+    ),
     "digest": CategoryMeta(
         name="digest",
         description=(
@@ -170,6 +174,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
     "pool": CategoryMeta(
         name="pool",
         description=("Worker pool sizing — supply/demand status and min/max bounds"),
+    ),
+    "provider": CategoryMeta(
+        name="provider",
+        description=(
+            "Provider availability — whether each harness login is usable, why "
+            "not, operator overrides and an immediate login recheck"
+        ),
     ),
     "formula": CategoryMeta(
         name="formula",

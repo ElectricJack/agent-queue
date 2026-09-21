@@ -13,7 +13,7 @@ import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
-  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
+  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters } = useTaskWorkspace();
   // The variant the canvas was actually SERVED, not the one the filters ask
   // for: the daemon promotes a focused request to the full layout when the
   // entered container is not in the active one, and searching that container
@@ -36,7 +36,7 @@ export default function TaskToolbar() {
   const shortcutsAvailable = () => !createOpen && !document.querySelector('[role="dialog"], [aria-modal="true"]');
   useShortcut("n", { label: "add task", section: "Tasks", onFire: () => setCreateOpen(true), when: shortcutsAvailable });
   useShortcut("/", { label: "search tasks", section: "Tasks", onFire: () => searchRef.current?.focus(), when: shortcutsAvailable });
-  const hasFilters = !!(filters.query || filters.status || filters.showCompleted || filters.window);
+  const hasFilters = !!(filters.query || filters.status || filters.showCompleted || filters.window || filters.held);
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-800 bg-gray-950 px-4 py-3">
@@ -64,6 +64,13 @@ export default function TaskToolbar() {
           disabled={!!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
+      {/* The held filter narrows the Tasks table to the server's held-task
+          ids; the graph draws from its own layout and has no such filter. */}
+      {!onGraph && <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400"
+        title="Only tasks waiting on an unavailable provider">
+        <input type="checkbox" checked={filters.held} onChange={(e) => setHeld(e.target.checked)} className="accent-indigo-500" />
+        Held by provider
+      </label>}
       {onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
         title="Pan the graph to the next matching task"
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">

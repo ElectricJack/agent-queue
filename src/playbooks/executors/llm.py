@@ -45,7 +45,9 @@ def _operation(step: LlmStep, ctx: StepContext, spec: LLMCallSpec | None) -> str
     if spec is None:
         return f"llm:{step.profile_id}"
     try:
-        resolved = ctx.services.llm.resolve(spec)
+        # ``resolve_current``: while ``llm.fallback`` is serving calls, the
+        # model named is the fallback's (provider-failover D13a).
+        resolved = ctx.services.llm.resolve_current(spec)
         return f"llm:{step.profile_id}/{resolved.model}"
     except Exception:  # noqa: BLE001 - a receipt must never expose resolution details
         return f"llm:{step.profile_id}"
@@ -315,7 +317,8 @@ class LiveLlmExecutor:
 
         spec = _spec(step, ctx, resolution.intelligence_class)
         try:
-            resolved = ctx.services.llm.resolve(spec)
+            # The adapter the call will use, the fallback's during an outage.
+            resolved = ctx.services.llm.resolve_current(spec)
             provider = ctx.services.llm._provider_for(resolved)
         except Exception:  # noqa: BLE001 - profiles/providers may reload between boundaries
             return _result(
@@ -522,13 +525,22 @@ class LiveLlmExecutor:
         except asyncio.CancelledError:
             return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
+            from src.llm.providers.errors import ProviderUnavailableError
+
+            # A fail-fast refusal (provider-failover D13a) names the reason
+            # a playbook author branches on, not the exception class.
+            diagnostic = (
+                "provider_unavailable"
+                if isinstance(exc, ProviderUnavailableError)
+                else type(exc).__name__
+            )
             return _result(
                 step,
                 ctx,
                 spec=spec,
                 outcome="provider_error",
                 llm_calls=calls,
-                diagnostics=(type(exc).__name__,),
+                diagnostics=(diagnostic,),
             )
 
 

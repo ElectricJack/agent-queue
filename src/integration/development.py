@@ -26,6 +26,17 @@ from src.database.tables import development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.delegate_release import release_delegates_on
+from src.integration.delivery_branches import (
+    ASSEMBLY_PREFIX,
+    TASK_BRANCH_PREFIX,
+    branch_of,
+    delete_branches,
+    expired_task_branches,
+    find_stale_branches,
+    live_branch_references,
+    released_integration_refs,
+    remote_heads,
+)
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -35,6 +46,29 @@ logger = logging.getLogger(__name__)
 TERMINAL_STATUSES = frozenset(
     {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value}
 )
+
+#: Evidence key on a default-branch journal row recording the removal of the
+#: refs that delivery made obsolete (:meth:`DevelopmentIntegration.
+#: collect_delivered_branches`).  ``{"state": "pending"}`` arms it when the row
+#: lands; ``complete`` / ``exhausted`` end it.  Rows journaled before the key
+#: existed carry none and are left to ``aq doctor --check
+#: git.stale_branches``.
+BRANCH_CLEANUP_KEY = "branch_cleanup"
+#: A cleanup that cannot confirm its deletes retries with backoff this often.
+BRANCH_CLEANUP_MAX_ATTEMPTS = 8
+BRANCH_CLEANUP_RETRY_SECONDS = 300.0
+BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
+#: Journal rows cleaned per project per tick; a backlog drains over ticks.
+BRANCH_CLEANUP_ROWS_PER_TICK = 10
+
+
+def armed_for_branch_cleanup(evidence):
+    """*evidence* with branch cleanup armed, for a row that just landed on main."""
+    return {**evidence, BRANCH_CLEANUP_KEY: {"state": "pending", "attempts": 0}}
+
+
+def _manifest_members(manifest):
+    return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
 
 
 @dataclass(frozen=True)
@@ -85,6 +119,8 @@ class DevelopmentIntegration:
     def __init__(self, db, *, data_dir, git=None, confirm_stopped=None):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
+        #: Bundles and the deletion log every branch delete writes first.
+        self.backup_dir = Path(data_dir) / "backups" / "branch-deletions"
         self.git = git or GitManager()
         self.next_due = {}
         self._project_faults = {}
@@ -176,6 +212,64 @@ class DevelopmentIntegration:
                 ).mappings()
             ]
 
+    async def rebind_foreign_repositories(self, project_id, repo):
+        """Deliver this project's tasks that still name another project's repository.
+
+        The sweep collects a project's tasks on its own repository, and every
+        other project's publisher collects only that project's tasks, so a
+        task whose ``repo_id`` names a repository of *another* project is
+        collected by nobody -- and readiness, scoped the same way, counts it
+        as delivered.  A project move used to leave exactly that behind
+        (``fleet-meadow``, ``smart-orbit.10``); the move now rebinds, and this
+        heals the rows it left.  Another repository of this same project is a
+        deliberate binding and is left alone.  Each rebind is reported on the
+        task, since it changes what the publisher will collect.
+        """
+        from src.database.tables import repos
+
+        own = select(repos.c.id).where(repos.c.project_id == project_id)
+        async with self.db._engine.begin() as conn:
+            foreign = (
+                await conn.execute(
+                    select(tasks.c.id, tasks.c.repo_id)
+                    .where(
+                        tasks.c.project_id == project_id,
+                        tasks.c.repo_id.is_not(None),
+                        tasks.c.repo_id.not_in(own),
+                    )
+                    .order_by(tasks.c.id)
+                    .with_for_update()
+                )
+            ).all()
+            if not foreign:
+                return []
+            ids = [row.id for row in foreign]
+            await conn.execute(update(tasks).where(tasks.c.id.in_(ids)).values(repo_id=repo.id))
+            flipped = await self.db.recompute_blocked(set(ids), conn=conn)
+        await self.db.log_blocked_flips(flipped)
+        for row in foreign:
+            logger.warning(
+                "development publisher rebound %s from %s to %s: the repository "
+                "belongs to another project, so no publisher collected the task",
+                row.id, row.repo_id, repo.id,
+                extra={"project": project_id, "task": row.id},
+            )
+            try:
+                await self.db.add_task_comment(
+                    row.id,
+                    (
+                        f"Repository rebound from `{row.repo_id}` to `{repo.id}`: the task "
+                        f"named another project's repository, so no publisher collected its "
+                        f"branch. Development delivery for `{project_id}` now collects it "
+                        f"from `{repo.url}`."
+                    ),
+                    author_kind="supervisor",
+                    author_id="development-integration",
+                )
+            except Exception:  # the rebind is the fix; the note is a courtesy
+                logger.debug("development publisher: rebind comment failed", exc_info=True)
+        return ids
+
     async def refresh_dependencies(self, project_id):
         """Repair projections from before delivery-aware readiness was installed."""
         async with self.db._engine.begin() as conn:
@@ -196,11 +290,10 @@ class DevelopmentIntegration:
             if actual == prepared or (
                 actual and prepared and await self.git.ais_ancestor(str(store), prepared, actual)
             ):
-                await self.change(
-                    row["id"],
-                    state="delivered",
-                    evidence=row["evidence"] | {"reconciled_remote": actual},
-                )
+                evidence = row["evidence"] | {"reconciled_remote": actual}
+                if row["target_ref"] == "refs/heads/" + repo.default_branch and row["manifest"]:
+                    evidence = armed_for_branch_cleanup(evidence)
+                await self.change(row["id"], state="delivered", evidence=evidence)
             elif actual == row["expected_sha"]:
                 # Caller holds publication exclusion; no daemon publisher survived.
                 await self.change(
@@ -253,7 +346,10 @@ class DevelopmentIntegration:
         )
         return evidence, passed or policy.validation == "advisory"
 
-    async def publish(self, repo, store, target_ref, head, expected, manifest, evidence, reason):
+    async def publish(
+        self, repo, store, target_ref, head, expected, manifest, evidence, reason,
+        *, arm_branch_cleanup=False,
+    ):
         now = time.time()
         row = {
             "id": str(uuid4()),
@@ -290,7 +386,12 @@ class DevelopmentIntegration:
         confirmed = await self.remote(store, target_ref)
         if confirmed != head:
             raise DevelopmentBusy("published ref could not be confirmed; journal retained")
-        await self.change(row["id"], state="delivered")
+        if arm_branch_cleanup:
+            await self.change(
+                row["id"], state="delivered", evidence=armed_for_branch_cleanup(evidence)
+            )
+        else:
+            await self.change(row["id"], state="delivered")
         return {"outcome": "delivered", "id": row["id"], "head_sha": head, "manifest": manifest}
 
     async def adopt(
@@ -375,6 +476,24 @@ class DevelopmentIntegration:
                     raise ValueError(f"required child {outside} is still open")
                 now = time.time()
                 identity = str(uuid4())
+                # The completion recorded below reports the adopted head, while
+                # the manifest names each task by its branch head, so readiness
+                # cannot match the two on its own. Bind them in the same row.
+                recorded = {t["id"]: str(uuid4()) for t in selected if t["status"] != "COMPLETED"}
+                sources = {member["task_id"]: member["source_sha"] for member in manifest}
+                evidence = {
+                    "kind": "operator_accepted",
+                    "operator_id": operator_id,
+                    "validation": "operator_decision",
+                    "conclusion": "not_ci_attested",
+                }
+                if recorded:
+                    evidence["completion_sources"] = [
+                        self._completion_proof(task_id, completion_id, head_sha, sources[task_id])
+                        for task_id, completion_id in sorted(recorded.items())
+                    ]
+                if target_ref == "refs/heads/" + repo.default_branch:
+                    evidence = armed_for_branch_cleanup(evidence)
                 await conn.execute(
                     insert(deliveries).values(
                         id=identity,
@@ -385,12 +504,7 @@ class DevelopmentIntegration:
                         prepared_sha=head_sha,
                         state="adopted",
                         manifest=manifest,
-                        evidence={
-                            "kind": "operator_accepted",
-                            "operator_id": operator_id,
-                            "validation": "operator_decision",
-                            "conclusion": "not_ci_attested",
-                        },
+                        evidence=evidence,
                         reason=reason,
                         created_at=now,
                         updated_at=now,
@@ -412,10 +526,10 @@ class DevelopmentIntegration:
                 from src.database.tables import task_completion_records
 
                 for task_id in close_order:
-                    if next(t for t in selected if t["id"] == task_id)["status"] != "COMPLETED":
+                    if task_id in recorded:
                         await conn.execute(
                             insert(task_completion_records).values(
-                                id=str(uuid4()),
+                                id=recorded[task_id],
                                 task_id=task_id,
                                 outcome="pass",
                                 summary=reason,
@@ -452,6 +566,7 @@ class DevelopmentIntegration:
             raise ValueError("project is not in development mode")
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
+        await self.rebind_foreign_repositories(project_id, repo)
         await self.refresh_dependencies(project_id)
         async with self.exclusion(repo.id):
             store = await self.store(repo)
@@ -717,7 +832,8 @@ class DevelopmentIntegration:
                 await self.reconcile_parked(repo, store, base)
                 return {"outcome": "parked", "head_sha": head, "evidence": evidence}
             result = await self.publish(
-                repo, store, target, head, base, manifest, evidence, "development batch"
+                repo, store, target, head, base, manifest, evidence, "development batch",
+                arm_branch_cleanup=True,
             )
             await self.reconcile_parked(
                 repo, store, head if result["outcome"] == "delivered" else base
@@ -750,10 +866,10 @@ class DevelopmentIntegration:
                 )
                 if not contained and proof is None:
                     continue
-                evidence = {**row["evidence"], **(
+                evidence = armed_for_branch_cleanup({**row["evidence"], **(
                     {"resolved_by_main_ancestry": accepted_head} if contained else
                     {"resolved_by_delivered_repair": proof}
-                )}
+                )})
                 await self.change(identity, state="adopted", prepared_sha=accepted_head, evidence=evidence)
                 history.append({**row, "state": "adopted", "prepared_sha": accepted_head,
                                 "evidence": evidence, "updated_at": time.time()})
@@ -799,8 +915,20 @@ class DevelopmentIntegration:
         except GitError:
             return None
 
+    @staticmethod
+    def _completion_proof(task_id, completion_id, reported_sha, source_sha):
+        """One ``completion_sources`` entry, the shape readiness matches on."""
+        return {"task_id": task_id, "completion_id": completion_id,
+                "reported_sha": reported_sha, "source_sha": source_sha}
+
     async def reconcile_completion_sources(self, repo, store, history):
-        """Bind unique abbreviated completion IDs to exact delivered revisions.
+        """Bind completions to delivered revisions the manifest does not name.
+
+        Two cases: a unique abbreviated completion ID that Git resolves to the
+        member's source, and a completion that reports the row's own prepared
+        head, which is on the target ref. The second is what :meth:`adopt`
+        records for a task it closes; adopt binds it as it writes the row, and
+        this pass backfills rows journaled before it did.
 
         Keep the original completion evidence intact. Readiness consumes this
         publisher proof, never a SQL prefix match that could accept ambiguity.
@@ -820,12 +948,17 @@ class DevelopmentIntegration:
                     canonical = await self._completion_source(store, completion)
                     completions[identity] = completion, canonical
                 completion, canonical = completions[identity]
-                if (completion is None or not completion.commits or canonical is None
-                        or canonical != member.get("source_sha")
-                        or canonical == completion.commits[-1]):
+                if completion is None or not completion.commits or canonical is None:
                     continue
-                proof = {"task_id": identity, "completion_id": completion.id,
-                         "reported_sha": completion.commits[-1], "source_sha": canonical}
+                reported = completion.commits[-1]
+                if canonical == member.get("source_sha"):
+                    if canonical == reported:
+                        continue  # The manifest itself names this close.
+                elif canonical != row["prepared_sha"]:
+                    continue
+                proof = self._completion_proof(
+                    identity, completion.id, reported, member.get("source_sha")
+                )
                 if proof not in proofs:
                     proofs.append(proof)
                     changed = True
@@ -1024,6 +1157,20 @@ class DevelopmentIntegration:
                 self._note_project_fault(project_id, exc)
             else:
                 self._note_project_fault(project_id, None)
+            # Its own isolation: a wedged batch must not keep delivered
+            # branches around, and a cleanup fault must not look like a
+            # publisher fault.  Failed deletes are recorded on the row and
+            # retried from there; only an unexpected error reaches here.
+            try:
+                await self.collect_delivered_branches(project_id, now=now)
+            except DevelopmentBusy:
+                pass
+            except Exception as exc:  # noqa: BLE001 - isolation is the point
+                logger.warning(
+                    "development branch cleanup failed for %s: %s: %s",
+                    project_id, type(exc).__name__, exc,
+                    extra={"project": project_id, "fault": type(exc).__name__},
+                )
 
     def _note_project_fault(self, project_id, exc):
         """One structured warning per project per state change.
@@ -1057,14 +1204,356 @@ class DevelopmentIntegration:
             extra={"project": project_id, "fault": type(exc).__name__},
         )
 
+    # -- branches a delivery made obsolete --------------------------------
+
+    async def collect_delivered_branches(self, project_id, *, now=None):
+        """Delete from origin the refs that confirmed main deliveries made obsolete.
+
+        Runs for each default-branch journal row armed with
+        ``branch_cleanup: pending`` (armed when the row lands: published,
+        reconciled, resolved from parked, or adopted).  For each row it deletes
+
+        * every member task's branch, when its remote head is the delivered
+          revision or is on the default branch, plus the ``-wip`` sibling
+          when that one is on the default branch;
+        * every candidate or parent assembly carrying one of the row's
+          members, once *all* the members it carries are delivered — so a
+          superseded candidate of a batch that parked goes too; and
+        * for a parked batch that its sources resolved on their own, the
+          branch of its repair when that repair ended FAILED or BLOCKED.
+          The source worker's branch is deleted only as a delivered member.
+
+        Nothing :func:`live_branch_references` holds is touched, and each
+        delete is a lease on the observed head.  What was deleted, kept (with
+        why) or already missing is recorded on the row; unconfirmed deletes
+        retry with backoff up to ``BRANCH_CLEANUP_MAX_ATTEMPTS``.
+        """
+        now = time.time() if now is None else now
+        project = await self.db.get_project(project_id)
+        if (
+            project is None
+            or project.hierarchical_integration_mode != "development"
+            or not project.integration_repository_id
+        ):
+            return {"outcome": "idle", "rows": []}
+        repo = await self.db.get_repo(project.integration_repository_id)
+        if repo is None:
+            return {"outcome": "idle", "rows": []}
+        target = "refs/heads/" + repo.default_branch
+
+        def due(row):
+            record = (row["evidence"] or {}).get(BRANCH_CLEANUP_KEY)
+            return (
+                row["repository_id"] == repo.id
+                and row["target_ref"] == target
+                and row["state"] in {"delivered", "adopted"}
+                and isinstance(record, dict)
+                and record.get("state") == "pending"
+                and float(record.get("next_attempt_at") or 0) <= now
+            )
+
+        # Cheap and lock-free: most ticks have nothing armed.
+        if not any(due(row) for row in await self.rows(project_id)):
+            return {"outcome": "idle", "rows": []}
+        async with self.exclusion(repo.id):
+            history = await self.rows(project_id)
+            pending = [row for row in history if due(row)][:BRANCH_CLEANUP_ROWS_PER_TICK]
+            if not pending:
+                return {"outcome": "idle", "rows": []}
+            try:
+                store = await self.store(repo)
+                heads = await remote_heads(self.run_git, store)
+                async with self.db._engine.connect() as conn:
+                    holds = await live_branch_references(conn)
+                plans = {
+                    row["id"]: await self._plan_branch_cleanup(
+                        repo, store, row, history, heads, holds
+                    )
+                    for row in pending
+                }
+                targets = {
+                    branch: {"head": entry["head"], "reason": entry["reason"]}
+                    for plan in plans.values()
+                    for branch, entry in plan["delete"].items()
+                }
+                deletion = await delete_branches(
+                    self.git, self.run_git, store, targets,
+                    default_branch=repo.default_branch,
+                    main_head=heads.get(repo.default_branch),
+                    backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
+                error = f"{type(exc).__name__}: {exc}"
+                return {
+                    "outcome": "retry",
+                    "rows": [
+                        await self._record_branch_cleanup(row, now, error=error)
+                        for row in pending
+                    ],
+                }
+            return {
+                "outcome": "collected",
+                "rows": [
+                    await self._record_branch_cleanup(
+                        row, now, plan=plans[row["id"]], deletion=deletion,
+                    )
+                    for row in pending
+                ],
+            }
+
+    async def _plan_branch_cleanup(self, repo, store, row, history, heads, holds):
+        """Decide what *row*'s landing lets go of.  Reads only; deletes nothing."""
+        target = "refs/heads/" + repo.default_branch
+        main_head = heads.get(repo.default_branch)
+        delete, kept, missing = {}, [], []
+        landed_by = f"delivered by development batch {row['id']}"
+
+        async def on_main(head):
+            return bool(main_head) and bool(
+                await self.git.ais_ancestor(str(store), head, main_head)
+            )
+
+        async def consider(branch, *, kind, delivered=None, quiet=False):
+            """Delete *branch* when it is still at *delivered* or is on main."""
+            if branch is None or branch in delete:
+                return
+            if (
+                not branch.startswith(TASK_BRANCH_PREFIX)
+                or branch == repo.default_branch
+                or (kind != "assembly" and branch.startswith(ASSEMBLY_PREFIX))
+            ):
+                if not quiet:
+                    kept.append({"branch": branch, "reason": "not an aq/ task branch"})
+                return
+            head = heads.get(branch)
+            if head is None:
+                if not quiet:
+                    missing.append(branch)
+                return
+            if branch in holds:
+                kept.append({"branch": branch, "reason": holds[branch]})
+            elif head == delivered or await on_main(head):
+                delete[branch] = {"head": head, "kind": kind, "reason": landed_by}
+            elif not quiet:
+                kept.append(
+                    {"branch": branch, "reason": f"has commits not on {repo.default_branch}"}
+                )
+
+        members = _manifest_members(row["manifest"])
+        for member in members:
+            task = await self.resolve_task(member["task_id"])
+            if task is None:
+                kept.append(
+                    {"branch": f"aq/{member['task_id']}", "reason": "task is unknown"}
+                )
+                continue
+            branch = branch_of(task.branch_name)
+            if branch is None:
+                continue
+            if task.status != TaskStatus.COMPLETED.value:
+                kept.append({"branch": branch, "reason": f"task is {task.status}"})
+                continue
+            await consider(branch, kind="task", delivered=member.get("source_sha"))
+            # A fail-close sibling holds a failed attempt: only its ancestry
+            # proves that work is on main.
+            await consider(branch + "-wip", kind="task", quiet=True)
+
+        def key(member):
+            return member["task_id"], member.get("source_sha")
+
+        landed = {key(member) for member in members}
+        done = {
+            key(member)
+            for other in history
+            if other["repository_id"] == repo.id
+            and other["target_ref"] == target
+            and other["state"] in {"delivered", "adopted"}
+            for member in _manifest_members(other["manifest"])
+        }
+        assemblies = {}
+        for other in history:
+            branch = branch_of(other["target_ref"])
+            if other["repository_id"] == repo.id and branch and branch.startswith(ASSEMBLY_PREFIX):
+                assemblies.setdefault(branch, []).append(other)
+        for branch, rows in sorted(assemblies.items()):
+            carried = {key(m) for other in rows for m in _manifest_members(other["manifest"])}
+            if not carried & landed:
+                continue
+            if any(other["state"] != "delivered" for other in rows):
+                kept.append({"branch": branch, "reason": "assembly publication is unsettled"})
+            elif not carried <= done:
+                kept.append({"branch": branch, "reason": "carries work not delivered yet"})
+            else:
+                latest = max(rows, key=lambda other: (other["created_at"], other["id"]))
+                await consider(branch, kind="assembly", delivered=latest["prepared_sha"])
+
+        evidence = row["evidence"] or {}
+        if "resolved_by_main_ancestry" in evidence:
+            # The batch parked, a repair was filed, then the sources reached
+            # main on their own.  A repair that ended without delivering is
+            # moot; one still able to run or deliver is held (or will be
+            # collected as a member of its own delivery).
+            repair = await self.resolve_task(self._repair_identity(row["manifest"]))
+            if repair is not None and repair.status in {
+                TaskStatus.FAILED.value, TaskStatus.BLOCKED.value,
+            }:
+                branch = branch_of(repair.branch_name)
+                for candidate in (branch, branch and branch + "-wip"):
+                    head = heads.get(candidate) if candidate else None
+                    if head is None or candidate in delete:
+                        continue
+                    if candidate in holds:
+                        kept.append({"branch": candidate, "reason": holds[candidate]})
+                    else:
+                        delete[candidate] = {
+                            "head": head, "kind": "moot_repair",
+                            "reason": f"repair {repair.task_id} {repair.status}; its sources "
+                                      f"reached {repo.default_branch} ({row['id']})",
+                        }
+        return {"delete": delete, "kept": kept, "missing": missing}
+
+    async def _record_branch_cleanup(self, row, now, *, plan=None, deletion=None, error=None):
+        """Write one attempt's result onto *row*; log the refs it deleted."""
+        evidence = row["evidence"] or {}
+        previous = evidence.get(BRANCH_CLEANUP_KEY) or {}
+        attempts = int(previous.get("attempts", 0)) + 1
+        deleted = list(previous.get("deleted", []))
+        fresh = []
+        if error is None:
+            kept, failed = list(plan["kept"]), []
+            outcomes, bundled = deletion["outcomes"], set(deletion["bundled"])
+            for branch, entry in sorted(plan["delete"].items()):
+                outcome = outcomes.get(branch)
+                if outcome == "deleted":
+                    fresh.append({"branch": branch, "sha": entry["head"], "kind": entry["kind"]})
+                    if branch in bundled:
+                        fresh[-1]["backup"] = deletion["bundle"]
+                elif outcome == "moved":
+                    kept.append({"branch": branch, "reason": "moved while being deleted"})
+                else:
+                    failed.append(branch)
+            deleted.extend(fresh)
+            missing = plan["missing"]
+            if failed:
+                error = f"{len(failed)} delete(s) not confirmed: {', '.join(failed[:5])}"
+        else:
+            kept, missing = previous.get("kept", []), previous.get("missing", [])
+        if error is None:
+            state, next_attempt = "complete", None
+        elif attempts >= BRANCH_CLEANUP_MAX_ATTEMPTS:
+            state, next_attempt = "exhausted", None
+        else:
+            state = "pending"
+            next_attempt = now + min(
+                BRANCH_CLEANUP_RETRY_SECONDS * 2 ** (attempts - 1),
+                BRANCH_CLEANUP_RETRY_MAX_SECONDS,
+            )
+        record = {
+            "state": state,
+            "attempts": attempts,
+            "next_attempt_at": next_attempt,
+            "last_error": error,
+            "deleted": deleted,
+            "kept": kept,
+            "missing": missing,
+            "log": (deletion or {}).get("log") or previous.get("log"),
+            "updated_at": now,
+        }
+        # Annotation only: it changes nothing readiness reads, so no
+        # projection recompute and no ``updated_at`` bump on the row.
+        async with self.db._engine.begin() as conn:
+            await conn.execute(
+                update(deliveries)
+                .where(deliveries.c.id == row["id"])
+                .values(evidence={**evidence, BRANCH_CLEANUP_KEY: record})
+            )
+        if fresh:
+            await self.db.log_event(
+                "development.branches_deleted",
+                project_id=row["project_id"],
+                payload=json.dumps({"delivery_id": row["id"], "deleted": fresh}),
+            )
+            logger.info(
+                "development delivery %s: deleted %d obsolete branch(es) from origin",
+                row["id"], len(fresh),
+                extra={"batch": row["id"], "project": row["project_id"]},
+            )
+        if state == "exhausted" and previous.get("state") != "exhausted":
+            logger.warning(
+                "development delivery %s: branch cleanup gave up after %d attempts: %s",
+                row["id"], attempts, error,
+                extra={"batch": row["id"], "project": row["project_id"]},
+            )
+        return {"delivery_id": row["id"], **record, "deleted_now": fresh}
+
+    async def stale_branches(self, project_id, *, delete=False, now=None):
+        """Origin ``aq/`` branches the branch policy lets go of, and what holds the rest.
+
+        The view behind ``aq doctor --check git.stale_branches`` (and the
+        supervisor's stall sweep): branches whose work is on the default
+        branch, ``aq/integration/*`` refs whose owner is released and whose
+        operation finished, and branches of FAILED or abandoned tasks 14 days
+        after they went terminal — minus everything
+        :func:`live_branch_references` holds.  See
+        :func:`src.integration.delivery_branches.find_stale_branches`.  With
+        *delete*, each stale branch is backed up, logged and deleted on a
+        lease at the head it was found at (:func:`delete_branches`).
+        """
+        now = time.time() if now is None else now
+        project = await self.db.get_project(project_id)
+        if project is None or not project.integration_repository_id:
+            raise ValueError("project has no designated repository")
+        repo = await self.db.get_repo(project.integration_repository_id)
+        if repo is None or not repo.url:
+            raise ValueError("project repository needs a remote URL")
+        async with self.exclusion(repo.id):
+            store = await self.store(repo)
+            async with self.db._engine.connect() as conn:
+                holds = await live_branch_references(conn)
+                released = await released_integration_refs(conn)
+                expired = await expired_task_branches(conn, now=now)
+            report = await find_stale_branches(
+                self.run_git, store, default_branch=repo.default_branch, holds=holds,
+                released=released, expired=expired,
+            )
+            report.update(project_id=project_id, repository_id=repo.id)
+            if not delete or not report["stale"]:
+                return report
+            deletion = await delete_branches(
+                self.git, self.run_git, store,
+                {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
+                default_branch=repo.default_branch, main_head=report["main_head"],
+                backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+            )
+        outcomes = deletion["outcomes"]
+        deleted = [e for e in report["stale"] if outcomes.get(e["branch"]) == "deleted"]
+        report["deleted"] = deleted
+        report["moved"] = [b for b, o in sorted(outcomes.items()) if o == "moved"]
+        report["failed"] = [b for b, o in sorted(outcomes.items()) if o == "failed"]
+        report["backup"] = {
+            "bundle": deletion["bundle"], "bundled": deletion["bundled"], "log": deletion["log"],
+        }
+        if deleted:
+            await self.db.log_event(
+                "git.stale_branches_deleted",
+                project_id=project_id,
+                payload=json.dumps({
+                    "repository_id": repo.id, "deleted": deleted, **report["backup"],
+                }),
+            )
+        return report
+
     async def configure(self, project_id, policy, *, reason, operator_id):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from src.database.tables import (
+            integration_batches,
             integration_branch_owners,
             integration_legacy_suppression,
             integration_promotion_intents,
+            project_integration_leases,
         )
+        from src.integration.live_operations import describe_live_operation, live_operations_on
 
         policy = DevelopmentPolicy.model_validate(policy).checked()
         if not reason.strip():
@@ -1119,6 +1608,67 @@ class DevelopmentIntegration:
             raise ValueError("project repository needs a remote URL")
         async with self.exclusion(repo.id), self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
+            current_mode = await conn.scalar(
+                select(projects.c.hierarchical_integration_mode).where(projects.c.id == project_id)
+            )
+            # Development does not run hierarchy repair operations.  Leaving
+            # one behind makes it permanently unschedulable, so a transition
+            # must make the operator explicitly settle it first.
+            if current_mode in {"hierarchy", "train"}:
+                live_operations = await live_operations_on(conn, project_id)
+                active_batches = (
+                    await conn.execute(
+                        select(
+                            integration_batches.c.id,
+                            integration_batches.c.lifecycle,
+                            integration_batches.c.cleanup_state,
+                        )
+                        .where(integration_batches.c.project_id == project_id)
+                        .where(
+                            integration_batches.c.lifecycle.in_(
+                                (
+                                    "sealing",
+                                    "sealed",
+                                    "building",
+                                    "testing",
+                                    "repairing",
+                                    "human_blocked",
+                                    "promoting",
+                                    "cleanup_pending",
+                                )
+                            )
+                            | (
+                                (integration_batches.c.lifecycle == "promoted")
+                                & (integration_batches.c.cleanup_state != "complete")
+                            )
+                        )
+                        .order_by(integration_batches.c.created_at, integration_batches.c.id)
+                    )
+                ).mappings().all()
+                lease = (
+                    await conn.execute(
+                        select(project_integration_leases).where(
+                            project_integration_leases.c.project_id == project_id
+                        )
+                    )
+                ).mappings().one_or_none()
+                if live_operations or active_batches or lease is not None:
+                    details = [
+                        describe_live_operation(operation) for operation in live_operations
+                    ]
+                    details.extend(
+                        f"batch {batch['id']} ({batch['lifecycle']}, cleanup "
+                        f"{batch['cleanup_state']})"
+                        for batch in active_batches
+                    )
+                    if lease is not None:
+                        details.append(
+                            f"lease for batch {lease['batch_id']} held by {lease['owner_id']}"
+                        )
+                    raise DevelopmentBusy(
+                        "cannot switch hierarchy integration to development while legacy "
+                        "integration work remains: " + "; ".join(details)
+                    )
             # Old in-flight default-branch writes must settle before switching publishers.
             pending = await conn.scalar(
                 select(integration_promotion_intents.c.id)

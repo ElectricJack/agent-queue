@@ -443,6 +443,23 @@ done
 cp "$REPO_ROOT/tests/fixtures/formulas/base-review.md" "$E2E_VAULT/formulas/base-review.md"
 cp "$REPO_ROOT/tests/fixtures/formulas/review-and-fix.md" "$E2E_VAULT/formulas/review-and-fix.md"
 
+# The provider-failover kit (docs/specs/provider-failover.md D23, scenario
+# S16): two fake harnesses, `prova` and `provb`; a class both can run
+# (`std-high`) and one only `prova` can (`solo-high`, the astra-high
+# analogue); and a hand-authored pool profile per (class, harness).  Whether
+# a fake start succeeds -- and what the fake login probe answers -- is read
+# from $E2E_FAKE_SCRIPT on every start, so S16 exhausts and restores a
+# provider by rewriting that one file.
+FAILOVER_KIT="$REPO_ROOT/tests/fixtures/provider_failover"
+mkdir -p "$E2E_VAULT/harnesses" "$E2E_VAULT/intelligence-classes"
+cp "$FAILOVER_KIT"/harnesses/*.md "$E2E_VAULT/harnesses/"
+cp "$FAILOVER_KIT"/intelligence-classes/*.md "$E2E_VAULT/intelligence-classes/"
+for profile_dir in "$FAILOVER_KIT"/agent-types/*/; do
+    profile_id="$(basename "$profile_dir")"
+    mkdir -p "$E2E_VAULT/agent-types/$profile_id"
+    cp "$profile_dir/profile.md" "$E2E_VAULT/agent-types/$profile_id/profile.md"
+done
+
 # ---------------------------------------------------------------------------
 # 4. Config
 # ---------------------------------------------------------------------------
@@ -461,6 +478,9 @@ else
     TIER=2
     LIVE_SUBSYSTEMS=true
 fi
+
+# Both fake providers start healthy; S16 rewrites this file mid-run.
+printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
 
 echo "==> writing $E2E_CONFIG (tier $TIER, provider $AQ_E2E_SESSION_PROVIDER)"
 cat > "$E2E_CONFIG" <<YAML
@@ -521,6 +541,9 @@ sessions:
   # Tier 1: nothing is spawned; the smoke runner acts as the pool worker.
   # Tier 2: switch to \`tmux\` (see docs/guides/e2e-swarm.md).
   provider: ${AQ_E2E_SESSION_PROVIDER}
+  # Tier 1 only (ignored by tmux): which fake harness starts die, and on
+  # which dialog -- rewritten by S16 mid-run.  src/sessions/fake_script.py.
+  fake_script_file: $E2E_FAKE_SCRIPT
   tmux_socket: $AQ_E2E_TMUX_SOCKET
   lease_ttl_seconds: 480
   adopt_on_start: false

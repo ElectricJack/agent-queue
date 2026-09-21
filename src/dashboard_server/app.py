@@ -7,9 +7,10 @@ One dispatcher decides where a request goes, in this order:
 2. ``/api``, ``/health``, ``/ready``, ``/ws`` (on a segment boundary) -- a path
    with a ``.`` or ``..`` segment is ``400``, then the edge gates
    (:mod:`src.dashboard_server.edge`), then the daemon proxy.
-3. The daemon's other prefixes (``/mcp``, ``/docs``, ``/redoc``,
-   ``/openapi.json``, ``/plans``, ``/dashboard``) -- ``404`` JSON, never
-   ``index.html``, so a client pointed at the wrong port gets an error.
+3. The daemon's non-dashboard prefixes and retired docs paths (``/mcp``,
+   ``/docs``, ``/redoc``, ``/openapi.json``, ``/plans``, ``/dashboard``) --
+   ``404`` JSON, never ``index.html``, so a client pointed at the wrong port
+   gets an error.
 4. Everything else -- the verified bundle with SPA fallback.
 
 Every response this process generates itself carries
@@ -39,7 +40,7 @@ HEALTH_PATH = "/__aq/health"
 RESERVED_PREFIX = "/__aq"
 #: Forwarded to the daemon (spec §2.1).  ``/ws`` carries the WebSockets.
 PROXIED_PREFIXES = ("/api", "/health", "/ready", "/ws")
-#: The daemon's other surfaces; never proxied and never an SPA route.
+#: Non-dashboard and retired documentation paths; never proxied nor an SPA route.
 NOT_SERVED_PREFIXES = ("/mcp", "/docs", "/redoc", "/openapi.json", "/plans", "/dashboard")
 
 
@@ -158,6 +159,9 @@ class DashboardServerApp:
                 "version": self.bundle.version,
                 "files": len(self.bundle.files),
                 "verified": True,
+                # Which build this process serves; `aq status` and `aq doctor`
+                # compare it with the installed manifest to spot a stale server.
+                "manifest_sha256": self.bundle.manifest_sha256,
             },
             "api_url": self.settings.api_url,
             "upstream_ok": await self.proxy.upstream_ok(),

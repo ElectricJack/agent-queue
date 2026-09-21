@@ -38,11 +38,14 @@ and takes exactly one of three paths.
    the `options` catalog — one row per intelligence class, provider and
    profile an ordinary worker can execute, with configured, idle and busy
    counts. An `already_routed` outcome ends the rule: the task carries a
-   class and a profile that serves it. An `explicit` outcome — the operator
-   already fixed the class, and `routing.explicit_profile_id` names the
-   profile that serves it — continues to step 3. An `undecided` outcome
-   continues to step 2. A `no_options`, `rejected`, or `runtime_error`
-   outcome fails the rule.
+   class and a profile that serves it. A `held` outcome also ends the rule:
+   the task has options in principle, but every one is on a provider that is
+   unavailable right now, and the task waits for one to recover rather than
+   failing a run every two minutes for the length of the outage. An
+   `explicit` outcome — the operator already fixed the class, and
+   `routing.explicit_profile_id` names the profile that serves it — continues
+   to step 3. An `undecided` outcome continues to step 2. A `no_options`,
+   `rejected`, or `runtime_error` outcome fails the rule.
 2. Ask the `playbook-compiler` profile to choose the route. Give it the task's
    `title`, `description`, `priority` and `task_type`, and the `options`
    rows, all from `routing`. Bind the answer as `decision`: an
@@ -51,15 +54,21 @@ and takes exactly one of three paths.
    continues to step 4; a `runtime_error` outcome fails the rule.
 3. Call `task_route` with `task_id` from the event, `profile_id`
    `routing.explicit_profile_id`, `intelligence_class`
-   `routing.intelligence_class`, and `reason` `explicit intelligence class`.
-   A `routed` outcome ends the rule; a `rejected` or `runtime_error` outcome
-   fails it.
+   `routing.intelligence_class`, `reason` `explicit intelligence class`, and
+   `provider_intent` `class_only`. A `routed` outcome ends the rule; a
+   `rejected` or `runtime_error` outcome fails it.
 4. Call `task_route` with `task_id` from the event, `profile_id`
    `decision.profile_id`, `intelligence_class` `decision.intelligence_class`,
-   and `reason` `decision.reason`. It writes the class and the profile onto
-   the task under the "no worker holds it" predicate and resolves the task's
-   routing gate. A `routed` outcome ends the rule; a `rejected` or
-   `runtime_error` outcome fails it.
+   `reason` `decision.reason`, and `provider_intent` `class_only`. It writes
+   the class and the profile onto the task under the "no worker holds it"
+   predicate and resolves the task's routing gate. A `routed` outcome ends
+   the rule; a `rejected` or `runtime_error` outcome fails it.
+
+The route this playbook writes is routing's own placement, so it records the
+provider intent `class_only`: nobody chose the provider, and if it becomes
+unavailable the task may fail over to the same class elsewhere. `task_route`
+never downgrades a `pinned` or `preferred` intent a human set on the same
+provider.
 
 ## Choosing a class
 

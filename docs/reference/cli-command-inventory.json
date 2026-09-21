@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 350,
+    "leaf_commands": 370,
     "registration": {
-      "generated": 245,
-      "handwritten": 105
+      "generated": 260,
+      "handwritten": 110
     },
     "ownership": {
-      "core": 311,
+      "core": 331,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 349
+      "supported": 369
     },
     "evidence_level": {
-      "behavioral": 10,
-      "dispatch": 245,
-      "registration": 95
+      "behavioral": 14,
+      "dispatch": 260,
+      "registration": 96
     },
     "acceptance_status": {
-      "working": 55,
+      "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 294
+      "untested": 310
     }
   },
   "commands": [
@@ -863,6 +863,36 @@
       }
     },
     {
+      "path": "aq dashboard restart",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_restart",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq dashboard serve",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -884,6 +914,36 @@
         "optional": [
           "--host",
           "--port",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard start",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_start",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -1021,6 +1081,66 @@
         ],
         "optional": [
           "--subject",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard status",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_status",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard stop",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_stop",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -2162,6 +2282,47 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq git ci-repair-adopt",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "ci_repair_adopt",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--task-id"
+        ],
+        "optional": [
+          "--ref",
+          "--head-sha",
+          "--failing-tests",
+          "--failing-checks",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--failing-tests",
+          "--failing-checks"
+        ],
         "nullable": []
       }
     },
@@ -6720,6 +6881,251 @@
       }
     },
     {
+      "path": "aq provider held-tasks",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_held_tasks",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider history",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_history",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--provider"
+        ],
+        "optional": [
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider recheck",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_recheck",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--provider"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider reroute",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_reroute",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--provider",
+          "--task-id",
+          "--to-profile",
+          "--include-paused",
+          "--dry-run",
+          "--force",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--task-id"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider reroute-undo",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_reroute_undo",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--batch-id",
+          "--task-id",
+          "--force",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--task-id"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider set-state",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_set_state",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--provider",
+          "--state"
+        ],
+        "optional": [
+          "--reason",
+          "--for",
+          "--until",
+          "--no-expiry",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--provider",
+          "--verbose",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq question answer",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -6866,6 +7272,291 @@
         "required": [],
         "optional": [
           "--no-dashboard",
+          "--no-dashboard-server",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review comment",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_comment",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--revision",
+          "--body"
+        ],
+        "optional": [
+          "--quote",
+          "--heading-path",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--heading-path"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review decide",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_decide",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--revision",
+          "--decision"
+        ],
+        "optional": [
+          "--note",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review delegate",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_delegate",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--to"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review import-edits",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_import_edits",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review list",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_list",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--state",
+          "--kind",
+          "--task-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review show",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_show",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id"
+        ],
+        "optional": [
+          "--revision",
+          "--comments",
+          "--diff-from",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review submit",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.reviews.review_submit",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--file"
+        ],
+        "optional": [
+          "--task-id",
+          "--project-id",
+          "--review-id",
+          "--kind",
+          "--title",
+          "--changes",
+          "--resolves",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review withdraw",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "review_withdraw",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--reason"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -7263,6 +7954,7 @@
         "required": [],
         "optional": [
           "--no-dashboard",
+          "--no-dashboard-server",
           "--json",
           "--brief",
           "--api-url"
@@ -7323,6 +8015,7 @@
         "required": [],
         "optional": [
           "--keep-sessions",
+          "--no-dashboard-server",
           "--json",
           "--brief",
           "--api-url"
@@ -10291,6 +10984,8 @@
           "--reason",
           "--deliverable",
           "--requires-kind",
+          "--pin",
+          "--provider-intent",
           "--json",
           "--brief",
           "--api-url"
@@ -10438,6 +11133,8 @@
           "--max-retries",
           "--verification-type",
           "--profile-id",
+          "--provider-intent",
+          "--pin",
           "--intelligence-class",
           "--integration-mode",
           "--skip-verification",
@@ -10492,6 +11189,8 @@
           "--description",
           "--priority",
           "--profile-id",
+          "--provider-intent",
+          "--pin",
           "--intelligence-class",
           "--parent-key",
           "--parent-title",
@@ -11421,6 +12120,8 @@
           "--profile-id"
         ],
         "optional": [
+          "--provider-intent",
+          "--pin",
           "--intelligence-class",
           "--workspace-id",
           "--json",

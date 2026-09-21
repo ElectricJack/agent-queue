@@ -9,6 +9,7 @@ import { createFakeDashboardStateServer, TestDashboardState } from "../testUtils
 vi.mock("../api/hooks", () => ({
   useProjects: () => ({ data: [{ id: "p1", name: "Project one" }] }),
 }));
+vi.mock("../api/reviews", () => ({ useWaitingReviewCount: () => 2 }));
 vi.mock("./AgentFlock", () => ({ default: () => null }));
 vi.mock("../pages/project/onboarding/useProjectRoots", () => ({
   useProjectRoots: () => ({
@@ -43,6 +44,11 @@ function newFolderButton() {
 }
 
 describe("LeftRail Add project button", () => {
+  it("shows the waiting review count beside the Reviews link", () => {
+    renderRail();
+    expect(screen.getByRole("link", { name: /reviews/i })).toHaveTextContent("2");
+  });
+
   it("places a compact, labelled New folder control immediately before Add project", () => {
     renderRail();
     const newFolder = newFolderButton();

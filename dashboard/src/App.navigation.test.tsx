@@ -31,10 +31,13 @@ vi.mock("./api/hooks", () => ({
   useResumeProject: () => ({ mutate: actions.resume, isPending: false }),
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
 }));
-vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {} }));
+vi.mock("./api/reviews", () => ({ useWaitingReviewCount: () => 0 }));
+vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {}, useRawEventSubscription: () => {} }));
 vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
 vi.mock("./shell/TopBar", () => ({ default: () => null }));
+// The outage banner polls provider availability; this suite is about routing.
+vi.mock("./shell/ProviderAvailabilityBanner", () => ({ default: () => null }));
 vi.mock("./shell/RightSurface", () => ({ default: () => <PaneProbe /> }));
 vi.mock("./shell/palette/Palette", async () => {
   const { useActions } = await import("./shell/palette/registerActions");
@@ -62,6 +65,7 @@ vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles
 vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
 vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
+vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
@@ -114,6 +118,11 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("routes the Reviews nav destination", async () => {
+    renderApp("/reviews");
+    expect(await screen.findByRole("heading", { name: "Reviews inbox" })).toBeInTheDocument();
+  });
+
   it("restores a task pane after returning from a session and permits closing it", async () => {
     renderApp("/agents");
     await screen.findByRole("heading", { name: "Agent flock" });

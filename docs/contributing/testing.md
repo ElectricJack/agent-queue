@@ -332,7 +332,7 @@ daemon on real PostgreSQL, driven through the real CLI, with no LLM:
 scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh
 ```
 
-It runs fifteen scenarios in roughly two and a half minutes inside an isolated
+It runs sixteen scenarios in roughly six minutes inside an isolated
 world under `~/.agent-queue-e2e` — its own database, port, vault, tmux socket
 and throwaway repository. Nothing it touches is shared with your daemon. The
 full guide is [e2e swarm](../guides/e2e-swarm.md); the scripts are inventoried

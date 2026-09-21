@@ -197,6 +197,7 @@ the first poll.
 | `keys` | tmux `send-keys` arguments, sent in order, when the pattern matches. |
 | `quarantine` | When true, matching is **terminal**: the keys answer "stop" and the session is quarantined instead of continuing startup. |
 | `once` | Fire at most once per startup. |
+| `signal` | On a quarantine rule only: what the dialog says about the provider — `auth` (the CLI is not logged in) or `usage` (the account is out of usage). Provider availability counts it as strong evidence ([provider failover](../specs/provider-failover.md) D2). Omitted, a built-in name map applies: `login-required` → `auth`, `rate-limit`/`usage-limit` → `usage`. |
 
 Two rules govern the whole table:
 

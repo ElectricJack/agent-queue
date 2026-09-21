@@ -70,6 +70,7 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
         OUTCOME_UP_TO_DATE,
         UpdateRefused,
         apply_update,
+        dashboard_server_running,
         describe,
         plan_update,
     )
@@ -99,7 +100,12 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
     base = api_base_url(_read_config(host.state_dir / "config.yaml"))
     daemon_running = host.probe(f"{base}/health") in (200, 503)
     console.print("\n[bold]An update is available:[/]")
-    for line in describe(plan, backup=not no_backup, daemon_running=daemon_running):
+    for line in describe(
+        plan,
+        backup=not no_backup,
+        daemon_running=daemon_running,
+        dashboard_server_running=dashboard_server_running(host),
+    ):
         console.print(f"  • {line}")
     for subject in plan.subjects[:10]:
         console.print(f"    [dim]{subject}[/]")
