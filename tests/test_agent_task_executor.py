@@ -434,6 +434,34 @@ class TestDispatch:
         assert result.receipt_result["child_task_id"] == "child-2"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("timeout_seconds", "run_deadline_at", "expected"),
+        [(None, 400.0, 400.0), (600, 400.0, 400.0), (600, 5_000.0, 700.0), (None, None, None)],
+    )
+    async def test_the_child_wait_never_outlives_the_run_deadline(
+        self, timeout_seconds, run_deadline_at, expected
+    ):
+        """The earlier of the step's timeout and the run's deadline, as a ``WaitStep`` does.
+
+        ``WaitScheduler`` expires only a wait that *has* a deadline, so a child
+        wait with none outlived its run: a child that never settled left the
+        run paused past the deadline that was meant to end it.
+        """
+        from dataclasses import replace
+
+        registry, adapter = registry_with(CREATE_TASK)
+        adapter.queue.append(created("child-2"))
+        db = StubDatabase({"reviewer": StubProfile(aq_commands=["a"])})
+        ctx = replace(
+            context(registry, principal=parent_principal(aq_commands={"a"}), db=db, clock=100.0),
+            run_deadline_at=run_deadline_at,
+        )
+
+        result = await run(agent_task_step(timeout_seconds=timeout_seconds), ctx)
+
+        assert result.wait.deadline_at == expected
+
+    @pytest.mark.asyncio
     async def test_a_refused_creation_takes_the_failed_edge(self):
         registry, adapter = registry_with(CREATE_TASK)
         adapter.queue.append(
