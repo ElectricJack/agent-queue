@@ -194,6 +194,22 @@ require_gcloud() {
 
 tf() { terraform -chdir="$AQ_TF_DIR" "$@"; }
 
+# Read a value from terraform.tfvars, falling back to the variable's default so
+# `stop` works even when the caller never overrode zone/name.
+tf_var() {
+  local key="$1" val
+  val="$(sed -nE "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"([^\"]*)\".*/\\1/p" \
+        "${AQ_TF_DIR}/terraform.tfvars" 2>/dev/null | head -1)"
+  if [[ -z "$val" ]]; then
+    case "$key" in
+      zone) val="us-central1-a" ;;
+      name) val="agent-queue" ;;
+      *) die "could not read ${key} from terraform.tfvars" ;;
+    esac
+  fi
+  printf '%s' "$val"
+}
+
 cmd_gcp() {
   case "${1:-plan}" in
     init)    require_tf; tf init ;;
@@ -205,13 +221,42 @@ cmd_gcp() {
       warn "the data disk has prevent_destroy set; remove it deliberately if you mean to."
       tf destroy
       ;;
+    stop)
+      # Stopping is safe by design: the daemon's restart recovery resets BUSY
+      # agents, releases every workspace lock as stale, and returns IN_PROGRESS
+      # tasks to READY. Compute stops billing; disks do not.
+      require_tf; require_gcloud
+      step "Stopping the VM (disks keep billing)"
+      gcloud compute instances stop "$(tf output -raw vm_name)" \
+        --zone "$(tf_var zone)" --project "$(tf_var project_id)"
+      printf '\n%sAlso stop the database to reach the real floor:%s\n  ./deploy.sh gcp db-stop\n' "$DIM" "$OFF"
+      ;;
+    start)
+      require_tf; require_gcloud
+      step "Starting the VM"
+      gcloud compute instances start "$(tf output -raw vm_name)" \
+        --zone "$(tf_var zone)" --project "$(tf_var project_id)"
+      printf '\ncloud-init re-runs on boot and brings the stack back up.\n'
+      ;;
+    db-stop)
+      require_tf; require_gcloud
+      step "Stopping Cloud SQL (storage still bills)"
+      gcloud sql instances patch "$(tf_var name)-pg" --activation-policy NEVER \
+        --project "$(tf_var project_id)" --quiet
+      ;;
+    db-start)
+      require_tf; require_gcloud
+      step "Starting Cloud SQL"
+      gcloud sql instances patch "$(tf_var name)-pg" --activation-policy ALWAYS \
+        --project "$(tf_var project_id)" --quiet
+      ;;
     ssh)     require_tf; require_gcloud; eval "$(tf output -raw ssh_command)" ;;
     tunnel)
       require_tf; require_gcloud
       printf 'Then open %shttp://127.0.0.1:%s%s\n\n' "$GRN" "$AQ_DASHBOARD_PORT" "$OFF"
       eval "$(tf output -raw dashboard_tunnel_command)"
       ;;
-    *) die "unknown: gcp ${1}. Try: init, plan, apply, output, destroy, ssh, tunnel" ;;
+    *) die "unknown: gcp ${1}. Try: init, plan, apply, output, ssh, tunnel, stop, start, db-stop, db-start, destroy" ;;
   esac
 }
 
@@ -228,6 +273,8 @@ Agent Queue deployment.
   ./deploy.sh login [claude|codex]   authenticate a harness (interactive)
   ./deploy.sh gcp plan|apply         provision one VM + Cloud SQL
   ./deploy.sh gcp ssh|tunnel|output|destroy
+  ./deploy.sh gcp stop|start         stop/start the VM (disks keep billing)
+  ./deploy.sh gcp db-stop|db-start   stop/start Cloud SQL (storage keeps billing)
 
 Variables (export to override):
 

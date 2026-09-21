@@ -7,8 +7,12 @@
 # effectively no authentication in this configuration — `api_auth` is documented
 # upstream as auth for a *local* API, the dashboard sends no Authorization
 # header, and a request with no header resolves to a scope that can run every
-# command. So: no external IP, no ingress except IAP, and the dashboard bound to
-# localhost on the VM and reached through a tunnel. Do not open this up without
+# command.
+#
+# So: no ingress except IAP, and the dashboard bound to localhost *on the VM*
+# and reached through a tunnel. `egress_mode` decides whether outbound goes via
+# a public IP (~$3/mo) or Cloud NAT (~$32/mo); neither opens an inbound path,
+# but NAT removes one that could be misconfigured. Do not open this up without
 # reading deploy/README.md's security posture section first.
 
 terraform {
@@ -74,18 +78,20 @@ resource "google_compute_subnetwork" "subnet" {
   private_ip_google_access = true
 }
 
-# The VM has no external IP, so without NAT it cannot reach the internet at all
-# — and it must: pulling base images, cloning the repo, installing the harness
-# CLIs, and every LLM API call an agent makes.
+# Only built when egress_mode = "nat". The VM must reach the internet either
+# way — base images, the repo, the harness CLIs, and every LLM API call an agent
+# makes — so one of NAT or a public IP is mandatory, never neither.
 resource "google_compute_router" "router" {
+  count   = var.egress_mode == "nat" ? 1 : 0
   name    = "${local.name}-router"
   region  = var.region
   network = google_compute_network.vpc.id
 }
 
 resource "google_compute_router_nat" "nat" {
+  count                              = var.egress_mode == "nat" ? 1 : 0
   name                               = "${local.name}-nat"
-  router                             = google_compute_router.router.name
+  router                             = google_compute_router.router[0].name
   region                             = var.region
   nat_ip_allocate_option             = "AUTO_ONLY"
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
@@ -279,8 +285,16 @@ resource "google_compute_instance" "vm" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.subnet.id
-    # No access_config block: no external IP. Egress is via Cloud NAT, ingress
-    # is IAP only.
+
+    # An access_config block is what attaches a public IPv4. It exists only for
+    # *egress*: ingress is denied by the custom VPC's implicit deny plus the
+    # single IAP rule, and the dashboard binds to 127.0.0.1 on the VM, so it is
+    # not listening on this interface. With egress_mode = "nat" there is no
+    # block at all and no public address.
+    dynamic "access_config" {
+      for_each = var.egress_mode == "external_ip" ? [1] : []
+      content {}
+    }
   }
 
   scheduling {

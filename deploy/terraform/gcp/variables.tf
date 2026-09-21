@@ -89,6 +89,34 @@ variable "data_disk_type" {
   }
 }
 
+variable "egress_mode" {
+  description = <<-EOT
+    How the VM reaches the internet. It must reach it: pulling images, cloning
+    the repo, installing harness CLIs, and every LLM call an agent makes.
+
+    "external_ip" (default) attaches an ephemeral public IPv4, roughly $3/month.
+    "nat" routes through Cloud NAT with no public address at all, roughly
+    $32/month for the gateway plus per-GB processing.
+
+    Ingress is denied either way — the custom VPC has an implicit deny and the
+    only rule allows IAP's range to port 22 — and the dashboard binds to
+    127.0.0.1 *on the VM*, so it is not listening on a public interface
+    regardless. The difference is defence in depth: with NAT there is no
+    inbound path to misconfigure, while "external_ip" leaves the firewall as
+    the thing that must stay correct.
+
+    Given the web layer has effectively no authentication (deploy/README.md),
+    choose "nat" if you would rather pay for the extra layer.
+  EOT
+  type        = string
+  default     = "external_ip"
+
+  validation {
+    condition     = contains(["external_ip", "nat"], var.egress_mode)
+    error_message = "egress_mode must be external_ip or nat."
+  }
+}
+
 # --- Database ----------------------------------------------------------------
 
 variable "db_tier" {
