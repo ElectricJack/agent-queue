@@ -56,7 +56,16 @@ It refuses when:
 * any session in the subtree is still live — `live_descendants`. A task can be
   terminal while its worker is still draining, so this check is separate;
 * an active integration repair operation owns a task in the subtree —
-  `integration_owned`.
+  `integration_owned`;
+* an integration control-plane row still names a task in the subtree —
+  `integration_owned` again, this time naming the row. Four tables key a row to
+  a task with a `RESTRICT` (or `NO ACTION`) foreign key that neither the archive
+  nor the delete clears: `integration_parent_episodes.parent_task_id`,
+  `integration_parent_verifications.parent_task_id`,
+  `integration_repair_operations.verifier_task_id` and
+  `integration_candidate_resolutions.repair_task_id`. The task cannot leave the
+  active view while it is part of an integration episode, so the archive says
+  which row holds it rather than letting the database refuse the final `DELETE`.
 
 What the archived row keeps: everything in `tasks` except `claim_epoch`,
 `deliverables`, `discord_thread_id`, `filed_count` and `next_child_ordinal` —
@@ -87,6 +96,16 @@ selected individually, and a root whose *grandchild* is still open is caught by
 `archive_task`'s own check, logged and skipped. A project's reusable routing
 task (`triage` / `triage-open`) is excluded, so it keeps one identity and its
 run history.
+
+A refusal skips one task, never the sweep. Both bulk paths
+(`archive_old_terminal_tasks` and `archive_completed_tasks`) catch the refusal
+per task and carry on, and they also catch an `IntegrityError` from a foreign
+key no guard knows about yet. Before that, a single held task raised a
+`RestrictViolationError` out of the loop and the sweep archived *nothing* —
+every unrelated eligible task included — and the orchestrator's rate limit then
+kept it from trying again for an hour, at which point it met the same row. That
+`IntegrityError` case is logged at `warning` with a traceback, because reaching
+it means a guard is missing.
 
 ### Reading and removing archived tasks
 
@@ -150,7 +169,7 @@ These are working guards, not bugs.
 | `integration_owned` | An active repair operation owns a task in the subtree. | Let the operation finish or be cancelled. |
 | `hierarchy.branch_discard_required` | A materialised branch origin in the subtree. | Re-run with `--branches keep` or `--branches delete`. |
 | A paused task | A worker cannot close or resume a `PAUSED` task. | The operator resumes it; a worker should push its work and report. |
-| `ForeignKeyViolationError` naming an `integration_*` table | The task is referenced by integration control-plane rows with a **named `RESTRICT`** foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of a live integration episode. |
+| `ForeignKeyViolationError` naming an `integration_*` table | The task is referenced by integration control-plane rows with a **named `RESTRICT`** foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of a live integration episode. The *archive* path reports the same four as `integration_owned` instead, naming the row — see [Archiving](#archiving). |
 
 ### A known limitation
 

@@ -16,6 +16,13 @@ from unittest.mock import MagicMock
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, ArchiveConfig, DiscordConfig
 from src.database import Database
+from src.database.queries.archive_queries import INTEGRATION_TASK_REFERENCES
+from src.database.tables import (
+    integration_parent_episodes,
+    integration_repair_operations,
+    metadata,
+    repos,
+)
 from src.models import (
     Agent,
     AgentOutput,
@@ -776,6 +783,228 @@ class TestArchiveOldTerminalTasks:
             older_than_seconds=0,
         )
         assert archived_ids == []
+
+
+# ---------------------------------------------------------------------------
+# Database: integration tables that hold a hard FK onto tasks.id
+# ---------------------------------------------------------------------------
+
+
+async def _backdate(db: Database, *task_ids: str, seconds: float = 86400) -> None:
+    """Push ``updated_at`` back so the age-based sweep selects *task_ids*."""
+    old_time = time.time() - seconds
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old_time, "id": tid},
+            )
+
+
+async def _seed_repo(db: Database, rid: str = "r-1", pid: str = "p-1") -> None:
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            repos.insert().values(
+                id=rid,
+                project_id=pid,
+                url="git@example.com:acme/app.git",
+                default_branch="main",
+                checkout_base_path="/tmp/checkouts",
+                source_type="clone",
+                source_path="",
+            )
+        )
+
+
+async def _seed_parent_episode(
+    db: Database,
+    *,
+    episode_id: str = "ep-1",
+    task_id: str = "t-1",
+    repo_id: str = "r-1",
+) -> None:
+    """Record a parent-collection episode against *task_id* (RESTRICT FK)."""
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            integration_parent_episodes.insert().values(
+                id=episode_id,
+                parent_task_id=task_id,
+                repository_id=repo_id,
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=time.time(),
+            )
+        )
+
+
+async def _seed_batch_repair_operation(
+    db: Database,
+    *,
+    operation_id: str = "op-1",
+    verifier_task_id: str = "t-1",
+    state: str = "completed",
+) -> None:
+    """Record a settled batch repair whose verifier was *verifier_task_id*."""
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            integration_repair_operations.insert().values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id="b-1",
+                parent_task_id=None,
+                episode_id="ep-batch",
+                active_stage=0,
+                state=state,
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                verifier_task_id=verifier_task_id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+class TestArchiveIntegrationReferences:
+    """Integration history pins the tasks it names.
+
+    Four integration tables carry a ``RESTRICT``/``NO ACTION`` foreign key onto
+    ``tasks.id``, so the ``DELETE FROM tasks`` that ends an archive cannot
+    succeed while one of their rows still names the task.  ``archive_task``
+    refuses those up front with ``integration_owned``; before that the database
+    raised an ``IntegrityError`` from the last statement of the transaction,
+    which escaped both bulk paths and ended the sweep.
+    """
+
+    async def test_archive_refuses_a_task_a_repair_operation_verified(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        # ``completed`` so the pre-existing active-repair guard stays quiet and
+        # the refusal can only be coming from the foreign-key guard.
+        await _seed_batch_repair_operation(db, verifier_task_id="t-1", state="completed")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-1")
+        assert exc.value.code == "integration_owned"
+        assert "op-1" in exc.value.detail
+        assert "t-1" in exc.value.detail
+
+        assert await db.get_task("t-1") is not None
+        assert await db.get_archived_task("t-1") is None
+
+    async def test_archive_refuses_a_task_a_parent_episode_records(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_repo(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, episode_id="ep-1", task_id="t-1")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-1")
+        assert exc.value.code == "integration_owned"
+        assert "ep-1" in exc.value.detail
+
+        assert await db.get_task("t-1") is not None
+
+    async def test_archive_refuses_a_held_descendant(self, db):
+        """The whole subtree moves together, so a held child pins its root."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_repo(db)
+        await _seed_task(db, "t-root", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "t-child", status=TaskStatus.COMPLETED, title="Child", parent_task_id="t-root"
+        )
+        await _seed_parent_episode(db, episode_id="ep-1", task_id="t-child")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-root")
+        assert exc.value.code == "integration_owned"
+        assert "t-child" in exc.value.detail
+
+        assert await db.get_task("t-root") is not None
+        assert await db.get_task("t-child") is not None
+
+    async def test_old_terminal_sweep_skips_the_held_task_and_archives_the_rest(self, db):
+        """The reported failure: one held task used to archive nothing at all.
+
+        ``archive_old_terminal_tasks`` caught only ``HierarchyError``, so the
+        ``RestrictViolationError`` the held task raised propagated out of the
+        loop and the unrelated eligible task stayed in the active view until
+        the next hourly run — which hit the same row again.
+        """
+        await _seed_project(db)
+        await _seed_repo(db)
+        # Ordered so the held task is selected first and would abort the rest.
+        await _seed_task(db, "t-held", status=TaskStatus.COMPLETED, title="Held")
+        await _seed_task(db, "t-other", status=TaskStatus.COMPLETED, title="Unrelated")
+        await _seed_parent_episode(db, episode_id="ep-1", task_id="t-held")
+        await _backdate(db, "t-held", "t-other")
+
+        archived_ids = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"],
+            older_than_seconds=3600,
+        )
+
+        assert archived_ids == ["t-other"]
+        assert await db.get_archived_task("t-other") is not None
+        assert await db.get_task("t-held") is not None
+        assert await db.get_archived_task("t-held") is None
+
+    async def test_archive_completed_tasks_skips_the_held_task(self, db):
+        await _seed_project(db)
+        await _seed_repo(db)
+        await _seed_task(db, "t-held", status=TaskStatus.COMPLETED, title="Held")
+        await _seed_task(db, "t-other", status=TaskStatus.COMPLETED, title="Unrelated")
+        await _seed_batch_repair_operation(db, verifier_task_id="t-held", state="completed")
+
+        archived_ids = await db.archive_completed_tasks(project_id="p-1")
+
+        assert archived_ids == ["t-other"]
+        assert await db.get_task("t-held") is not None
+
+    def test_every_foreign_key_onto_tasks_is_cleaned_up_or_guarded(self):
+        """A new FK onto ``tasks.id`` must be classified, not met by a sweep.
+
+        ``_delete_one`` clears (or nulls, or relies on ``ON DELETE``) every
+        reference on the left; everything else has to be refused before the
+        archive starts, or the ``DELETE FROM tasks`` raises and takes the rest
+        of the sweep with it.  Adding a foreign key onto ``tasks.id`` without
+        deciding which side it belongs on fails here.
+        """
+        cleaned_up = {
+            ("agents", "current_task_id"),  # ON DELETE SET NULL; also nulled explicitly
+            ("sessions", "task_id"),  # nulled: the run history outlives the task
+            ("task_assignment_routes", "task_id"),  # ON DELETE CASCADE
+            ("task_context", "task_id"),
+            ("task_criteria", "task_id"),
+            ("task_dependencies", "task_id"),
+            ("task_dependencies", "depends_on_task_id"),
+            ("task_gates", "task_id"),
+            ("task_labels", "task_id"),
+            ("task_layouts", "task_id"),
+            ("task_metadata", "task_id"),
+            ("task_results", "task_id"),
+            ("task_tools", "task_id"),
+            ("task_workspace_requirements", "task_id"),
+            ("tasks", "parent_task_id"),  # the subtree archives deepest-first
+            ("workspaces", "locked_by_task_id"),  # lock released
+        }
+        guarded = {(table.name, column) for table, column, _ in INTEGRATION_TASK_REFERENCES}
+        assert not (cleaned_up & guarded)
+
+        actual = {
+            (table.name, fk.parent.name)
+            for table in metadata.sorted_tables
+            for fk in table.foreign_keys
+            if fk.column.table.name == "tasks"
+        }
+        assert actual == cleaned_up | guarded
 
 
 # ---------------------------------------------------------------------------

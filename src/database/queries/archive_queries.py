@@ -8,10 +8,14 @@ import time
 
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     agents,
     archived_tasks,
+    integration_candidate_resolutions,
+    integration_parent_episodes,
+    integration_parent_verifications,
     integration_repair_operations,
     integration_repair_stages,
     sessions,
@@ -22,6 +26,26 @@ from src.database.tables import (
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
+
+#: Integration rows that hold a hard foreign key onto ``tasks.id``, as
+#: ``(table, column, label)``.  Nothing in ``_delete_one`` clears them and
+#: every one of these keys is ``RESTRICT`` or ``NO ACTION``, so the final
+#: ``DELETE FROM tasks`` raises :class:`~sqlalchemy.exc.IntegrityError` rather
+#: than a :class:`HierarchyError` — which used to escape ``archive_task`` and
+#: abort the whole sweep, so an hour's worth of unrelated eligible tasks were
+#: left in the active view too.  ``archive_task`` reports them as
+#: ``integration_owned`` instead, naming the row that holds the task, and both
+#: bulk paths then skip that task and carry on.
+#:
+#: ``tests/test_archive.py`` ratchets this list against the schema: a new
+#: foreign key onto ``tasks.id`` must either be cleaned up by ``_delete_one``
+#: or be listed here.
+INTEGRATION_TASK_REFERENCES = (
+    (integration_parent_episodes, "parent_task_id", "integration parent episode"),
+    (integration_parent_verifications, "parent_task_id", "integration parent verification"),
+    (integration_repair_operations, "verifier_task_id", "integration repair operation"),
+    (integration_candidate_resolutions, "repair_task_id", "integration candidate resolution"),
+)
 
 
 class ArchiveQueryMixin:
@@ -58,6 +82,9 @@ class ArchiveQueryMixin:
             )).scalar_one_or_none()
             if repair is not None:
                 raise HierarchyError("integration_owned", f"active repair operation {repair}")
+            held = await self._integration_reference_hold(ids, conn=conn)
+            if held is not None:
+                raise HierarchyError("integration_owned", held)
             # Follow the existing sessions-before-tasks lock order. A task
             # can be terminal while its worker is still draining.
             live = await self.live_descendant_sessions(task_id, conn=conn)
@@ -128,6 +155,35 @@ class ArchiveQueryMixin:
         await self._notify_settled(settle_result.settled)
         await self._notify_ready(ready + list(settle_result.ready))
         return True
+
+    async def _integration_reference_hold(self, ids, *, conn) -> str | None:
+        """Name the integration row that still references one of *ids*, or ``None``.
+
+        Each table in :data:`INTEGRATION_TASK_REFERENCES` keys a row to a task
+        with a foreign key the archive never clears, so the row outliving the
+        task is not something the database will allow.  Reading them here turns
+        what was an ``IntegrityError`` from the very last statement of the
+        archive — raised too late for either bulk path to attribute, and fatal
+        to the rest of the sweep — into an ``integration_owned`` refusal that
+        names the episode, verification, operation or resolution an operator has
+        to settle first.
+
+        The tables are read in their declared order and the first hit wins;
+        which one is reported does not change the answer, because a task any of
+        them names cannot be archived at all.
+        """
+        for table, column, label in INTEGRATION_TASK_REFERENCES:
+            row = (
+                await conn.execute(
+                    select(table.c.id, table.c[column])
+                    .where(table.c[column].in_(ids))
+                    .order_by(table.c.id)
+                    .limit(1)
+                )
+            ).first()
+            if row is not None:
+                return f"{label} {row[0]} references {row[1]}"
+        return None
 
     async def _archive_one(self, task, *, conn) -> None:
         """Move a single task row from ``tasks`` into ``archived_tasks``."""
@@ -255,6 +311,18 @@ class ArchiveQueryMixin:
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
+            except IntegrityError:
+                # A foreign key onto ``tasks`` that none of the guards above
+                # knows about.  One such row used to end the sweep where it
+                # stood, leaving every later eligible task in the active view
+                # until the next run; skip just this task, and log loudly
+                # enough that the missing guard gets added.
+                logger.warning(
+                    "archive_completed_tasks: %s is still referenced by a row the archive "
+                    "cannot clear; skipping it",
+                    tid,
+                    exc_info=True,
+                )
 
         return archived
 
@@ -316,6 +384,18 @@ class ArchiveQueryMixin:
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
+            except IntegrityError:
+                # A foreign key onto ``tasks`` that none of the guards above
+                # knows about.  One such row used to end the sweep where it
+                # stood, leaving every later eligible task in the active view
+                # until the next run; skip just this task, and log loudly
+                # enough that the missing guard gets added.
+                logger.warning(
+                    "archive_old_terminal_tasks: %s is still referenced by a row the archive "
+                    "cannot clear; skipping it",
+                    tid,
+                    exc_info=True,
+                )
 
         return archived
 
