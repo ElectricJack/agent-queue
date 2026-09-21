@@ -329,7 +329,33 @@ describe("LayoutCanvas", () => {
     expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("e");
     layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
     view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
-    expect(fitBounds).toHaveBeenCalledTimes(1);
+    expect(fitBounds.mock.calls[0]![0]).toEqual({ x: 0, y: 0, width: 720, height: 312 });
+    // The persisted box, then (the tiles having landed) the cropped frame --
+    // and a re-render with nothing new fits nothing more.
+    const fits = fitBounds.mock.calls.length;
+    expect(fits).toBeLessThanOrEqual(2);
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+    view.rerender(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    expect(fitBounds).toHaveBeenCalledTimes(fits);
+  });
+
+  it("refits an entered container to its children once they land, leaving a far stub out", () => {
+    layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 12 }), ancestors: [], layout_version: 1 };
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { w: 3, h: 12 }),
+              n("c", "card", 0.1, 0.45, { container_id: "e", depth: 1 }),
+              n("d", "card", 0.1, 5.33, { container_id: "e", depth: 1 })],
+      edges: [], stubs: [{ id: "far", project_id: "p1", x: 6.15, y: 12.22, w: 1, h: 1, title: "Far" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as unknown as TilesResponse);
+    render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+    const last = fitBounds.mock.calls[fitBounds.mock.calls.length - 1]![0] as { x: number; y: number; width: number; height: number };
+    expect(fitBounds.mock.calls[0]![0]).toEqual({ x: 0, y: 0, width: 720, height: 12 * 156 });
+    expect(last.x).toBe(0); expect(last.y).toBe(0);
+    // Frame 1.25 wide (card at 0.1 + 1 + inset) plus the docked stub column.
+    expect(last.width).toBeCloseTo((1.25 + 0.6 + 1) * 240);
+    expect(last.height).toBeCloseTo((6.33 + 0.15) * 156);
+    expect(flow.current!.nodes.find((node) => node.id === "far")!.position.y).toBe(0);
   });
 
   it("does not claim an empty graph before the first tiles response", () => {

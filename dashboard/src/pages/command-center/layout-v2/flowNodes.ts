@@ -12,6 +12,70 @@ const STUB_PORT_X = -1.2;
 const OVERFLOW_W = 0.4;
 const OVERFLOW_H = 0.3;
 const OVERFLOW_GAP = 0.05;
+/** Inset kept around an entered container's children when its frame is cropped. */
+const ENTERED_PAD = 0.15;
+/** Where boundary stubs dock beside an entered container, in world units. */
+const DOCK_GAP = 0.6;
+const DOCK_PITCH = 1.2;
+
+/** A world-unit rectangle. */
+export interface WorldRect { x: number; y: number; w: number; h: number }
+
+/**
+ * The entered container's frame, cropped to what is drawn inside it. The
+ * persisted box is the engine's step-sized geometry for the fully expanded
+ * subtree, so with the children collapsed into tiles it can be several times
+ * taller than its content; inside a container the breadcrumb already names
+ * it, so the frame only has to hold the children. Null until the entered
+ * scope's own response has delivered the container: a node carried over from
+ * the previous scope is the root view's collapsed tile, not this frame.
+ */
+export function enteredFrame(store: LayoutStore, focusId: string | null | undefined): WorldRect | null {
+  if (!focusId) return null;
+  const focus = store.nodes.get(focusId);
+  if (!focus || store.carried.has(focusId)) return null;
+  let x1 = -Infinity, y1 = -Infinity;
+  for (const n of store.nodes.values()) {
+    if (n.id === focusId || n.kind === "stub" || store.carried.has(n.id)) continue;
+    x1 = Math.max(x1, n.x + n.w);
+    y1 = Math.max(y1, n.y + n.h);
+  }
+  if (!Number.isFinite(x1)) return { x: focus.x, y: focus.y, w: focus.w, h: focus.h };
+  return {
+    x: focus.x, y: focus.y,
+    w: Math.min(focus.w, Math.max(1, x1 - focus.x + ENTERED_PAD)),
+    h: Math.min(focus.h, Math.max(1, y1 - focus.y + ENTERED_PAD)),
+  };
+}
+
+/**
+ * Where each same-project boundary stub is drawn inside an entered container:
+ * docked in one column just right of the cropped frame, in the stubs' own
+ * reading order. Its persisted position is where the task sits in the ROOT
+ * layout, which from inside a container is an arbitrary far-off point that
+ * made zoom-to-fit shrink the children to a speck.
+ */
+function dockedStubPositions(store: LayoutStore, frame: WorldRect, projectId: string): Map<string, { x: number; y: number }> {
+  const docked = [...store.stubs.values()]
+    .filter((s) => !store.nodes.has(s.id) && s.project_id === projectId)
+    .sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id));
+  return new Map(docked.map((s, i) => [s.id, { x: frame.x + frame.w + DOCK_GAP, y: frame.y + i * DOCK_PITCH }]));
+}
+
+/**
+ * Everything the view fits to after entering a container: the cropped frame
+ * plus the stubs docked beside it. Null until the entered container arrives.
+ */
+export function enteredBounds(store: LayoutStore, focusId: string | null | undefined, projectId: string): WorldRect | null {
+  const frame = enteredFrame(store, focusId);
+  if (!frame) return null;
+  let x1 = frame.x + frame.w, y1 = frame.y + frame.h;
+  for (const p of dockedStubPositions(store, frame, projectId).values()) {
+    x1 = Math.max(x1, p.x + 1);
+    y1 = Math.max(y1, p.y + 1);
+  }
+  return { x: frame.x, y: frame.y, w: x1 - frame.x, h: y1 - frame.y };
+}
 
 export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onFocus: (id: string) => void }
 export interface FlowContext {
@@ -127,7 +191,10 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     nodes.push(node);
   };
 
-  for (const n of store.nodes.values()) {
+  const frame = enteredFrame(store, ctx.focusId);
+  const docked = frame ? dockedStubPositions(store, frame, ctx.projectId) : null;
+  for (const stored of store.nodes.values()) {
+    const n = frame && stored.id === ctx.focusId ? { ...stored, w: frame.w, h: frame.h } : stored;
     pos.set(n.id, { x: n.x, y: n.y });
     const gates = gatesFor(n.id);
     const sig = nodeSignature(n, gates);
@@ -152,16 +219,18 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     // A stub from another project carries coordinates in that project's frame,
     // so it is drawn as a labelled port just outside this project's left edge.
     const foreign = s.project_id !== ctx.projectId;
-    const x = foreign ? STUB_PORT_X : s.x;
+    const dock = docked?.get(s.id);
+    const x = foreign ? STUB_PORT_X : dock?.x ?? s.x;
+    const y = dock?.y ?? s.y;
     const title = foreign
       ? `${ctx.projectNames?.get(s.project_id) ?? s.project_id} · ${s.title ?? s.id}`
       : s.title ?? s.id;
-    pos.set(s.id, { x, y: s.y });
-    const stub: LayoutNode = { id: s.id, title, status: "PENDING", priority: 100, is_blocked: false, x, y: s.y, w: 1, h: 1, depth: 0,
+    pos.set(s.id, { x, y });
+    const stub: LayoutNode = { id: s.id, title, status: "PENDING", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
       container_id: null, kind: "stub", context_only: true, agg_children: 0, agg_descendants: 0, agg_completed: 0, agg_running: 0, agg_blocked: 0, agg_active: 0 } as LayoutNode;
     const gates = gatesFor(s.id);
     push(s.id, nodeSignature(stub, gates), () => ({
-      id: s.id, type: "task", className: "aq-stub", position: toPx(x, s.y + ctx.offsetY, ctx.density),
+      id: s.id, type: "task", className: "aq-stub", position: toPx(x, y + ctx.offsetY, ctx.density),
       ...sizePx(1, 1, ctx.density), zIndex: 5, draggable: false, connectable: false, data: taskNodeData(stub, ctx, gates),
     }));
   }
