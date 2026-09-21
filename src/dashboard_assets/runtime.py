@@ -1,89 +1,44 @@
-"""Locate and verify the dashboard bundled with an AQ distribution."""
+"""Compatibility shim: the dashboard bundle verifier lives in :mod:`src.dashboard_server.bundle`.
+
+A pre-change ``aq update`` keeps running its old code after it pulls, and
+lazy-imports ``src.dashboard_assets.runtime.verify_dashboard_bundle`` from the
+*new* checkout to verify the bundle it just rebuilt (docs/specs/dashboard-server.md
+§6.2).  This module therefore stays, re-exports that name, and must not import
+``fastapi`` or anything of the daemon's -- Starlette, which the bundle module
+already needs, is the heaviest thing it loads.
+"""
 
 from __future__ import annotations
 
-import hashlib
-import json
-from dataclasses import dataclass
-from importlib import metadata, resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 from starlette.staticfiles import StaticFiles
 
+from src.dashboard_server.bundle import (
+    DashboardBundle,
+    dashboard_directory,
+    installed_version,
+    verify_bundle_inventory,
+    verify_dashboard_bundle,
+)
 
-_MANIFEST_NAME = "aq-dashboard-manifest.json"
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
-
-@dataclass(frozen=True)
-class DashboardBundle:
-    """A verified dashboard bundle available to the installed daemon."""
-
-    directory: Path
-    version: str
-    files: dict[str, str]
-
-
-def installed_version() -> str:
-    """Return the installed distribution version without requiring a checkout."""
-    try:
-        return metadata.version("agent-queue")
-    except metadata.PackageNotFoundError:  # pragma: no cover - source-only use
-        from src.cli import __version__
-
-        return __version__
+__all__ = [
+    "DashboardBundle",
+    "dashboard_directory",
+    "installed_version",
+    "mount_dashboard",
+    "verify_dashboard_bundle",
+]
 
 
-def dashboard_directory() -> Path:
-    """Return the physical package-data directory used by normal wheel installs."""
-    package_root = resources.files("src.dashboard_assets")
-    return Path(str(package_root.joinpath("dist")))
-
-
-def _read_manifest(directory: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads((directory / _MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"dashboard manifest is unavailable or invalid: {error}") from error
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise ValueError("dashboard manifest has an unsupported schema version")
-    if not isinstance(payload.get("version"), str) or not payload["version"]:
-        raise ValueError("dashboard manifest has no artifact version")
-    if not isinstance(payload.get("files"), dict) or not payload["files"]:
-        raise ValueError("dashboard manifest has no file inventory")
-    return payload
-
-
-def verify_dashboard_bundle(directory: Path | None = None) -> DashboardBundle:
-    """Validate the packaged dashboard before exposing it over HTTP."""
-    directory = directory or dashboard_directory()
-    payload = _read_manifest(directory)
-    files: dict[str, str] = {}
-    for relative, expected_digest in payload["files"].items():
-        if not isinstance(relative, str) or not isinstance(expected_digest, str):
-            raise ValueError("dashboard manifest contains a non-string file entry")
-        candidate = Path(relative)
-        if candidate.is_absolute() or ".." in candidate.parts or not candidate.parts:
-            raise ValueError(f"dashboard manifest contains unsafe path {relative!r}")
-        if len(expected_digest) != 64 or any(char not in "0123456789abcdef" for char in expected_digest):
-            raise ValueError(f"dashboard manifest contains an invalid digest for {relative!r}")
-        path = directory / candidate
-        try:
-            actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError as error:
-            raise ValueError(f"dashboard asset is missing: {relative}") from error
-        if actual_digest != expected_digest:
-            raise ValueError(f"dashboard asset digest mismatch: {relative}")
-        files[relative] = expected_digest
-    if "index.html" not in files:
-        raise ValueError("dashboard manifest does not include index.html")
-    return DashboardBundle(directory=directory, version=payload["version"], files=files)
-
-
+# Interim: smart-meadow.4 deletes this class with ``mount_dashboard``.
 class _DashboardStaticFiles(StaticFiles):
     """Static files with an index fallback for browser-routed dashboard URLs."""
 
@@ -99,15 +54,21 @@ class _DashboardStaticFiles(StaticFiles):
         return response
 
 
+# Interim: smart-meadow.4 deletes this and the daemon's call in src/api/app.py.
 def mount_dashboard(app: FastAPI, *, directory: Path | None = None) -> DashboardBundle | None:
-    """Mount a verified release dashboard at ``/dashboard`` when one exists."""
+    """Mount a verified release dashboard at ``/dashboard`` when one exists.
+
+    It verifies the inventory but not the manifest's ``base``, so an install
+    whose bundle predates ``base`` keeps its daemon starting until the dashboard
+    server replaces this mount.
+    """
     directory = directory or dashboard_directory()
     if not directory.is_dir():
         # Source checkouts deliberately do not carry generated dashboard output.
         return None
     # A release wheel that has an incomplete or altered package-data tree must
     # fail closed rather than serving an unverified browser application.
-    bundle = verify_dashboard_bundle(directory)
+    bundle = verify_bundle_inventory(directory)
 
     # A mount at /dashboard only matches /dashboard/...; the bare path relies
     # on Starlette's slash redirect, which happens only when *no* route
@@ -119,6 +80,12 @@ def mount_dashboard(app: FastAPI, *, directory: Path | None = None) -> Dashboard
         query = f"?{request.url.query}" if request.url.query else ""
         return RedirectResponse(url=f"/dashboard/{query}", status_code=307)
 
-    app.router.add_route("/dashboard", _to_dashboard, methods=["GET", "HEAD"], include_in_schema=False)
-    app.mount("/dashboard", _DashboardStaticFiles(directory=str(bundle.directory), html=True), name="dashboard")
+    app.router.add_route(
+        "/dashboard", _to_dashboard, methods=["GET", "HEAD"], include_in_schema=False
+    )
+    app.mount(
+        "/dashboard",
+        _DashboardStaticFiles(directory=str(bundle.directory), html=True),
+        name="dashboard",
+    )
     return bundle

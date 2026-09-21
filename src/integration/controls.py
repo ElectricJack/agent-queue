@@ -116,6 +116,9 @@ class IntegrationControlService:
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:
         return await self._recovery().retry_cleanup(batch_id)
 
+    async def release_delegates(self, operation_id: str) -> dict[str, Any]:
+        return await self._recovery().release_delegates(operation_id)
+
     async def has_active_work(self, project_id: str) -> bool:
         async with self.db._engine.connect() as conn:
             return await self._has_active_work_on(conn, project_id)

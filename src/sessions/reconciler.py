@@ -33,7 +33,11 @@ from dataclasses import dataclass, field
 
 from src.claim_file import read_claim_file, remove_claim_file_if_matches
 from src.models import SessionRecord, TaskStatus
-from src.pool_claims import is_live_pool_claim_task_status
+from src.pool_claims import (
+    idle_pool_claim_loop_stalled,
+    is_live_pool_claim_task_status,
+    pool_claim_loop_stall_seconds,
+)
 from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
 from src.sessions.provider import (
     Cap,
@@ -509,37 +513,40 @@ class SessionReconciler:
                     "session.claim_timeout", session_id=s.id, task_id=s.task_id
                 )
 
-    # -- pool: abandoned post-prepare claim loop -------------------------
+    # -- pool: abandoned claim loop ----------------------------------------
 
     def _pool_claim_loop_stall_seconds(self) -> float:
-        """Grace before recycling an idle worker stranded after preparation.
+        """Grace before recycling an idle worker whose claim loop went quiet.
 
-        A healthy worker may sit in one server-side long poll for
-        ``claim_wait_max`` seconds, then need a scheduler tick to issue the
-        next one.  Two complete windows avoid confusing that normal silence
-        with abandonment.  ``prepare_timeout`` is also a lower bound: both
-        values are existing operator-facing bounds on the same preparation
-        and retry path, so this introduces no unbounded idle supply state.
+        Shared with pool supply accounting (:mod:`src.pool_claims`), so a
+        worker stops counting as idle supply at the same moment it becomes
+        eligible for recycling.
         """
-        swarm = self.config.swarm
-        return max(1.0, float(swarm.prepare_timeout), 2.0 * float(swarm.claim_wait_max))
+        return pool_claim_loop_stall_seconds(self.config.swarm)
 
     async def _step_abandoned_pool_claim_loop(
         self, live: list[SessionRecord], now: float
     ) -> None:
-        """Recycle a worker that stopped after a released prepare failure.
+        """Recycle an idle worker that stopped entering its claim loop.
 
-        ``prepare_failed`` already leaves the original task READY with its
-        exponential preparation backoff and diagnostic metadata.  What it
-        cannot prove is that the agent consumed the response and resumed its
-        loop.  ``task_claim`` stamps session activity at entry, so a stale
-        result plus no later claim for the bounded grace is evidence the loop
-        ceased.  The database CAS changes intent before teardown, closing the
-        race with a late claim and preserving all session/instance fences.
+        ``task_claim`` stamps session activity at entry, so an idle worker
+        with no later claim (and no pane or transcript activity) for the
+        bounded grace has no loop running.  Two shapes reach this: a worker
+        that stopped after a released ``prepare_failed`` (which already left
+        the task READY with its preparation backoff), and a worker that never
+        reached its loop at all because the harness is parked on a provider
+        screen — a usage limit or login prompt painted after startup, when
+        the startup dialog pass is long over.  Either way the row, its agent
+        and its workspace are held by a process that will not take work, and
+        pool sizing no longer counts it as supply; tearing it down is what
+        returns them.  The database CAS changes intent before teardown,
+        closing the race with a late claim and preserving all session/instance
+        fences.
         """
         if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
             return
-        stale_before = now - self._pool_claim_loop_stall_seconds()
+        stall_seconds = self._pool_claim_loop_stall_seconds()
+        stale_before = now - stall_seconds
         for observed in live:
             if (
                 observed.lifecycle != "pool"
@@ -547,11 +554,11 @@ class SessionReconciler:
                 or observed.desired_state != "running"
                 or observed.task_id is not None
                 or observed.claim_phase is not None
-                or observed.last_claim_result != "prepare_failed"
             ):
                 continue
-            last = observed.last_activity or observed.started_at
-            if last is None or last > stale_before or self._is_deferred(observed.name):
+            if not idle_pool_claim_loop_stalled(
+                observed, now=now, stall_seconds=stall_seconds
+            ) or self._is_deferred(observed.name):
                 continue
             # Do not tear down based on an observation alone.  The guarded
             # update proves this exact running instance remains unclaimed;
@@ -568,7 +575,8 @@ class SessionReconciler:
             if current is None or current.instance_token != observed.instance_token:
                 continue
             logger.warning(
-                "Pool session %s stopped claiming after prepare failure; recycling", current.id
+                "Pool session %s has not claimed for %.0fs (last result %s); recycling",
+                current.id, stall_seconds, current.last_claim_result or "none",
             )
             await self.orchestrator._terminate_pool_session(
                 current, reason="claim_loop_stalled"

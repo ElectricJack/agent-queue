@@ -3261,6 +3261,45 @@ integration_repair_stages = Table(
     ),
 )
 
+#: One row per delegate released because its integration operation ended.
+#:
+#: The audit trail for the release described in
+#: docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
+#: It carries no foreign key to ``tasks`` or to
+#: ``integration_repair_operations`` on purpose: its whole job is to outlive
+#: both, so the answer to "why did this task end, and who ended it" survives
+#: a later delete or archive of the task.
+integration_delegate_releases = Table(
+    "integration_delegate_releases",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operation_id", Text, nullable=False),
+    Column("operation_state", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("previous_status", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("released_by", Text, nullable=False),
+    Column("released_at", Float, nullable=False),
+    Column("cleanup", JSON, nullable=True),
+    Index("idx_integration_delegate_releases_task", "task_id", "released_at"),
+    Index("idx_integration_delegate_releases_operation", "operation_id"),
+    CheckConstraint(
+        "operation_state IN ('completed', 'cancelled')",
+        name="ck_integration_delegate_releases_operation_state",
+    ),
+    CheckConstraint(
+        "disposition IN ('cancelled', 'superseded')",
+        name="ck_integration_delegate_releases_disposition",
+    ),
+    CheckConstraint(
+        "role IN ('verifier', 'repair_stage', 'candidate_member')",
+        name="ck_integration_delegate_releases_role",
+    ),
+)
+
 integration_check_evidence = Table(
     "integration_check_evidence",
     metadata,

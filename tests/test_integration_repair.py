@@ -486,8 +486,11 @@ async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_name
     assert cancelled["outcome"] == "cancelled"
     assert cancelled["preserved_owners"] == ["aq/parent"]
 
-    # The retained owner and checkout no longer keep the ticket open.
-    assert await service.retire_terminal_delegates(300.0) == ["delegate"]
+    # The retained owner and checkout no longer keep the ticket open, and the
+    # cancellation settles it in its own transaction rather than leaving a
+    # ticket nothing will close until some later reconciliation tick.
+    assert cancelled["released_delegates"] == ["delegate"]
+    assert await service.retire_terminal_delegates(300.0) == []
     retired = await db.get_task("delegate")
     assert retired.status == TaskStatus.FAILED
     assert retired.retry_count == 1
@@ -4905,8 +4908,14 @@ async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_resto
     task_id = dispatched["repair_task_id"]
     async with db.immediate() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
-    with pytest.raises(HierarchyError, match="active repair operation"):
+    # The refusal names the operation, its state, the seat this task occupies
+    # in it and what would let go -- not a bare code the operator has to guess at.
+    with pytest.raises(HierarchyError, match="operation is active and owns this task") as refusal:
         await db.archive_task(task_id)
+    assert refusal.value.code == "integration_owned"
+    assert refusal.value.context["integration_operation"] == {
+        "operation_id": "operation", "state": "active", "role": "repair_stage",
+    }
     # Reproduce the historical archive, before that guard existed.
     async with db.immediate() as conn:
         task = await db._get_task_conn(task_id, conn=conn)

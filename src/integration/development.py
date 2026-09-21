@@ -25,6 +25,7 @@ from src.database.queries.blocked_state import blocked_predicate
 from src.database.tables import development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.integration.delegate_release import release_delegates_on
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -1418,12 +1419,30 @@ class DevelopmentIntegration:
                     updated_at=now,
                 )
             )
-            return {
+            # Cancelling obsoletes the operation's delegates: settle them in
+            # the same transaction rather than leaving tickets nothing will
+            # ever close.  A delegate whose writer is being *preserved* as
+            # quarantine still has a live session, so it is skipped here and
+            # picked up once that session is gone.
+            releases, transitions = await release_delegates_on(
+                self.db,
+                conn,
+                now=now,
+                released_by="integration_cancel_preserving",
+                operation_ids=[operation_id],
+            )
+            result = {
                 "outcome": "cancelled",
                 "operation_id": operation_id,
                 "preserved_owners": [r["ref"] for r in retained if r["session_id"]],
                 "reason": reason,
+                "released_delegates": [row["task_id"] for row in releases],
             }
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        return result
 
     async def preserve_stopped_owners(self, project_id):
         """Retain the old checkout intact and make a fresh workspace claim possible."""

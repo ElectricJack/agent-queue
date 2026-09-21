@@ -36,6 +36,8 @@ NON_DEFAULT_VALUES = {
     ("memory", "embedding_provider"): "openai",
     ("provider_failover", "mode"): "observe",
     ("provider_failover", "default_policy"): "hold",
+    # An IP literal or ``localhost`` only; a name DNS could re-point is refused.
+    ("dashboard_server", "host"): "0.0.0.0",
 }
 
 # Sections that do not read every field they declare.

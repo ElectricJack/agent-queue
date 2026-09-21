@@ -488,9 +488,11 @@ class SessionQueryMixin:
     async def request_idle_pool_recycle(
         self, session_id: str, *, instance_token: str, stale_before: float
     ) -> bool:
-        """Fence an abandoned post-prepare-failure pool worker for teardown.
+        """Fence an idle pool worker whose claim loop went quiet for teardown.
 
-        The recovery caller has observed a stale idle worker, but that is not
+        The recovery caller has observed a stale idle worker (after a released
+        ``prepare_failed``, or one that never reached its loop because the
+        harness is parked on a provider screen), but that is not
         enough to stop it: a concurrent ``task_claim`` may be taking its
         slot.  This single conditional write is the hand-off fence.  Once it
         wins, a new claim sees ``desired_state='stopped'`` and cannot acquire
@@ -513,7 +515,6 @@ class SessionQueryMixin:
                         sessions.c.desired_state == "running",
                         sessions.c.task_id.is_(None),
                         sessions.c.claim_phase.is_(None),
-                        sessions.c.last_claim_result == "prepare_failed",
                         func.coalesce(sessions.c.last_activity, sessions.c.started_at)
                         <= stale_before,
                     )

@@ -74,14 +74,30 @@ Those descriptions are affirmative evidence for the default, not a reason to
 escalate. Do not select a deep class merely because the task involves an
 unfamiliar library or language, several files, or a failing test.
 
-Use `deep-high` or `astra-high` only for exceptionally difficult work: a
-genuinely unresolved architectural problem, a hard investigation with concrete
-evidence that standard reasoning was insufficient, or unusually complex
-correctness reasoning. The reason must name that specific difficulty and explain
-why `standard-high` is insufficient. C++, multiple files, native builds,
-integration tests, high priority, and a failing CI run alone are not reasons to
-select one of them. `astra-*` exists only on OpenAI, so it is selectable only
-when a supplied row offers it.
+The `deep-high` row on the `anthropic` provider (`deep-high-claude`) is for code
+design only: a spec, an architecture, an implementation plan, or an API shape.
+Never choose it for a bug fix, a repair, an implementation, tests, or
+documentation, however hard that work looks; route those to another row.
+
+Outside design, use a deep class or `astra-high` only for exceptionally
+difficult work: a genuinely unresolved architectural problem, a hard
+investigation with concrete evidence that standard reasoning was insufficient,
+or unusually complex correctness reasoning. The reason must name that specific
+difficulty and explain why `standard-high` is insufficient. C++, multiple files,
+native builds, integration tests, high priority, and a failing CI run alone are
+not reasons to select one of them. `astra-*` exists only on OpenAI, so it is
+selectable only when a supplied row offers it.
+
+OpenCode rows are the ones whose `profile_id` ends in `-opencode`. Prefer one
+for well-specified, test-verified implementation with a narrow footprint: the
+requirements are settled, the files to change are named or obvious, and an
+existing or specified test checks the result. Choose `standard-high-opencode`
+for that work and `fast-low-opencode` for trivial mechanical edits, whenever the
+row is offered. Choose `fast-off-opencode` only when the task names an
+independent verifier, such as a test or check someone else runs, because that
+model can report success on a file it has broken. Integration repairs (titled
+`Repair development integration: ...`) and end-to-end or manual-verification
+work are never OpenCode work.
 
 Choose a class and compatible profile only from the supplied options. Preserve
 explicit operator assignments. If `standard-high` is absent, select the closest
@@ -89,8 +105,9 @@ suitable available standard class and explain the fallback; do not promote to
 deep just because workers are temporarily occupied.
 
 Copy `provider` from the chosen row. Temporary worker occupancy is not a reason
-to change the required intelligence class; when two rows offer the same class,
-prefer a `pool` lifecycle row, then the row with idle capacity.
+to change the required intelligence class. When several rows offer the chosen
+class, apply the OpenCode guidance above first; otherwise prefer a `pool`
+lifecycle row, then the row with idle capacity.
 
 Give a concise, non-empty `reason`. Return exactly one JSON object with this
 shape and no extra fields:

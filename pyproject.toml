@@ -103,6 +103,12 @@ dependencies = [
     # extra), so the one-command install -- `pip install -e .[cli]` -- served
     # HTTP but failed every WebSocket upgrade, and no terminal could connect.
     "websockets>=14.0",
+    # uvicorn serves the daemon's API and the dashboard server
+    # (src/dashboard_server/, docs/specs/dashboard-server.md §1). It used to
+    # arrive only through `mcp`; a process we run directly declares it. The
+    # floor is a release with the WebSocket denial-response extension the
+    # dashboard server uses to refuse a handshake with the daemon's status.
+    "uvicorn>=0.30",
     # mcp — PYSEC-2026-3481, 3482, 3483. Also pinned in [mcp] extras; hoisted
     # here so transitive pulls (claude-agent-sdk, etc.) resolve to a safe
     # version. <2 because the FastMCP import moved in mcp 2.x.

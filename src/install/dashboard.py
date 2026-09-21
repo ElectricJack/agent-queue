@@ -121,7 +121,7 @@ def source_fingerprint(root: Path, *, git: str | None, execute: CommandRunner) -
 
 
 def _bundle_verifies(root: Path) -> bool:
-    from src.dashboard_assets.runtime import verify_dashboard_bundle
+    from src.dashboard_server.bundle import verify_dashboard_bundle
 
     try:
         verify_dashboard_bundle(bundle_directory(root))

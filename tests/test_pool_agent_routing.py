@@ -9,7 +9,9 @@ from dataclasses import replace
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, Project, RepoSourceType, SessionRecord, Workspace
+from src.models import (
+    Agent, AgentProfile, AgentState, Project, RepoSourceType, SessionRecord, Workspace,
+)
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
@@ -145,17 +147,70 @@ async def test_pool_start_waits_rather_than_growing_into_an_unrunnable_worker(po
     assert (await db.get_workspace("ws")).locked_by_agent_id is None
 
 
-async def test_generic_pool_inherits_the_matched_workers_codex_identity(pool_routing):
+async def test_claude_pool_mints_its_own_row_rather_than_launching_an_idle_codex_row(
+    pool_routing,
+):
+    """A pool session for profile P runs P's harness (swift-dune, 2026-09-21).
+
+    ``worker-deep`` is a generic Claude profile, so ``task_agent_mismatch``
+    accepts any idle worker of its class -- the Codex row included -- and the
+    launch used to take that row's harness.  The Claude pool then started
+    Codex sessions, which sat at Codex's usage-limit screen while the Claude
+    task they were counted against waited.  An idle row that would run a
+    different CLI is not a candidate; the pool mints a row of its own.
+    """
     orch, db = pool_routing
-    await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
+    await db.create_agent(Agent(id="sol", name="Codex standard-high #1", profile_id="saved-codex"))
     sid = await launch(orch, db, "worker-deep")
     assert sid is not None
     row = await db.get_session(sid)
-    assert (row.agent_id, row.harness, row.model, row.intelligence_class) == (
-        "sol", "codex", "gpt-5.6-sol", "deep-high",
+    assert row.agent_id != "sol"
+    assert (row.harness, row.model, row.intelligence_class) == (
+        "claude", "claude-fable-5", "deep-high",
     )
-    assert (await db.get_profile("worker-deep")).harness == "claude"
-    assert (await db.get_agent("sol")).harness is None
+    assert (await db.get_agent(row.agent_id)).profile_id == "worker-deep"
+    sol = await db.get_agent("sol")
+    assert (sol.state, sol.profile_id, sol.harness) == (AgentState.IDLE, "saved-codex", None)
+    assert await db.get_workspace_for_agent("sol") is None
+    assert (await db.get_workspace("ws")).locked_by_agent_id == row.agent_id
+
+
+async def test_codex_pool_does_not_launch_an_idle_claude_row(pool_routing):
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="fable", name="Deep Claude", profile_id="saved-claude"))
+    sid = await launch(orch, db, "deep-codex-pool")
+    row = await db.get_session(sid)
+    assert row.agent_id != "fable"
+    assert (row.harness, row.model) == ("codex", "gpt-5.6-sol")
+    assert (await db.get_agent("fable")).state == AgentState.IDLE
+
+
+async def test_pool_reuses_an_idle_row_whose_resolved_harness_is_its_own(pool_routing):
+    """The comparison is on the harness the session would run, not the profile id.
+
+    Another Claude profile's row, and a Codex-profile row whose saved
+    override runs Claude, both launch Claude -- so both remain candidates
+    for the Claude pool, while the plain Codex row created first does not.
+    """
+    orch, db = pool_routing
+    await db.create_agent(Agent(id="sol", name="Codex", profile_id="saved-codex"))
+    await db.create_agent(Agent(
+        id="switched", name="Codex profile, Claude override", profile_id="saved-codex",
+        harness="claude",
+    ))
+    await db.create_agent(Agent(id="fable", name="Deep Claude", profile_id="saved-claude"))
+    first = await db.get_session(await launch(orch, db, "worker-deep"))
+    assert (first.agent_id, first.harness, first.model) == (
+        "switched", "claude", "claude-fable-5",
+    )
+    await db.create_workspace(Workspace(
+        id="ws2", project_id="p", workspace_path="/tmp/pool-routing-ws2",
+        source_type=RepoSourceType.LINK, kind_id="project-repo",
+    ))
+    second = await db.get_session(await launch(orch, db, "worker-deep"))
+    assert (second.agent_id, second.harness) == ("fable", "claude")
+    assert (await db.get_agent("sol")).state == AgentState.IDLE
+    assert {agent.id for agent in await db.list_agents()} == {"sol", "switched", "fable"}
 
 
 async def test_pool_start_does_not_steal_an_interactive_sol_or_fall_back_to_triage(pool_routing):

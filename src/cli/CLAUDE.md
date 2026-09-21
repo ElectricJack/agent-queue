@@ -21,6 +21,8 @@ claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
 daemon.py          `aq start` / `stop` / `restart`
+dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` commands merge
+                   into it): `aq dashboard serve`, the dashboard server in the foreground
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
 doctor.py          `aq doctor` and `aq costs`
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),

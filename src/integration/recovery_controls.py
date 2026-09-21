@@ -26,14 +26,13 @@ from src.database.tables import (
     sessions,
     task_integration_checkpoints,
     task_metadata,
-
     tasks,
     workspaces,
 )
+from src.integration.delegate_release import ENDED_OPERATION_STATES, release_delegates_on
 from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.models import TaskStatus
-
 
 LegacyResolutionObserver = Callable[[dict[str, Any]], Awaitable[str | None]]
 
@@ -597,11 +596,66 @@ class IntegrationRecoveryControls:
                     )
                     .values(lifecycle="aborted", human_abort_reason=reason, updated_at=now)
                 )
+            # Cancelling the operation obsoletes its delegates in the same
+            # breath, so settle them here rather than leaving tickets nothing
+            # will ever close until the next reconciliation tick happens to
+            # run.  A delegate with a live writer is skipped exactly as it is
+            # everywhere else; the tick picks it up once that writer is gone.
+            releases, transitions = await release_delegates_on(
+                self.db,
+                conn,
+                now=now,
+                released_by="integration_abort",
+                operation_ids=[operation_id],
+            )
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
         return {
             "outcome": "aborted",
             "operation_id": operation_id,
             "project_id": project_id,
             "reason": reason,
+            "released_delegates": [row["task_id"] for row in releases],
+        }
+
+    async def release_delegates(self, operation_id: str) -> dict[str, Any]:
+        """Settle the delegates of one operation that has already ended.
+
+        ``abort`` releases as it cancels, but an operation cancelled before
+        that existed -- or one that completed without ever needing a delegate
+        it had filed -- leaves tickets nothing can schedule or close.  This is
+        the scoped operator repair for exactly those; the fleet-wide one is
+        ``aq doctor --check integration.stranded_delegates --fix``, and both run
+        the same code.
+
+        A *running* operation is refused rather than released: its delegates
+        are its own business, and taking them would pull work out from under a
+        live writer.  Repeating the call is safe and reports
+        ``nothing_to_release``.
+        """
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            operation = await self._locked_operation_on(conn, operation_id)
+            if operation is None:
+                return {"outcome": "not_found", "operation_id": operation_id}
+            project_id = await self._project_id_on(conn, operation)
+            if operation["state"] not in ENDED_OPERATION_STATES:
+                return self._state_result("invalid_state", operation, project_id)
+            releases, transitions = await release_delegates_on(
+                self.db, conn, now=now, released_by="integration_release_delegates",
+                operation_ids=[operation_id],
+            )
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        return {
+            "outcome": "released" if releases else "nothing_to_release",
+            "operation_id": operation_id,
+            "project_id": project_id,
+            "released_delegates": [row["task_id"] for row in releases],
         }
 
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:

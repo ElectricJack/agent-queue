@@ -898,6 +898,46 @@ class TestAbandonedPoolClaimLoop:
         assert (current.state, current.desired_state) == ("stopped", "stopped")
         assert pool_reconciler.test_orch.terminations == [(row.id, "claim_loop_stalled")]
 
+    async def test_recycles_a_worker_that_never_reached_its_claim_loop(
+        self, db, provider, pool_reconciler
+    ):
+        """swift-dune: a harness parked on a provider screen never claims.
+
+        Codex's usage-limit screen is painted in answer to the bootstrap
+        prompt, long after the startup dialog pass, so the session is
+        ``running`` with no claim result at all.  It holds its agent and
+        workspace and takes no work; the claim-loop grace applies to it just
+        as it does after a prepare failure.
+        """
+        row = await _session(
+            db, provider, sid="pool-stuck", task_id=None, name="p-pool-stuck",
+            lifecycle="pool", last_activity=NOW - 1_000,
+        )
+        assert row.last_claim_result is None
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("stopped", "stopped")
+        assert pool_reconciler.test_orch.terminations == [(row.id, "claim_loop_stalled")]
+
+    async def test_idle_worker_inside_its_long_poll_window_is_not_recycled(
+        self, db, provider, pool_reconciler
+    ):
+        # A healthy worker's last claim entry is at most one long poll (plus
+        # a turn) old; the grace is two windows.
+        grace = pool_reconciler._pool_claim_loop_stall_seconds()
+        row = await _session(
+            db, provider, sid="pool-polling", task_id=None, name="p-pool-polling",
+            lifecycle="pool", last_activity=NOW - grace + 5,
+        )
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        current = await db.get_session(row.id)
+        assert (current.state, current.desired_state) == ("running", "running")
+        assert pool_reconciler.test_orch.terminations == []
+
     async def test_successor_after_recycle_fence_is_not_terminated(
         self, db, provider, pool_reconciler, monkeypatch
     ):
