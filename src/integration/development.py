@@ -8,11 +8,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import signal
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -24,6 +26,38 @@ from src.database.tables import development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.models import TaskStatus
+
+logger = logging.getLogger(__name__)
+
+#: Statuses :meth:`Database.archive_task` accepts.  Anything in the archive is
+#: already in one of them, so an archived source has finished being worked on.
+TERMINAL_STATUSES = frozenset(
+    {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value}
+)
+
+
+@dataclass(frozen=True)
+class ResolvedTask:
+    """The publisher's view of a task, wherever the task currently lives.
+
+    Archiving moves a terminal task out of ``tasks`` and into
+    ``archived_tasks``.  A publisher that reads only the live table therefore
+    sees a finished task as *missing*, which is not the same thing at all: it
+    loses the task's project, its branch and — for a repair — the generation
+    that bounds the repair chain.
+    """
+
+    task_id: str
+    project_id: str
+    repo_id: str | None
+    status: str
+    description: str
+    branch_name: str | None
+    archived: bool
+
+    @property
+    def terminal(self) -> bool:
+        return self.status in TERMINAL_STATUSES
 
 
 class DevelopmentPolicy(BaseModel):
@@ -52,6 +86,7 @@ class DevelopmentIntegration:
         self.data_dir = Path(data_dir) / "development-integration"
         self.git = git or GitManager()
         self.next_due = {}
+        self._project_faults = {}
         self.confirm_stopped = confirm_stopped
 
     async def on_task_completed(self, event):
@@ -726,10 +761,26 @@ class DevelopmentIntegration:
             if not progress:
                 break
         for row in pending.values():
-            await self.ensure_repair(
-                repo.project_id, repo.id, row["manifest"],
-                row["prepared_sha"] or accepted_head, reason=row["reason"],
-            )
+            # Each parked row is dispatched on its own.  A row the publisher
+            # cannot resolve records a named diagnostic and the sweep moves to
+            # the next one; it never takes the remaining rows, the rest of the
+            # project, or the other projects down with it.
+            diagnostics = []
+            try:
+                await self.ensure_repair(
+                    repo.project_id, repo.id, row["manifest"],
+                    row["prepared_sha"] or accepted_head, reason=row["reason"],
+                    diagnostics=diagnostics,
+                )
+            except Exception as exc:  # noqa: BLE001 - isolation is the point
+                diagnostics.append(
+                    {
+                        "kind": "repair_dispatch_failed",
+                        "task_ids": sorted(m["task_id"] for m in row["manifest"]),
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            await self._record_batch_diagnostic(row, diagnostics)
         await self.reconcile_completion_sources(repo, store, history)
 
     async def _completion_source(self, store, completion):
@@ -788,9 +839,13 @@ class DevelopmentIntegration:
         the evidence; a task merely marked completed is insufficient.
         """
         identity = self._repair_identity(manifest)
-        task = await self.db.get_task(identity)
+        # Through the archive as well: a repair that completed and was then
+        # archived is still the proof that resolves its parked row.  Reading
+        # only ``tasks`` made the publisher re-file an archived repair as a
+        # fresh READY task on every tick.
+        task = await self.resolve_task(identity)
         if (
-            task is None or task.status != TaskStatus.COMPLETED
+            task is None or task.status != TaskStatus.COMPLETED.value
             or task.project_id != repo.project_id or task.repo_id != repo.id
             or task.branch_name != "aq/" + identity
         ):
@@ -827,6 +882,105 @@ class DevelopmentIntegration:
         return None
 
     @staticmethod
+    def _name_diagnostic(diagnostics, *, kind, task_ids, detail):
+        """Name a batch-scoped fault instead of raising it.
+
+        The sweep visits every parked batch of every development project.  One
+        batch that cannot be resolved is a fact about that batch; turning it
+        into an exception starved the other twenty-four parked agent-queue
+        batches and wrote a rich traceback every five minutes for months.
+        """
+        entry = {"kind": kind, "task_ids": sorted(task_ids), "detail": detail}
+        if diagnostics is None:
+            logger.warning(
+                "development publisher: %s (%s)", detail, kind,
+                extra={"diagnostic": kind, "task_ids": entry["task_ids"]},
+            )
+        else:
+            diagnostics.append(entry)
+        return entry
+
+    async def _record_batch_diagnostic(self, row, diagnostics):
+        """Persist at most one diagnostic per batch, and log only on change.
+
+        ``consecutive_ticks`` is what makes a stall visible to
+        ``aq doctor --check integration.development_publisher_stalled`` without
+        the publisher having to keep process-local state across restarts.
+        """
+        evidence = row.get("evidence") or {}
+        previous = evidence.get("publisher_diagnostic")
+        if not diagnostics:
+            if previous is None:
+                return
+            evidence = {k: v for k, v in evidence.items() if k != "publisher_diagnostic"}
+            await self.change(row["id"], evidence=evidence)
+            logger.info(
+                "development batch %s recovered from %s", row["id"], previous.get("kind"),
+                extra={"batch": row["id"], "diagnostic": previous.get("kind")},
+            )
+            return
+        current = diagnostics[0]
+        now = time.time()
+        unchanged = (
+            previous is not None
+            and previous.get("kind") == current["kind"]
+            and previous.get("detail") == current["detail"]
+        )
+        entry = {
+            **current,
+            "batch_id": row["id"],
+            "first_failed_at": previous.get("first_failed_at", now) if unchanged else now,
+            "last_failed_at": now,
+            "consecutive_ticks": (previous.get("consecutive_ticks", 0) + 1) if unchanged else 1,
+        }
+        if len(diagnostics) > 1:
+            entry["also"] = diagnostics[1:]
+        await self.change(row["id"], evidence={**evidence, "publisher_diagnostic": entry})
+        if not unchanged:
+            # One line per batch per state change.  A repeat of the same fault
+            # only bumps the counter above; it must not reach the log again.
+            logger.warning(
+                "development batch %s parked on %s: %s",
+                row["id"], current["kind"], current["detail"],
+                extra={"batch": row["id"], "diagnostic": current["kind"],
+                       "project": row["project_id"]},
+            )
+
+    async def resolve_task(self, task_id):
+        """Return *task_id* from the live table, else from the archive, else ``None``.
+
+        Every publisher read of a manifest source goes through here.  Reading
+        ``tasks`` alone is what wedged the agent-queue batch: an archived
+        generation-3 repair read back as missing, reset the repair generation
+        to 1, and raised ``repair source ... is not in project`` out of the
+        whole sweep on every tick.
+        """
+        task = await self.db.get_task(task_id)
+        if task is not None:
+            status = task.status.value if hasattr(task.status, "value") else str(task.status)
+            return ResolvedTask(
+                task_id=task_id,
+                project_id=task.project_id,
+                repo_id=task.repo_id,
+                status=status,
+                description=task.description or "",
+                branch_name=task.branch_name,
+                archived=False,
+            )
+        row = await self.db.get_archived_task(task_id)
+        if row is None:
+            return None
+        return ResolvedTask(
+            task_id=task_id,
+            project_id=row["project_id"],
+            repo_id=row.get("repo_id"),
+            status=row["status"],
+            description=row.get("description") or "",
+            branch_name=row.get("branch_name"),
+            archived=True,
+        )
+
+    @staticmethod
     def _repair_identity(manifest):
         digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:20]
         return "development-repair-" + digest
@@ -849,19 +1003,58 @@ class DevelopmentIntegration:
             project_id = row["id"]
             if now < self.next_due.get(project_id, 0):
                 continue
-            policy = DevelopmentPolicy.model_validate(
-                row["hierarchical_integration_policy"]
-            ).checked()
+            # Policy validation is guarded too, and arms the deadline itself:
+            # a project whose stored policy no longer validates must neither
+            # stop the fleet's remaining projects nor spin on every 5s cycle
+            # because no deadline was ever set for it.
+            try:
+                policy = DevelopmentPolicy.model_validate(
+                    row["hierarchical_integration_policy"]
+                ).checked()
+            except Exception as exc:  # noqa: BLE001 - isolation is the point
+                self.next_due[project_id] = now + DevelopmentPolicy().interval_seconds
+                self._note_project_fault(project_id, exc)
+                continue
             self.next_due[project_id] = now + policy.interval_seconds
             try:
                 await self.preserve_stopped_owners(project_id)
                 await self.sweep(project_id)
-            except Exception:
-                import logging
+            except Exception as exc:  # noqa: BLE001 - isolation is the point
+                self._note_project_fault(project_id, exc)
+            else:
+                self._note_project_fault(project_id, None)
 
-                logging.getLogger(__name__).exception(
-                    "Development batch remains recoverable for %s", project_id
+    def _note_project_fault(self, project_id, exc):
+        """One structured warning per project per state change.
+
+        The previous handler called ``logging.exception`` on every failing
+        tick.  With a five-minute interval and a permanently wedged batch that
+        is a multi-hundred-line rich traceback twelve times an hour; it grew
+        daemon.log past eleven million lines.  The fault is a *state*, so it
+        is logged when the state changes and counted the rest of the time.
+        """
+        faults = self._project_faults
+        if exc is None:
+            previous = faults.pop(project_id, None)
+            if previous is not None:
+                logger.info(
+                    "development publisher recovered for %s after %d failing tick(s)",
+                    project_id, previous["ticks"],
+                    extra={"project": project_id},
                 )
+            return
+        signature = f"{type(exc).__name__}: {exc}"
+        previous = faults.get(project_id)
+        if previous is not None and previous["signature"] == signature:
+            previous["ticks"] += 1
+            return
+        faults[project_id] = {"signature": signature, "ticks": 1}
+        logger.warning(
+            "development publisher tick failed for %s: %s (batch state is durable; "
+            "the next tick retries)",
+            project_id, signature,
+            extra={"project": project_id, "fault": type(exc).__name__},
+        )
 
     async def configure(self, project_id, policy, *, reason, operator_id):
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -1422,7 +1615,9 @@ class DevelopmentIntegration:
                 await self.db._after_release(result)
         return preserved
 
-    async def ensure_repair(self, project_id, repository_id, manifest, candidate_sha, *, reason):
+    async def ensure_repair(
+        self, project_id, repository_id, manifest, candidate_sha, *, reason, diagnostics=None
+    ):
         """File one deliberately-rooted repair with provenance and delivery holds.
 
         Development delivery can park a *set* of source tasks.  It must not
@@ -1451,20 +1646,46 @@ class DevelopmentIntegration:
         from src.models import DepType, Task, TaskType
 
         identity = self._repair_identity(manifest)
-        if await self.db.get_task(identity) is not None:
+        # Archive-aware, or an archived repair reads back as "never filed" and
+        # is recreated as a fresh READY task on every tick.  That is how
+        # ``development-repair-dfda02e25d80e0d1ab2d`` came to sit in ``tasks``
+        # as READY while ``archived_tasks`` held the same id COMPLETED.
+        if await self.resolve_task(identity) is not None:
             return identity
         single_original_source = len(manifest) == 1 and not str(
             manifest[0]["task_id"]
         ).startswith("development-repair-")
-        generation = 1
+        # Resolve every source once, through the archive as well as the live
+        # table, and decide the whole batch before writing anything.
+        resolved, missing = {}, []
         for member in manifest:
-            source_task = await self.db.get_task(member["task_id"])
-            if source_task and source_task.id.startswith("development-repair-"):
-                import re
-
-                match = re.search(
-                    r"Development repair generation: (\d+)", source_task.description or ""
-                )
+            source_id = member["task_id"]
+            source = await self.resolve_task(source_id)
+            if (
+                source is None
+                or source.project_id != project_id
+                or (source.archived and not source.terminal)
+            ):
+                missing.append(source_id)
+            else:
+                resolved[source_id] = source
+        if missing:
+            # A source that exists nowhere is a fact about the batch, not a
+            # reason to abort the sweep for every other batch and project.
+            self._name_diagnostic(
+                diagnostics,
+                kind="repair_source_missing",
+                task_ids=missing,
+                detail=(
+                    f"{len(missing)} repair source(s) resolve in neither tasks nor "
+                    f"archived_tasks for project '{project_id}': {', '.join(sorted(missing))}"
+                ),
+            )
+            return None
+        generation = 1
+        for source in resolved.values():
+            if source.task_id.startswith("development-repair-"):
+                match = re.search(r"Development repair generation: (\d+)", source.description)
                 generation = max(generation, (int(match.group(1)) if match else 1) + 1)
         if generation > 3:
             return None  # Keep the candidate parked for operator inspection; no unbounded repair chain.
@@ -1496,9 +1717,23 @@ class DevelopmentIntegration:
             await self.db.create_task(repair, conn=conn)
             for member in manifest:
                 source_id = member["task_id"]
-                source = await self.db.get_task(source_id)
-                if source is None or source.project_id != project_id:
-                    raise ValueError(f"repair source '{source_id}' is not in project '{project_id}'")
+                source = resolved[source_id]
+                if source.archived:
+                    # ``task_dependencies.depends_on_task_id`` references
+                    # ``tasks.id``, so no edge to an archived source can exist.
+                    # The source is terminal, which is to say already
+                    # satisfied, and the repair's description still names the
+                    # revision.  Record that and carry on; the schema's limit
+                    # is not a reason to fail the batch.
+                    logger.info(
+                        "development repair %s: source %s is archived (%s); "
+                        "provenance edge skipped, source already satisfied",
+                        identity,
+                        source_id,
+                        source.status,
+                        extra={"repair": identity, "source": source_id, "status": source.status},
+                    )
+                    continue
                 await self.db.add_dependency(
                     identity, source_id, DepType.DISCOVERED_FROM.value,
                     description=reason, conn=conn,
@@ -1512,7 +1747,7 @@ class DevelopmentIntegration:
                         source_id, identity, DepType.BLOCKS.value,
                         description=f"required development repair: {reason}", conn=conn,
                     )
-            if single_original_source:
+            if single_original_source and not resolved[manifest[0]["task_id"]].archived:
                 await self.db.set_parent(
                     identity,
                     manifest[0]["task_id"],

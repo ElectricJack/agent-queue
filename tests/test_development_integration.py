@@ -980,3 +980,223 @@ async def test_configure_discovers_origin_added_after_local_onboarding(setup, ha
     ))
     assert (await service.sweep("local"))["outcome"] == "delivered"
     assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+
+
+async def _park(service, identity, manifest, *, reason="selected validation failed"):
+    """Persist a parked batch row exactly as a failed sweep would."""
+    now = time.time()
+    await service.save(
+        {
+            "id": identity,
+            "project_id": "p",
+            "repository_id": "r",
+            "target_ref": "refs/heads/main",
+            "expected_sha": None,
+            "prepared_sha": None,
+            "state": "parked",
+            "manifest": manifest,
+            "evidence": {"kind": "validation", "conclusion": "failed"},
+            "reason": reason,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+
+async def _repair_chain(db, service, depth):
+    """Return the id of a generation-*depth* repair, as the incident's chain grew."""
+    previous = "original"
+    for _ in range(depth):
+        previous = await service.ensure_repair(
+            "p", "r", [{"task_id": previous, "source_sha": "a" * 40}], "b" * 40,
+            reason="validation failed",
+        )
+    assert f"Development repair generation: {depth}" in (await db.get_task(previous)).description
+    return previous
+
+
+async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
+    """The exact incident: manifest -> source closes -> source archived -> tick.
+
+    ``development-repair-8d6e0c872accc17c1d65`` was a generation-3 repair that
+    closed pass and was archived.  Every later tick resolved it through the
+    live ``tasks`` table only, lost the generation, tried to file a fourth
+    repair and raised ``repair source ... is not in project``, which aborted
+    the whole sweep for five months of ticks.
+    """
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "original")
+    previous = await _repair_chain(db, service, 3)
+
+    await _park(service, "wedged", [{"task_id": previous, "source_sha": "a" * 40}])
+
+    # The generation-3 repair closes pass and is archived.
+    await db.update_task(previous, status=TaskStatus.COMPLETED.value)
+    assert await db.archive_task(previous)
+    assert await db.get_task(previous) is None
+    assert (await db.get_archived_task(previous))["status"] == TaskStatus.COMPLETED.value
+
+    # The next tick must survive it.
+    await service.sweep("p")
+
+    # The generation budget is resolved through the archive, so no fourth
+    # repair is filed and the archived repair is not resurrected as READY.
+    assert await db.get_task(previous) is None
+    row = next(r for r in await service.rows("p") if r["id"] == "wedged")
+    assert row["state"] == "parked"
+    async with db._engine.connect() as conn:
+        from src.database.tables import tasks as tasks_table
+
+        live_repairs = set(
+            (
+                await conn.execute(
+                    select(tasks_table.c.id).where(
+                        tasks_table.c.id.like("development-repair-%")
+                    )
+                )
+            ).scalars()
+        )
+    assert previous not in live_repairs
+
+
+async def test_archived_terminal_source_is_satisfied_without_a_schema_impossible_edge(setup, caplog):
+    """An archived terminal source still yields a repair, minus its FK-bound edges.
+
+    ``task_dependencies.depends_on_task_id`` references ``tasks.id``, so no
+    provenance edge to an archived source can exist.  The publisher records
+    that as a structured log line and carries on; it never raises.
+    """
+    import logging
+
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "original")
+    await db.update_task("original", status=TaskStatus.COMPLETED.value)
+    assert await db.archive_task("original")
+    assert await db.get_task("original") is None
+
+    with caplog.at_level(logging.INFO, logger="src.integration.development"):
+        identity = await service.ensure_repair(
+            "p", "r", [{"task_id": "original", "source_sha": "a" * 40}], "b" * 40,
+            reason="validation failed",
+        )
+
+    repair = await db.get_task(identity)
+    assert repair is not None and repair.project_id == "p"
+    assert repair.parent_task_id is None
+    assert await db.get_typed_dependencies(identity) == []
+    assert any(
+        "original" in record.getMessage() and "archived" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+async def test_absent_repair_source_is_a_named_batch_diagnostic(setup):
+    """A source that exists nowhere is reported on the batch, not raised."""
+    db, service, _source, _remote, _repo = setup
+    await _park(service, "ghost", [{"task_id": "never-existed", "source_sha": "a" * 40}])
+
+    await service.sweep("p")
+
+    row = next(r for r in await service.rows("p") if r["id"] == "ghost")
+    assert row["state"] == "parked"
+    diagnostic = row["evidence"]["publisher_diagnostic"]
+    assert diagnostic["kind"] == "repair_source_missing"
+    assert diagnostic["task_ids"] == ["never-existed"]
+    assert diagnostic["consecutive_ticks"] == 1
+    assert await db.get_task(service._repair_identity(row["manifest"])) is None
+
+    # A second tick counts the repetition instead of raising or duplicating.
+    await service.sweep("p")
+    row = next(r for r in await service.rows("p") if r["id"] == "ghost")
+    assert row["evidence"]["publisher_diagnostic"]["consecutive_ticks"] == 2
+
+
+async def test_one_unresolvable_batch_does_not_abort_the_sweep_for_the_rest(setup):
+    """Isolation: the first bad row must not starve every later parked row."""
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "original")
+    await feature(setup, "later")
+
+    await _park(service, "ghost", [{"task_id": "never-existed", "source_sha": "a" * 40}])
+    await _park(service, "healthy", [{"task_id": "later", "source_sha": "c" * 40}])
+
+    await service.sweep("p")
+
+    healthy = next(r for r in await service.rows("p") if r["id"] == "healthy")
+    identity = service._repair_identity(healthy["manifest"])
+    repair = await db.get_task(identity)
+    assert repair is not None, "a later parked row still gets its repair"
+    assert ("later", "parent-child") in await db.get_typed_dependencies(identity)
+
+
+async def test_tick_isolates_one_failing_project_and_logs_one_warning(setup, caplog):
+    """A failing project logs one structured warning, not a rich traceback."""
+    import logging
+
+    db, service, _source, _remote, _repo = setup
+    await db.create_project(Project(id="q", name="Second"))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "q")
+            .values(
+                hierarchical_integration_mode="development",
+                hierarchical_integration_policy={"validation": "focused", "commands": ["true"]},
+                integration_repository_id=None,
+            )
+        )
+    swept = []
+    original = service.sweep
+
+    async def sweep(project_id, **kwargs):
+        swept.append(project_id)
+        return await original(project_id, **kwargs)
+
+    service.sweep = sweep
+    service.next_due.clear()  # ``configure`` already armed p's interval
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        await service.tick(time.time())
+
+    assert "p" in swept, "a broken project must not stop the rest of the fleet"
+    messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("q" in message for message in messages)
+    assert not any(record.exc_info for record in caplog.records), "no rich traceback"
+
+
+async def test_archived_repair_is_not_resurrected_as_a_fresh_ready_task(setup):
+    """An archived repair has been filed; re-filing it loses its completion.
+
+    ``development-repair-dfda02e25d80e0d1ab2d`` was found in ``tasks`` as READY
+    and in ``archived_tasks`` as COMPLETED at the same time — one row per tick
+    that read the live table alone.
+    """
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "original")
+    manifest = [{"task_id": "original", "source_sha": "a" * 40}]
+    identity = await service.ensure_repair(
+        "p", "r", manifest, "b" * 40, reason="validation failed"
+    )
+    await db.update_task(identity, status=TaskStatus.COMPLETED.value)
+    assert await db.archive_task(identity)
+    assert await db.get_task(identity) is None
+
+    assert (
+        await service.ensure_repair("p", "r", manifest, "b" * 40, reason="validation failed")
+        == identity
+    )
+    assert await db.get_task(identity) is None, "the archived repair stays archived"
+
+
+async def test_invalid_policy_arms_its_own_deadline_instead_of_spinning(setup):
+    """A project whose stored policy no longer validates is skipped, not retried at 5s."""
+    db, service, _source, _remote, _repo = setup
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(hierarchical_integration_policy={"validation": "focused", "commands": []})
+        )
+    now = time.time()
+    service.next_due.clear()
+    await service.tick(now)
+    assert service.next_due["p"] > now, "the deadline is armed even though validation failed"

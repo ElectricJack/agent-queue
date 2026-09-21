@@ -539,3 +539,169 @@ async def test_stranded_fences_ignores_a_collector_row(db):
     result = await run_check(db, "integration.stranded_fences")
 
     assert result.severity is Severity.OK
+
+
+# --------------------------------------------------------------------------
+# integration.development_publisher_stalled
+# --------------------------------------------------------------------------
+
+
+async def _development_project(db, project_id="p"):
+    import sqlalchemy as sa
+
+    from src.database.tables import projects
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa.update(projects)
+            .where(projects.c.id == project_id)
+            .values(hierarchical_integration_mode="development")
+        )
+
+
+async def _batch(db, batch_id, *, manifest, state="parked", diagnostic=None, project_id="p"):
+    import sqlalchemy as sa
+
+    from src.database.tables import development_deliveries
+
+    now = time.time()
+    evidence = {"kind": "validation"}
+    if diagnostic is not None:
+        evidence["publisher_diagnostic"] = diagnostic
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa.insert(development_deliveries).values(
+                id=batch_id,
+                project_id=project_id,
+                repository_id="r",
+                target_ref="refs/heads/main",
+                expected_sha=None,
+                prepared_sha=None,
+                state=state,
+                manifest=manifest,
+                evidence=evidence,
+                reason="selected validation failed",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+async def test_publisher_stalled_names_the_batch_and_the_cause(db):
+    """The agent-queue incident: the same fault on tick after tick."""
+    await _development_project(db)
+    await _batch(
+        db,
+        "b4f49c0c",
+        manifest=[{"task_id": "development-repair-8d6e", "source_sha": "a" * 40}],
+        diagnostic={
+            "kind": "repair_dispatch_failed",
+            "task_ids": ["development-repair-8d6e"],
+            "detail": "ValueError: repair source 'development-repair-8d6e' is not in project 'p'",
+            "consecutive_ticks": 42,
+            "first_failed_at": time.time() - 86_400,
+            "last_failed_at": time.time(),
+        },
+    )
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.ERROR
+    assert "b4f49c0c" in result.detail
+    assert "repair_dispatch_failed" in result.detail
+    assert result.data["stalls"][0]["consecutive_ticks"] == 42
+    assert result.data["stalls"][0]["task_ids"] == ["development-repair-8d6e"]
+
+
+async def test_publisher_stalled_lets_one_failing_tick_pass(db):
+    await _development_project(db)
+    await _batch(
+        db,
+        "fresh",
+        manifest=[{"task_id": "one", "source_sha": "a" * 40}],
+        diagnostic={
+            "kind": "repair_source_missing",
+            "task_ids": ["one"],
+            "detail": "one repair source resolves nowhere",
+            "consecutive_ticks": 1,
+            "first_failed_at": time.time(),
+        },
+    )
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.OK
+
+
+async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
+    """A repair closed pass whose branch no batch ever picked up."""
+    from src.models import TaskCompletion
+
+    await _development_project(db)
+    repair = "development-repair-uncollected"
+    await db.create_task(
+        Task(
+            id=repair,
+            project_id="p",
+            title="repair",
+            description="",
+            branch_name=f"aq/{repair}",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id="c1", task_id=repair, outcome="pass", completed_at=time.time() - 7_200
+        )
+    )
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.ERROR
+    stall = result.data["stalls"][0]
+    assert stall["cause"] == "repair_branch_uncollected"
+    assert stall["task_ids"] == [repair]
+    assert f"aq/{repair}" in stall["detail"]
+
+
+async def test_publisher_stalled_accepts_a_repair_the_publisher_did_pick_up(db):
+    """Collected-then-parked is the publisher working, not stalling."""
+    from src.models import TaskCompletion
+
+    await _development_project(db)
+    repair = "development-repair-collected"
+    await db.create_task(
+        Task(
+            id=repair,
+            project_id="p",
+            title="repair",
+            description="",
+            branch_name=f"aq/{repair}",
+            status=TaskStatus.COMPLETED,
+        )
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id="c1", task_id=repair, outcome="pass", completed_at=time.time() - 7_200
+        )
+    )
+    await _batch(db, "picked-up", manifest=[{"task_id": repair, "source_sha": "a" * 40}])
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.OK
+
+
+async def test_publisher_stalled_is_quiet_without_a_development_project(db):
+    repair = "development-repair-other-mode"
+    await db.create_task(
+        Task(id=repair, project_id="p", title="r", description="",
+             branch_name=f"aq/{repair}", status=TaskStatus.COMPLETED)
+    )
+    result = await run_check(db, "integration.development_publisher_stalled")
+    assert result.severity is Severity.OK
+
+
+def test_publisher_stalled_is_registered():
+    registry = default_registry()
+    assert "integration.development_publisher_stalled" in registry.ids()
