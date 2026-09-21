@@ -68,18 +68,42 @@ pending").
    backoff from 5 minutes to 6 hours, up to 8 attempts (`exhausted`). A
    `development.branches_deleted` event is logged per run that deletes.
 
-5. **The backlog is doctor's.** `aq doctor --check integration.landed_branches`
-   scans each development project's origin (the publisher's clone) for `aq/`
-   branches whose work is on the default branch and that nothing holds;
-   `--fix` deletes them on the same lease. "On main" is: head is an ancestor;
-   or every non-merge commit beyond main has a twin on main with the same
-   author e-mail, author time and subject (the task asked for "by commit
-   subject"; the author stamp stops a generic subject from matching different
-   work), and every merge beyond main is *clean* — its tree equals
-   `git merge-tree --write-tree` of its parents — so a hand-resolved merge
-   keeps the branch. Branches outside `aq/` are counted, never touched.
+5. **Everything else is `git.stale_branches`** (`src/doctor/git_checks.py`,
+   rules in `delivery_branches.find_stale_branches`; the supervisor's stall
+   sweep runs it — the shipped supervisor profile says so and now carries the
+   `doctor` grant). For each development project's origin, an `aq/` branch is
+   stale by exactly one rule:
+   * `landed` — head is an ancestor of main; or every non-merge commit beyond
+     main has a twin on main with the same author e-mail, author time and
+     subject (the brief's "by commit subject"; the stamp stops a generic
+     subject matching different work) **and** every merge beyond main is
+     clean — its tree equals `git merge-tree --write-tree` of its parents — so
+     a hand-resolved merge keeps the branch;
+   * `integration` — an `aq/integration/*` ref with ≥1 owner row, all
+     `released`, and every operation tied to it (owner id, or any operation
+     on the batch whose `integration_branch` it is) outside
+     active/escalated/human_required. Never by ancestry; no owner recovery;
+   * `expired` — the branch (and `-wip`) of a FAILED task, or one whose
+     `work_outcome` is `abandoned` (metadata or latest completion record),
+     live or archived, 14 days after `max(updated_at, latest completed_at)`.
+   Held branches (decision 1) are reported, not deleted; `--fix` re-scans
+   under the publisher exclusion and deletes the rest.
 
-6. **Archive sweeps hold undelivered work.** `archive_task(...,
+6. **Every deletion is restorable, and only `aq/` is ever touched**
+   (`delivery_branches.delete_branches`, used by both deleters). It refuses
+   outright anything outside `aq/`, the default branch, `main` and
+   `gh-pages`. Before pushing it writes every tip main cannot reach into a new
+   thin bundle (`--not <main head>`, verified with `bundle verify` and
+   `list-heads`) at `<data_dir>/backups/branch-deletions/<yyyy-mm>/<utc>-<repo>.bundle`
+   — `git bundle` cannot append, so each run adds a file rather than
+   rewriting a monthly one — and appends every branch to
+   `<data_dir>/backups/branch-deletions/<yyyy-mm>.tsv` as
+   `branch, sha, reason, bundle|-, recorded_at, repository` (fsynced; the
+   first two columns match the supervisor's `deleted-branches-2026-09-21.tsv`).
+   Restore: `git bundle unbundle <bundle>` then `git push origin
+   <sha>:refs/heads/<branch>`.
+
+7. **Archive sweeps hold undelivered work.** `archive_task(...,
    hold_undelivered=True)` — used by auto-archive, `archive_completed_tasks`
    and bulk `archive_task` by project — refuses with
    `hierarchy.delivery_pending` when the subtree holds a COMPLETED task for
@@ -90,20 +114,29 @@ pending").
 
 ## Not done here
 
-* Legacy hierarchy/train refs (`refs/aq/integration-*`,
-  `aq/integration-repairs/*`) belong to `src/integration/cleanup.py`.
-  `cancel_preserving` keeps its owner refs as quarantine by design; those
-  owners hold their branches here too.
+* Hidden legacy refs (`refs/aq/integration-*`, not branches) stay with
+  `src/integration/cleanup.py`. `aq/integration-repairs/*` branches are
+  ordinary `aq/` branches here: deleted only when landed and unreferenced.
+* `BranchDiscardService` (`aq task delete --branches delete` in
+  hierarchy/train projects) still deletes without a bundle; it acts on an
+  explicit operator choice through the GitHub App transport and a different
+  store. Filed as a follow-up so it gets the same backup.
 * Open pull requests are not consulted. Deleting a PR's head branch closes
   the PR on GitHub; development mode does not use PRs, and every deleted
-  branch's work is already on main.
+  branch is either on main or bundled.
+* No new owner-recovery logic: stale `reserved` owner rows keep holding their
+  branches (follow-up `quick-torrent`).
 
-## Evidence (read-only dry run, 2026-09-21)
+## Evidence (read-only dry runs, 2026-09-21)
 
 Against the live origin and holds computed from the operator database:
-927 `aq/` branches; 681 landed and unreferenced (660 by ancestry, 21 by
-author stamp and subject, every merge clean), 237 landed but held (181 by
-hierarchy-era owner rows still `reserved`, 20 assemblies of parked batches,
-18 parked-batch members, 8 attached owners, 6 active legacy batch refs, 3
-undelivered COMPLETED tasks, 1 `handoff_pending` owner), 7 not landed, 46
-non-`aq/` branches out of scope. The holds query took 0.3 s, the scan 1.5 s.
+
+* Before the supervisor's hand cleanup (973 refs): 681 landed and
+  unreferenced (660 ancestry, 21 subject), 237 landed but held (181 by
+  hierarchy-era owner rows still `reserved`), 7 not landed, 46 outside `aq/`.
+* After it (380 refs), full policy: 202 stale (191 ancestry, 11 subject),
+  123 held (108 `reserved` owners, 7 `attached`, 3 undelivered COMPLETED
+  tasks, 2 active legacy batches, 2 parked batches, 1 `handoff_pending`),
+  7 kept, 46 outside `aq/`. Rule (a) matches nothing yet (every
+  `aq/integration/*` owner is `reserved`/`attached`); rule (b)'s four expired
+  branches are already gone or held. Holds 0.3 s, scan 0.4–1.5 s.

@@ -14,6 +14,7 @@ from src.doctor.db_checks import db_checks
 from src.doctor.dashboard_server_checks import dashboard_server_checks
 from src.doctor.dashboard_state_checks import dashboard_state_checks
 from src.doctor.formula_checks import formula_checks
+from src.doctor.git_checks import git_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
 from src.doctor.intelligence_class_checks import intelligence_class_checks
@@ -51,6 +52,7 @@ __all__ = [
     "default_registry",
     "exit_code_for",
     "formula_checks",
+    "git_checks",
     "integration_checks",
     "intelligence_class_checks",
     "playbook_v2_checks",
@@ -88,6 +90,8 @@ def default_registry() -> DoctorRegistry:
     for check in skill_checks():
         registry.register(check)
     for check in integration_checks():
+        registry.register(check)
+    for check in git_checks():
         registry.register(check)
     for check in capability_checks():
         registry.register(check)

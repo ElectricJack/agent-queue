@@ -8,28 +8,41 @@ sometimes with a ``-wip`` sibling).  The publisher lands *merges*, but GitHub
 lists every one of those refs as a live branch until somebody deletes it, and
 on 2026-09-21 origin carried 961 of them, 893 already merged.
 
-Two callers delete them, and both ask this module the same question first —
-"does anything still need this branch?" (:func:`live_branch_references`):
+Two callers delete them, and both ask the same question first — "does
+anything still need this branch?" (:func:`live_branch_references`):
 
 * :meth:`src.integration.development.DevelopmentIntegration.collect_delivered_branches`
   after a batch is confirmed on the default branch, for exactly the refs that
   batch's journal names; and
-* ``aq doctor --check integration.landed_branches [--fix]`` for the backlog:
-  any ``aq/`` branch whose work is already on the default branch
-  (:func:`find_landed_branches`).
+* ``aq doctor --check git.stale_branches [--fix]`` — also what the
+  supervisor's stall sweep runs — for everything else
+  (:func:`find_stale_branches`): branches whose work is on the default
+  branch, ``aq/integration/*`` refs whose owner is released and whose
+  operation finished (:func:`released_integration_refs`), and branches of
+  FAILED or abandoned tasks 14 days after they went terminal
+  (:func:`expired_task_branches`).
 
-Deletion is always a lease on the head that was observed
-(:func:`delete_remote_branches`), so a branch somebody pushed to in the
-meantime is never removed, and a ref that is already gone is success.
+Only ``aq/`` branches are ever deleted, never the default branch, ``main`` or
+``gh-pages`` (:func:`deletable`, enforced inside :func:`delete_branches`).
+Every deletion is restorable: a tip the default branch cannot reach is
+bundled first, every branch is logged with its sha before the push, and each
+delete is a lease on the head that was observed, so a branch somebody pushed
+to in the meantime is never removed.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import re
+import time
 from collections.abc import Iterable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
@@ -45,6 +58,7 @@ from src.database.tables import (
     projects,
     sessions,
     task_branch_origins,
+    task_completion_records,
     task_metadata,
     tasks,
 )
@@ -52,11 +66,22 @@ from src.git.manager import GitError
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.models import TaskStatus
 
+logger = logging.getLogger(__name__)
+
 #: Only branches in the daemon's own namespace are ever deleted.  A person's
 #: ``fix/...`` branch is theirs to tidy, whatever its ancestry says.
 TASK_BRANCH_PREFIX = "aq/"
+#: Never deleted, whatever else is true (the default branch is added per repo).
+PROTECTED_BRANCHES = frozenset({"main", "gh-pages"})
 #: Publisher assemblies: candidate snapshots and parent aggregates.
 ASSEMBLY_PREFIX = "aq/development/"
+#: Legacy integration branches (``IntegrationScheduler._integration_branch``);
+#: only rule (a) — released owner, finished operation — lets one go.
+INTEGRATION_PREFIX = "aq/integration/"
+#: A FAILED or abandoned task's branch is kept this long after it went terminal.
+FAILED_BRANCH_KEEP_SECONDS = 14 * 24 * 3600.0
+#: Temporary refs a backup bundle is written from, removed right after.
+BACKUP_REF_PREFIX = "refs/aq-backup/heads/"
 
 #: Task statuses that can still run, and so may still push to their branch.
 LIVE_TASK_STATUSES = (
@@ -345,28 +370,77 @@ async def remote_heads(run_git, store) -> dict[str, str]:
     return heads
 
 
-async def delete_remote_branches(git, run_git, store, targets: dict[str, str]) -> dict[str, str]:
-    """Delete each ``branch -> expected head`` in *targets* from ``origin``.
+def deletable(branch: str, default_branch: str) -> bool:
+    """The one rule no caller can override: ``aq/`` only, never a protected name."""
+    return (
+        branch.startswith(TASK_BRANCH_PREFIX)
+        and branch != default_branch
+        and branch not in PROTECTED_BRANCHES
+    )
 
-    Every delete carries ``--force-with-lease=<ref>:<expected>``, so a branch
-    that moved since it was observed is left alone.  The push result is not
-    trusted on its own: the remote is listed afterwards and each branch is
-    classified from what is actually there —
 
-    * ``deleted`` — gone (including already gone before the push);
-    * ``moved``   — present at a different head: someone pushed, keep it;
-    * ``failed``  — still at the expected head: transport trouble, retry.
+async def delete_branches(
+    git,
+    run_git,
+    store,
+    targets: dict[str, dict[str, str]],
+    *,
+    default_branch: str,
+    main_head: str,
+    backup_dir: Path,
+    repository_id: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Back up, record, then delete each ``branch -> {"head", "reason"}`` from ``origin``.
 
-    A failure to *list* the remote raises, which the caller treats as one
-    retryable attempt for everything it asked for.
+    Nothing is deleted that cannot be put back:
+
+    1. every tip that is not reachable from *main_head* is written to a new,
+       verified bundle under ``<backup_dir>/<yyyy-mm>/`` (thin: ``--not
+       <main_head>``, so it restores into any clone of the repository);
+    2. every branch — reachable or not — is appended to the month's
+       deletion log ``<backup_dir>/<yyyy-mm>.tsv`` as ``branch, sha, reason,
+       bundle, recorded_at, repository`` *before* anything is pushed;
+    3. each delete carries ``--force-with-lease=<ref>:<head>``, so a branch
+       that moved since it was observed is left alone.
+
+    Restore one: ``git bundle unbundle <bundle>`` in any clone (skip it when
+    the log says ``-``: the commit is on the default branch), then
+    ``git push origin <sha>:refs/heads/<branch>``.
+
+    The push result is not trusted on its own: the remote is listed
+    afterwards and each branch is classified from what is there — ``deleted``
+    (gone, including already gone), ``moved`` (present at another head: keep)
+    or ``failed`` (still at the head: retry).  A branch outside ``aq/`` or a
+    protected name raises before anything is written.
     """
     if not targets:
-        return {}
+        return {"outcomes": {}, "bundle": None, "bundled": [], "log": None}
+    refused = sorted(b for b in targets if not deletable(b, default_branch))
+    if refused:
+        raise ValueError(f"refusing to delete protected or non-aq/ branches: {refused}")
+    if not main_head:
+        raise ValueError(f"cannot back up branches without the {default_branch} head")
+    now = time.time() if now is None else now
     ordered = sorted(targets)
+    unreachable = [
+        b for b in ordered
+        if not await git.ais_ancestor(str(store), targets[b]["head"], main_head)
+    ]
+    bundle = (
+        await _bundle(run_git, store, {b: targets[b]["head"] for b in unreachable},
+                      main_head=main_head, backup_dir=backup_dir,
+                      repository_id=repository_id, now=now)
+        if unreachable else None
+    )
+    log = _record_deletions(
+        backup_dir, targets, bundled=set(unreachable), bundle=bundle,
+        repository_id=repository_id, now=now,
+    )
     for start in range(0, len(ordered), PUSH_CHUNK):
         chunk = ordered[start : start + PUSH_CHUNK]
         args = ["push", "--porcelain", "--no-verify", "origin"]
-        args += [f"--force-with-lease=refs/heads/{b}:{targets[b]}" for b in chunk]
+        args += [f"--force-with-lease=refs/heads/{b}:{targets[b]['head']}" for b in chunk]
         args += [f":refs/heads/{b}" for b in chunk]
         # A rejected lease makes the whole push exit non-zero; the listing
         # below is what decides each branch.
@@ -381,11 +455,230 @@ async def delete_remote_branches(git, run_git, store, targets: dict[str, str]) -
         current = remote.get(branch)
         if current is None:
             outcomes[branch] = "deleted"
-        elif current == targets[branch]:
+        elif current == targets[branch]["head"]:
             outcomes[branch] = "failed"
         else:
             outcomes[branch] = "moved"
-    return outcomes
+    return {
+        "outcomes": outcomes,
+        "bundle": str(bundle) if bundle else None,
+        "bundled": unreachable,
+        "log": str(log),
+    }
+
+
+def _month(now: float) -> str:
+    return datetime.fromtimestamp(now, UTC).strftime("%Y-%m")
+
+
+async def _bundle(
+    run_git, store, heads: dict[str, str], *, main_head, backup_dir, repository_id, now
+) -> Path:
+    """Write *heads* to a new verified bundle; raise rather than return an unproved one."""
+    stamp = datetime.fromtimestamp(now, UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", repository_id) or "repository"
+    directory = Path(backup_dir) / _month(now)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stamp}-{slug}.bundle"
+    refs = {f"{BACKUP_REF_PREFIX}{branch}": sha for branch, sha in heads.items()}
+    try:
+        for ref, sha in refs.items():
+            await run_git(store, "update-ref", ref, sha)
+        await run_git(store, "bundle", "create", str(path), *sorted(refs), "--not", main_head)
+        await run_git(store, "bundle", "verify", str(path))
+        listed = await run_git(store, "bundle", "list-heads", str(path))
+    finally:
+        for ref in refs:
+            try:
+                await run_git(store, "update-ref", "-d", ref)
+            except GitError:
+                logger.warning("could not remove temporary backup ref %s", ref)
+    present = {tuple(line.split(" ", 1)) for line in listed.splitlines() if " " in line}
+    missing = sorted(ref for ref, sha in refs.items() if (sha, ref) not in present)
+    if missing:
+        raise GitError(f"branch backup {path} is missing {missing}")
+    return path
+
+
+def _record_deletions(backup_dir, targets, *, bundled, bundle, repository_id, now) -> Path:
+    """Append one line per branch to the month's deletion log, durably."""
+    directory = Path(backup_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{_month(now)}.tsv"
+    recorded_at = datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds")
+
+    def clean(value) -> str:
+        return re.sub(r"[\t\r\n]+", " ", str(value))
+
+    lines = [
+        "\t".join((
+            branch,
+            targets[branch]["head"],
+            clean(targets[branch].get("reason") or "-"),
+            str(bundle) if branch in bundled else "-",
+            recorded_at,
+            clean(repository_id),
+        ))
+        + "\n"
+        for branch in sorted(targets)
+    ]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.writelines(lines)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return path
+
+
+# -- rules for what may go -----------------------------------------------
+
+
+async def released_integration_refs(conn: Any) -> dict[str, str]:
+    """``aq/integration/*`` branches rule (a) lets go of, with why.
+
+    A legacy integration branch may go only when it has at least one
+    ``integration_branch_owners`` row, every one of them is ``released``,
+    and every operation tied to it — an owner that is an operation, or any
+    operation on the batch whose ``integration_branch`` it is — has left
+    ``active``/``escalated``/``human_required``.  No owner recovery happens
+    here: a ``reserved``/``attached``/``handoff_pending`` row simply holds.
+    """
+    owners: dict[str, list[tuple[str, str]]] = {}
+    for ref, owner_id, state in (
+        await conn.execute(
+            select(
+                integration_branch_owners.c.ref,
+                integration_branch_owners.c.owner_id,
+                integration_branch_owners.c.handoff_state,
+            ).where(integration_branch_owners.c.ref.like("%aq/integration/%"))
+        )
+    ).all():
+        branch = branch_of(ref)
+        if branch and branch.startswith(INTEGRATION_PREFIX):
+            owners.setdefault(branch, []).append((owner_id, state))
+    if not owners:
+        return {}
+    batches: dict[str, list[str]] = {}
+    for batch_id, ref in (
+        await conn.execute(
+            select(integration_batches.c.id, integration_batches.c.integration_branch).where(
+                integration_batches.c.integration_branch.is_not(None)
+            )
+        )
+    ).all():
+        branch = branch_of(ref)
+        if branch in owners:
+            batches.setdefault(branch, []).append(batch_id)
+    batch_ids = [b for ids in batches.values() for b in ids]
+    owner_ids = [o for rows in owners.values() for o, _ in rows]
+    operations = (
+        await conn.execute(
+            select(
+                integration_repair_operations.c.id,
+                integration_repair_operations.c.batch_id,
+                integration_repair_operations.c.state,
+            ).where(
+                integration_repair_operations.c.id.in_(owner_ids)
+                | integration_repair_operations.c.batch_id.in_(batch_ids)
+            )
+        )
+    ).all()
+    released = {}
+    for branch, rows in sorted(owners.items()):
+        if any(state != "released" for _, state in rows):
+            continue
+        tied = [
+            (op_id, state)
+            for op_id, batch_id, state in operations
+            if op_id in {o for o, _ in rows} or batch_id in batches.get(branch, [])
+        ]
+        if any(state in ACTIVE_OPERATION_STATES for _, state in tied):
+            continue
+        detail = ", ".join(f"{op_id} {state}" for op_id, state in sorted(tied)) or "none"
+        released[branch] = f"integration owner released; operations: {detail}"
+    return released
+
+
+async def expired_task_branches(
+    conn: Any, *, now: float, keep_seconds: float = FAILED_BRANCH_KEEP_SECONDS
+) -> dict[str, str]:
+    """Branches of FAILED or abandoned tasks terminal for *keep_seconds* (rule b).
+
+    Live and archived tasks both count.  Abandoned means ``work_outcome``
+    ``abandoned`` in the task's metadata or its latest completion record.
+    The clock starts at the later of the task's ``updated_at`` and its latest
+    completion, so any later activity restarts the wait.  A task that can
+    still run is never listed (and is held anyway).
+    """
+    abandoned_meta = set(
+        (
+            await conn.execute(
+                select(task_metadata.c.task_id).where(
+                    task_metadata.c.key == "work_outcome",
+                    task_metadata.c.value == json.dumps("abandoned"),
+                )
+            )
+        ).scalars()
+    )
+    latest = (
+        select(
+            task_completion_records.c.task_id,
+            func.max(task_completion_records.c.completed_at).label("completed_at"),
+        )
+        .group_by(task_completion_records.c.task_id)
+        .subquery()
+    )
+    abandoned_close = set(
+        (
+            await conn.execute(
+                select(task_completion_records.c.task_id)
+                .select_from(
+                    task_completion_records.join(
+                        latest,
+                        (latest.c.task_id == task_completion_records.c.task_id)
+                        & (latest.c.completed_at == task_completion_records.c.completed_at),
+                    )
+                )
+                .where(task_completion_records.c.work_outcome == "abandoned")
+            )
+        ).scalars()
+    )
+    abandoned = abandoned_meta | abandoned_close
+    cutoff = now - keep_seconds
+    expired: dict[str, str] = {}
+    for table, archived in ((tasks, False), (archived_tasks, True)):
+        rows = (
+            await conn.execute(
+                select(
+                    table.c.id, table.c.branch_name, table.c.status, table.c.updated_at,
+                    latest.c.completed_at,
+                )
+                .select_from(table.outerjoin(latest, latest.c.task_id == table.c.id))
+                .where(
+                    table.c.branch_name.is_not(None),
+                    (table.c.status == TaskStatus.FAILED.value)
+                    | (
+                        table.c.id.in_(abandoned)
+                        & table.c.status.in_(
+                            (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value,
+                             TaskStatus.BLOCKED.value)
+                        )
+                    ),
+                )
+            )
+        ).all()
+        for task_id, branch, status, updated_at, completed_at in rows:
+            terminal_at = max(float(updated_at or 0), float(completed_at or 0))
+            if terminal_at > cutoff:
+                continue
+            kind = "abandoned" if task_id in abandoned else status
+            since = datetime.fromtimestamp(terminal_at, UTC).date().isoformat()
+            where = " (archived)" if archived else ""
+            reason = f"task {task_id}{where} {kind} since {since}"
+            name = branch_of(branch)
+            if name:
+                expired.setdefault(name, reason)
+                expired.setdefault(name + "-wip", reason)
+    return expired
 
 
 # -- the backlog ---------------------------------------------------------
@@ -394,28 +687,39 @@ async def delete_remote_branches(git, run_git, store, targets: dict[str, str]) -
 _FIELD = "\x1f"
 
 
-async def find_landed_branches(
-    run_git, store, *, default_branch: str, holds: dict[str, str]
+async def find_stale_branches(
+    run_git,
+    store,
+    *,
+    default_branch: str,
+    holds: dict[str, str],
+    released: dict[str, str] | None = None,
+    expired: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Classify every ``aq/`` branch of ``origin`` against the default branch.
+    """Classify every branch of ``origin`` under the branch policy.
 
-    A branch's work is *on main* when its head is an ancestor of the default
-    branch (``ancestry``), or when every non-merge commit it has beyond the
-    default branch has a twin there with the same author e-mail, author time
-    and subject (``subject``) — how a rebased or cherry-picked copy looks
-    (both keep the author stamp; a same-subject commit with another stamp is
-    different work).  Either way every merge commit beyond the default branch
-    must be *clean*: its tree is exactly what Git's own merge of its parents
-    produces.  A hand-resolved ("evil") merge can hold work nothing else
-    has, so it keeps the branch.  A branch whose only commits beyond main
-    are clean merges of work already on main is ``ancestry`` too.
+    An ``aq/`` branch is *stale* by exactly one rule:
 
-    Returns ``{"landed": [...], "kept": [...], "unlanded": int,
-    "out_of_scope": int, "main_head": sha}``; *landed* entries carry the head
-    to lease the delete on and how the work was found (``ancestry`` /
-    ``subject``).  Branches in *holds* are reported under *kept* with the
-    hold's reason even when their work is on main.
+    * ``integration`` — an ``aq/integration/*`` ref in *released* (rule a;
+      such a ref is never judged by its ancestry);
+    * ``landed`` — its work is on the default branch: the head is an
+      ancestor (``ancestry``), or every non-merge commit beyond the default
+      branch has a twin there with the same author e-mail, author time and
+      subject (``subject``, how a rebased or cherry-picked copy looks); and
+      every merge beyond the default branch is *clean* — its tree is exactly
+      Git's own merge of its parents — because a hand-resolved merge can hold
+      work nothing else has;
+    * ``expired`` — the branch of a FAILED or abandoned task in *expired*
+      (rule b).
+
+    A stale branch in *holds* is reported under ``held`` instead.  Returns
+    ``{"stale": [...], "held": [...], "kept": int, "out_of_scope": int,
+    "main_head": sha}``; entries carry ``branch``, ``head`` (to lease the
+    delete on), ``rule``, ``found_by`` and ``reason``.  Branches outside
+    ``aq/``, the default branch, ``main`` and ``gh-pages`` are only counted.
     """
+    released = released or {}
+    expired = expired or {}
     heads = await remote_heads(run_git, store)
     main_head = heads.get(default_branch)
     if main_head is None:
@@ -433,48 +737,62 @@ async def find_landed_branches(
         ).split()
     )
     main_stamps: set[str] | None = None
-    landed, kept = [], []
-    unlanded = out_of_scope = 0
-    for branch, head in sorted(heads.items()):
-        if branch == default_branch:
-            continue
-        if not branch.startswith(TASK_BRANCH_PREFIX):
-            out_of_scope += 1
-            continue
-        how = None
+
+    async def on_main(branch, head):
+        nonlocal main_stamps
         if f"refs/remotes/origin/{branch}" in merged:
-            how = "ancestry"
-        else:
-            beyond = await run_git(
-                store, "log", "--no-merges",
-                f"--format=%ae{_FIELD}%at{_FIELD}%s", f"{main_head}..{head}", "--",
+            return "ancestry"
+        beyond = await run_git(
+            store, "log", "--no-merges",
+            f"--format=%ae{_FIELD}%at{_FIELD}%s", f"{main_head}..{head}", "--",
+        )
+        stamps = [line for line in beyond.splitlines() if line]
+        if stamps and main_stamps is None:
+            main_stamps = set(
+                (
+                    await run_git(
+                        store, "log", "--no-merges",
+                        f"--format=%ae{_FIELD}%at{_FIELD}%s", main_head, "--",
+                    )
+                ).splitlines()
             )
-            stamps = [line for line in beyond.splitlines() if line]
-            if stamps and main_stamps is None:
-                main_stamps = set(
-                    (
-                        await run_git(
-                            store, "log", "--no-merges",
-                            f"--format=%ae{_FIELD}%at{_FIELD}%s", main_head, "--",
-                        )
-                    ).splitlines()
-                )
-            if all(stamp in main_stamps for stamp in stamps) and await _merges_are_clean(
-                run_git, store, main_head, head
-            ):
-                how = "subject" if stamps else "ancestry"
-        if how is None:
-            unlanded += 1
+        if all(stamp in main_stamps for stamp in stamps) and await _merges_are_clean(
+            run_git, store, main_head, head
+        ):
+            return "subject" if stamps else "ancestry"
+        return None
+
+    stale, held = [], []
+    kept = out_of_scope = 0
+    for branch, head in sorted(heads.items()):
+        if not deletable(branch, default_branch):
+            if branch != default_branch:
+                out_of_scope += 1
             continue
+        entry = None
+        if branch.startswith(INTEGRATION_PREFIX):
+            if branch in released:
+                entry = {"rule": "integration", "found_by": "owner",
+                         "reason": released[branch]}
+        else:
+            how = await on_main(branch, head)
+            if how is not None:
+                entry = {"rule": "landed", "found_by": how,
+                         "reason": f"work is on {default_branch} ({how})"}
+            elif branch in expired:
+                entry = {"rule": "expired", "found_by": "age", "reason": expired[branch]}
+        if entry is None:
+            kept += 1
+            continue
+        entry = {"branch": branch, "head": head, **entry}
         if branch in holds:
-            kept.append({"branch": branch, "head": head, "found_by": how,
-                         "reason": holds[branch]})
-            continue
-        landed.append({"branch": branch, "head": head, "found_by": how})
+            held.append({**entry, "held_by": holds[branch]})
+        else:
+            stale.append(entry)
     return {
-        "landed": landed,
+        "stale": stale,
+        "held": held,
         "kept": kept,
-        "unlanded": unlanded,
         "out_of_scope": out_of_scope,
         "main_head": main_head,
     }
@@ -503,10 +821,16 @@ async def _merges_are_clean(run_git, store, main_head: str, head: str) -> bool:
 
 __all__ = [
     "ASSEMBLY_PREFIX",
+    "FAILED_BRANCH_KEEP_SECONDS",
+    "INTEGRATION_PREFIX",
+    "PROTECTED_BRANCHES",
     "TASK_BRANCH_PREFIX",
     "branch_of",
-    "delete_remote_branches",
-    "find_landed_branches",
+    "deletable",
+    "delete_branches",
+    "expired_task_branches",
+    "find_stale_branches",
     "live_branch_references",
+    "released_integration_refs",
     "remote_heads",
 ]

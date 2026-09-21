@@ -30,9 +30,11 @@ from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
     TASK_BRANCH_PREFIX,
     branch_of,
-    delete_remote_branches,
-    find_landed_branches,
+    delete_branches,
+    expired_task_branches,
+    find_stale_branches,
     live_branch_references,
+    released_integration_refs,
     remote_heads,
 )
 from src.models import TaskStatus
@@ -50,7 +52,7 @@ TERMINAL_STATUSES = frozenset(
 #: collect_delivered_branches`).  ``{"state": "pending"}`` arms it when the row
 #: lands; ``complete`` / ``exhausted`` end it.  Rows journaled before the key
 #: existed carry none and are left to ``aq doctor --check
-#: integration.landed_branches``.
+#: git.stale_branches``.
 BRANCH_CLEANUP_KEY = "branch_cleanup"
 #: A cleanup that cannot confirm its deletes retries with backoff this often.
 BRANCH_CLEANUP_MAX_ATTEMPTS = 8
@@ -117,6 +119,8 @@ class DevelopmentIntegration:
     def __init__(self, db, *, data_dir, git=None, confirm_stopped=None):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
+        #: Bundles and the deletion log every branch delete writes first.
+        self.backup_dir = Path(data_dir) / "backups" / "branch-deletions"
         self.git = git or GitManager()
         self.next_due = {}
         self._project_faults = {}
@@ -1209,11 +1213,16 @@ class DevelopmentIntegration:
                     for row in pending
                 }
                 targets = {
-                    branch: entry["head"]
+                    branch: {"head": entry["head"], "reason": entry["reason"]}
                     for plan in plans.values()
                     for branch, entry in plan["delete"].items()
                 }
-                outcomes = await delete_remote_branches(self.git, self.run_git, store, targets)
+                deletion = await delete_branches(
+                    self.git, self.run_git, store, targets,
+                    default_branch=repo.default_branch,
+                    main_head=heads.get(repo.default_branch),
+                    backup_dir=self.backup_dir, repository_id=repo.id, now=now,
+                )
             except Exception as exc:  # noqa: BLE001 - one attempt, recorded, retried
                 error = f"{type(exc).__name__}: {exc}"
                 return {
@@ -1227,7 +1236,7 @@ class DevelopmentIntegration:
                 "outcome": "collected",
                 "rows": [
                     await self._record_branch_cleanup(
-                        row, now, plan=plans[row["id"]], outcomes=outcomes
+                        row, now, plan=plans[row["id"]], deletion=deletion,
                     )
                     for row in pending
                 ],
@@ -1238,6 +1247,7 @@ class DevelopmentIntegration:
         target = "refs/heads/" + repo.default_branch
         main_head = heads.get(repo.default_branch)
         delete, kept, missing = {}, [], []
+        landed_by = f"delivered by development batch {row['id']}"
 
         async def on_main(head):
             return bool(main_head) and bool(
@@ -1264,7 +1274,7 @@ class DevelopmentIntegration:
             if branch in holds:
                 kept.append({"branch": branch, "reason": holds[branch]})
             elif head == delivered or await on_main(head):
-                delete[branch] = {"head": head, "kind": kind}
+                delete[branch] = {"head": head, "kind": kind, "reason": landed_by}
             elif not quiet:
                 kept.append(
                     {"branch": branch, "reason": f"has commits not on {repo.default_branch}"}
@@ -1336,10 +1346,14 @@ class DevelopmentIntegration:
                     if candidate in holds:
                         kept.append({"branch": candidate, "reason": holds[candidate]})
                     else:
-                        delete[candidate] = {"head": head, "kind": "moot_repair"}
+                        delete[candidate] = {
+                            "head": head, "kind": "moot_repair",
+                            "reason": f"repair {repair.task_id} {repair.status}; its sources "
+                                      f"reached {repo.default_branch} ({row['id']})",
+                        }
         return {"delete": delete, "kept": kept, "missing": missing}
 
-    async def _record_branch_cleanup(self, row, now, *, plan=None, outcomes=None, error=None):
+    async def _record_branch_cleanup(self, row, now, *, plan=None, deletion=None, error=None):
         """Write one attempt's result onto *row*; log the refs it deleted."""
         evidence = row["evidence"] or {}
         previous = evidence.get(BRANCH_CLEANUP_KEY) or {}
@@ -1348,10 +1362,13 @@ class DevelopmentIntegration:
         fresh = []
         if error is None:
             kept, failed = list(plan["kept"]), []
+            outcomes, bundled = deletion["outcomes"], set(deletion["bundled"])
             for branch, entry in sorted(plan["delete"].items()):
                 outcome = outcomes.get(branch)
                 if outcome == "deleted":
                     fresh.append({"branch": branch, "sha": entry["head"], "kind": entry["kind"]})
+                    if branch in bundled:
+                        fresh[-1]["backup"] = deletion["bundle"]
                 elif outcome == "moved":
                     kept.append({"branch": branch, "reason": "moved while being deleted"})
                 else:
@@ -1380,6 +1397,7 @@ class DevelopmentIntegration:
             "deleted": deleted,
             "kept": kept,
             "missing": missing,
+            "log": (deletion or {}).get("log") or previous.get("log"),
             "updated_at": now,
         }
         # Annotation only: it changes nothing readiness reads, so no
@@ -1409,16 +1427,20 @@ class DevelopmentIntegration:
             )
         return {"delivery_id": row["id"], **record, "deleted_now": fresh}
 
-    async def landed_branches(self, project_id, *, delete=False):
-        """Origin ``aq/`` branches whose work is on main and that nothing holds.
+    async def stale_branches(self, project_id, *, delete=False, now=None):
+        """Origin ``aq/`` branches the branch policy lets go of, and what holds the rest.
 
-        The backlog view behind ``aq doctor --check
-        integration.landed_branches``: rows journaled before branch cleanup
-        existed, and branches no journal row names at all.  See
-        :func:`src.integration.delivery_branches.find_landed_branches` for
-        what "on main" means.  With *delete*, each landed branch is deleted
-        on a lease at the head it was found at.
+        The view behind ``aq doctor --check git.stale_branches`` (and the
+        supervisor's stall sweep): branches whose work is on the default
+        branch, ``aq/integration/*`` refs whose owner is released and whose
+        operation finished, and branches of FAILED or abandoned tasks 14 days
+        after they went terminal — minus everything
+        :func:`live_branch_references` holds.  See
+        :func:`src.integration.delivery_branches.find_stale_branches`.  With
+        *delete*, each stale branch is backed up, logged and deleted on a
+        lease at the head it was found at (:func:`delete_branches`).
         """
+        now = time.time() if now is None else now
         project = await self.db.get_project(project_id)
         if project is None or not project.integration_repository_id:
             raise ValueError("project has no designated repository")
@@ -1429,25 +1451,36 @@ class DevelopmentIntegration:
             store = await self.store(repo)
             async with self.db._engine.connect() as conn:
                 holds = await live_branch_references(conn)
-            report = await find_landed_branches(
-                self.run_git, store, default_branch=repo.default_branch, holds=holds
+                released = await released_integration_refs(conn)
+                expired = await expired_task_branches(conn, now=now)
+            report = await find_stale_branches(
+                self.run_git, store, default_branch=repo.default_branch, holds=holds,
+                released=released, expired=expired,
             )
             report.update(project_id=project_id, repository_id=repo.id)
-            if not delete or not report["landed"]:
+            if not delete or not report["stale"]:
                 return report
-            outcomes = await delete_remote_branches(
+            deletion = await delete_branches(
                 self.git, self.run_git, store,
-                {entry["branch"]: entry["head"] for entry in report["landed"]},
+                {e["branch"]: {"head": e["head"], "reason": e["reason"]} for e in report["stale"]},
+                default_branch=repo.default_branch, main_head=report["main_head"],
+                backup_dir=self.backup_dir, repository_id=repo.id, now=now,
             )
-        deleted = [e for e in report["landed"] if outcomes.get(e["branch"]) == "deleted"]
+        outcomes = deletion["outcomes"]
+        deleted = [e for e in report["stale"] if outcomes.get(e["branch"]) == "deleted"]
         report["deleted"] = deleted
         report["moved"] = [b for b, o in sorted(outcomes.items()) if o == "moved"]
         report["failed"] = [b for b, o in sorted(outcomes.items()) if o == "failed"]
+        report["backup"] = {
+            "bundle": deletion["bundle"], "bundled": deletion["bundled"], "log": deletion["log"],
+        }
         if deleted:
             await self.db.log_event(
-                "development.landed_branches_deleted",
+                "git.stale_branches_deleted",
                 project_id=project_id,
-                payload=json.dumps({"repository_id": repo.id, "deleted": deleted}),
+                payload=json.dumps({
+                    "repository_id": repo.id, "deleted": deleted, **report["backup"],
+                }),
             )
         return report
 
