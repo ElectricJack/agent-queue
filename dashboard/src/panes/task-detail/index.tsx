@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ClipboardEvent, DragEvent } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowTopRightOnSquareIcon,
   ClipboardIcon,
@@ -37,6 +37,7 @@ import Modal from "../../components/Modal";
 import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
 import type { TaskDetailArgs } from "./manifest";
+import { useReviews } from "../../api/reviews";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -71,6 +72,8 @@ function pendingDeliverable(item: Record<string, string>): DeliverableRow {
 
 type LocalModal = "close" | "reopen" | null;
 
+type RelatedReview = { id: string; title: string; relation?: unknown };
+
 export default function TaskDetailPane({
   args,
   setToolbar,
@@ -78,6 +81,7 @@ export default function TaskDetailPane({
 }: PaneViewProps<TaskDetailArgs>) {
   const navigate = useNavigate();
   const { data: task, isLoading, isError } = useTask(args.taskId);
+  const { data: taskReviews } = useReviews({ taskId: args.taskId });
   const { data: gates } = useGates({ projectId: task?.project_id, enabled: !!task?.project_id });
   const resolveGate = useResolveGate();
   const deleteTask = useDeleteTask();
@@ -112,8 +116,12 @@ export default function TaskDetailPane({
   const loose = task as TaskWithLooseFields | undefined;
 
   const taskGates = (
-    (gates ?? []) as Array<GateSummary & { task_ids?: string[] }>
+    (gates ?? []) as Array<GateSummary & { task_ids?: string[]; await_id?: string }>
   ).filter((g) => (g.task_ids ?? []).includes(args.taskId));
+  const waitingReviews = ((taskReviews?.reviews ?? []) as RelatedReview[])
+    .filter((review) => review.relation === "waiting");
+  const authoredReviews = ((taskReviews?.reviews ?? []) as RelatedReview[])
+    .filter((review) => review.relation === "author");
 
   const uploadFiles = useCallback(async (files: File[]) => {
     const images = files.filter((file) => file.type.startsWith("image/"));
@@ -421,9 +429,18 @@ export default function TaskDetailPane({
                 key={g.id}
                 className="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 p-2.5 text-sm"
               >
-                <span className="text-gray-300">
-                  {g.gate_type} <span className="text-xs text-gray-500">{g.status}</span>
-                </span>
+                {g.gate_type === "review" && g.await_id ? (
+                  <Link
+                    to={`/reviews/${encodeURIComponent(g.await_id)}`}
+                    className="text-indigo-300 hover:underline"
+                  >
+                    review <span className="text-xs text-gray-500">{g.status}</span>
+                  </Link>
+                ) : (
+                  <span className="text-gray-300">
+                    {g.gate_type} <span className="text-xs text-gray-500">{g.status}</span>
+                  </span>
+                )}
                 {g.gate_type === "human" && g.status === "open" && (
                   <span className="flex gap-1.5">
                     <button
@@ -449,6 +466,27 @@ export default function TaskDetailPane({
           </ul>
         </section>
       )}
+
+      {waitingReviews.map((review) => (
+        <section key={review.id} className="rounded-lg border border-amber-700/50 bg-amber-950/20 p-3">
+          <Link
+            to={`/reviews/${encodeURIComponent(review.id)}`}
+            className="text-sm font-semibold text-amber-200 hover:underline"
+          >
+            Waiting on review: {review.title}
+          </Link>
+        </section>
+      ))}
+      {authoredReviews.map((review) => (
+        <section key={review.id} className="rounded-lg border border-indigo-700/50 bg-indigo-950/20 p-3">
+          <Link
+            to={`/reviews/${encodeURIComponent(review.id)}`}
+            className="text-sm font-semibold text-indigo-200 hover:underline"
+          >
+            Submitted review: {review.title}
+          </Link>
+        </section>
+      ))}
 
       {(task?.subtasks ?? []).length > 0 && (
         <TaskRefSection title="Subtasks" items={task!.subtasks!} onOpen={open} />

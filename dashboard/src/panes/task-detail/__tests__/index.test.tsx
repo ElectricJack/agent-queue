@@ -16,6 +16,11 @@ const mockUseTaskAttachments = vi.fn();
 const mockUseUploadTaskAttachment = vi.fn();
 const mockUseDeleteTaskAttachment = vi.fn();
 const mockUseDeleteTask = vi.fn();
+const mockUseReviews = vi.fn();
+
+vi.mock("../../../api/reviews", () => ({
+  useReviews: (...args: unknown[]) => mockUseReviews(...args),
+}));
 
 vi.mock("../../../api/hooks", async () => {
   const actual = await vi.importActual<typeof import("../../../api/hooks")>(
@@ -105,6 +110,7 @@ beforeEach(() => {
   mockUseUploadTaskAttachment.mockReset();
   mockUseDeleteTaskAttachment.mockReset();
   mockUseDeleteTask.mockReset();
+  mockUseReviews.mockReset();
   mockOpen.mockReset();
   mockClose.mockReset();
   mockNavigate.mockReset();
@@ -114,6 +120,7 @@ beforeEach(() => {
   mockUseUploadTaskAttachment.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   mockUseDeleteTaskAttachment.mockReturnValue({ mutate: vi.fn(), isPending: false });
   mockUseDeleteTask.mockReturnValue({ mutate: vi.fn(), isPending: false });
+  mockUseReviews.mockReturnValue({ data: { reviews: [] } });
 });
 
 describe("TaskDetailPane — screenshot attachments", () => {
@@ -325,6 +332,21 @@ describe("TaskDetailPane — metadata, PR link, relationships", () => {
 });
 
 describe("TaskDetailPane — gates", () => {
+  it("links reviews waiting on and submitted by this task", () => {
+    mockUseTask.mockReturnValue({ data: fixtureTask, isLoading: false, isError: false });
+    mockUseReviews.mockReturnValue({ data: { reviews: [
+      { id: "review-waiting", title: "Architecture", relation: "waiting" },
+      { id: "review-author", title: "Implementation plan", relation: "author" },
+    ] } });
+
+    renderWithRouter(<TaskDetailPane {...noopProps()} />);
+
+    expect(screen.getByRole("link", { name: "Waiting on review: Architecture" }))
+      .toHaveAttribute("href", "/reviews/review-waiting");
+    expect(screen.getByRole("link", { name: "Submitted review: Implementation plan" }))
+      .toHaveAttribute("href", "/reviews/review-author");
+  });
+
   it("shows only gates whose task_ids include this task", () => {
     mockUseTask.mockReturnValue({
       data: { ...fixtureTask, status: "IN_PROGRESS" },

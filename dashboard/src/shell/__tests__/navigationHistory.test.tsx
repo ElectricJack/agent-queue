@@ -46,7 +46,7 @@ vi.mock("../../api/agents", () => ({
     }],
   }),
 }));
-vi.mock("../../ws/useEventStream", () => ({ useEventStream: () => {} }));
+vi.mock("../../ws/useEventStream", () => ({ useEventStream: () => {}, useRawEventSubscription: () => {} }));
 vi.mock("../../panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("../AgentFlock", () => ({ default: () => null }));
 vi.mock("../RightSurface", () => ({ default: () => <PaneProbe /> }));
