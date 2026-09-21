@@ -3448,6 +3448,33 @@ integration_delegate_releases = Table(
     ),
 )
 
+#: One row per non-dry ``OwnerRecovery`` run on an integration branch owner.
+#:
+#: The audit trail for docs/superpowers/specs/2026-09-21-integration-owner-recovery-design.md
+#: §3: what the check saw (origin and local tips, the checkout, any preserved
+#: ref and the writer's stop proof), what it did, and who ran it.  Like
+#: ``integration_delegate_releases`` it carries only soft references, so the
+#: record outlives the owner row's task and the row itself.
+integration_owner_recoveries = Table(
+    "integration_owner_recoveries",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("owner_row_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("ref", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("outcome", Text, nullable=False),
+    Column("reason", Text, nullable=True),
+    Column("evidence", JSON, nullable=False),
+    Column("principal", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "outcome IN ('released', 'preserved_and_released', 'not_eligible')",
+        name="ck_integration_owner_recoveries_outcome",
+    ),
+    Index("idx_integration_owner_recoveries_owner", "owner_row_id", "created_at"),
+)
+
 integration_check_evidence = Table(
     "integration_check_evidence",
     metadata,
