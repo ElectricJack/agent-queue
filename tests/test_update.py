@@ -8,13 +8,18 @@ asked to do.
 
 from __future__ import annotations
 
+import io
+import json
 import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from src.install import update as update_module
+from src.install import update_finish
 from src.install.command import CommandOutput, run_command
 from src.install.dashboard import BuildOutcome, bundle_directory
 from src.install.update import (
@@ -83,14 +88,32 @@ class Repo:
         _git(self.seed, "push", "--quiet", "origin", "main")
         return _git(self.seed, "rev-parse", "HEAD")
 
+    def remove(self, path: str, message: str = "remove") -> str:
+        _git(self.seed, "rm", "--quiet", path)
+        _git(self.seed, "commit", "--quiet", "-m", message)
+        _git(self.seed, "push", "--quiet", "origin", "main")
+        return _git(self.seed, "rev-parse", "HEAD")
+
+    def pull(self) -> None:
+        _git(self.checkout, "pull", "--quiet", "--ff-only")
+
     def head(self) -> str:
         return _git(self.checkout, "rev-parse", "HEAD")
 
 
-class FakeHost:
-    """The daemon, pip, pg_dump and the dashboard build; git passes through."""
+FINISH = ("-m", "src.install.update_finish")
 
-    def __init__(self, state_dir: Path, *, running: bool = True):
+
+class FakeHost:
+    """The daemon, pip, pg_dump and the dashboard build; git passes through.
+
+    The finisher -- the fresh process `aq update` hands the pulled code to --
+    runs in-process here with these same fakes, through its real command line
+    and its real output, so the hand-off protocol is exercised both ways.
+    ``real_finisher`` runs it as the subprocess it is in production.
+    """
+
+    def __init__(self, state_dir: Path, *, running: bool = True, real_finisher: bool = False):
         self.state_dir = state_dir
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "config.yaml").write_text("messaging_platform: none\n", encoding="utf-8")
@@ -100,11 +123,18 @@ class FakeHost:
         self.calls: list[tuple[str, ...]] = []
         self.pip_cwds: list[str | None] = []
         self.builds = 0
+        self.real_finisher = real_finisher
+        self.finishes: list[tuple[tuple[str, ...], str | None]] = []
+        #: What successive probes of the served dashboard answer, while running.
+        self.dashboard_statuses: list[int] = []
+        self.heads_at_finish: list[str] = []
 
     def execute(self, argv, **kwargs) -> CommandOutput:
         command = tuple(str(part) for part in argv)
         if command[0] == "git":
             return run_command(command, **kwargs)
+        if command[1:3] == FINISH:
+            return self._finish(command, **kwargs)
         self.calls.append(command)
         if command[1:] == ("stop", "--keep-sessions"):
             self.running = False
@@ -120,7 +150,30 @@ class FakeHost:
             return CommandOutput(argv=command, returncode=1 if self.fail_pip else 0)
         raise AssertionError(f"unexpected command: {command}")
 
+    def _finish(self, command, **kwargs) -> CommandOutput:
+        cwd = kwargs.get("cwd")
+        self.finishes.append((command, cwd))
+        if cwd:
+            self.heads_at_finish.append(_git(Path(cwd), "rev-parse", "HEAD"))
+        if self.real_finisher:
+            return run_command(command, **kwargs)
+        out = io.StringIO()
+        code = update_finish.main(
+            list(command[3:]),
+            host_factory=lambda **fields: replace(
+                Host(**fields),
+                execute=self.execute,
+                probe=self.probe,
+                build=self.build,
+                sleep=lambda seconds: None,
+            ),
+            out=out,
+        )
+        return CommandOutput(argv=command, returncode=code, stdout=out.getvalue())
+
     def probe(self, url: str) -> int | None:
+        if self.running and url.endswith("/dashboard/") and self.dashboard_statuses:
+            return self.dashboard_statuses.pop(0)
         return 200 if self.running else None
 
     def build(self, checkout, **kwargs) -> BuildOutcome:
@@ -131,7 +184,7 @@ class FakeHost:
         return Host(
             execute=self.execute,
             probe=self.probe,
-            python="/venv/bin/python",
+            python=sys.executable if self.real_finisher else "/venv/bin/python",
             aq="/venv/bin/aq",
             system="darwin",
             arch="arm64",
@@ -417,6 +470,325 @@ def test_a_second_update_is_refused_while_one_holds_the_lock(repo, fake, monkeyp
     with pytest.raises(UpdateRefused, match="in progress"):
         apply_update(plan_update(repo.checkout), fake.host())
     assert fake.calls == []
+
+
+# -- the hand-off to the new code --------------------------------------------
+
+
+def test_the_pulled_code_is_finished_by_a_fresh_process_from_the_new_checkout(
+    repo, fake, monkeypatch
+):
+    """The updater's own memory is the old code; only the pull runs there."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    target = repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [(command, cwd)] = fake.finishes
+    assert command[:3] == ("/venv/bin/python", *FINISH)
+    assert cwd == str(repo.checkout)  # `-m` resolves `src` from the working directory
+    assert fake.heads_at_finish == [target]  # started only once the code had moved
+    # What the finisher did is reported as the update's own steps.
+    assert [name for name, ok, _ in report.steps if ok] == [
+        "Stop the daemon",
+        "Update the code",
+        "Reinstall Python dependencies",
+        "Rebuild the dashboard",
+        "Start the daemon",
+    ]
+
+
+def test_the_old_process_runs_no_post_pull_step_itself(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    repo.push("pyproject.toml", "[project]\nname = 'agent-queue'\nversion = '2'\n")
+    host = fake.host()
+    seen: list[tuple[str, ...]] = []
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(argv=command, returncode=0)
+        seen.append(command)
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert not [call for call in seen if "pip" in call or call[1:2] == ("start",)]
+    assert fake.builds == 0
+
+
+def test_a_module_that_disappears_with_the_pull_rolls_the_update_back(repo, fake, monkeypatch):
+    """An error nobody planned for must not leave the daemon stopped on moved code."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    before = repo.head()
+    target = repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    def current(root, fingerprint):
+        if repo.head() == target:
+            raise ModuleNotFoundError("No module named 'src.dashboard_assets.runtime'")
+        return True
+
+    monkeypatch.setattr(update_module, "bundle_is_current", current)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "src.dashboard_assets.runtime" in report.remediation
+    assert not (fake.state_dir / "update.lock").exists()
+
+
+def test_a_new_daemon_that_came_up_is_stopped_before_the_code_moves_back(repo, fake, monkeypatch):
+    """`aq start` leaves a running daemon alone, so the rollback has to stop it first."""
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    monkeypatch.setattr(update_module, "bundle_is_current", lambda root, fingerprint: True)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    fake.dashboard_statuses = [404]  # the new daemon is up but fails its own validation
+    heads_at_stop: list[str] = []
+    execute = fake.execute
+
+    def watching(argv, **kwargs):
+        if tuple(argv)[1:] == ("stop", "--keep-sessions"):
+            heads_at_stop.append(repo.head())
+        return execute(argv, **kwargs)
+
+    fake.execute = watching
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert [call[1] for call in fake.calls] == ["stop", "start", "stop", "start"]
+    assert heads_at_stop[1] != before  # stopped while still on the new code
+    assert repo.head() == before and fake.running is True
+
+
+def test_an_unexpected_error_in_the_old_process_after_the_pull_rolls_back(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the hand-off blew up")
+
+    monkeypatch.setattr(update_module, "_finish_on_new_code", broken)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "the hand-off blew up" in report.remediation
+
+
+def test_an_unexpected_error_while_rolling_back_is_reported_not_raised(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    bundle_directory(repo.checkout).mkdir(parents=True)
+    before = repo.head()
+    repo.push("dashboard/src/app.ts", "export const x = 2\n")
+
+    def current(root, fingerprint):
+        raise ModuleNotFoundError("No module named 'src.dashboard_assets.runtime'")
+
+    monkeypatch.setattr(update_module, "bundle_is_current", current)
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_FAILED
+    assert repo.head() == before  # the code did move back
+    assert "aq start" in report.remediation
+    assert "src.dashboard_assets.runtime" in report.remediation
+
+
+def test_a_finisher_that_dies_without_a_word_rolls_back(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    before = repo.head()
+    repo.push("README.md", "AQ 2\n")
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(
+                argv=command,
+                returncode=1,
+                stdout="not json\n[1, 2]\n",
+                stderr="Traceback (most recent call last):\nImportError: cannot import name 'x'\n",
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "cannot import name 'x'" in report.remediation
+
+
+def test_a_finisher_killed_after_it_began_starting_a_migrated_daemon_is_not_rolled_back(
+    repo, fake, monkeypatch
+):
+    """Its last word was that the new daemon was starting: the schema may have moved."""
+    _no_worker_scope(monkeypatch)
+    target = repo.push("migrations/versions/a0002.py", "revision = 'a0002'\n")
+    monkeypatch.setattr(
+        update_module,
+        "backup_database",
+        lambda config_path, destination, **k: (True, str(destination)),
+    )
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            return CommandOutput(
+                argv=command,
+                stdout=json.dumps({"aq_update": "daemon_starting"}) + "\n",
+                error="python did not finish within 10s",
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_FAILED
+    assert repo.head() == target
+    assert "migrations may already have run" in report.remediation
+
+
+def test_events_a_newer_finisher_adds_are_ignored_by_an_older_updater(repo, fake, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo.push("README.md", "AQ 2\n")
+    host = fake.host()
+
+    def execute(argv, **kwargs):
+        command = tuple(str(part) for part in argv)
+        if command[1:3] == FINISH:
+            lines = [
+                {"aq_update": "something_new", "detail": 1},
+                {"aq_update": "step", "name": "Start the daemon", "ok": True, "extra": "x"},
+                {"unrelated": True},
+            ]
+            return CommandOutput(
+                argv=command,
+                returncode=0,
+                stdout="npm said something\n" + "\n".join(json.dumps(line) for line in lines),
+            )
+        return fake.execute(argv, **kwargs)
+
+    report = apply_update(plan_update(repo.checkout), replace(host, execute=execute))
+
+    assert report.outcome == OUTCOME_UPDATED
+    assert ("Start the daemon", True, "") in report.steps
+
+
+# -- the finisher as the real subprocess it is --------------------------------
+
+STUB_FINISHER = """\
+import json
+import sys
+
+print(json.dumps({"aq_update": "step", "name": "Ran the new checkout's finisher", "ok": True,
+                  "message": " ".join(sys.argv[1:])}))
+"""
+
+
+def _with_a_finisher(repo: Repo) -> None:
+    """Give the checkout a `src` package of its own, as a real one has.
+
+    Without it `-m src.install.update_finish` would fall through to the
+    agent-queue this test suite is installed from.
+    """
+    repo.push("src/__init__.py", "")
+    repo.push("src/install/__init__.py", "")
+    repo.push("src/install/update_finish.py", STUB_FINISHER)
+    repo.pull()
+
+
+def test_the_finisher_that_runs_is_the_pulled_checkouts_own(tmp_path, monkeypatch):
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path)
+    fake = FakeHost(tmp_path / "aq", real_finisher=True)
+    _with_a_finisher(repo)
+    target = repo.push(
+        "src/install/update_finish.py", STUB_FINISHER.replace("Ran the new", "Ran the newer")
+    )
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_UPDATED, report.remediation
+    [ran] = [step for step in report.steps if step[0].startswith("Ran the")]
+    assert ran[0] == "Ran the newer checkout's finisher"
+    assert f"--target {target}" in ran[2] and f"--checkout {repo.checkout}" in ran[2]
+
+
+def test_a_pull_that_deletes_the_finisher_module_rolls_back(tmp_path, monkeypatch):
+    """The real thing: the module the old process counts on is gone from the new code."""
+    _no_worker_scope(monkeypatch)
+    repo = Repo(tmp_path)
+    fake = FakeHost(tmp_path / "aq", real_finisher=True)
+    _with_a_finisher(repo)
+    before = repo.head()
+    repo.remove("src/install/update_finish.py")
+
+    report = apply_update(plan_update(repo.checkout), fake.host())
+
+    assert report.outcome == OUTCOME_ROLLED_BACK, report.remediation
+    assert repo.head() == before
+    assert fake.running is True
+    assert "update_finish" in report.remediation
+    assert (repo.checkout / "src/install/update_finish.py").exists()
+
+
+def test_the_finisher_needs_nothing_the_new_code_has_not_installed_yet(tmp_path):
+    """It runs before `pip install`: standard library and `src.install` only."""
+    root = Path(update_finish.__file__).resolve().parents[2]
+
+    output = run_command([sys.executable, "-S", *FINISH, "--help"], cwd=str(root), timeout=60)
+
+    assert output.ok, output.stderr
+    assert "--checkout" in output.stdout
+
+
+def test_the_finisher_accepts_arguments_a_newer_updater_does_not_know(tmp_path):
+    out = io.StringIO()
+
+    code = update_finish.main(
+        [
+            "--checkout",
+            str(tmp_path),
+            "--state-dir",
+            str(tmp_path / "aq"),
+            "--previous",
+            "a" * 40,
+            "--target",
+            "b" * 40,
+            "--from-the-future",
+            "1",
+        ],
+        host_factory=lambda **fields: replace(
+            Host(**fields), execute=lambda argv, **k: CommandOutput(argv=tuple(argv), returncode=0)
+        ),
+        out=out,
+    )
+
+    assert code == 0, out.getvalue()
+
+
+def test_a_timed_out_command_keeps_what_it_had_printed():
+    output = run_command(
+        [sys.executable, "-c", "import time; print('so far', flush=True); time.sleep(30)"],
+        timeout=1.5,
+    )
+
+    assert not output.ok and "did not finish" in (output.error or "")
+    assert output.stdout.strip() == "so far"
 
 
 # -- pieces -----------------------------------------------------------------
