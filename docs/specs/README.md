@@ -26,6 +26,16 @@ tell you what the subsystem does now.
 `.obsidian/` holds vault settings so `docs/specs/` can be browsed in Obsidian.
 AQ does not read it.
 
+### Specs for work in flight
+
+A spec written for an epic that has not shipped yet is still a design record,
+but it is the one its implementation tasks are being held to. When the work
+lands, the concept page takes over and the row moves out of this table.
+
+| Spec | Date | Epic | Decides |
+|---|---|---|---|
+| [Provider failover](provider-failover.md) | 2026-09-20 | `bold-rapids` | Provider availability states and their evidence, provider intent on a task (`pinned` / `preferred` / `class_only`), the failover and hold policy, capacity protection, the return path, and every operator surface. |
+
 ## Reading a spec safely
 
 * Check the **Status** line at the top. "Draft", "approved direction" and a date
