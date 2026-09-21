@@ -30,6 +30,7 @@ import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
 import TaskAttention from "../../components/TaskAttention";
+import TaskProviderRouting, { ProviderIntentChip } from "../../components/TaskProviderRouting";
 import TaskDescription from "../../components/TaskDescription";
 import TaskFieldsEditor, { ReadField, type EditableTask } from "../../components/TaskFieldsEditor";
 import Modal from "../../components/Modal";
@@ -239,6 +240,7 @@ export default function TaskDetailPane({
               {task.profile_id}
             </span>
           )}
+          {task && <ProviderIntentChip intent={task.provider_intent} />}
           {loose?.intelligence_class && (
             <span className="rounded bg-indigo-500/10 px-2 py-0.5 text-indigo-300">
               {loose.intelligence_class}
@@ -255,6 +257,8 @@ export default function TaskDetailPane({
       {task && <TaskActions task={task} returnTo={location.pathname + location.search} onDeleted={close} onOpenTerminal={close} />}
 
       {task && <TaskAttention task={task as Task & { needs_attention?: string | null }} />}
+
+      {task && <TaskProviderRouting task={task} />}
 
       {task && <TaskDescription key={task.id} task={task} />}
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { activityWindowHours, activityWindowLabel, matchesTask, readTaskFilters, writeTaskFilters } from "../taskFilters";
 
-const base = { query: "", status: "", showCompleted: false, focus: "", window: "" };
+const base = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 
 describe("shared task filters", () => {
   it("searches words across title, ID, project, and agent without case sensitivity", () => {
@@ -21,15 +21,15 @@ describe("shared task filters", () => {
 
   it("round-trips filters while preserving unrelated deep-link parameters", () => {
     const params = new URLSearchParams("openDrawer=events&q=old");
-    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true, focus: "", window: "" });
-    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true, focus: "", window: "" });
+    const result = writeTaskFilters(params, { query: "new task", status: "READY", showCompleted: true, focus: "", window: "", held: false });
+    expect(readTaskFilters(result)).toEqual({ query: "new task", status: "READY", showCompleted: true, focus: "", window: "", held: false });
     expect(result.get("openDrawer")).toBe("events");
     expect(params.get("q")).toBe("old");
     expect(writeTaskFilters(result, base).toString()).toBe("openDrawer=events");
   });
 
   it("retains unknown statuses from links rather than silently broadening a filter", () => {
-    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true, focus: "", window: "" });
+    expect(readTaskFilters(new URLSearchParams("status=custom&completed=1"))).toEqual({ query: "", status: "CUSTOM", showCompleted: true, focus: "", window: "", held: false });
   });
 
   it("resolves the offered time ranges and rejects anything else", () => {
@@ -54,9 +54,9 @@ describe("shared task filters", () => {
   });
 
   it("round-trips the focus param", () => {
-    const p = writeTaskFilters(new URLSearchParams(), { query: "", status: "", showCompleted: false, focus: "e1", window: "" });
+    const p = writeTaskFilters(new URLSearchParams(), { query: "", status: "", showCompleted: false, focus: "e1", window: "", held: false });
     expect(p.get("focus")).toBe("e1");
     expect(readTaskFilters(p).focus).toBe("e1");
-    expect(writeTaskFilters(p, { query: "", status: "", showCompleted: false, focus: "", window: "" }).has("focus")).toBe(false);
+    expect(writeTaskFilters(p, { query: "", status: "", showCompleted: false, focus: "", window: "", held: false }).has("focus")).toBe(false);
   });
 });

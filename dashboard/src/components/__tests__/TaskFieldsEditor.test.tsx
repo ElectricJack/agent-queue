@@ -10,7 +10,8 @@ const data = vi.hoisted(() => ({ task: {
   priority: 100, task_type: "feature", integration_mode: null, intelligence_class: "standard-medium",
   profile_id: null, max_retries: 3, retry_count: 0, skip_verification: false, assigned_agent: null,
 } as Record<string, unknown> }));
-const api = vi.hoisted(() => ({ editTask: vi.fn(), taskSet: vi.fn(), taskComments: vi.fn(), taskComment: vi.fn(), taskSubtasks: vi.fn() }));
+const api = vi.hoisted(() => ({ editTask: vi.fn(), taskSet: vi.fn(), taskComments: vi.fn(), taskComment: vi.fn(), taskSubtasks: vi.fn(),
+  postProviderRerouteUndoApiProvidersRerouteUndoPost: vi.fn() }));
 vi.mock("../../api/client", async (load) => ({
   ...await load<typeof import("../../api/client")>(), ...api,
 }));
@@ -38,7 +39,8 @@ beforeEach(() => {
   api.editTask.mockResolvedValue({ data: { updated: "t", fields: ["priority"] } });
   api.taskComments.mockResolvedValue({ data: { comments: [], total: 0, limit: 50, offset: 0 } });
   api.taskSubtasks.mockResolvedValue({ data: { success: true, task_id: "t", subtasks: [], total: 0, settled: 0 } });
-  data.task = { ...data.task, status: "READY", assigned_agent: null };
+  data.task = { ...data.task, status: "READY", assigned_agent: null, profile_id: null,
+    provider_intent: "class_only", provider_hold: null, rerouted_from: null, reroute: null };
 });
 afterEach(() => { cleanup(); client.clear(); });
 const noop = () => {};
@@ -114,5 +116,76 @@ describe("task fields editor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("spinbutton", { name: "Priority" })).toBeNull();
     expect(api.editTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["full", "drawer"] as const)("shows the intent chip and pins the current route in %s", async (surface) => {
+    data.task = { ...data.task, profile_id: "worker-deep-high-claude", provider_intent: "preferred" };
+    mount(surface);
+    // The header chip and the details field both read the stored intent.
+    expect(screen.getAllByTestId("provider-intent-chip").map((chip) => chip.textContent))
+      .toEqual(["Preferred", "Preferred"]);
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
+    expect(pin).not.toBeChecked();
+    fireEvent.click(pin);
+    expect(select("Provider intent")).toHaveValue("pinned");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
+      body: { task_id: "t", pin: true }, throwOnError: true,
+    }));
+  });
+
+  it("starts a newly chosen route unpinned and sends pin only when it is ticked", async () => {
+    mount("drawer");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
+    // No profile: nothing to pin, and only "Class only" is selectable.
+    expect(pin).toBeDisabled();
+    const options = Array.from(select("Provider intent").options);
+    expect(options.filter((o) => o.disabled).map((o) => o.value)).toEqual(["pinned", "preferred"]);
+
+    fireEvent.change(select("Profile"), { target: { value: "worker-deep-high-claude" } });
+    expect(pin).toBeEnabled();
+    expect(pin).not.toBeChecked();
+    expect(select("Provider intent")).toHaveValue("preferred");
+    fireEvent.click(pin);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
+      body: { task_id: "t", profile_id: "worker-deep-high-claude", pin: true }, throwOnError: true,
+    }));
+  });
+
+  it("unpins through the intent select and sends the explicit intent", async () => {
+    data.task = { ...data.task, profile_id: "worker-deep-high-claude", provider_intent: "pinned" };
+    mount("full");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
+    expect(pin).toBeChecked();
+    fireEvent.change(select("Provider intent"), { target: { value: "class_only" } });
+    expect(pin).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
+      body: { task_id: "t", provider_intent: "class_only" }, throwOnError: true,
+    }));
+  });
+
+  it("locks the intent with the other routing fields while the task runs", () => {
+    data.task = { ...data.task, status: "IN_PROGRESS", assigned_agent: "agent-1",
+      profile_id: "worker-deep-high-claude", provider_intent: "preferred" };
+    mount("drawer");
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(select("Provider intent")).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Pin to this provider" })).toBeDisabled();
+  });
+
+  it.each(["full", "drawer"] as const)("renders the provider hold and re-route in %s", (surface) => {
+    data.task = { ...data.task, profile_id: "standard-high-claude", provider_intent: "preferred",
+      rerouted_from: "standard-high-codex",
+      reroute: { id: 1, from_profile_id: "standard-high-codex", to_profile_id: "standard-high-claude",
+        reason_code: "provider_unavailable", at: 1_789_200_000, undoable: true },
+      provider_hold: { provider: "claude", state: "exhausted", kind: "no_available_target", until: null } };
+    mount(surface);
+    expect(screen.getByTestId("task-provider-hold-kind")).toHaveTextContent("No available provider to move it to");
+    expect(screen.getByTestId("task-reroute")).toHaveTextContent("Re-routed from standard-high-codex");
   });
 });

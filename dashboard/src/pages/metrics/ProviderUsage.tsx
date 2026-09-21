@@ -19,11 +19,23 @@
  * response): the horizon differs per provider and the doctor check WARNs on the
  * same verdict, so deriving it a second time here is how two surfaces end up
  * disagreeing about one card.
+ *
+ * Each provider's cards sit under its availability header (provider-failover
+ * D20) — ``GET /api/providers/usage`` joined to ``GET
+ * /api/providers/availability`` on the provider key.  A provider the
+ * availability read knows but that has no usage reading still gets its
+ * header; a failed availability read leaves the quota cards exactly as they
+ * were, because an outage of one read must not blank the other.
  */
 
+import { useEffect, useRef } from "react";
 import { useProviderUsage } from "../../api/hooks";
 import type { ProviderUsageSnapshot } from "../../api/hooks";
+import { providerErrorText, useProviderAvailability, type ProviderAvailabilityStatus } from "../../api/providers";
+import ProviderAvailabilityHeader from "./ProviderAvailabilityHeader";
+import { isUnavailable, sortStatuses } from "./providerAvailabilityFormat";
 import { formatAge, formatReset, seriesLabel, sortSnapshots, toneFor } from "./providerUsageFormat";
+import { useServerNow } from "./useServerNow";
 
 export function UsageCard({ row, now }: { row: ProviderUsageSnapshot; now: number }) {
   const percent = Number.isFinite(row.used_percent) ? row.used_percent : 0;
@@ -94,32 +106,142 @@ function UnavailableUsageCard({ provider }: { provider: "Claude" }) {
   );
 }
 
+const CARD_GRID = "grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3";
+
+/**
+ * One provider: its availability header (when the availability read knows
+ * it) above its quota cards.  ``id="provider-<key>"`` is the anchor the
+ * outage banner links to.
+ */
+function ProviderGroup({
+  providerKey,
+  status,
+  rows,
+  claudeGap,
+  usageNow,
+  availabilityNow,
+}: {
+  providerKey: string;
+  status: ProviderAvailabilityStatus | undefined;
+  rows: ProviderUsageSnapshot[];
+  claudeGap: boolean;
+  usageNow: number;
+  availabilityNow: number;
+}) {
+  const cards = (rows.length > 0 || claudeGap) && (
+    <div className={CARD_GRID}>
+      {rows.map((row) => (
+        <UsageCard key={row.id} row={row} now={usageNow} />
+      ))}
+      {claudeGap && <UnavailableUsageCard provider="Claude" />}
+    </div>
+  );
+  if (!status) {
+    return cards ? (
+      <div id={`provider-${providerKey}`} data-testid={`provider-group-${providerKey}`}>
+        {cards}
+      </div>
+    ) : null;
+  }
+  return (
+    <article
+      id={`provider-${providerKey}`}
+      data-testid={`provider-group-${providerKey}`}
+      className={`scroll-mt-4 space-y-3 rounded-xl border p-3 ${
+        isUnavailable(status) ? "border-red-900/60 bg-red-950/10" : "border-gray-800 bg-gray-900/30"
+      }`}
+    >
+      <ProviderAvailabilityHeader status={status} now={availabilityNow} />
+      {cards}
+    </article>
+  );
+}
+
+/**
+ * Scroll to ``#provider-<key>`` once the group exists.  The banner links
+ * here from any page; the Metrics route is lazy and both reads are async, so
+ * the browser's own fragment scroll fires before the target is rendered.
+ */
+function useProviderAnchor(ready: boolean) {
+  const done = useRef<string | null>(null);
+  useEffect(() => {
+    if (!ready) return;
+    const hash = window.location.hash;
+    if (!hash.startsWith("#provider-") || done.current === hash) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    done.current = hash;
+    target.scrollIntoView?.({ block: "start", behavior: "smooth" });
+  });
+}
+
 export default function ProviderUsage() {
-  const { data, isLoading, isError, error, isFetching, refetch } = useProviderUsage();
-  const rows = sortSnapshots(data?.snapshots ?? []);
-  const hasClaudeReading = rows.some((row) => row.provider === "claude");
+  const usage = useProviderUsage();
+  const availability = useProviderAvailability();
+  const rows = sortSnapshots(usage.data?.snapshots ?? []);
+  const statuses = sortStatuses(availability.data?.providers ?? []);
   // The server's clock, so a reset time is not read against a skewed browser.
-  const now = data?.now ?? Date.now() / 1000;
+  const usageNow = usage.data?.now ?? Date.now() / 1000;
+  const availabilityNow = useServerNow(availability.data?.now, availability.dataUpdatedAt);
+  const usageReady = !usage.isLoading && !usage.isError;
+  const claudeGap = usageReady && rows.length > 0 && !rows.some((row) => row.provider === "claude");
+
+  const statusByKey = new Map(statuses.map((status) => [status.provider, status] as const));
+  const rowsByKey = new Map<string, ProviderUsageSnapshot[]>();
+  for (const row of rows) rowsByKey.set(row.provider, [...(rowsByKey.get(row.provider) ?? []), row]);
+  const keys = [...new Set([
+    ...statuses.map((status) => status.provider),
+    ...rowsByKey.keys(),
+    ...(claudeGap ? ["claude"] : []),
+  ])].sort((a, b) => a.localeCompare(b));
+
+  useProviderAnchor(keys.length > 0);
+
+  const refresh = () => {
+    void usage.refetch();
+    void availability.refetch();
+  };
+  const refreshing = usage.isFetching || availability.isFetching;
 
   return (
     <section className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-xs uppercase tracking-wide text-gray-500">Provider limits</h2>
+        <h2 className="text-xs uppercase tracking-wide text-gray-500">Providers</h2>
         <button
           type="button"
           aria-label="Refresh provider usage"
-          disabled={isFetching}
-          onClick={() => void refetch()}
+          disabled={refreshing}
+          onClick={refresh}
           className="text-xs text-gray-500 hover:text-gray-200 disabled:cursor-wait disabled:opacity-60"
         >
-          {isFetching ? "Refreshing…" : "Refresh"}
+          {refreshing ? "Refreshing…" : "Refresh"}
         </button>
       </div>
-      {isError ? (
-        <p className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
-          Could not load provider usage: {String((error as Error)?.message ?? error)}
+      {availability.isError && (
+        <p className="rounded-lg border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+          Could not load provider availability: {providerErrorText(availability.error)}
         </p>
-      ) : isLoading ? (
+      )}
+      {keys.length > 0 && (
+        <div className="space-y-3">
+          {keys.map((key) => (
+            <ProviderGroup
+              key={key}
+              providerKey={key}
+              status={statusByKey.get(key)}
+              rows={usageReady ? (rowsByKey.get(key) ?? []) : []}
+              claudeGap={claudeGap && key === "claude"}
+              usageNow={usageNow}
+              availabilityNow={availabilityNow}
+            />
+          ))}
+        </div>
+      )}
+      {usage.isError ? (
+        <p className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
+          Could not load provider usage: {String((usage.error as Error)?.message ?? usage.error)}
+        </p>
+      ) : usage.isLoading ? (
         <p className="text-sm text-gray-500">Loading provider usage…</p>
       ) : rows.length === 0 ? (
         // Explicitly not a row of 0% bars: "nobody has reported yet" and
@@ -127,14 +249,7 @@ export default function ProviderUsage() {
         <p className="rounded-xl border border-gray-800 bg-gray-900/40 p-4 text-sm text-gray-500">
           No provider usage recorded yet
         </p>
-      ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {rows.map((row) => (
-            <UsageCard key={row.id} row={row} now={now} />
-          ))}
-          {!hasClaudeReading && <UnavailableUsageCard provider="Claude" />}
-        </div>
-      )}
+      ) : null}
     </section>
   );
 }

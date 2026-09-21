@@ -2,6 +2,7 @@ import { Suspense, useEffect, useState } from "react";
 import { Outlet, useSearchParams } from "react-router-dom";
 import LeftRail from "./LeftRail";
 import TopBar from "./TopBar";
+import ProviderAvailabilityBanner from "./ProviderAvailabilityBanner";
 import RightSurface from "./RightSurface";
 import { RightSurfaceProvider, useRightSurface } from "./useRightSurface";
 import { ShortcutsProvider, useShortcut } from "./hotkeys/useShortcuts";
@@ -176,7 +177,12 @@ function ShellBody() {
 
   return (
     <div className="grid h-screen w-screen grid-cols-[auto_1fr_auto] grid-rows-[auto_1fr] bg-gray-950 text-gray-100">
-      <TopBar />
+      {/* The outage banner rides in the header row so it spans every page
+          without shifting the rail/main/surface grid beneath it. */}
+      <div className="col-span-3 row-start-1 flex min-w-0 flex-col">
+        <TopBar />
+        <ProviderAvailabilityBanner />
+      </div>
       <LeftRail />
       <main className="col-start-2 row-start-2 min-h-0 min-w-0 overflow-hidden">
         <Suspense

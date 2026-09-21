@@ -20,6 +20,7 @@ interface TaskWorkspaceValue {
   setStatus: (status: string) => void;
   setShowCompleted: (show: boolean) => void;
   setWindow: (window: string) => void;
+  setHeld: (held: boolean) => void;
   clearFilters: () => void;
 }
 const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
@@ -57,6 +58,7 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
     }, { replace: true });
   }, [setParams]);
   const setWindow = useCallback((window: string) => update({ window }), [update]);
+  const setHeld = useCallback((held: boolean) => update({ held }), [update]);
   // Entering a container (or leaving one) is navigation, not a filter edit:
   // it PUSHES, so the browser's Back button goes back up a level.
   const setFocus = useCallback((id: string | null) => {
@@ -65,12 +67,12 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const clearFilters = useCallback(() => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", focus: current.focus });
+      return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", held: false, focus: current.focus });
     }, { replace: true });
   }, [setParams]);
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
-    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, clearFilters]);
+    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters }),
+  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters]);
   return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider projectIds={projectIds}>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 

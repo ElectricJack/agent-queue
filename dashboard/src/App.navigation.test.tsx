@@ -35,6 +35,8 @@ vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {} }));
 vi.mock("./panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("./shell/AgentFlock", () => ({ default: () => <div>Global flock sidebar</div> }));
 vi.mock("./shell/TopBar", () => ({ default: () => null }));
+// The outage banner polls provider availability; this suite is about routing.
+vi.mock("./shell/ProviderAvailabilityBanner", () => ({ default: () => null }));
 vi.mock("./shell/RightSurface", () => ({ default: () => <PaneProbe /> }));
 vi.mock("./shell/palette/Palette", async () => {
   const { useActions } = await import("./shell/palette/registerActions");

@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
-import { useCreateTask, useIntelligenceClasses, useProjects, type CreateTaskRequest } from "../api/hooks";
+import { useCreateTask, useIntelligenceClasses, useProfiles, useProjects, type CreateTaskRequest } from "../api/hooks";
 import { groupIntelligenceClasses } from "./intelligence-classes/mapping";
+import { dedupeProfileOptions } from "../pages/project/Config";
 import Modal from "./Modal";
 
 interface CreateTaskModalProps {
@@ -28,6 +29,14 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
   // the assignment router, and the operator creating it by hand already knows
   // how much reasoning the work needs.
   const [intelligenceClass, setIntelligenceClass] = useState("");
+  // The route is optional: without a profile, routing places the task by its
+  // class and the intent is *class only*.  Naming one makes it *preferred*
+  // (it fails over to the same class elsewhere); *Pin to this provider* —
+  // unchecked by default — makes it hold instead (provider-failover D8/D9).
+  const { data: profiles } = useProfiles();
+  const profileOptions = dedupeProfileOptions(profiles ?? []);
+  const [profileId, setProfileId] = useState("");
+  const [pin, setPin] = useState(false);
   const valid = !!title.trim() && !!projectId && !!intelligenceClass && Number.isInteger(priority);
   const error: unknown = createTask.error;
   const errorMessage = error instanceof Error ? error.message : error && typeof error === "object" && "error" in error
@@ -41,12 +50,17 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
     if (priority !== 100) body.priority = priority;
     if (taskType) body.task_type = taskType;
     if (integrationMode) body.integration_mode = integrationMode;
+    if (profileId) {
+      body.profile_id = profileId;
+      if (pin) body.pin = true;
+    }
     createTask.mutate(body, {
       onSuccess: (data) => {
         const taskId = data.task_id || data.created;
         if (taskId) onCreated?.(taskId);
         setTitle(""); setDescription(""); setProjectId(defaultProjectId ?? "");
         setPriority(100); setTaskType(""); setIntegrationMode(""); setIntelligenceClass("");
+        setProfileId(""); setPin(false);
         onClose();
       },
     });
@@ -92,6 +106,27 @@ export default function CreateTaskModal({ open, onClose, defaultProjectId, onCre
               ))}
             </select>
             {classesError && <p className="mt-1 text-xs text-red-400">Could not load intelligence classes.</p>}
+          </div>
+          <div>
+            <label htmlFor={`${id}-profile`} className="mb-1 block text-sm text-gray-400">Profile</label>
+            <select id={`${id}-profile`} value={profileId}
+              onChange={(e) => { setProfileId(e.target.value); if (!e.target.value) setPin(false); }}
+              className={inputClass}>
+              <option value="">Route by intelligence class</option>
+              {profileOptions.map((p) => <option key={p.id} value={p.id}>{p.name && p.name !== p.id ? `${p.name} (${p.id})` : p.id}</option>)}
+            </select>
+            <label className="mt-2 flex items-center gap-2 text-xs text-gray-300">
+              <input type="checkbox" checked={pin} disabled={!profileId} onChange={(e) => setPin(e.target.checked)}
+                className="h-3.5 w-3.5 accent-indigo-500 disabled:cursor-not-allowed" />
+              Pin to this provider
+            </label>
+            <p className="mt-1 text-xs text-gray-500">
+              {profileId
+                ? pin
+                  ? "Pinned: holds while this profile's provider is unavailable."
+                  : "Preferred: fails over to the same class on another provider when this one is unavailable."
+                : "Pick a profile to choose (and optionally pin) a provider."}
+            </p>
           </div>
           <div>
             <label htmlFor={`${id}-type`} className="mb-1 block text-sm text-gray-400">Type</label>

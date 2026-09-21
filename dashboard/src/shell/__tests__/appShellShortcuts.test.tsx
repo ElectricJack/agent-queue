@@ -18,6 +18,8 @@ vi.mock("../../panes/registry", () => ({ PANE_REGISTRY: {} }));
 vi.mock("../../panes/agentPush", () => ({ useAgentPushBridge: () => {} }));
 vi.mock("../LeftRail", () => ({ default: () => null }));
 vi.mock("../TopBar", () => ({ default: () => null }));
+// The outage banner polls provider availability; this suite is about shortcuts.
+vi.mock("../ProviderAvailabilityBanner", () => ({ default: () => null }));
 vi.mock("../palette/Palette", () => ({ Palette: () => null }));
 // The right surface reports what the shell asked it to show.
 vi.mock("../RightSurface", async () => {

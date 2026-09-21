@@ -5,6 +5,12 @@ export interface TaskFilters {
   focus: string;
   /** Key into ACTIVITY_WINDOWS, or "" for the whole backlog. */
   window: string;
+  /**
+   * Only tasks an unavailable provider is holding (provider-failover D20).
+   * The id set comes from the server's ``provider_held_tasks`` read, never
+   * from the rows themselves — a list row carries no hold.
+   */
+  held: boolean;
 }
 
 /** Recent-work windows offered in the toolbar; "24h" is the labelled default. */
@@ -37,12 +43,13 @@ export function readTaskFilters(params: URLSearchParams): TaskFilters {
     // An unknown value would silently show the full backlog under a
     // "last 24 hours" heading, so only known keys survive the round trip.
     window: activityWindowHours(params.get("window") ?? "") ? params.get("window")! : "",
+    held: params.get("held") === "1",
   };
 }
 
 export function writeTaskFilters(params: URLSearchParams, filters: TaskFilters): URLSearchParams {
   const next = new URLSearchParams(params);
-  for (const [key, value] of [["q", filters.query], ["status", filters.status], ["completed", filters.showCompleted ? "1" : ""], ["focus", filters.focus], ["window", filters.window]] as const) {
+  for (const [key, value] of [["q", filters.query], ["status", filters.status], ["completed", filters.showCompleted ? "1" : ""], ["focus", filters.focus], ["window", filters.window], ["held", filters.held ? "1" : ""]] as const) {
     if (value) next.set(key, value);
     else next.delete(key);
   }

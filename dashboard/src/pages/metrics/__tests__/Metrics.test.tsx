@@ -51,6 +51,9 @@ vi.mock("../../../api/client", async () => {
     getProviderUsageApiProvidersUsageGet: async () => ({
       data: { now: 1000, snapshots: [], series: {} },
     }),
+    getProviderAvailabilityApiProvidersAvailabilityGet: async () => ({
+      data: { success: true, mode: "enforce", now: 1000, providers: [] },
+    }),
   };
 });
 
