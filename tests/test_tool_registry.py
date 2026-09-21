@@ -812,7 +812,6 @@ _PLAYBOOK_COMMANDS = [
     "playbook_graph_layout_save",
     "playbook_health",
     # Playbook V2 semantic graph (src/commands/playbook_v2_commands.py).
-    "playbook_commands",
     "playbook_v2_graph",
     "playbook_activation_health",
     "playbook_activate",
