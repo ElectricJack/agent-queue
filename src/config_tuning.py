@@ -248,6 +248,7 @@ def recommended_tuning(machine: MachineResources | None = None) -> dict[str, Any
             "merge_ci_policy": "warn",
             "merge_required_checks": [],
             "merge_require_up_to_date": True,
+            "owner_recovery_sweep": False,
         },
         "pricing": {"models": _pricing_rows()},
         "max_concurrent_playbook_runs": max(1, min(4, agents)),
@@ -661,6 +662,12 @@ def tuning_notes(machine: MachineResources | None = None) -> tuple[TuningNote, .
             "merge into a default branch no run has tested.",
             "Set false on a low-traffic repo where the extra CI re-runs cost "
             "more than the risk.",
+        ),
+        TuningNote(
+            "integration.owner_recovery_sweep",
+            "false: the first releases of the current stranded-owner backlog should be "
+            "deliberate and observed, not triggered by a daemon restart.",
+            "Set true only after the supervisor has released the existing backlog by hand.",
         ),
         TuningNote(
             "pricing.models",

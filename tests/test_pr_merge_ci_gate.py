@@ -400,6 +400,7 @@ def test_integration_config_defaults():
     integ = IntegrationConfig()
     assert integ.merge_ci_policy == "warn"
     assert integ.merge_required_checks == []
+    assert integ.owner_recovery_sweep is False
     assert integ.validate() == []
 
 
@@ -672,3 +673,18 @@ def test_loader_reads_merge_require_up_to_date(tmp_path):
         "  merge_require_up_to_date: false\n"
     )
     assert load_config(str(path)).integration.merge_require_up_to_date is False
+
+
+def test_loader_reads_owner_recovery_sweep(tmp_path):
+    from src.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n"
+        "  bot_token: t\n"
+        "  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        "integration:\n"
+        "  owner_recovery_sweep: true\n"
+    )
+    assert load_config(str(path)).integration.owner_recovery_sweep is True

@@ -554,6 +554,7 @@ class Orchestrator(
         self.integration_scheduler = None
         self.integration_outbox = None
         self.integration_service = None
+        self._owner_recovery_next_due: float = 0.0
         self._development_completion_unsub = None
         self.integration_attestation_service = None
         self.integration_attestation_resolver = None
@@ -1240,6 +1241,22 @@ class Orchestrator(
             return
         await service.drain_due(now=now)
 
+    async def _sweep_stranded_owners(self, now: float) -> None:
+        """Release quiet, provably abandoned branch owners every five minutes."""
+        if (
+            not self.config.integration.owner_recovery_sweep
+            or now < self._owner_recovery_next_due
+        ):
+            return
+        from src.integration.owner_recovery import owner_recovery_for
+
+        recovery = owner_recovery_for(self)
+        if recovery is None:
+            return
+        self._owner_recovery_next_due = now + 300.0
+        candidates = await recovery.candidates(quiet_seconds=600, limit=50)
+        await recovery.recover_many([candidate["id"] for candidate in candidates], principal="sweep")
+
     async def stop_task(self, task_id: str) -> str | None:
         """Forcibly stop an in-progress task and release its agent.
 
@@ -1817,6 +1834,7 @@ class Orchestrator(
             attestation=self.integration_attestation_service,
         )
         from src.integration.development import DevelopmentIntegration
+        from src.integration.owner_recovery import owner_recovery_for
         async def development_confirm_stopped(session):
             from src.sessions.provider import SessionHandle
             provider = self.session_providers.create(session["provider"], self.config)
@@ -1827,6 +1845,8 @@ class Orchestrator(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
         )
+        owner_recovery = owner_recovery_for(self)
+        self.development_integration.owner_recovery = owner_recovery
         if self._development_completion_unsub is not None:
             self._development_completion_unsub()
         self._development_completion_unsub = self.bus.subscribe(
@@ -1835,7 +1855,12 @@ class Orchestrator(
         self.integration_service = IntegrationService(
             self.db,
             self.integration_scheduler,
-            RepairService(self.db),
+            RepairService(
+                self.db,
+                owner_recovery=(
+                    owner_recovery if self.config.integration.owner_recovery_sweep else None
+                ),
+            ),
             self.integration_outbox,
             candidate_ci_handler=candidate_ci.handle,
             parent_ci_handler=parent_ci.tick,
@@ -1846,6 +1871,7 @@ class Orchestrator(
             drain_handler=self.integration_control_service.reconcile_drains,
             branch_discard_handler=self._drain_branch_discards,
             branch_materialization_handler=self._drain_branch_materializations,
+            owner_recovery_handler=self._sweep_stranded_owners,
         )
         self.integration_service.start()
 
