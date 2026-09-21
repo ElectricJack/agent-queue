@@ -32,6 +32,7 @@ aq doctor --check integration.stranded_delegates
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
+aq doctor --check integration.landed_branches
 ```
 
 ## Symptom index
@@ -51,6 +52,8 @@ aq doctor --check integration.development_publisher_stalled
 | Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
+| Delivered `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
+| `hierarchy.delivery_pending` when archiving | The work has not reached `main` | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
 | Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
@@ -349,6 +352,53 @@ remote moved — never retries on its own, because it is a statement about the
 repository rather than about the network. `--fix` re-arms parked discards for
 another attempt.
 
+## Delivered branches are still on the remote
+
+Delivery pushes a branch per task (`aq/<task-id>`), a candidate per batch
+(`aq/development/<project>/<head>`), parent assemblies
+(`aq/development/parent/…`) and a branch per repair. Once a batch is confirmed
+on the default branch, the publisher deletes what it made obsolete on the next
+tick: each member's branch (still at the delivered revision, or on `main`), a
+`-wip` sibling that is on `main`, every assembly whose members have all landed,
+and the branch of a failed repair whose sources reached `main` on their own.
+Every delete is a lease on the head it saw, so a branch someone pushed to since
+is kept.
+
+What happened is recorded on the batch's journal row, under
+`evidence.branch_cleanup`: `deleted` (branch, sha, kind), `kept` (branch and
+why), `missing`, `attempts`, and `state` — `pending`, `complete`, or `exhausted`
+after eight unconfirmed attempts. Each run that deletes something also logs a
+`development.branches_deleted` event.
+
+A branch stays when anything still references it: a task that can still run
+or has a live session, COMPLETED work not delivered yet, an unsettled batch
+(and every assembly carrying one of its members), an open repair's sources, an
+`integration_branch_owners` row that is not `released`, a live legacy operation,
+batch or promotion intent, a live hierarchy branch origin, or a pending branch
+discard. Only `aq/` branches are ever deleted.
+
+Batches delivered before this cleanup existed, and branches no batch names,
+are the doctor's job:
+
+```bash
+aq doctor --check integration.landed_branches        # what could go, and what holds the rest
+aq doctor --check integration.landed_branches --fix  # delete the landed, unreferenced ones
+```
+
+A branch counts as landed when its head is on `main`, or when every commit it
+has beyond `main` has a twin there with the same author e-mail, author time
+and subject (a rebased or cherry-picked copy) and every merge beyond `main` is
+exactly Git's own merge of its parents. `data.projects[].held_examples` names
+what holds a landed branch; a common one on older installs is an owner row left
+`reserved` by the hierarchy era.
+
+The archive sweeps (hourly auto-archive, and bulk `aq task archive --project-id`)
+refuse a COMPLETED task whose delivery has not landed with
+`hierarchy.delivery_pending`, including a task whose `repo_id` names another
+project's repository, which the publisher never collects.
+`aq doctor --check tasks.archive_blocked` lists them. An explicit single-task
+archive is not held.
+
 ## Slot reset keeps failing
 
 A claim that cannot prepare its worktree slot releases the claim and records
@@ -480,9 +530,10 @@ refused.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 [`src/integration/branch_discard.py`](../../src/integration/branch_discard.py),
+[`src/integration/delivery_branches.py`](../../src/integration/delivery_branches.py),
 [`src/doctor/integration_checks.py`](../../src/doctor/integration_checks.py),
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py).
 
 ```bash
-aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py
+aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
 ```
