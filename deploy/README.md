@@ -321,13 +321,18 @@ stack: optional harness binaries absent, no project root configured, and no
 
 ### Harness authentication
 
-Log in once, inside the container:
+Log in once per harness, inside the container:
 
 ```bash
 docker compose -f docker-compose.prod.yml exec daemon claude auth login
+docker compose -f docker-compose.prod.yml exec daemon codex login --device-auth
 ```
 
-This persists because the image sets `CLAUDE_CONFIG_DIR=/home/aq/.claude`, which
+Both persist: `~/.claude` and `~/.codex` are each on their own volume. Codex
+keeps its login in `~/.codex/auth.json` (`CODEX_HOME`), *outside* `~/.claude`,
+so it needs its own mount — and gemini would need `~/.gemini` likewise.
+
+The Claude login additionally persists because the image sets `CLAUDE_CONFIG_DIR=/home/aq/.claude`, which
 puts the CLI's *entire* configuration inside the one persisted volume. Without
 it, `.credentials.json` lives in `~/.claude` (persisted) while `.claude.json` —
 which carries the OAuth **account linkage** — sits beside that directory and is
@@ -335,28 +340,51 @@ not, so every `--build` leaves a credential file in place and still drops you
 back to "Select login method". That failure is especially confusing because
 `claude auth status` run by hand reports `loggedIn: true`.
 
-### Only bake in harnesses you will route to
+### Which harness each profile uses
 
-`AQ_HARNESSES` controls which CLIs the image installs (default: `claude` only).
-AQ nonetheless derives worker profiles for **every** harness — `*-codex`,
-`*-gemini` — and will happily route a task to one whose binary is absent. The
-session then dies instantly with an empty `start-stderr.log`, because the error
-goes to the tmux pane:
+The shipped profiles are not all Claude, so the image installs `claude` and
+`codex` by default (`AQ_HARNESSES`):
+
+| Profile | Harness |
+|---|---|
+| supervisor, planner, reviewer, final-reviewer, triage, spec-ingest, playbook-compiler, worker-claude | `claude` |
+| **pr-merger**, worker-codex | **`codex`** |
+
+AQ additionally derives a worker rung per (intelligence class x harness), so
+`*-codex` profiles exist and can be routed to whether or not that CLI is
+present. **An image missing a harness some profile routes to fails in the worst
+way available**: the session dies instantly with an *empty* `start-stderr.log`,
+because the real error goes to the tmux pane and the pane is killed with the
+session:
 
 ```
 nice: 'codex': No such file or directory
 ```
 
-Retire the rungs you cannot run, once per install:
+Installing a harness is not the same as authenticating it — each needs its own
+credential, and an unauthenticated one fails at startup just as visibly.
+
+If you genuinely want a harness-free image, retire the rungs rather than leaving
+them routable:
 
 ```bash
 for p in astra-high astra-low deep-high deep-low fast-high fast-low standard-high; do
-  docker compose -f docker-compose.prod.yml exec -T daemon \
-    aq agent delete-profile --profile-id "$p-codex" --reason "CLI not installed in this image"
+  $D aq agent delete-profile --profile-id "$p-codex" --reason "CLI not installed"
 done
 ```
 
-Or add the harness to `AQ_HARNESSES` and authenticate it too.
+Those rungs are **derived**, not shipped, so `aq agent profile-reseed` will not
+bring them back — it only accepts the ten shipped system profiles. The
+tombstones live in `vault/agent-types/.retired-defaults`; delete the entries
+there and they are re-derived at the next start.
+
+### The orchestrator's own LLM is a separate credential
+
+`llm.provider` defaults to `anthropic` with no `api_key`. This is *not* the
+harness login — it is what the orchestrator itself uses for reflection, routing
+playbooks and knowledge extraction. Nothing calls it with the shipped defaults,
+because `playbooks.enabled` and `memory.enabled` are both off; enable either and
+you need a real API key in `llm.api_key`.
 
 ### Diagnosing a session that dies at startup
 

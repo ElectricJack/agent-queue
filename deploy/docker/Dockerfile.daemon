@@ -84,8 +84,16 @@ USER aq
 #   claude: curl -fsSL https://claude.ai/install.sh | bash   -> ~/.local/bin
 #   codex:  curl -fsSL https://chatgpt.com/codex/install.sh | sh
 #   gemini: npm install -g @google/gemini-cli                 (needs Node)
-# Default to Claude only; add others by overriding AQ_HARNESSES at build time.
-ARG AQ_HARNESSES="claude"
+#
+# Both claude and codex by default, because the shipped profiles need both:
+# `pr-merger` declares `harness: codex`, and AQ derives a `*-codex` worker rung
+# per intelligence class. An image missing a harness some profile routes to
+# fails in the worst way available — the session dies instantly with an empty
+# start-stderr.log, because `nice: 'codex': No such file or directory` goes to
+# the tmux pane, which is killed with the session.
+#
+# Each harness still needs its own credential; see deploy/README.md.
+ARG AQ_HARNESSES="claude,codex"
 RUN set -eu; \
     for harness in $(echo "${AQ_HARNESSES}" | tr ',' ' '); do \
         case "$harness" in \
@@ -95,14 +103,14 @@ RUN set -eu; \
         esac; \
     done
 
-# `claude auth login` writes ~/.claude/.credentials.json, and the daemon reads
-# agent transcripts back from ~/.claude/projects/<slug>/*.jsonl. Both must
-# survive `docker compose up --build`, so ~/.claude is a volume — created here
-# so the volume is seeded aq-owned rather than root-owned.
-#
-# Only .claude is mounted, never /home/aq: a volume over the whole home would
-# hide the harness CLI installed above at ~/.local/bin.
-RUN mkdir -p /home/aq/.claude
+# One directory per harness, each mounted as a volume by
+# docker-compose.prod.yml, each created here so the volume is seeded aq-owned
+# rather than root-owned:
+#   ~/.claude  credentials + .claude.json (see CLAUDE_CONFIG_DIR above)
+#   ~/.codex   auth.json (CODEX_HOME)
+# Only these are mounted, never /home/aq itself: a volume over the whole home
+# would hide the harness CLIs installed at ~/.local/bin.
+RUN mkdir -p /home/aq/.claude /home/aq/.codex
 
 # The CLI has three first-run gates — theme, "do you trust this folder", and
 # bypass-permissions consent — and an agent session cannot click through them:

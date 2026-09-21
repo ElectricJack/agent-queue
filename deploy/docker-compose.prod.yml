@@ -21,9 +21,10 @@ services:
       context: ..
       dockerfile: deploy/docker/Dockerfile.daemon
       args:
-        # Add codex here to bake in a second harness. Gemini needs Node in the
-        # image — see deploy/README.md.
-        AQ_HARNESSES: ${AQ_HARNESSES:-claude}
+        # claude and codex by default: shipped profiles route to both
+        # (`pr-merger` is codex). Gemini needs Node in the image — see
+        # deploy/README.md.
+        AQ_HARNESSES: ${AQ_HARNESSES:-claude,codex}
     image: agent-queue/daemon:latest
     restart: unless-stopped
     # The daemon spawns tmux sessions and their descendants; without an init
@@ -55,6 +56,9 @@ services:
       # `claude auth login`) and the agent transcripts the daemon reads back
       # from ~/.claude/projects/. Without this, every rebuild logs you out.
       - aq-home:/home/aq/.claude
+      # Codex keeps its login in ~/.codex/auth.json (CODEX_HOME), outside
+      # ~/.claude — without this it is lost on every rebuild.
+      - aq-codex:/home/aq/.codex
     # No `ports:` — the API is reached through the dashboard container only.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health || exit 1"]
@@ -104,5 +108,6 @@ services:
 volumes:
   aq-data:
   aq-home:
+  aq-codex:
   aq-workspaces:
   aq-pgdata:
