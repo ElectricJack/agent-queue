@@ -57,7 +57,7 @@ aq test tests/test_orchestrator.py                # focused tests for what you c
 ./run.sh start                         # start daemon
 ```
 
-- **Swarm end-to-end:** `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` drives a real daemon on real PostgreSQL through the pool/claim/formula/hierarchy scenarios via the real CLI, in ~2½ min and with no LLM. See **[docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md)**; run it after any change to claims, pools, formulas or the task hierarchy.
+- **Swarm end-to-end:** `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` drives a real daemon on real PostgreSQL through the pool/claim/formula/hierarchy scenarios and a whole provider outage (S16, two fake providers driven by `sessions.fake_script_file`) via the real CLI, in ~8 min (S16 alone ~3½; `scripts/e2e-smoke.sh S16` runs just it) and with no LLM. See **[docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md)**; run it after any change to claims, pools, formulas, the task hierarchy or provider failover.
 - Python 3.12+, ruff (line-length 100, py312), pytest-asyncio (auto mode)
 - Async-first: use `GitManager` async API (`a`-prefixed), never sync `subprocess.run()` in production
 - Commands return `{"success": bool, ...}` dicts

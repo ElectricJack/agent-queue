@@ -59,8 +59,9 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 14 scenarios. `S1`–`S8` cover swarm composition;
-`S9`–`S14` cover the wider stateful CLI surface. Every CLI subprocess is
+The default run executes all 16 scenarios. `S1`–`S8` cover swarm composition;
+`S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
+outage against two fake providers. Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
@@ -97,8 +98,12 @@ PASS S13 plugin extensions (...)
      disposable entry point loaded when present and was an exit-2 unknown command when absent
 PASS S14 graph + vault (...)
      layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+PASS S15 development integration (...)
+     local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
+PASS S16 provider failover (206.1s)
+     prova tripped in 2 launch(es); moved …,… to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned …; all-down held everything, claim=drain_requested, critical escalation
 
-14/14 scenarios passed
+16/16 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -122,7 +127,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 14 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 16 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -290,6 +295,78 @@ including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
 
+**S16 — provider failover.** The end-to-end check of
+[provider failover](../specs/provider-failover.md) (D23), against the fake
+provider kit below. It queues three `preferred`, one `pinned`, one
+`solo-high` and two `class_only` tasks on `prova`, then logs `prova` out.
+It asserts that `prova` turns `unauthenticated` within two launches and that
+nothing launches against it afterwards (counted from the provider's own
+`startup_dialog` evidence, because a startup death leaves no session row);
+that `aq provider held-tasks` and `aq task explain` name every hold
+(`provider_pinned`, `no_equivalent_rung`, and `failover_inactive` for the rest,
+because Tier 1 runs no playbooks); and that `aq provider reroute --dry-run`
+plans exactly what the live sweep then does. The live sweep is the command the
+`provider-failover` playbook calls. The sweep moves one task at a time into
+`provb`'s `max_active: 1` — the runner works it as the `provb` session, and
+the top-up sweep joins the same batch — and `provb` never runs two sessions.
+It then checks one outage notice to `user:dashboard`, one batch notice to
+`supervisor-e2e`, one `high` escalation, and the status counts. Recovery comes
+next: the script restores `prova`, `aq provider recheck` puts it on probation,
+the single canary launch claims a held task and turns `prova` `available`, the
+pinned task runs on `prova`, the moved-and-queued task stays on `provb` until
+`aq provider reroute-undo` returns it, and the escalation resolves. Finally
+every provider goes down (`prova` logged out, the others disabled by override):
+the sweep moves nothing and holds everything as `all_providers_unavailable`, a
+live claude session's claim answers `drain_requested`, the escalation turns
+`critical`, and `providers.availability` reports `error`. Cleanup restores
+every provider whatever happened. *Regression it catches: a provider outage
+that keeps launching, work that moves past a pool's bound or across a class, a
+pin that moves, a hold with no reason, or a recovery that never completes.*
+
+### The fake provider kit
+
+`tests/fixtures/provider_failover/` holds everything S16 needs, and
+`e2e-env.sh` copies it into the vault:
+
+| File | What it is |
+|---|---|
+| `harnesses/prova.md`, `harnesses/provb.md` | Two vendorless fake harnesses, each declaring a `login-required` (`signal: auth`) and a `usage-limit` (`signal: usage`) quarantine dialog. Their provider keys are their ids. |
+| `intelligence-classes/std-high.md` | A class with a slice for both harness ids, so `std-high-prova` and `std-high-provb` are equivalent rungs. |
+| `intelligence-classes/solo-high.md` | A class with a `prova` slice only — the `astra-high` analogue. A task on it holds with `no_equivalent_rung`. |
+| `agent-types/std-high-prova`, `std-high-provb`, `solo-high-prova` | Hand-authored pool profiles, `max_active: 1`. `WORKER_PROVIDERS` is fixed, so the kit authors rungs rather than deriving them; this also proves that an operator-authored profile fails over. |
+
+Nothing ever runs a `prova` binary. `sessions.fake_script_file` (Tier 1 only;
+`$AQ_E2E_HOME/fake-provider-script.json`) maps each fake harness to a mode, and
+the fake session provider re-reads it on every start
+([`src/sessions/fake_script.py`](../../src/sessions/fake_script.py)):
+
+| Mode | A start… |
+|---|---|
+| `ok` | succeeds (also the default for a harness the file does not name) |
+| `login_required` | dies on the `login-required` dialog — a logged-out CLI |
+| `usage_limit` | dies on the `usage-limit` dialog — an exhausted account |
+| `crash` | dies with no dialog — an unattributed startup death |
+| `rate_limit_midtask` | succeeds, then exits `after_s` seconds later with a usage-limit line in its pane |
+
+The same file answers the daemon's login probe for the harnesses it names
+(`login_required` is *not signed in*, anything else *signed in*), and a
+fake-session daemon with a script probes no real CLI at all. So you can drive
+an outage by hand against a running kit:
+
+```bash
+echo '{"prova": "login_required", "provb": "ok"}' > "$AQ_E2E_HOME/fake-provider-script.json"
+# queue work on std-high-prova, then:
+aq provider status --provider prova
+aq provider reroute --dry-run
+echo '{"prova": "ok", "provb": "ok"}' > "$AQ_E2E_HOME/fake-provider-script.json"
+aq provider recheck --provider prova
+```
+
+Keep S16's cleanup order in mind if you do: `aq provider set-state … --state auto`
+puts a still-unavailable provider on probation. Probation admits one canary
+launch, and a canary nobody works holds that provider's launches for
+`CANARY_TIMEOUT_SECONDS` (10 minutes). So clear the queued work first.
+
 ### Readiness is not liveness
 
 `GET /api/health` is a static stub: it answers `{"status": "ok"}` as soon as
@@ -307,9 +384,9 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the fifteen scenarios then run against an empty database
+serving `/api/health`; the sixteen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
-fifteen product regressions rather than one broken environment.
+sixteen product regressions rather than one broken environment.
 
 ### Running two kits at once
 

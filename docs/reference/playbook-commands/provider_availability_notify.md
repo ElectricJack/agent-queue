@@ -108,7 +108,7 @@ flapping notice's timestamp is held in memory and resets on restart.
 | `rejected` | Unknown provider, or availability tracking is not running. | `aq provider status` lists the tracked providers. |
 | `messages_disabled` | `messages.enabled` is false; nothing can be queued. | `aq system config get messages` |
 | `disabled` | `provider_failover.notify.supervisor` is false. | `aq system config get provider_failover` |
-| `flap_damped` | The provider is flapping; one notice was already sent this window. | `aq provider history <provider>` |
+| `flap_damped` | The provider is flapping; one notice was already sent this window. | `aq provider history --provider <provider>` |
 
 ## Example step
 

@@ -96,7 +96,21 @@ emits `task.route_needed` for a task missing those fields and decides nothing
 else ([`src/prompts/default_playbooks/default-assignment-routing.md`](../../src/prompts/default_playbooks/default-assignment-routing.md)).
 
 **Profile pin** — an explicit `profile_id` on a task, which overrides routing.
-Clearing the pin lets routing choose again.
+Clearing the pin lets routing choose again. It fixes the *profile*, not the
+provider: an explicit profile is only a preference for its provider (see
+provider intent).
+
+**Provider availability** — whether a provider's login can do work right now:
+`available` or `degraded` (launchable), or `exhausted`, `unauthenticated`,
+`failing` or `disabled` (nothing launches against it). Queued work on an
+unavailable provider holds or fails over
+([scheduling](../concepts/scheduling.md#provider-availability-and-failover)).
+
+**Provider intent** — `tasks.provider_intent`: `pinned` (a human required that
+provider; the task holds during its outage), `preferred` (an explicit profile;
+fails over to the same class elsewhere) or `class_only` (routing chose it;
+fails over). Only an explicit pin — `--pin`, a graph node's `pin: true`, the
+dashboard's *Pin to this provider* — sets `pinned`.
 
 **Lifecycle** — how sessions for a profile are created:
 `task` (one session per assigned task, work is pushed), `pool` (a standing

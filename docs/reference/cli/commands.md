@@ -511,6 +511,26 @@ orphaned worktree slots.
 | `aq project workspace-doctor` | `workspace_doctor` | gen | Diagnose worktree inventory. |
 | `aq project workspace-reap` | `workspace_reap` | gen | Explicitly reap a retired worktree slot (removes its directory + row). |
 
+### `aq provider`
+
+Provider availability and failover. A **provider** is a harness login
+(`claude`, `codex`, `gemini`, plus `llm` for the direct path); a vendor name is
+accepted as an alias. `status`, `history` and `held-tasks` read; `recheck`,
+`set-state`, `reroute` and `reroute-undo` change state. None of them is in an
+ordinary worker token's scope: they belong to operators and supervisors. See
+[a provider ran out of usage](../../guides/provider-outage.md).
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq provider held-tasks` | `provider_held_tasks` | gen | List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, …). |
+| `aq provider history` | `provider_history` | gen | List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it. |
+| `aq provider recheck` | `provider_recheck` | gen | Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state. |
+| `aq provider reroute` | `provider_reroute` | gen | Re-route queued work off an unavailable provider to the same intelligence class on an available one; `--dry-run` plans only. |
+| `aq provider reroute-undo` | `provider_reroute_undo` | gen | Undo provider re-routes: return tasks to the profile they were on before, by `--batch-id` or `--task-id`. |
+| `aq provider set-state` | `provider_set_state` | gen | Override a provider's availability: `disabled`, `available` (always expires) or `auto` (clear the override). |
+| `aq provider status` | `provider_status` | gen | Show each provider's availability: the effective state, its reason, since when, the expected recovery, any override, held tasks and the newest usage reading. |
+
 ### `aq question`
 
 Worker questions and their answers. A question is recorded from a live

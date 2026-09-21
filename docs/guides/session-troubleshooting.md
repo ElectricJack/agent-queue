@@ -501,6 +501,8 @@ reason above is resolved by the subsystem that owns it.
   and interactive terminal, and what the claim file guarantees.
 * [Worker pools](worker-pools.md) — sizing, placement and drain policy for
   `p-` sessions.
+* [A provider ran out of usage](provider-outage.md) — the provider side of a
+  usage-limit or login death: its state, where the task went, and how to undo it.
 * [Migrations](migrations.md) — why a worker may never run Alembic, and what
   the refusal message means.
 

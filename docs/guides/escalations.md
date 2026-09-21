@@ -241,7 +241,8 @@ reflex:
   `docs/specs/provider-failover.md` D19). An `exhausted` provider with a known
   reset time never pages anyone. Like the watchdog's, this source kind is not
   approval for anything: reply to tell the supervisor what you did (for
-  example, that you ran `codex login`), and the recovery closes it.
+  example, that you ran `codex login`), and the recovery closes it. The
+  [provider outage runbook](provider-outage.md) covers what to do on the host.
 
 Dependency waits, in-flight retries and unchanged queue state never create an
 incident.

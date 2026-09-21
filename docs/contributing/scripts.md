@@ -50,7 +50,7 @@ database. Full guide: [e2e swarm](../guides/e2e-swarm.md).
 | [`e2e-common.sh`](../../scripts/e2e-common.sh) | Shared settings, sourced by the others. **Never run directly.** | `AQ_E2E_HOME`, `AQ_E2E_PORT`, `AQ_E2E_SESSION_PROVIDER`, `E2E_PG_*` — every value overridable, so two checkouts can run side by side. | None. |
 | [`e2e-env.sh`](../../scripts/e2e-env.sh) | Create or refresh the isolated environment. | `--reset` (also drop the DB, repo and vault), `--register` (register projects and workspaces; needs a running daemon). | Creates `$AQ_E2E_HOME`, its config, vault and seed repository; `--reset` destroys and rebuilds them, stopping the daemon this home owns first and refusing (exit 2) when something else holds `$AQ_E2E_API_URL`. |
 | [`e2e-daemon.sh`](../../scripts/e2e-daemon.sh) | Start / stop / inspect the isolated daemon. | `start`, `stop`, `status`, `logs [n]`. | Runs `python3 -m src.main` from this worktree against the e2e config; writes a pid file it validates by cmdline before signalling. `start` and `status` gate on `/ready` (via `e2e/probe.py`), not on the `/api/health` liveness stub. |
-| [`e2e-smoke.sh`](../../scripts/e2e-smoke.sh) | Run the **fifteen** Tier 1 scenarios, no LLM. | Scenario ids, e.g. `S2 S8`; all of them by default. | Starts a daemon if none is up and stops whatever it started, including on Ctrl-C. Preflights the schema and exits 2 rather than running the scenarios against an unusable database. Exits nonzero if any scenario fails. |
+| [`e2e-smoke.sh`](../../scripts/e2e-smoke.sh) | Run the **sixteen** Tier 1 scenarios, no LLM. | Scenario ids, e.g. `S2 S8`; all of them by default. | Starts a daemon if none is up and stops whatever it started, including on Ctrl-C. Preflights the schema and exits 2 rather than running the scenarios against an unusable database. Exits nonzero if any scenario fails. |
 | [`e2e-clean.sh`](../../scripts/e2e-clean.sh) | Destroy only the disposable resources. | — | Refuses to act unless `$AQ_E2E_HOME` resolves to a real directory carrying an `.aq-e2e` marker and is not `/`, `$HOME`, `~/.agent-queue` or the repository root. |
 | [`e2e-dashboard.sh`](../../scripts/e2e-dashboard.sh) | Vite dev server pointed at the e2e daemon. | `AQ_E2E_PORT`, `DASHBOARD_PORT` (default 5173). | Foreground process. Refuses to start without `node_modules/` or the generated TS client. |
 | [`e2e/aq.py`](../../scripts/e2e/aq.py) | Run *this worktree's* `aq`, not whatever is pip-installed. | Same arguments as `aq`. | Whatever the command does. |
@@ -63,10 +63,11 @@ database. Full guide: [e2e swarm](../guides/e2e-swarm.md).
 scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh
 ```
 
-The fifteen scenarios cover pool sizing, the claim loop, worker-filed work,
+The sixteen scenarios cover pool sizing, the claim loop, worker-filed work,
 formulas, fence and scope refusals, doctor, a concurrent-claim race, project
 onboarding, task lifecycle, workspace and file writes, messages, the MCP
-registry, plugin extensions, and graph plus vault operations.
+registry, plugin extensions, graph plus vault operations, development
+integration, and a whole provider outage against two fake providers.
 
 ## Supported: CI and integration
 

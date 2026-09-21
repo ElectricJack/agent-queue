@@ -121,7 +121,7 @@ machine-readable form of this table is
 | `dashboard` | `docs/guides/dashboard.md` | `docs/reference/modules/dashboard.md` |
 | `database` | `docs/reference/database/**` | `docs/reference/modules/database.md` |
 | `vault` | `docs/concepts/configuration-and-vault.md`, `docs/reference/configuration.md` | `docs/reference/modules/vault.md` |
-| `providers` | `docs/concepts/providers.md` | `docs/reference/modules/providers.md` |
+| `providers` | `docs/concepts/providers.md`, `docs/guides/provider-outage.md` | `docs/reference/modules/providers.md` |
 | `plugins` | `docs/guides/plugins-and-mcp.md` | `docs/reference/modules/plugins.md` |
 | `communications` | `docs/concepts/messaging.md`, `docs/guides/escalations.md` | `docs/reference/modules/communications.md` |
 | `operations` | `docs/guides/operations.md` | `docs/reference/modules/operations.md` |

@@ -1,0 +1,134 @@
+run started 2026-09-21T08:48:42Z
+cf7c10942
+==> using the daemon already running at http://127.0.0.1:8117
+swarm e2e (Tier 1) — daemon at http://127.0.0.1:8117
+
+PASS S1 pool sizing (5.4s)
+     2 sessions for 3 ready tasks; pool.scaled = 'start 2 worker'
+PASS S2 claim loop as a worker (22.0s)
+     claimed 1/1 then drain_requested; 59f5cb4a-34bc-4a9a-ad50-045f6994d6db retired, replaced by 09913783-ab36-4a91-8483-6c1ae7ece684
+PASS S3 worker-filed work (15.2s)
+     bold-vault DEFINED + discovered-from azure-beacon + routing gate gate-d9da76278602 resolved
+PASS S4 formulas (31.7s)
+     cooked nimble-stone (nimble-stone.1, nimble-stone.2); as-cooked matches; settled as COMPLETED
+PASS S5 fence + scope (44.2s)
+     cross-session heartbeat and cross-project prime both refused (sound-dune)
+PASS S6 doctor (10.6s)
+     17 swarm checks clean; hot-reload flip warned ('4 pool profile(s) configured but swarm.enabled is false — their tasks are never pushed and never claimed (report-only)') and restored ('swarm.enabled is true')
+PASS S7 PostgreSQL claim race (35.9s)
+     outcomes ['claimed', 'no_ready_work'] — one winner, loser said no_ready_work
+PASS S8 project onboarding (9.6s)
+     real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+PASS S9 task lifecycle (17.5s)
+     partial flags exited 2 without persistence; full JSON receipt yielded ['azure-zenith']; update persisted; priority failure rolled back; task deleted
+PASS S10 workspace + file/git/note writes (41.9s)
+     workspace/file/git/note CRUD persisted across processes; refusals rolled back
+PASS S11 messages (14.8s)
+     queued/injected/replied to msg-96c009d866a84a4793a2867794a2ec98 through database-only sink; bad target refused
+PASS S12 MCP registry (12.2s)
+     registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+PASS S13 plugin extensions (3.8s)
+     disposable entry point loaded when present and was an exit-2 unknown command when absent
+PASS S14 graph + vault (7.5s)
+     layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+PASS S15 development integration (18.5s)
+     local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
+     · fake script: {"prova": "ok", "provb": "ok"}
+     · baseline: prova available
+     · baseline: provb available
+     · fake script: {"prova": "login_required", "provb": "ok"}
+     · queued 3 preferred ['wise-ridge', 'eager-nexus', 'sharp-current'], pinned fleet-dune, solo-high keen-horizon, class_only ['sharp-torrent', 'eager-pinnacle']
+     · prova unauthenticated (login_required): 2 consecutive launches died on the login dialog — after 2 launch(es); remediation: run `prova login` on the host; if the account is out of usage the login will not stick until it resets. Then `aq provider recheck --provider prova`.
+     · no further prova launches in 12s (2 total)
+     · held-tasks: wise-ridge=failover_inactive, fleet-dune=provider_pinned, eager-nexus=failover_inactive, sharp-torrent=failover_inactive, sharp-current=failover_inactive, eager-pinnacle=failover_inactive, keen-horizon=no_equivalent_rung
+     · explain fleet-dune: provider_pinned on prova
+     · dry run: would move ['wise-ridge'], hold {'provider_pinned': 1, 'awaiting_failover_capacity': 4, 'no_equivalent_rung': 1}
+     · sweep: moved wise-ridge std-high-prova -> std-high-provb (batch prb-prova-2); held {'provider_pinned': 1, 'awaiting_failover_capacity': 4, 'no_equivalent_rung': 1}
+     · provb session 3afde571-7a44-4a52-a1cf-55d56b38773e claimed and closed wise-ridge
+     · top-up sweep: moved eager-nexus into the same batch prb-prova-2
+     · provb never exceeded max_active=1 (peak 1)
+     · notices: 1 to user:dashboard ('Provider prova: unauthenticated'), 1 to supervisor-e2e for prb-prova-2
+     · escalation escalation-provider-prova-2 (high, needs_human): Provider prova is unauthenticated and needs a login
+     · aq provider status prova: unauthenticated since 1789980857, held 5, rerouted 2 (batch prb-prova-2)
+     · fake script: {"prova": "ok", "provb": "ok"}
+     · recheck: probe authenticated -> degraded (recovering), probation
+     · canary 0d99782e-c3de-4954-96a7-c6cba8d1f816 (solo-high-prova) claimed held keen-horizon; prova available
+     · 13d50da9-5ae4-4d70-9ca3-e31cc81f66c3 claimed and closed the pinned task fleet-dune on prova
+     · moved eager-nexus stayed on std-high-provb; holds cleared; escalation resolved (Provider prova is launchable again (degraded: on probation: the login probe reports signed in; the next successful launch completes recovery).)
+     · reroute-undo returned eager-nexus to std-high-prova
+     · fake script: {"prova": "login_required", "provb": "usage_limit"}
+     · prova logged out again; claude, codex and provb disabled by override
+     · all-down sweep: moved none, held {'all_providers_unavailable': 6}
+     · claude session claim while every provider is down: drain_requested
+     · escalation escalation-provider-prova-6 is critical: Provider prova is unauthenticated and needs a login
+     · doctor providers.availability: error — every session provider is unavailable -- nothing can launch: claude disabled since 2026-09-21 01:56 (e2e S16: every prov
+     · fake script: {"prova": "ok", "provb": "ok"}
+PASS S16 provider failover (206.1s)
+     prova tripped in 2 launch(es); moved wise-ridge,eager-nexus to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned eager-nexus; all-down held everything, claim=drain_requested, critical escalation
+
+16/16 scenarios passed
+
+Capability report (passed | broken | unsupported | dependency-unavailable | explicitly-untested)
+  passed                 agent/session/pool: S1: 2 sessions for 3 ready tasks; pool.scaled = 'start 2 worker'
+  passed                 task/session/workspace: S2: claimed 1/1 then drain_requested; 59f5cb4a-34bc-4a9a-ad50-045f6994d6db retired, replaced by 09913783-ab36-4a91-8483-6c1ae7ece684
+  passed                 task/dependency/gate: S3: bold-vault DEFINED + discovered-from azure-beacon + routing gate gate-d9da76278602 resolved
+  passed                 formula/task-graph: S4: cooked nimble-stone (nimble-stone.1, nimble-stone.2); as-cooked matches; settled as COMPLETED
+  passed                 authentication/scope: S5: cross-session heartbeat and cross-project prime both refused (sound-dune)
+  passed                 config/doctor: S6: 17 swarm checks clean; hot-reload flip warned ('4 pool profile(s) configured but swarm.enabled is false — their tasks are never pushed and never claimed (report-only)') and restored ('swarm.enabled is true')
+  passed                 task/claim/postgresql: S7: outcomes ['claimed', 'no_ready_work'] — one winner, loser said no_ready_work
+  passed                 project/git/vault: S8: real CLI linked an unchanged repository and initialized main + README; each project has one enabled project-repo workspace and standard vault storage
+  passed                 task CRUD/rollback: S9: partial flags exited 2 without persistence; full JSON receipt yielded ['azure-zenith']; update persisted; priority failure rolled back; task deleted
+  passed                 workspace CRUD: S10: workspace/file/git/note CRUD persisted across processes; refusals rolled back
+  passed                 file/git/note CRUD: S10: workspace/file/git/note CRUD persisted across processes; refusals rolled back
+  passed                 message CRUD: S11: queued/injected/replied to msg-96c009d866a84a4793a2867794a2ec98 through database-only sink; bad target refused
+  passed                 MCP registry CRUD: S12: registry create/read/delete passed; loopback:1 probe = dependency-unavailable
+  passed                 plugin extension startup: S13: disposable entry point loaded when present and was an exit-2 unknown command when absent
+  passed                 graph/vault: S14: layout rebuild/tidy persisted through daemon; isolated vault migration preview made no writes
+  passed                 integration: S15: local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
+  passed                 provider availability/failover: S16: prova tripped in 2 launch(es); moved wise-ridge,eager-nexus to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned eager-nexus; all-down held everything, claim=drain_requested, critical escalation
+  dependency-unavailable memory semantic search: memory.enabled=false; no Milvus/Ollama or aq-memory service is contacted
+  dependency-unavailable MCP remote tools: S12 probes only a deliberately closed loopback port
+  unsupported            agent questions: questions belong to harness transcripts; no second CLI ask-human state machine
+  unsupported            plugin hook history: hooks were replaced by playbooks; the compatibility command is not history
+  explicitly-untested    real providers/tmux/external messaging: Tier 2 only; Tier 1 spends no tokens and sends no network messages
+  explicitly-untested    plugin install/update/remove from remote git: would mutate the interpreter environment or require an external repository
+  explicitly-untested    playbook activation/run: playbooks.enabled=false in deterministic Tier 1; formula mutation is covered by S4
+  explicitly-untested    database upgrade/daemon control: workers never migrate databases or start/stop anything except the disposable daemon wrapper
+
+================ post-run evidence (same daemon) ================
+$ aq provider status
+                                                                     Provider availability                                                                      
+┏━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Provider           ┃ State     ┃ Since   ┃ Recovery ┃ Held ┃ Moved ┃ Last OK ┃ Usage ┃ Reason                                                                ┃
+┡━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ claude (anthropic) │ available │ 9m ago  │ —        │    0 │     0 │ 46s ago │ —     │ —                                                                     │
+│ codex (openai)     │ available │ 9m ago  │ —        │    0 │     0 │ —       │ —     │ —                                                                     │
+│ prova              │ degraded  │ 11s ago │ —        │    0 │     0 │ 1m ago  │ —     │ on probation: reset by human:local-operator; the next successful      │
+│                    │           │         │          │      │       │         │       │ launch completes recovery                                             │
+│ provb              │ available │ 9m ago  │ —        │    0 │     0 │ 2m ago  │ —     │ —                                                                     │
+└────────────────────┴───────────┴─────────┴──────────┴──────┴───────┴─────────┴───────┴───────────────────────────────────────────────────────────────────────┘
+
+$ aq provider history --provider prova
+01:57:09 gen 7: unauthenticated -> degraded (recovering) by human:local-operator — on probation: reset by human:local-operator; the next successful launch completes recovery
+01:56:18 gen 6: degraded -> unauthenticated (login_required) by system — a launch died on its login dialog and the login probe reports not signed in
+01:56:18 gen 5: available -> degraded (suspect_auth) by system — one launch died on the login dialog; awaiting corroboration
+01:55:38 gen 4: degraded -> available () by system — 
+01:55:28 gen 3: unauthenticated -> degraded (recovering) by system — on probation: the login probe reports signed in; the next successful launch completes recovery
+01:54:16 gen 2: degraded -> unauthenticated (login_required) by system — 2 consecutive launches died on the login dialog
+01:54:16 gen 1: available -> degraded (suspect_auth) by system — one launch died on the login dialog; awaiting corroboration
+
+$ aq escalation list --project-id e2e   (provider incidents)
+escalation-provider-prova-6 high resolved | Provider prova is unauthenticated and needs a login | Provider prova is launchable again (degraded: on probation: reset by human:local-operator; the next successful launch completes recovery).
+escalation-provider-prova-2 high resolved | Provider prova is unauthenticated and needs a login | Provider prova is launchable again (degraded: on probation: the login probe reports signed in; the next successful launch completes recovery).
+
+$ aq message list --to-kind user --to-id dashboard   (provider notices)
+- Provider prova: unauthenticated
+- Provider prova: degraded
+- Provider prova: unauthenticated
+- Provider claude: disabled
+- Provider codex: disabled
+- Provider provb: disabled
+- Provider claude: available
+- Provider codex: available
+- Provider provb: available
+- Provider prova is flapping

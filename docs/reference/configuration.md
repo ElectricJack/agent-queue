@@ -78,8 +78,8 @@ aq system config schema
 | messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. |
 | agents_config, agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
-| llm.fallback | An optional second direct-path credential (`provider`, `api_key`, `base_url`, `model`, `default_class`). While provider availability holds the `llm` key unavailable, direct-path calls (playbook `llm` steps, including default-assignment-routing) resolve their intelligence class against the fallback provider's slice and use it; a class with no slice there fails fast with `provider_error` (`provider_unavailable`). A session harness's login is never used. | `null` (no fallback: calls fail fast during an outage). Restart-required like the rest of `llm`. It must differ from the primary in provider, `api_key` or `base_url`. See [provider failover](../specs/provider-failover.md) D13a. |
-| provider_failover | Provider availability: when a harness login counts as exhausted, logged out or failing (usage thresholds, trip counts, windows), recovery and the auth probe, operator override expiry, and the failover policy the re-route engine reads. `mode: off \| observe \| enforce` — `observe` tracks and reports without suppressing launches. | `mode: enforce`; see [provider failover](../specs/provider-failover.md) D22 for every key. `aq provider status` shows the state. |
+| llm.fallback | An optional second direct-path credential, used only while provider availability holds the reserved `llm` key unavailable. | `null` (no fallback: direct-path calls fail fast during an outage). Restart-required like the rest of `llm`. See [`llm.fallback`](#llmfallback). |
+| provider_failover | Provider availability and failover: when a harness login counts as exhausted, logged out or failing, how it recovers, operator override expiry, and the failover policy and limits the re-route sweep reads. | `mode: enforce`. Hot-reloadable. Every key is in [`provider_failover` keys](#provider_failover-keys); `aq provider status` shows the state. |
 | docs | Base URL used to link contracted playbook commands to their reference pages. | Defaults to this repository's `main/docs/` tree; private mirrors can override it. |
 | supervisor, supervisor_agent, sessions, worktrees, streams | Session execution, supervisor delivery, worktree behavior, and stream handling. | Some flags gate service construction and require restart. |
 | memory, memory_extractor, inbox | Optional memory extension behavior, extraction, and inbox polling. | Memory data is preserved if disabled; plugin availability is separate. |
@@ -89,6 +89,148 @@ aq system config schema
 | swarm, resources, metrics, graph_layout | Pull pools, per-session limits/test slots, fleet metrics, and graph layout. | Resources defaults gate shared machine capacity. |
 | dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
+
+## Provider availability settings
+
+Two blocks configure what happens when a provider runs out of usage, loses its login
+or keeps failing: `provider_failover` for the coding-agent sessions and the re-route
+sweep, and `llm.fallback` for the daemon's own direct API calls. What the states and
+holds mean is explained in [scheduling](../concepts/scheduling.md#provider-availability-and-failover);
+what to do during an outage is the [provider outage runbook](../guides/provider-outage.md).
+Defaults and bounds below are read from `ProviderFailoverConfig` and `LLMFallbackConfig`
+in [src/config.py](../../src/config.py); the machine-readable form is
+[configuration-schema.json](configuration-schema.json) and `aq system config schema`.
+
+### `provider_failover` keys
+
+Every key is optional; an absent key keeps its default, and an absent section is the
+defaults. The section is **hot-reloadable**: the availability service and the re-route
+engine read it through a getter on every piece of evidence and every sweep, so an edit
+applies on the next tick without a restart. A value outside its bound rejects the whole
+edited file, and the current configuration stays in use.
+
+~~~yaml
+provider_failover:
+  mode: enforce
+  classes:
+    deep-high: hold          # never fail deep-high work over to another provider
+  reroute:
+    max_priority_value: 50   # only urgent work moves automatically
+  override:
+    default_ttl_seconds: 7200
+~~~
+
+**Policy.**
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `mode` | `enforce` | `off`, `observe`, `enforce` | `enforce` suppresses launches against an unavailable provider and lets the sweep move work. `observe` tracks state, emits events, notifies and serves every surface, but suppresses nothing and moves nothing automatically. `off` records nothing. |
+| `order` | `[]` | List of provider keys; a duplicate is a warning | Failover target preference. Empty means the project default's provider first, then `claude`, then `codex`, then any other provider. |
+| `default_policy` | `same_class` | `same_class`, `hold` | What a class does when its provider is unavailable: move to the same class elsewhere, or hold. |
+| `classes` | `{}` | Map of class id to `same_class` or `hold` | Per-class override of `default_policy`. |
+
+**`usage`** — thresholds on the provider's own usage readings (the account-wide window's
+used percent).
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `usage.exhausted_percent` | `99.0` | `(0, 100]` | A fresh account-wide reading at or above this is `exhausted`. A model-scoped window this full only makes the provider `degraded`. |
+| `usage.degraded_percent` | `85.0` | `(0, 100]`, below `exhausted_percent` | A reading at or above this is `degraded` (`usage_high`): still launched against, never a failover target. Also the "usage is high" corroboration that lets one usage dialog or rate-limit exit trip the provider. |
+| `usage.hysteresis_percent` | `2.0` | `>= 0`, below `degraded_percent` | A `usage_high` provider stays degraded until its reading falls this far below `degraded_percent`. |
+
+**`launch`** and **`rate_limit`** — how much evidence trips a provider.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `launch.strong_failures_to_trip` | `2` | `>= 1` | Consecutive startup deaths on the login (or usage-limit) dialog that trip `unauthenticated` (or `exhausted`) without other corroboration. |
+| `launch.generic_failures_to_trip` | `5` | `>= 1` | Consecutive unexplained startup deaths inside the window that trip `failing` — when they span two projects, or happen where another provider launched successfully. |
+| `launch.window_seconds` | `600` | `> 0` | The window those failures, rate-limit exits and the "another provider launched here" test are counted over. |
+| `launch.suspect_backoff_seconds` | `30` | `>= 0` | How long a task pauses (`provider_suspect`) after the first uncorroborated provider signal, or when a recovering provider's canary launch is already in flight. |
+| `rate_limit.exits_to_trip` | `2` | `>= 1` | Sessions (distinct) exiting on a provider rate limit inside the window that trip `exhausted`. |
+| `rate_limit.cooldown_seconds` | `900` | `>= 0` | Backoff base for an `exhausted` provider that reported no reset time. It doubles with each failed recovery, capped at `recovery.backoff_max_seconds`. |
+
+**`auth_probe`** and **`recovery`** — the login probe and the way back.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `auth_probe.interval_seconds` | `600` | `>= 0`; `0` disables | How often the daemon runs the harness's login-status command against a launchable provider. |
+| `auth_probe.timeout_seconds` | `10` | `> 0` | How long one probe may take. |
+| `recovery.reset_grace_seconds` | `60` | `>= 0` | How long after an `exhausted` provider's reset time it goes on probation. |
+| `recovery.auth_probe_interval_seconds` | `120` | `> 0` | How often an `unauthenticated` provider is probed. `aq provider recheck` probes at once. |
+| `recovery.failing_backoff_seconds` | `300` | `>= 0` | Backoff base for a `failing` provider; doubles with each failed canary. |
+| `recovery.backoff_max_seconds` | `3600` | `>= 0` | The cap on every doubled backoff. |
+| `recovery.flap_window_seconds` | `3600` | `>= 0` | After this long launchable, the backoff doubling resets. Also the window `notify.flap_threshold` counts half changes over. |
+
+**`override`** — operator overrides set with `aq provider set-state`.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `override.default_ttl_seconds` | `14400` (4 h) | `>= 0`, at most `max_ttl_seconds` | How long an override lasts when neither `--for` nor `--until` is given. |
+| `override.max_ttl_seconds` | `604800` (7 d) | `>= 0` | The longest override accepted. Only `disabled` may be set with `--no-expiry`; an `available` override always expires. |
+
+**`reroute`** — the limits the re-route sweep (`provider_reroute`, driven by the
+`provider-failover` playbook) applies to automatic moves. An operator's `--force` move
+skips the trickle and the per-task limits.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `reroute.enabled` | `true` | boolean | `false` turns automatic moves off; held tasks report `failover_inactive` and wait for their provider. |
+| `reroute.max_per_sweep` | `10` | `>= 1` | Most tasks one sweep moves. |
+| `reroute.target_backlog_factor` | `1.0` | `> 0` | Per target rung, at most `max(1, ceil(factor × capacity))` moved-and-not-yet-started tasks are kept queued; capacity is `max_active` for a pool profile, else its enabled workers. The rest hold `awaiting_failover_capacity`. |
+| `reroute.allow_degraded_target` | `false` | boolean | Let a `degraded` provider receive failover traffic. |
+| `reroute.max_priority_value` | `null` | integer or `null` | When set, only tasks whose priority number is at most this move automatically; the rest hold `priority_policy_hold`. |
+| `reroute.task_cooldown_seconds` | `1800` | `>= 0`; `0` disables | A task moved automatically is not moved automatically again inside this window. |
+| `reroute.max_auto_per_task` | `2` | `>= 1` | After this many automatic moves a task holds for a human (`reroute_limit_reached`). |
+
+**`notify`**, **`doctor`** and **`evidence`**.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `notify.supervisor` | `true` | boolean | Send the half-change message to the global supervisor and `user:dashboard`, and the per-project notice for each re-route batch. Both also need `messages.enabled`. |
+| `notify.digest` | `true` | boolean | Include provider state changes in the hourly digest, as fleet facts. |
+| `notify.escalate_unauthenticated` | `true` | boolean | File an escalation when a provider is logged out. |
+| `notify.escalate_failing_after_seconds` | `1800` | `>= 0` | File an escalation when a provider has been `failing` this long. |
+| `notify.escalate_all_down_after_seconds` | `1800` | `>= 0` | While every session provider is unavailable, file a `critical` escalation unless one is due back within this long. |
+| `notify.flap_threshold` | `3` | `>= 1` | More half changes than this inside `recovery.flap_window_seconds` is flapping: one message says so, and per-change messages pause for a window. |
+| `doctor.held_warn_seconds` | `14400` (4 h) | `>= 0` | `aq doctor --check providers.held_tasks` warns about work held longer than this. |
+| `evidence.keep` | `20` | `>= 1`, and at least the largest trip count plus 2 | Evidence items kept per provider, newest first. The trip rules count over this ring. |
+
+`pause_retry` was an earlier section for provider backoff; nothing read it. It is retired
+and ignored with a warning.
+
+### `llm.fallback`
+
+An optional second credential for the direct path (playbook `llm` steps, including
+default-assignment-routing, plugin `invoke_llm`, stub enrichment). Provider availability
+tracks direct-path calls under the reserved key `llm`. While that key is unavailable and
+`provider_failover.mode` is `enforce`, calls resolve their intelligence class against the
+fallback provider's slice and are made with this credential; a class with no slice there,
+or no fallback at all, fails fast with `provider_error` (diagnostic
+`provider_unavailable`) instead of waiting. A session harness's login is never borrowed
+([src/llm/client.py](../../src/llm/client.py)).
+
+~~~yaml
+llm:
+  provider: anthropic
+  fallback:
+    provider: openai
+    api_key: ${OPENAI_API_KEY}
+~~~
+
+| Key | Default | What it does |
+|---|---|---|
+| `fallback` | `null` | Absent or `null`: no fallback. Otherwise a mapping of the keys below. |
+| `fallback.provider` | — (required) | `anthropic`, `google` or `openai`. |
+| `fallback.api_key` | `""` | The credential; empty means the provider's own `*_API_KEY` environment variable. |
+| `fallback.base_url` | `""` | `openai` only: an OpenAI-compatible endpoint. |
+| `fallback.model` | `""` | An explicit model id; empty means the intelligence class, else the provider default. |
+| `fallback.default_class` | `""` | The class used when a call names none. |
+
+The fallback must differ from the primary in `provider`, `api_key` or `base_url` — the
+same credential is unavailable exactly when the primary is, so an identical block is a
+validation error. Only `max_tokens` is shared with the primary. Unknown keys are ignored
+with a warning that names them (never their values). `llm` is restart-required, so a
+change to `llm.fallback` takes effect when the daemon restarts.
 
 ## Reload and restart
 
