@@ -2817,6 +2817,9 @@ class DashboardServerConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_SERVER_PORT
+    #: Public dashboard origin used in links sent outside the local machine.
+    #: Empty preserves the local host-and-port URL.
+    public_url: str = ""
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2833,6 +2836,8 @@ class DashboardServerConfig:
             errors.append(ConfigError(
                 "dashboard.server", "port", f"must be between 1 and 65535, got {self.port!r}",
             ))
+        if not isinstance(self.public_url, str):
+            errors.append(ConfigError("dashboard", "public_url", "must be a string"))
         return errors
 
 
@@ -2847,6 +2852,8 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
     kwargs = _dataclass_kwargs(DashboardServerConfig, section)
+    if isinstance(dashboard, Mapping) and "public_url" in dashboard:
+        kwargs["public_url"] = dashboard["public_url"]
     kwargs.setdefault("port", default_dashboard_server_port(raw))
     return DashboardServerConfig(**kwargs)
 
