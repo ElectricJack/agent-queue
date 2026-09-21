@@ -92,7 +92,8 @@ a *live* worker and reports the delivery status.
 The dashboard server process, and the durable dashboard state documents. The
 dashboard server is a separate local process that serves the verified bundle
 and proxies the daemon's API, so the browser stays same-origin and the daemon
-serves no pages ([design](../../specs/dashboard-server.md)). `serve` runs it in
+serves no dashboard ([guide](../../guides/dashboard.md#opening-the-dashboard),
+[design](../../specs/dashboard-server.md)). `serve` runs it in
 the foreground; `start` / `stop` / `restart` / `status` manage it in the
 background (`~/.agent-queue/dashboard-server.pid` and `.log`) and work while
 the daemon is down. `aq start`, `aq stop` and `aq restart` call them when a

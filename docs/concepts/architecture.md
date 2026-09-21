@@ -52,7 +52,7 @@ The daemon is **API only**. Its HTTP app ([`src/api/app.py`](../../src/api/app.p
 exposes `/api`, `/health`, `/ready`, the `/ws` sockets and the embedded MCP
 server, on `mcp_server.port` (8081 by default), and serves no dashboard page,
 script or stylesheet; the only HTML it returns is FastAPI's interactive API
-reference at `/docs` and `/redoc`. Its old `/dashboard` path answers `404` with a JSON pointer naming
+reference at `/docs` and `/redoc` and the plan viewer at `/plans/<task_id>`. Its old `/dashboard` path answers `404` with a JSON pointer naming
 the dashboard server's URL, so an old bookmark explains itself instead of
 failing silently.
 
@@ -79,7 +79,7 @@ The split is about ownership, not scale:
 | Imports | Everything | Only `src.config` from AQ — never the API, orchestrator, database or command layers ([boundary test](../../tests/test_dashboard_server_app.py)) |
 | Secrets | Database URL, provider keys | None; started with an allowlisted environment |
 | Started by | `aq start` | `aq start`, after the daemon answers `/health`, when a verified bundle is installed and `dashboard.server.enabled` is true |
-| When the other is down | Keeps running; CLI and MCP still work | Keeps serving the page, which shows the daemon as unreachable (`503 daemon_unreachable` on proxied paths) |
+| When the other is down | Keeps running; CLI and MCP still work | Keeps serving the page; proxied paths answer `503 daemon_unreachable` until the daemon is back |
 | Supervised | Recovers durable work on restart | Not restarted automatically; `aq status` and `aq doctor` report it and `aq start` heals it |
 
 Because the dashboard server sees the real browser address and the daemon only

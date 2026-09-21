@@ -20,8 +20,8 @@ on port 8081 no longer serves it.
   mounted the built dashboard at `http://127.0.0.1:8081/dashboard/`. That mount
   is gone ([src/api/app.py](../src/api/app.py)). The daemon answers `/api`,
   `/health`, `/ready`, the `/ws` sockets and `/mcp`; the only HTML it still
-  returns is FastAPI's interactive API reference at `/docs` and `/redoc` (see
-  [known issues](#known-issues)). A request
+  returns is FastAPI's interactive API reference at `/docs` and `/redoc` and the
+  plan viewer at `/plans/<task_id>` (see [known issues](#known-issues)). A request
   for `/dashboard` or anything under it gets `404` with a pointer instead of a
   page:
 
@@ -71,7 +71,31 @@ on port 8081 no longer serves it.
 
 ### What you do on an existing install
 
-<!-- e2e:upgrade-matrix -->
+Which case you are in depends on how AQ was installed and, for a source
+checkout, on whether its updater already finishes on the new code — which is
+true when this file exists:
+
+```bash
+test -f ~/.local/share/agent-queue/src/install/update_finish.py && echo "updates cleanly" || echo "expect the one-time exit 20"
+```
+
+(Use your own checkout path if you set `AQ_CHECKOUT_DIR`.) The two `aq update`
+rows were run end to end in disposable Ubuntu 24.04 containers on 2026-09-21,
+from three older commits; the [transcript](validation/api-only-daemon-e2e.md)
+has the full output.
+
+| Your install | Run | What happens |
+|---|---|---|
+| Source checkout that **updates cleanly** (installed or updated since 2026-09-20 ~21:00) | `aq update` | Stops the dashboard server (if one runs) and the daemon, moves the code, rebuilds the dashboard for `/`, starts the daemon and the dashboard server, and checks both. Ends with `OK Start the dashboard server — http://127.0.0.1:8082/`, exit 0. |
+| Source checkout that **expects the one-time exit 20** (installed 2026-09-16 to 2026-09-20 ~21:00 and not updated since) | `aq update` | The update works, but the old updater still running in memory asks the daemon for `/dashboard/`, gets the new `404`, and reports `XX Start the daemon — the daemon is up but not serving the dashboard` and "The update failed … AQ was not rolled back", exit 20. **Nothing is wrong:** the checkout is on the new code, the schema is at head, the daemon is healthy and the dashboard server is serving. Confirm with `aq status` (the daemon running, `Dashboard: running at http://127.0.0.1:8082/`), then optionally rerun `aq install` — it records the dashboard server step and prints the new URL without opening a second browser window. Later updates are clean. Tracked as `smart-meadow.9`. |
+| Source checkout, updated by rerunning the one-command bootstrap instead | the same bootstrap command | The bootstrap moves the checkout to the tip and `aq install` rebuilds the bundle, starts the dashboard server and reports its URL. No second browser window. *The bootstrap rerun itself was not exercised; an `aq install` rerun on the moved checkout was, with this result.* |
+| Contributor checkout with no built bundle | nothing | Unchanged: `aq start` offers the Vite dev server on `http://localhost:5173`. |
+| Wheel installation | upgrade to a wheel built after 2026-09-21, then `aq restart` | The wheel carries the rebuilt bundle; `aq restart` restarts the daemon and starts the dashboard server. *Not exercised in the end-to-end run — no release wheel has been built since this change.* |
+
+If an installer printed `http://127.0.0.1:8081/dashboard/` and that page was
+blank, you installed in the few hours before this change landed, when the
+bundle was already built for the dashboard server: the dashboard was already at
+`http://127.0.0.1:8082/`, and `aq update` finishes the move.
 
 ### Where the dashboard is now
 
@@ -148,4 +172,27 @@ bind is not loopback. The full statement is in the
 
 ### Known issues
 
-<!-- e2e:known-issues -->
+* **After a daemon crash, `aq start` does not restart the daemon while the
+  dashboard server is running** (`smart-meadow.7`). It answers `Daemon is
+  already running (PID …)` with the *dashboard server's* PID, because its
+  fallback process search matches the dashboard server's command line. Run
+  `aq restart` instead: it stops the dashboard server first, then starts both.
+  For the same reason, do not run `aq stop --no-dashboard-server` while the
+  daemon is down — it stops the dashboard server.
+* **The first `aq update` from an install older than 2026-09-20 ~21:00 exits
+  20 although it succeeded** (`smart-meadow.9`); see
+  [what you do on an existing install](#what-you-do-on-an-existing-install).
+* **The daemon still serves a few HTML pages:** FastAPI's interactive API
+  reference at `/docs`, `/docs/oauth2-redirect` and `/redoc`, and the plan
+  viewer at `/plans/<task_id>` ([src/api/health.py](../src/api/health.py)) — all
+  of which load their scripts from a CDN. None is the dashboard, and the
+  dashboard server relays none of them. Whether to keep them is open
+  (`smart-meadow.8`).
+* **With the daemon down, the dashboard does not say so.** The page loads, but
+  shows *Preferences unavailable* and *Loading…* until the daemon answers
+  again; `aq dashboard status` reports `the daemon is not answering it`.
+* **Discord escalation and digest links point at the daemon.** Their dashboard
+  link is built from `health_check.base_url`, else the daemon's own
+  `health_check.port` ([src/main.py](../src/main.py)), which serves no dashboard.
+  Until that follows the dashboard server, set `health_check.base_url` to the
+  URL your Discord readers can open the dashboard at.
