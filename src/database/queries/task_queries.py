@@ -1329,6 +1329,7 @@ class TaskQueryMixin:
         *,
         meta: dict,
         context: str = "",
+        from_statuses: tuple[TaskStatus, ...] | None = None,
         extra_where=None,
         **kwargs,
     ) -> bool:
@@ -1337,8 +1338,14 @@ class TaskQueryMixin:
         For state that describes the transition itself -- a provider pause's
         ``provider_pause`` record (provider-failover D17) -- so no reader can
         see the pause without its cause, or the cause without the pause.
-        Returns False, writing nothing, when *extra_where* matched no row.
+        *from_statuses* guards the write on the task's current status (a
+        caller that awaited something slow since it read the task must not
+        reopen one an operator closed or paused meanwhile).  Returns False,
+        writing nothing, when the guard matched no row.
         """
+        if from_statuses is not None:
+            guard = tasks.c.status.in_([status.value for status in from_statuses])
+            extra_where = guard if extra_where is None else and_(extra_where, guard)
         async with self.immediate() as conn:
             result = await self._apply_transition(
                 conn,

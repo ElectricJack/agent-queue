@@ -993,8 +993,12 @@ class PoolsMixin:
                     )
                     # A death that just tripped the provider (attributable
                     # generic failures -> ``failing``) was the provider's
-                    # too; pool sizing now stops the launches fleet-wide.
-                    attributed = attributed or availability.is_unavailable(launch_provider)
+                    # too, and pool sizing now stops the launches fleet-wide
+                    # -- in enforce mode only; observe mode sizes nothing,
+                    # so the key quarantine is all that stops a relaunch.
+                    attributed = attributed or (
+                        availability.enforcing and availability.is_unavailable(launch_provider)
+                    )
                 await _rollback(
                     f"session died during startup: {exc}"
                     + (f" | startup output: {excerpt}" if excerpt else ""),

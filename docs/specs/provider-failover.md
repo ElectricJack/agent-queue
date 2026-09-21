@@ -569,8 +569,22 @@ detail) into `_fail_session_launch`; the exit path is
 * **The checkpoint** is `acommit_all(…, no_verify=True)` then
   `stranded_work.preserve_unpushed_work` (never forced; `aq/<task>-wip` when a
   diverged remote branch holds the name), recording `unmerged_branch` /
-  `unmerged_commit` like a failing close does. A hierarchy/train branch is
-  left to its integration owner (`checkpoint: integration_managed`).
+  `unmerged_commit` like a failing close does. It touches only the workspace
+  locked by the task, never a pool claim still `preparing` (`not_started`),
+  and plan files -- left out of every task commit -- do not count as work at
+  risk. It runs in the orchestrator cycle, so each is bounded by
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
+  hierarchy/train branch is left to its integration owner (`checkpoint:
+  integration_managed`), and a tripped task there takes a short provider pause
+  instead of READY, as the launch path does when the integration release is
+  unconfirmed.
+* **Order on the exit path:** checkpoint while the session row is still live
+  (a daemon that dies mid-push re-runs the failover next tick, where a row
+  already marked non-live would have let the orphan sweep BLOCK the task),
+  then the session row, then the claim's resources are released *before* the
+  task becomes claimable, then a status-guarded transition (`from_statuses`:
+  a task an operator closed or paused meanwhile is left alone), then the
+  hand-off note -- only for an outcome that was actually written.
 * **"Holds in place with the workspace kept"** is an operator pause through
   the existing manual-pause machinery (`needs_attention:
   provider_failover_push_failed`): the dead session is confirmed stopped, a

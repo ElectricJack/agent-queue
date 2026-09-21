@@ -62,6 +62,8 @@ META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
 
 _LIVE_STATES = ("starting", "running", "draining")
+#: Task statuses in which a session still holds the task's claim.
+_HELD_CLAIM_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
 #: Public alias — other modules ask "is this session row live?" too
 #: (``_cmd_task_close`` decides whether verification feedback can be
 #: handed back in place rather than reopening the task).
@@ -865,16 +867,22 @@ class SessionReconciler:
         A ``RATE_LIMIT`` exit, or any death while the provider is unavailable
         (already, or tripped by this exit's evidence), in ``mode: enforce``.
         Such a death spends no retry, arms no pool-key quarantine and never
-        pauses the task into the dead provider.  Before anything releases the
-        workspace the orchestrator commits and pushes the work and leaves the
-        hand-off note (``provider_failover_checkpoint``); then:
+        pauses the task into the dead provider.  In this order:
 
-        * provider tripped -- the task goes back to READY and the
-          ``provider-failover`` sweep moves or holds it;
-        * first, uncorroborated signal -- it pauses
-          ``launch.suspect_backoff_seconds`` with its ``provider_pause``;
-        * the push failed -- it is held in place (an operator pause with a
-          local Git checkpoint): nothing is discarded to make a move possible.
+        1. **Preserve the work** (``provider_failover_checkpoint``: WIP
+           commit and push of the task's locked workspace) while the session
+           row is still live -- a daemon that dies mid-push re-runs this on
+           its next tick instead of the orphan sweep blocking an
+           IN_PROGRESS task whose row went non-live first.
+        2. The push failed -> **hold in place** (an operator pause with a
+           local Git checkpoint): nothing is discarded to make a move
+           possible.
+        3. Otherwise release the claim's resources *before* the task becomes
+           claimable, then the guarded transition: provider tripped ->
+           READY for the ``provider-failover`` sweep; first, uncorroborated
+           signal -> a ``launch.suspect_backoff_seconds`` pause with its
+           ``provider_pause`` record.
+        4. The hand-off note, once the outcome is written.
 
         Returns False, having done nothing, for every other exit, which keeps
         the verdict handling below exactly as it was.
@@ -889,7 +897,7 @@ class SessionReconciler:
             or verdict.verdict is Verdict.DRAINED
             # A held claim only: a task paused, parked on a human or moved
             # meanwhile owns its own recovery, checkpoint included.
-            or task.status not in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+            or task.status not in _HELD_CLAIM_STATUSES
             or availability is None
             or orch is None
             or not hasattr(orch, "provider_failover_checkpoint")
@@ -910,6 +918,24 @@ class SessionReconciler:
             return False
         pool = row.lifecycle == "pool"
         verdict_name = str(verdict.verdict)
+        # A pool claim still being prepared: the daemon owns that slot.
+        checkpoint = await orch.provider_failover_checkpoint(
+            task, preserve=not pool or row.claim_phase == "active"
+        )
+
+        async def handoff(outcome: str, *, held: bool = False) -> None:
+            await orch.provider_failover_handoff(
+                task,
+                row,
+                failure=failure,
+                verdict=verdict_name,
+                reason=verdict.reason,
+                checkpoint=checkpoint,
+                disposition=outcome,
+                held=held,
+                now=now,
+            )
+
         if verdict.verdict is Verdict.RATE_LIMIT:
             await self._apply_rate_limit_cooldown(row)
         elif not pool:
@@ -919,15 +945,6 @@ class SessionReconciler:
                 row.id, state="stopped", desired_state="stopped",
                 ended_at=now, end_reason=verdict_name,
             )
-        checkpoint, _handoff = await orch.provider_failover_checkpoint(
-            task,
-            row,
-            failure=failure,
-            verdict=verdict_name,
-            reason=verdict.reason,
-            disposition=disposition,
-            now=now,
-        )
 
         if checkpoint.at_risk:
             if not pool:
@@ -942,6 +959,7 @@ class SessionReconciler:
                 # Normally already stopped by the hold; otherwise this is
                 # the confirmed-stop teardown every pool exit owes.
                 await orch._terminate_pool_session(row, reason="provider_failover_hold")
+            await handoff(disposition, held=True)
             await self._emit(
                 "task.paused",
                 task_id=task.id,
@@ -951,20 +969,28 @@ class SessionReconciler:
             )
             return True
 
-        if disposition == inflight.TRIPPED:
-            context, resume_after, meta = inflight.CONTEXT_UNAVAILABLE, None, None
-        else:
-            context = inflight.CONTEXT_SUSPECT
+        # Tripped goes straight back to the queue -- unless an integration
+        # owner governs the workspace, whose release this path cannot see;
+        # a short provider pause (which the sweep resumes at once) then
+        # keeps the task unclaimable while that settles, as the launch path does.
+        pause = disposition == inflight.SUSPECT or checkpoint.status == "integration_managed"
+        if pause:
+            context = (
+                inflight.CONTEXT_SUSPECT
+                if disposition == inflight.SUSPECT
+                else inflight.CONTEXT_UNAVAILABLE
+            )
             resume_after = now + float(availability.config.launch.suspect_backoff_seconds)
             meta = {
                 inflight.PROVIDER_PAUSE_META: inflight.provider_pause_record(
                     availability, failure, context=context, resume_after=resume_after, now=now
                 )
             }
+        else:
+            context, resume_after, meta = inflight.CONTEXT_UNAVAILABLE, None, {}
+
         if pool:
-            if meta is None:
-                await orch._terminate_pool_session(row, reason=context)
-            else:
+            if pause:
                 await orch._terminate_pool_session(
                     row,
                     reason=context,
@@ -972,31 +998,42 @@ class SessionReconciler:
                     resume_after=resume_after,
                     task_meta=meta,
                 )
-        elif meta is None:
-            # Release *before* the task is claimable again: the release frees
-            # every workspace locked by this task id, and a READY task can be
-            # claimed the moment it is written.
-            await self._carry_resume_key(row, task)
-            await self._release_task(task, row, reason=context)
-            await self.db.transition_task(
-                task.id,
-                TaskStatus.READY,
-                context=context,
-                resume_after=None,
-                assigned_agent_id=None,
+            else:
+                await orch._terminate_pool_session(row, reason=context)
+            current = await self.db.get_task(task.id)
+            moved = (
+                current is not None
+                and current.assigned_agent_id is None
+                and current.status is (TaskStatus.PAUSED if pause else TaskStatus.READY)
             )
         else:
-            await self.db.transition_task_with_meta(
+            # Release *before* the task is claimable again: the release frees
+            # every workspace locked by this task id, and a task can be
+            # claimed the moment it is written READY (or the sweep resumes a
+            # provider pause).
+            await self._carry_resume_key(row, task)
+            await self._release_task(task, row, reason=context)
+            moved = await self.db.transition_task_with_meta(
                 task.id,
-                TaskStatus.PAUSED,
+                TaskStatus.PAUSED if pause else TaskStatus.READY,
                 meta=meta,
                 context=context,
+                from_statuses=_HELD_CLAIM_STATUSES,
                 resume_after=resume_after,
                 assigned_agent_id=None,
             )
-            await self._carry_resume_key(row, task)
-            await self._release_task(task, row, reason=context)
-        if meta is not None:
+        if not moved:
+            # Someone else decided the task's fate meanwhile (an operator
+            # pause or close), or the pool claim is retained for an
+            # integration handoff; the work is preserved either way.
+            logger.info(
+                "Task %s: provider failover left the task as it found it (%s)",
+                task.id,
+                context,
+            )
+            return True
+        await handoff(disposition)
+        if pause:
             await self._emit(
                 "task.paused",
                 task_id=task.id,
@@ -1011,7 +1048,7 @@ class SessionReconciler:
             row.id,
             failure.provider,
             verdict_name,
-            "back in the queue for re-routing" if meta is None else f"paused until {resume_after:.0f}",
+            f"paused until {resume_after:.0f}" if pause else "back in the queue for re-routing",
         )
         return True
 

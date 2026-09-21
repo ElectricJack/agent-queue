@@ -783,3 +783,141 @@ async def test_every_provider_down_holds_the_task_and_launches_nothing(orch, tmp
     assert task.status == TaskStatus.READY and task.profile_id == "standard-high-codex"
     hold = await orch.provider_availability.hold_for(task)
     assert hold["kind"] == "all_providers_unavailable"
+
+
+# -- the review's edge cases -----------------------------------------------------------
+
+
+async def test_plan_files_left_uncommitted_do_not_hold_the_task(tmp_path):
+    """Task commits leave plan files out on purpose; they are not work at risk."""
+    origin, work = _make_repo(tmp_path)
+    _do_some_work(work)
+    (work / "plan.md").write_text("# my plan\n")
+    (work / ".claude" / "plans").mkdir(parents=True)
+    (work / ".claude" / "plans" / "step.md").write_text("step\n")
+
+    checkpoint = await inflight.checkpoint_workspace(GitManager(), str(work), "t0")
+
+    assert checkpoint.status == "pushed" and not checkpoint.at_risk
+    tip = _git(["rev-parse", "refs/heads/aq/t0"], origin)
+    assert "plan.md" not in _git(["ls-tree", "-r", "--name-only", tip], origin).split()
+
+
+async def test_a_refusal_while_the_canary_is_in_flight_is_a_short_recovering_pause(orch):
+    from unittest.mock import MagicMock
+
+    await _task(orch, "t0")
+    action = MagicMock(task_id="t0", agent_id="a-x", project_id="p-1")
+    await orch.db.transition_task("t0", TaskStatus.ASSIGNED, context="test")
+    await orch._fail_session_launch(
+        action,
+        await orch.db.get_task("t0"),
+        "provider codex is recovering; its canary launch is still in flight",
+        notify=False,
+        failure=inflight.ProviderFailure(kind=inflight.LAUNCH_REFUSED, provider="codex"),
+    )
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.PAUSED and task.resume_after <= time.time() + 31
+    pause = await orch.db.get_task_meta("t0", "provider_pause")
+    assert pause["context"] == inflight.CONTEXT_RECOVERING
+
+
+async def test_the_work_is_checkpointed_before_the_session_row_goes_non_live(orch, tmp_path):
+    """A daemon that dies mid-push must find a live row (re-run the failover),
+    not an IN_PROGRESS task with a dead row the orphan sweep would BLOCK."""
+    session, _workspace, _origin = await _launch_on_codex(orch, git_root=tmp_path / "git")
+    seen = {}
+    original = orch.provider_failover_checkpoint
+
+    async def spy(task, **kw):
+        seen["state"] = (await orch.db.get_session(session.id)).state
+        seen["task"] = (await orch.db.get_task(task.id)).status
+        return await original(task, **kw)
+
+    orch.provider_failover_checkpoint = spy
+    orch.git = GitManager()
+    await _die_on_usage_limit(orch, session)
+    assert seen == {"state": "running", "task": TaskStatus.IN_PROGRESS}
+
+
+async def test_a_task_closed_during_the_checkpoint_is_not_reopened(orch, tmp_path):
+    session, _workspace, _origin = await _launch_on_codex(orch, git_root=tmp_path / "git")
+    await orch.provider_availability.set_state(
+        "codex", DISABLED, by="human:test", reason="out of usage", until=None
+    )
+    original = orch.provider_failover_checkpoint
+
+    async def operator_closes_meanwhile(task, **kw):
+        result = await original(task, **kw)
+        await orch.db.transition_task(task.id, TaskStatus.FAILED, context="operator", force=True)
+        return result
+
+    orch.provider_failover_checkpoint = operator_closes_meanwhile
+    orch.git = GitManager()
+    await _die_on_usage_limit(orch, session)
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.FAILED  # not reopened to READY
+    assert await orch.db.get_task_meta("t0", inflight.HANDOFF_META) is None
+    assert await orch.db.get_workspace_for_task("t0") is None  # still released
+
+
+async def test_a_checkpoint_that_overruns_its_budget_holds_the_task(orch, tmp_path, monkeypatch):
+    import asyncio
+
+    from src.orchestrator import provider_failover
+
+    session, _workspace, _origin = await _launch_on_codex(orch, git_root=tmp_path / "git")
+    monkeypatch.setattr(provider_failover, "CHECKPOINT_BUDGET_SECONDS", 0.05)
+
+    async def hung(task):
+        await asyncio.sleep(5)
+
+    orch._failover_checkpoint = hung
+    orch.git = GitManager()
+    await _die_on_usage_limit(orch, session)
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.PAUSED and task.resume_after is None  # held
+    handoff = await orch.db.get_task_meta("t0", inflight.HANDOFF_META)
+    assert handoff["checkpoint"] == "unknown" and handoff["disposition"] == "held"
+
+
+async def test_a_pool_session_whose_push_fails_is_held_with_its_work(orch, tmp_path):
+    await orch.db.update_profile("standard-high-codex", lifecycle="pool", max_active=2)
+    row = await _claimed_pool_session(orch, tmp_path, "t0", 1)
+    ws = await orch.db.get_workspace_for_task("t0")
+    work = pathlib.Path(ws.workspace_path)
+    for child in work.iterdir():
+        child.unlink()
+    work.rmdir()
+    _make_repo(tmp_path / "git", work=work)
+    _do_some_work(work)
+    _git(["remote", "set-url", "origin", str(tmp_path / "unreachable.git")], work)
+    orch.git = GitManager()
+
+    await _die_on_usage_limit(orch, row)
+
+    task = await orch.db.get_task("t0")
+    assert task.status == TaskStatus.PAUSED and task.resume_after is None
+    assert task.retry_count == 0
+    assert await orch.db.get_task_meta("t0", "needs_attention") == inflight.PUSH_FAILED_ATTENTION
+    assert _git(["log", "-1", "--format=%s", "aq/t0"], work) == inflight.WIP_COMMIT_MESSAGE
+    assert (await orch.db.get_task_meta("t0", "manual_pause_checkpoint"))["branch"] == "aq/t0"
+    assert (await orch.db.get_session(row.id)).state == "stopped"
+    assert orch._pool_quarantine == {}
+
+
+async def test_a_pool_claim_still_being_prepared_is_not_checkpointed(orch, tmp_path):
+    await orch.db.update_profile("standard-high-codex", lifecycle="pool", max_active=2)
+    row = await _claimed_pool_session(orch, tmp_path, "t0", 1)
+    await orch.db.update_session(row.id, claim_phase="preparing")
+    called = []
+
+    async def must_not_run(task):
+        called.append(task.id)
+        return inflight.Checkpoint(status="clean")
+
+    orch._failover_checkpoint = must_not_run
+    orch.git = GitManager()
+    await _die_on_usage_limit(orch, row)
+    assert called == []
+    assert (await orch.db.get_task_meta("t0", inflight.HANDOFF_META))["checkpoint"] == "not_started"

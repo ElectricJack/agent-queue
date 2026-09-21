@@ -1178,23 +1178,36 @@ class ExecutionMixin:
                 await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
 
-        if disposition == inflight.TRIPPED and integration_released is not False:
+        held_claim = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
+        if disposition == inflight.UNATTRIBUTED:
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="session_launch_failed",
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+            )
+            if integration_released is not False:
+                await release_launch_claim()
+        elif disposition == inflight.TRIPPED and integration_released is not False:
             # Release *before* the task becomes claimable again: the release
             # frees every workspace locked by this task id, and a READY task
             # can be reassigned the moment it is written.
             await release_launch_claim()
-            await self.db.transition_task(
+            await self.db.transition_task_with_meta(
                 action.task_id,
                 TaskStatus.READY,
+                meta={},
                 context=inflight.CONTEXT_UNAVAILABLE,
+                from_statuses=held_claim,
                 resume_after=None,
                 assigned_agent_id=None,
             )
-            return
-        if disposition != inflight.UNATTRIBUTED:
+        else:
             # ``suspect``, or ``tripped`` while an integration owner keeps the
-            # workspace: a short provider pause the sweep resumes at once
-            # when the provider is down.
+            # workspace: a short provider pause, which the failover sweep
+            # resumes at once when the provider is down.  Released first too
+            # -- the sweep can make the task claimable at any moment.
             backoff = float(availability.config.launch.suspect_backoff_seconds)
             if disposition == inflight.TRIPPED:
                 context = inflight.CONTEXT_UNAVAILABLE
@@ -1202,10 +1215,13 @@ class ExecutionMixin:
                 context = inflight.CONTEXT_RECOVERING
             else:
                 context = inflight.CONTEXT_SUSPECT
+            if integration_released is not False:
+                await release_launch_claim()
             await self.db.transition_task_with_meta(
                 action.task_id,
                 TaskStatus.PAUSED,
                 context=context,
+                from_statuses=held_claim,
                 resume_after=now + backoff,
                 assigned_agent_id=None,
                 meta={
@@ -1218,16 +1234,6 @@ class ExecutionMixin:
                     )
                 },
             )
-        else:
-            await self.db.transition_task(
-                action.task_id,
-                TaskStatus.PAUSED,
-                context="session_launch_failed",
-                resume_after=now + backoff,
-                assigned_agent_id=None,
-            )
-        if integration_released is not False:
-            await release_launch_claim()
         if not notify:
             return
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""

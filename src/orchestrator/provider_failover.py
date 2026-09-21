@@ -2,20 +2,24 @@
 
 :class:`~src.sessions.reconciler.SessionReconciler` decides that a session
 died on its provider (:func:`src.providers.inflight.decide`); this mixin owns
-the two steps that need the orchestrator's Git, database and bus:
+the steps that need the orchestrator's Git, database and bus:
 
 * :meth:`provider_failover_checkpoint` -- before anything releases the
-  workspace, commit uncommitted work as a WIP checkpoint, push the branch
-  and leave the hand-off note (task comment plus
+  workspace, commit uncommitted work as a WIP checkpoint and push the branch,
+  inside a time budget (this runs in the orchestrator cycle, and an
+  account-wide limit kills every session on the provider at once);
+* :meth:`provider_failover_handoff` -- once the task's outcome is final, the
+  hand-off note (task comment plus
   ``task_metadata['provider_failover_handoff']``) the next worker's
   ``aq prime`` shows;
-* :meth:`provider_failover_hold` -- when that push failed, hold the task
-  in place instead of re-routing it: nothing is discarded to make a move
+* :meth:`provider_failover_hold` -- when the push failed, hold the task in
+  place instead of re-routing it: nothing is discarded to make a move
   possible.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -24,17 +28,83 @@ from src.providers import inflight
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ProviderFailoverMixin"]
+__all__ = ["CHECKPOINT_BUDGET_SECONDS", "ProviderFailoverMixin"]
 
 #: Integration modes whose task branch is fenced by an integration owner;
 #: the failover checkpoint never pushes around that fence.
 _INTEGRATION_MANAGED_MODES = frozenset({"hierarchy", "train"})
+#: The most one dead session's checkpoint may take.  A timeout proves
+#: nothing about the work, so it holds the task (``unknown`` is at risk).
+CHECKPOINT_BUDGET_SECONDS = 90.0
 
 
 class ProviderFailoverMixin:
     """Checkpoint, hand-off and hold for a session that died on its provider."""
 
     async def provider_failover_checkpoint(
+        self, task: Any, *, preserve: bool = True
+    ) -> inflight.Checkpoint:
+        """Preserve the work in *task*'s locked workspace on its branch (D13).
+
+        Only the workspace locked by *task* is touched: a slot the task no
+        longer holds may already be another task's live tree.  *preserve*
+        False (a pool claim still being prepared, so the daemon owns the
+        slot) records ``not_started`` and touches nothing.  Never raises.
+        """
+        if not preserve:
+            return inflight.Checkpoint(status="not_started")
+        try:
+            return await asyncio.wait_for(
+                self._failover_checkpoint(task), timeout=CHECKPOINT_BUDGET_SECONDS
+            )
+        except TimeoutError:
+            logger.warning(
+                "Task %s: failover checkpoint exceeded %.0fs; holding the task",
+                task.id,
+                CHECKPOINT_BUDGET_SECONDS,
+            )
+            return inflight.Checkpoint(
+                status="unknown", error=f"checkpoint exceeded {CHECKPOINT_BUDGET_SECONDS:.0f}s"
+            )
+        except Exception as exc:  # never let preservation break the exit path
+            logger.warning("Task %s: failover checkpoint failed", task.id, exc_info=True)
+            return inflight.Checkpoint(status="unknown", error=str(exc))
+
+    async def _failover_checkpoint(self, task: Any) -> inflight.Checkpoint:
+        from src.orchestrator.stranded_work import UNMERGED_BRANCH_META, UNMERGED_COMMIT_META
+
+        project = await self.db.get_project(task.project_id)
+        ws = await self.db.get_workspace_for_task(task.id)
+        workspace = ws.workspace_path if ws else None
+        if getattr(project, "hierarchical_integration_mode", None) in _INTEGRATION_MANAGED_MODES:
+            # The branch belongs to its integration owner, and the release
+            # that follows goes through ``arelease_integration_writer_for_retry``.
+            # Pushing around that fence is not this module's call.
+            return inflight.Checkpoint(
+                status="integration_managed",
+                workspace=workspace,
+                branch=getattr(task, "branch_name", None),
+            )
+        checkpoint = await inflight.checkpoint_workspace(
+            self.git,
+            workspace,
+            task.id,
+            event_bus=getattr(self, "bus", None),
+            project_id=task.project_id,
+        )
+        branch = checkpoint.pushed_branch or (checkpoint.branch if checkpoint.at_risk else None)
+        if branch and checkpoint.commits:
+            # The contract a retry, the dashboard and the next agent already
+            # read to find a predecessor's commits (``stranded_work``).
+            try:
+                await self.db.set_task_meta(task.id, UNMERGED_BRANCH_META, branch)
+                if checkpoint.head:
+                    await self.db.set_task_meta(task.id, UNMERGED_COMMIT_META, checkpoint.head)
+            except Exception:
+                logger.debug("Task %s: unmerged branch not recorded", task.id, exc_info=True)
+        return checkpoint
+
+    async def provider_failover_handoff(
         self,
         task: Any,
         session: Any,
@@ -42,17 +112,18 @@ class ProviderFailoverMixin:
         failure: inflight.ProviderFailure,
         verdict: str,
         reason: str,
+        checkpoint: inflight.Checkpoint,
         disposition: str,
+        held: bool = False,
         now: float | None = None,
-    ) -> tuple[inflight.Checkpoint, dict[str, Any]]:
-        """Preserve *session*'s work on *task*'s branch and write the hand-off note.
+    ) -> dict[str, Any]:
+        """Write the hand-off note: where the last worker stopped, and why.
 
-        Returns the checkpoint (``at_risk`` means the caller must hold, not
-        re-route) and the note.  Never raises: a failure to preserve is a
-        checkpoint status, and a failure to record the note is logged.
+        Called once the task's outcome is written, so a failover retried
+        after a crash does not leave a note for an outcome that never
+        happened.  Never raises.
         """
         at = time.time() if now is None else float(now)
-        checkpoint = await self._failover_checkpoint(task, session)
         subtasks: list[dict] = []
         try:
             subtasks = list(await self.db.list_task_subtasks(task.id))
@@ -67,7 +138,7 @@ class ProviderFailoverMixin:
             checkpoint=checkpoint,
             disposition=disposition,
             subtasks=subtasks,
-            held=checkpoint.at_risk,
+            held=held,
             now=at,
         )
         try:
@@ -84,63 +155,16 @@ class ProviderFailoverMixin:
         except Exception:
             logger.debug("Task %s: hand-off comment failed", task.id, exc_info=True)
         logger.info(
-            "Task %s: provider %s failover checkpoint %s (wip_commit=%s, branch=%s, head=%s)",
+            "Task %s: provider %s failover (%s): checkpoint %s, wip_commit=%s, branch=%s, head=%s",
             task.id,
             failure.provider,
+            handoff["disposition"],
             checkpoint.status,
             checkpoint.wip_commit,
             handoff.get("branch"),
             (checkpoint.head or "")[:12],
         )
-        return checkpoint, handoff
-
-    async def _failover_checkpoint(self, task: Any, session: Any) -> inflight.Checkpoint:
-        from src.orchestrator.stranded_work import UNMERGED_BRANCH_META, UNMERGED_COMMIT_META
-
-        try:
-            project = await self.db.get_project(task.project_id)
-        except Exception:
-            logger.debug("Task %s: project unreadable for failover", task.id, exc_info=True)
-            project = None
-        workspace = None
-        try:
-            ws = await self.db.get_workspace_for_task(task.id)
-            workspace = ws.workspace_path if ws else None
-        except Exception:
-            logger.debug("Task %s: workspace unreadable for failover", task.id, exc_info=True)
-        workspace = workspace or getattr(session, "work_dir", None) or None
-        if getattr(project, "hierarchical_integration_mode", None) in _INTEGRATION_MANAGED_MODES:
-            # The branch belongs to its integration owner; the retry path
-            # (``arelease_integration_writer_for_retry``) keeps the workspace
-            # attached for the next writer.  Pushing around that fence is
-            # not this module's call.
-            return inflight.Checkpoint(
-                status="integration_managed",
-                workspace=workspace,
-                branch=getattr(task, "branch_name", None),
-            )
-        try:
-            checkpoint = await inflight.checkpoint_workspace(
-                self.git,
-                workspace,
-                task.id,
-                event_bus=getattr(self, "bus", None),
-                project_id=task.project_id,
-            )
-        except Exception as exc:  # never let preservation break the exit path
-            logger.warning("Task %s: failover checkpoint failed", task.id, exc_info=True)
-            return inflight.Checkpoint(status="unknown", workspace=workspace, error=str(exc))
-        branch = checkpoint.pushed_branch or (checkpoint.branch if checkpoint.at_risk else None)
-        if branch and checkpoint.commits:
-            # The contract a retry, the dashboard and the next agent already
-            # read to find a predecessor's commits (``stranded_work``).
-            try:
-                await self.db.set_task_meta(task.id, UNMERGED_BRANCH_META, branch)
-                if checkpoint.head:
-                    await self.db.set_task_meta(task.id, UNMERGED_COMMIT_META, checkpoint.head)
-            except Exception:
-                logger.debug("Task %s: unmerged branch not recorded", task.id, exc_info=True)
-        return checkpoint
+        return handoff
 
     async def provider_failover_hold(self, task: Any, *, reason: str) -> bool:
         """Hold *task* in place: its work could not be pushed (D13).

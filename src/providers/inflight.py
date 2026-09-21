@@ -209,6 +209,8 @@ class Checkpoint:
     * ``pushed`` -- commits (the WIP one included) are now on ``origin``;
     * ``clean`` -- nothing uncommitted, every commit already on a remote;
     * ``not_git`` / ``no_workspace`` -- nothing Git could lose;
+    * ``not_started`` -- a pool claim still being prepared: the daemon owns
+      the slot and no work has started in it;
     * ``integration_managed`` -- a hierarchy/train branch, whose preservation
       its integration owner governs (nothing is pushed around its fence);
     * ``push_failed`` / ``no_remote`` / ``unknown`` / ``dirty`` -- work
@@ -303,16 +305,49 @@ async def checkpoint_workspace(
         result.status = work.status
         result.error = work.error or result.error
     if not result.at_risk:
-        # Work the WIP commit could not take (a conflicted index, a hook
-        # that still ran) is still only in this checkout.
-        try:
-            still_dirty = await git.ahas_uncommitted_changes(workspace, strict=True)
-        except Exception:
-            logger.debug("Task %s: status unreadable in %s", task_id, workspace, exc_info=True)
-            still_dirty = None
+        # Work the WIP commit could not take (a conflicted index, a failed
+        # commit) is still only in this checkout.  Plan files are left out of
+        # every task commit on purpose, so they are not work at risk.
+        still_dirty = await _unsaved_changes(git, workspace)
         if still_dirty or (dirty is None and still_dirty is None):
             result.status = "dirty" if still_dirty else "unknown"
     return result
+
+
+def _is_plan_file(path: str) -> bool:
+    from src.git.manager import GitManager
+
+    for pattern in GitManager._PLAN_FILE_EXCLUDES:
+        if path == pattern or (pattern.endswith("/") and path.startswith(pattern)):
+            return True
+    return False
+
+
+async def _unsaved_changes(git: Any, workspace: str) -> bool | None:
+    """Uncommitted changes other than plan files; ``None`` when Git cannot tell."""
+    try:
+        result = await git._arun_subprocess(
+            ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+            cwd=workspace,
+        )
+    except Exception:
+        logger.debug("status unreadable in %s", workspace, exc_info=True)
+        return None
+    if result.returncode != 0:
+        return None
+    entries = (result.stdout or "").split("\0")
+    skip_next = False
+    for entry in entries:
+        if skip_next:  # a rename's original path
+            skip_next = False
+            continue
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        skip_next = "R" in status or "C" in status
+        if not _is_plan_file(path):
+            return True
+    return False
 
 
 # -- the hand-off note --------------------------------------------------------------
@@ -375,23 +410,30 @@ def handoff_comment(handoff: Mapping[str, Any], task_id: str) -> str:
     ]
     branch = handoff.get("branch") or "-"
     head = (handoff.get("head") or "")[:12] or "-"
-    wip = (
-        f"uncommitted work saved as `{WIP_COMMIT_MESSAGE}`"
-        if handoff.get("wip_commit")
-        else "no uncommitted work to save"
-    )
     status = handoff.get("checkpoint")
-    if status == "pushed":
-        where = f"pushed to origin/{branch}"
-    elif status == "clean":
-        where = "already on origin"
-    elif status == "integration_managed":
-        where = "left to the branch's integration owner"
+    if status == "integration_managed":
+        lines.append(
+            f"Branch `{branch}`: not touched -- its integration owner governs what the "
+            "workspace keeps; check it before redoing anything."
+        )
+    elif status == "not_started":
+        lines.append("The claim was still being prepared: no work had started in its slot.")
     elif status in ("not_git", "no_workspace"):
-        where = "no Git checkout to preserve"
+        lines.append("No Git checkout held by this task to preserve.")
     else:
-        where = f"NOT pushed ({handoff.get('push_error') or status})"
-    lines.append(f"Branch `{branch}` at `{head}`: {wip}; {where}.")
+        if handoff.get("wip_commit"):
+            wip = f"uncommitted work saved as `{WIP_COMMIT_MESSAGE}`"
+        elif status in ("pushed", "clean"):
+            wip = "nothing uncommitted to save"
+        else:
+            wip = "uncommitted work may remain in the checkout"
+        if status == "pushed":
+            where = f"pushed to origin/{branch}"
+        elif status == "clean":
+            where = "already on origin"
+        else:
+            where = f"NOT pushed ({handoff.get('push_error') or status})"
+        lines.append(f"Branch `{branch}` at `{head}`: {wip}; {where}.")
     subtasks = handoff.get("subtasks") or {}
     if subtasks.get("total"):
         open_items = [

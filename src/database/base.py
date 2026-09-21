@@ -255,6 +255,7 @@ class DatabaseBackend(Protocol):
         *,
         meta: dict,
         context: str = "",
+        from_statuses: tuple[TaskStatus, ...] | None = None,
         extra_where=None,
         **kwargs,
     ) -> bool: ...
