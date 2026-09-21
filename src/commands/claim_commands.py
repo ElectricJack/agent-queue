@@ -313,7 +313,9 @@ class ClaimCommandsMixin:
             # provider-failover D13: an idle worker whose provider is
             # unavailable takes no new work.  One snapshot lookup on the
             # *session's* provider -- never a per-candidate join -- so the
-            # claim frontier's ordered scan is untouched (D14).
+            # claim frontier's ordered scan is untouched (D14).  Every
+            # provider being down is not a special case: the answer is still
+            # drain, not ``not_admissible`` + wait (D15's recorded decision).
             drain = self._provider_drain_reason(session)
             if drain:
                 return self._simple(ClaimResult.DRAIN_REQUESTED, drain, session)

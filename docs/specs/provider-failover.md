@@ -710,14 +710,49 @@ Further limits, all per sweep or per task:
 | `reroute.max_auto_per_task` | 2 | After two automatic moves a task holds for a human: `reroute_limit_reached`. Two providers flapping in turn cannot ping-pong a task. |
 
 **Every provider unavailable.** There is no target, so the sweep moves nothing;
-everything holds with `all_providers_unavailable`; launches are suppressed; pool
-workers' claims answer `not_admissible` with reason `provider_unavailable` and a
-wait hint of the earliest `until`, which the pool loop already handles. One
-notification says so (D19), and it becomes a human escalation when no provider
-has an `until` at all (every one needs a login) or the earliest `until` is more
-than `notify.escalate_all_down_after_seconds` away. The `llm` key does not count
-toward "every provider" — the direct path being down strands routing of
-undecided tasks, not execution.
+everything holds with `all_providers_unavailable`; launches are suppressed; and
+an idle pool worker's claim answers `drain_requested`, exactly as it does when
+only its own provider is down (D13, *Pool sessions*) — the claim path has no
+all-down case. One notification says so (D19), and it becomes a human
+escalation when no provider has an `until` at all (every one needs a login) or
+the earliest `until` is more than `notify.escalate_all_down_after_seconds` away.
+The `llm` key does not count toward "every provider" — the direct path being
+down strands routing of undecided tasks, not execution.
+
+*Decision (`solid-pinnacle`, 2026-09-21): drain, not wait.* An earlier draft of
+this paragraph had the claim answer `not_admissible` with reason
+`provider_unavailable` and a wait hint of the earliest `until`, so that a worker
+would wait out a short outage instead of draining. The end-to-end run
+(`bold-rapids.5`, S16) found the code answering `drain_requested`
+(`ClaimCommandsMixin._provider_drain_reason`, checked before admission). The
+code was kept and this text amended, because waiting buys nothing the return
+path (D16) does not already give, and costs three things:
+
+* **The worker cannot wait on its own provider.** A claim long-polls for at most
+  `swarm.claim_wait_max` (60 s); every re-claim after that is a model turn, and
+  every state in the unavailable half is a statement about that same model API.
+  The turn either fails — the CLI parks on its usage-limit screen, which the
+  idle-worker recycle (D13, `azure-ridge` row) ends anyway, later and with
+  noisier evidence — or it spends tokens polling an outage whose `until` is
+  typically hours away. "The pool loop already handles" a wait only for
+  admission reasons that leave the model reachable.
+* **Sizing overrules it.** `_measure_pools` gives every pool on a suppressed
+  provider bounds `(0, 0)`, so once `swarm.scale_down_grace` (120 s) passes the
+  sizer marks idle workers `desired_state = stopped` and their next claim answers
+  `drain_requested` ("pool is draining") regardless. Keeping them would need an
+  all-down carve-out in sizing as well — a second rule in D13, not a claim-path
+  tweak.
+* **Parked workers would bypass the canary.** On recovery D4 admits one launch
+  at a time until one succeeds, so eight workers do not stampede a login that
+  may still be dead. Workers parked in a claim loop would all resume against a
+  provider that is only on probation. Drained, the fleet re-forms through the
+  canary.
+
+What draining costs is small: with `swarm.fresh_context_per_task` (the default)
+a worker retires after one task anyway, so a drained idle worker is one session
+start per rung on recovery. The all-down case keeps its own treatment where a
+human needs it — the `critical` escalation above (D19) and `providers.availability`
+reporting `ERROR` (D21) — not on the claim path.
 
 ## 5. Return path
 
@@ -1078,9 +1113,11 @@ sessions per profile ≤ `max_active` and fleet-wide ≤ `global_max_active`**;
 provider-paused tasks move and resume, legacy pauses are untouched without
 `--include-paused`; the availability-aware project default is derived and never
 persisted; undo restores the route and refuses a running task; force moves a pin
-and records the actor; every provider down ⇒ nothing moves, claims answer
-`not_admissible`; recovery releases holds, leaves moved tasks, routes new work
-home. A guard asserts the claim SQL references no provider table, and the existing
+and records the actor; every provider down ⇒ nothing moves; recovery releases
+holds, leaves moved tasks, routes new work home. That every provider down drains
+an idle pool worker (`drain_requested`, never `not_admissible`) and sizes every
+pool to `(0, 0)` is pinned in `tests/test_provider_suppression.py` (D15's
+decision). A guard asserts the claim SQL references no provider table, and the existing
 claim-frontier perf test must still pass unchanged.
 
 **In-flight** (`tests/test_provider_inflight.py`, `.4`): a startup death on a
@@ -1106,8 +1143,8 @@ launches, no further launches, moves inside `provb`'s `max_active: 1`, holds wit
 their kinds, one supervisor message, one escalation, `aq provider status`; restore
 `prova` and `aq provider recheck` ⇒ probation ⇒ `available` after one launch; held
 tasks run on `prova`, moved-and-queued tasks stay on `provb`, `reroute-undo`
-returns one; then both providers down ⇒ holds, `not_admissible`, a critical
-escalation, no moves. The transcript is attached to `.5`. Every wall-clock
+returns one; then both providers down ⇒ holds, idle workers answer
+`drain_requested` (D15), a critical escalation, no moves. The transcript is attached to `.5`. Every wall-clock
 assertion takes `perf_strict`.
 
 ## 9. Non-goals and known limits

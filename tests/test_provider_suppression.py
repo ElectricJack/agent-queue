@@ -349,3 +349,50 @@ async def test_an_idle_pool_worker_is_drained_on_its_next_claim(pool_orch, pool_
     result = await handler._cmd_task_claim({"next": True})
     assert result["result"] == "drain_requested"
     assert "codex" in (result.get("reason") or result.get("error") or str(result))
+
+
+async def test_every_provider_down_drains_an_idle_worker_rather_than_parking_it(
+    pool_orch, pool_db
+):
+    """D15's decision: an all-down outage is not a claim-path special case.
+
+    The earlier draft answered ``not_admissible`` + a wait hint so a worker
+    would wait out a short outage; the recorded decision is drain, because
+    the worker cannot take its next turn against its own dead provider,
+    sizing drains it after ``scale_down_grace`` anyway, and parked workers
+    would bypass D4's recovery canary.  A short ``until`` changes nothing.
+    """
+    from src.models import SessionRecord
+    from src.scheduler import PoolKey
+
+    orch = pool_orch
+    await pool_db.create_profile(
+        AgentProfile(
+            id="worker-claude", name="wc", lifecycle="pool", min_active=0, max_active=2,
+            harness="claude", default_class="standard-medium",
+        )
+    )
+    await pool_db.create_session(
+        SessionRecord(
+            id="sess-1", project_id=POOL_PROJECT, profile_id="worker", harness="codex",
+            provider="fake", name="p-worker--proj--x", lifecycle="pool", state="running",
+            work_dir="/tmp", epoch="e", instance_token="i", started_at=time.time(),
+        )
+    )
+    availability = orch.provider_availability
+    for provider in ("codex", "claude"):
+        await availability.set_state(
+            provider, "disabled", by="human:test", reason="short outage", until=time.time() + 300
+        )
+    assert availability.suppressed_providers() >= {"codex", "claude"}
+
+    handler = CommandHandler(orch, orch.config)
+    handler._current_scope = {"kind": "session", "session_id": "sess-1", "project_id": POOL_PROJECT}
+    result = await handler._cmd_task_claim({"next": True, "wait": 60})
+    assert result["result"] == "drain_requested", result
+    assert "codex" in (result.get("reason") or result.get("error") or str(result))
+    assert (await pool_db.get_session("sess-1")).task_id is None
+
+    measurement = await orch._measure_pools()
+    assert measurement.bounds[PoolKey("worker")] == (0, 0)
+    assert measurement.bounds[PoolKey("worker-claude")] == (0, 0)
