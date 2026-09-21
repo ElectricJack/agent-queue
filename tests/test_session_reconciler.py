@@ -30,9 +30,13 @@ from src.models import (
 from src.database.tables import task_branch_origins
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
+from src.providers.availability import DEGRADED, EXHAUSTED
+from src.providers.availability_service import ProviderAvailabilityService
 from src.sessions import SessionProviderRegistry
 from src.sessions.exit_classifier import Verdict, classify_exit
 from src.sessions.fake import FakeProvider
+from src.sessions.harness_parser import Harness
+from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionHandle, SessionSpec
 from src.sessions.reconciler import (
     DRAIN_ACK_KEY,
@@ -2118,6 +2122,7 @@ class _Availability:
     def __init__(self, *, unavailable=()):
         self.unavailable = set(unavailable)
         self.rate_limit_exits: list[str] = []
+        self.rate_limit_reasons: list[str] = []
 
     def provider_for_harness(self, harness, project_id=None):
         return harness
@@ -2127,6 +2132,7 @@ class _Availability:
 
     async def record_rate_limit_exit(self, session, *, reason=""):
         self.rate_limit_exits.append(session.id)
+        self.rate_limit_reasons.append(reason)
 
 
 class TestProviderAvailability:
@@ -2346,3 +2352,202 @@ class TestUsageLimitScreen:
         task = await db.get_task("t1")
         assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
         assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == [row.id]
+
+
+# ---------------------------------------------------------------------------
+# Usage-limit screen on an idle pool worker (azure-ridge, provider-failover D2)
+# ---------------------------------------------------------------------------
+
+CODEX_LIMIT_LINE = (
+    "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+    "to purchase more credits or try again at Sep 23rd, 2026 3:44 PM."
+)
+CLAUDE_LIMIT_LINE = "You've hit your session limit · resets 1:40am (America/Los_Angeles)"
+
+#: A Codex pool worker whose bootstrap prompt was answered with the limit: the
+#: pane the operator pasted on 2026-09-21 (vault session 264468f1).
+CODEX_IDLE_POOL_PANE = "\n".join(
+    [
+        "› You are a pool worker for project agent-queue (profile standard-high-codex).",
+        "  Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the",
+        "",
+        f"■ {CODEX_LIMIT_LINE}",
+        "",
+        "› Ask Codex to do anything",
+        "",
+        "  gpt-6-astra xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-0",
+    ]
+)
+
+#: The same shape on Claude Code: the bootstrap prompt, then the limit.
+CLAUDE_IDLE_POOL_PANE = "\n".join(
+    [
+        "❯ You are a pool worker for project agent-queue (profile standard-high-claude).",
+        "  Loop: run `aq task claim --next --wait 60`. On `claimed`, run `aq prime`, do the",
+        f"  ⎿  {CLAUDE_LIMIT_LINE}",
+        "     /usage-credits to finish what you’re working on.",
+        "",
+        "❯ ",
+    ]
+)
+
+
+class TestIdlePoolWorkerOnUsageLimitScreen:
+    """A pool worker parked on its usage limit before it ever claimed.
+
+    Its bootstrap prompt is answered with the limit screen, so it never
+    reaches its claim loop and holds no task: the stall ladder (which
+    recognises the screen on a session holding a task) never sees it, and the
+    abandoned-claim-loop step recycles it.  That recycle is the only place the
+    limit is observed, so it records the rate-limit exit — two such workers
+    trip the provider — instead of letting pool sizing relaunch into the same
+    limit with no evidence at all.
+    """
+
+    async def _parked(
+        self, db, provider, pool_reconciler, *, text, sid="pool-limited", idle=1_000.0,
+        availability=True,
+    ):
+        if availability:
+            pool_reconciler.test_orch.provider_availability = _Availability()
+        row = await _session(
+            db, provider, sid=sid, task_id=None, name=f"p-{sid}", lifecycle="pool",
+            last_activity=NOW - idle,
+        )
+        provider.sessions[row.name].activity = NOW - idle
+        provider.feed_output(row.name, text, activity=False)
+        return row
+
+    @pytest.mark.parametrize("mode", ["enforce", "observe"])
+    @pytest.mark.parametrize(
+        ("pane", "line"),
+        [(CODEX_IDLE_POOL_PANE, CODEX_LIMIT_LINE), (CLAUDE_IDLE_POOL_PANE, CLAUDE_LIMIT_LINE)],
+        ids=["codex", "claude"],
+    )
+    async def test_a_limit_screen_is_recorded_as_a_rate_limit_exit(
+        self, db, provider, pool_reconciler, mode, pane, line
+    ):
+        pool_reconciler.config.provider_failover.mode = mode
+        row = await self._parked(db, provider, pool_reconciler, text=pane)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        availability = pool_reconciler.test_orch.provider_availability
+        assert availability.rate_limit_exits == [row.id]
+        assert availability.rate_limit_reasons == [
+            f"usage-limit screen on an idle pool worker: {line}"
+        ]
+        # Recycled all the same -- no task is held, so there is nothing to
+        # checkpoint or requeue -- under a reason that says why.
+        assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
+        current = await db.get_session(row.id)
+        assert (current.state, current.end_reason) == ("stopped", "usage_limit_screen")
+        assert row.name not in provider.sessions
+
+    async def test_the_orchestrator_tick_records_it(self, db, provider, pool_reconciler):
+        row = await self._parked(db, provider, pool_reconciler, text=CODEX_IDLE_POOL_PANE)
+
+        await pool_reconciler.tick(now=NOW)
+
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == [row.id]
+        assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
+
+    async def test_two_parked_workers_trip_the_provider(self, db, provider, pool_reconciler):
+        """On the real availability service: one recycle degrades, two sessions trip (D3)."""
+        harnesses = HarnessRegistry()
+        harnesses.upsert(Harness(id="claude", name="claude", command="claude"))
+        service = ProviderAvailabilityService(
+            db=db,
+            config_getter=lambda: pool_reconciler.config,
+            harness_registry=harnesses,
+            clock=lambda: NOW,
+        )
+        pool_reconciler.test_orch.provider_availability = service
+
+        first = await self._parked(
+            db, provider, pool_reconciler, text=CLAUDE_IDLE_POOL_PANE, sid="pool-a",
+            availability=False,
+        )
+        await pool_reconciler._step_abandoned_pool_claim_loop([first], NOW)
+        assert service.effective_state("claude") == DEGRADED
+
+        second = await self._parked(
+            db, provider, pool_reconciler, text=CLAUDE_IDLE_POOL_PANE, sid="pool-b",
+            availability=False,
+        )
+        await pool_reconciler._step_abandoned_pool_claim_loop([second], NOW)
+        assert service.effective_state("claude") == EXHAUSTED
+        assert pool_reconciler.test_orch.terminations == [
+            (first.id, "usage_limit_screen"),
+            (second.id, "usage_limit_screen"),
+        ]
+
+    async def test_with_failover_off_it_is_an_ordinary_stalled_claim_loop(
+        self, db, provider, pool_reconciler
+    ):
+        pool_reconciler.config.provider_failover.mode = "off"
+        row = await self._parked(db, provider, pool_reconciler, text=CODEX_IDLE_POOL_PANE)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == []
+        assert pool_reconciler.test_orch.terminations == [(row.id, "claim_loop_stalled")]
+
+    @pytest.mark.parametrize(
+        "pane",
+        [
+            # Parked on an empty composer: a stalled loop, cause unknown.
+            "› Ask Codex to do anything\n\n  gpt-6-astra xhigh · ~/wt/slot-0",
+            # Broad rate-limit text is exit-classifier evidence, not the screen.
+            "  ⎿  HTTP 429 Too Many Requests: rate limit, retrying\n❯ ",
+            # A diff that quotes the wording is output, not the screen.
+            f"+■ {CODEX_LIMIT_LINE}\n› Ask Codex to do anything",
+        ],
+        ids=["empty-composer", "broad-429", "quoted-in-a-diff"],
+    )
+    async def test_anything_else_is_an_ordinary_stalled_claim_loop(
+        self, db, provider, pool_reconciler, pane
+    ):
+        row = await self._parked(db, provider, pool_reconciler, text=pane)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == []
+        assert pool_reconciler.test_orch.terminations == [(row.id, "claim_loop_stalled")]
+
+    async def test_a_limit_screen_inside_the_grace_is_left_alone(
+        self, db, provider, pool_reconciler
+    ):
+        grace = pool_reconciler._pool_claim_loop_stall_seconds()
+        row = await self._parked(
+            db, provider, pool_reconciler, text=CODEX_IDLE_POOL_PANE, idle=grace - 5
+        )
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == []
+        assert pool_reconciler.test_orch.terminations == []
+        assert (await db.get_session(row.id)).state == "running"
+
+    async def test_a_worker_that_began_a_claim_records_nothing(
+        self, db, provider, pool_reconciler
+    ):
+        """Evidence follows the recycle fence: a claim that won it is not a stalled loop."""
+        row = await self._parked(db, provider, pool_reconciler, text=CODEX_IDLE_POOL_PANE)
+        await db.update_session(row.id, claim_phase="claiming", claim_phase_at=NOW)
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == []
+        assert pool_reconciler.test_orch.terminations == []
+
+    async def test_without_an_availability_service_it_still_says_why(
+        self, db, provider, pool_reconciler
+    ):
+        row = await self._parked(
+            db, provider, pool_reconciler, text=CODEX_IDLE_POOL_PANE, availability=False
+        )
+
+        await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
+
+        assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
