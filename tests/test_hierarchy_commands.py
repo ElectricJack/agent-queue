@@ -657,3 +657,52 @@ class TestHierarchyRefusalsOverHTTP:
             {"task_id": "has-branch", "branch": "aq/has-branch", "base_sha": "a" * 40}
         ]
         assert await db.get_task("has-branch") is not None
+
+
+class TestDeleteIntegrationOwned:
+    """An integration audit row refuses a cascade delete through the surface.
+
+    The cascade path checks ``live_descendant_sessions`` and deletes inside one
+    caller-owned transaction, so the refusal has to come back as the command's
+    refusal dict *and* roll that transaction back — never half a tree deleted.
+    """
+
+    async def _repair_verified(self, db, task_id: str) -> None:
+        """A settled batch repair whose verifier was *task_id* (RESTRICT FK)."""
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_repair_operations
+
+        now = time.time()
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_repair_operations).values(
+                    id="op-1",
+                    target_kind="batch",
+                    batch_id="b-1",
+                    parent_task_id=None,
+                    episode_id="ep-batch",
+                    active_stage=0,
+                    state="completed",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    required_check_version="v1",
+                    verifier_task_id=task_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    async def test_cascade_delete_reports_the_refusal_and_keeps_the_tree(self, db, handler):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c", status=TaskStatus.COMPLETED)
+        await db.add_dependency("c", "p", "parent-child")
+        await self._repair_verified(db, "c")
+
+        res = await handler.execute("delete_task", {"task_id": "p", "cascade": True})
+
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.integration_owned"
+        assert "integration_repair_operations(c)" in res["error"]
+        assert await db.get_task("p") is not None
+        assert await db.get_task("c") is not None
