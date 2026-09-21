@@ -44,6 +44,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import asdict, fields
 from typing import Any
 
+from src.agents.liveness import LIVE_SESSION_STATES
 from src.providers.availability import (
     AUTH_PROBE,
     AVAILABLE,
@@ -202,7 +203,9 @@ class ProviderAvailabilityService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._probe_tasks: dict[str, asyncio.Task] = {}
         self._last_probe_started: dict[str, float] = {}
-        self._canary: dict[str, float] = {}
+        #: ``provider -> (admitted at, session id or None)`` for each
+        #: probation canary in flight (D4).
+        self._canary: dict[str, tuple[float, str | None]] = {}
         self._seen_sessions: dict[str, None] = {}
         self._last_usage: dict[str, tuple] = {}
         self._tracked: set[str] = set()
@@ -339,13 +342,19 @@ class ProviderAvailabilityService:
         reason = row.effective_reason(at) if row is not None else ""
         return f"provider llm is {self.effective_state('llm', at)}: {reason}".rstrip(": ")
 
-    def admit_launch(self, provider: str, *, now: float | None = None) -> tuple[bool, str | None]:
+    def admit_launch(
+        self, provider: str, *, now: float | None = None, session_id: str | None = None
+    ) -> tuple[bool, str | None]:
         """May a session start against *provider* right now?
 
         Refuses an unavailable provider, and on probation admits exactly one
         launch (the canary) until one succeeds (D4).  Admission marks the
         canary as in flight; ``launch_success`` or any failure evidence for
-        the provider releases it.
+        the provider releases it.  So does the end of *session_id*, the
+        session the launch will run as, when it stops without either -- an
+        operator kill, a stalled-claim reap -- which :meth:`tick` notices
+        from its row; without one the canary is presumed lost only after
+        ``CANARY_TIMEOUT_SECONDS``.
         """
         if not provider or not self.enforcing:
             return True, None
@@ -359,16 +368,53 @@ class ProviderAvailabilityService:
                 f"provider {provider} is {state}: {row.effective_reason(at)}"
             )
         if row.on_probation(at):
-            started = self._canary.get(provider)
-            if started is not None and at - started < CANARY_TIMEOUT_SECONDS:
+            canary = self._canary.get(provider)
+            if canary is not None and at - canary[0] < CANARY_TIMEOUT_SECONDS:
                 return False, (
                     f"provider {provider} is recovering; its canary launch is still in flight"
                 )
-            self._canary[provider] = at
+            self._canary[provider] = (at, session_id or None)
         return True, None
 
-    def release_canary(self, provider: str) -> None:
+    def release_canary(self, provider: str, *, session_id: str | None = None) -> None:
+        """Free *provider*'s canary slot; with *session_id*, only if it is that launch's."""
+        if session_id is not None:
+            canary = self._canary.get(provider)
+            if canary is None or canary[1] != session_id:
+                return
         self._canary.pop(provider, None)
+
+    async def _release_ended_canaries(self) -> None:
+        """Release each canary whose session has stopped without evidence (D4).
+
+        Read from the session row, so an end by any route -- the reconciler,
+        ``aq session kill``, a reap, a restart -- is found.  A canary whose
+        row does not exist yet is still starting and stays in flight.  The
+        end is not recorded as evidence: a kill proves nothing about the
+        provider, and a death the provider explains already recorded its own.
+        """
+        for provider, (_at, session_id) in list(self._canary.items()):
+            if session_id is None:
+                continue
+            try:
+                session = await self._db.get_session(session_id)
+            except Exception:
+                logger.debug("provider availability: canary %s unreadable", session_id,
+                             exc_info=True)
+                continue
+            if session is None or session.state in LIVE_SESSION_STATES:
+                continue
+            current = self._canary.get(provider)
+            if current is None or current[1] != session_id:
+                continue  # released or replaced while the row was read
+            logger.info(
+                "provider %s: canary session %s ended (%s) without launch evidence; "
+                "the next launch may be the canary",
+                provider,
+                session_id,
+                session.end_reason or session.state,
+            )
+            self.release_canary(provider)
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -435,6 +481,7 @@ class ProviderAvailabilityService:
             return []
         if not self._loaded:
             await self.load()
+        await self._release_ended_canaries()
         transitions: list[Transition] = []
         cfg = self.config
         now = self.now()

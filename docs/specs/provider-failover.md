@@ -210,7 +210,11 @@ While on probation:
 
 * at most **one** launch may be in flight for the provider (the canary) until
   the first `launch_success` — eight pool workers do not stampede a login that
-  may still be dead;
+  may still be dead. A canary that never started, or whose session row stops
+  without launch evidence (killed, reaped, died after startup), is no longer in
+  flight: the next availability tick frees the slot and records nothing, since
+  a kill proves nothing about the provider. Only a canary with no session to
+  watch waits out the 10-minute presumed-lost timeout;
 * a single strong or medium failure signal returns it to the state it came from
   **without corroboration**, with `level + 1` (so the next backoff doubles);
 * the first `launch_success` makes it `available`. `level` decays to 0 after
