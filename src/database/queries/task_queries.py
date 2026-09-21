@@ -1377,10 +1377,13 @@ class TaskQueryMixin:
         hierarchy/train project, and ``None`` there refuses with
         ``branch_discard_required`` rather than silently choosing.
 
-        Refuses a container with children unless *cascade*.  One transaction:
-        dependents are snapshotted while the edges exist, the subtree is
-        removed deepest-first, the former container is settled, and the
-        projection is recomputed.
+        Refuses a container with children unless *cascade*, and refuses with
+        ``integration_owned`` when an integration control-plane row still holds
+        a task in the set being deleted (see
+        :data:`~src.database.queries.archive_queries.INTEGRATION_TASK_REFERENCES`).
+        One transaction: dependents are snapshotted while the edges exist, the
+        subtree is removed deepest-first, the former container is settled, and
+        the projection is recomputed.
 
         When *conn* is supplied, the caller already owns the transaction
         (e.g. to check ``live_descendant_sessions`` atomically with the
@@ -1419,6 +1422,21 @@ class TaskQueryMixin:
         ids = await self.subtree_ids(task_id, conn=conn)
         if len(ids) > 1 and not cascade:
             raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
+        # The four tables in ``INTEGRATION_TASK_REFERENCES`` hold a ``RESTRICT``
+        # (or ``NO ACTION``) key onto ``tasks.id`` that ``_delete_one``
+        # deliberately does not clear, so the refusal below is the database's
+        # answer either way.  Read it here so it arrives as the ``HierarchyError``
+        # ``_cmd_delete_task`` knows how to render: left to the final ``DELETE
+        # FROM tasks`` it is an ``IntegrityError``, which that command does not
+        # catch, and an expected refusal reaches the operator as a traceback.
+        #
+        # After the cascade guard on purpose, so ``ids`` is exactly the set
+        # about to be deleted: a delete without ``--cascade`` is refused on
+        # ``has_children`` and never names a row holding a descendant it would
+        # not have touched.
+        held = await self._integration_reference_hold(ids, conn=conn)
+        if held is not None:
+            raise HierarchyError("integration_owned", held)
         affected = await self._collect_affected(set(ids), conn)
         affected -= set(ids)
         if parent:

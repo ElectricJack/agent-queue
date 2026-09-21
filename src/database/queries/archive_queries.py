@@ -33,9 +33,11 @@ logger = logging.getLogger(__name__)
 #: ``DELETE FROM tasks`` raises :class:`~sqlalchemy.exc.IntegrityError` rather
 #: than a :class:`HierarchyError` — which used to escape ``archive_task`` and
 #: abort the whole sweep, so an hour's worth of unrelated eligible tasks were
-#: left in the active view too.  ``archive_task`` reports them as
-#: ``integration_owned`` instead, naming the row that holds the task, and both
-#: bulk paths then skip that task and carry on.
+#: left in the active view too.  Both paths that end in that statement report
+#: them as ``integration_owned`` instead, naming the row that holds the task:
+#: ``archive_task``, after which both bulk sweeps skip that task and carry on,
+#: and ``_delete_task_body``, whose caller renders a ``HierarchyError`` as a
+#: refusal and anything else as an unhandled error.
 #:
 #: ``tests/test_archive.py`` ratchets this list against the schema: a new
 #: foreign key onto ``tasks.id`` must either be cleaned up by ``_delete_one``
@@ -160,17 +162,18 @@ class ArchiveQueryMixin:
         """Name the integration row that still references one of *ids*, or ``None``.
 
         Each table in :data:`INTEGRATION_TASK_REFERENCES` keys a row to a task
-        with a foreign key the archive never clears, so the row outliving the
-        task is not something the database will allow.  Reading them here turns
-        what was an ``IntegrityError`` from the very last statement of the
-        archive — raised too late for either bulk path to attribute, and fatal
-        to the rest of the sweep — into an ``integration_owned`` refusal that
-        names the episode, verification, operation or resolution an operator has
-        to settle first.
+        with a foreign key neither the archive nor the delete clears, so the row
+        outliving the task is not something the database will allow.  Reading
+        them up front turns what was an ``IntegrityError`` from the very last
+        statement of the transaction — raised too late for an archive sweep to
+        attribute, and fatal to the rest of it; raised past the only refusal
+        shape ``_cmd_delete_task`` renders, on the delete — into an
+        ``integration_owned`` refusal that names the episode, verification,
+        operation or resolution an operator has to settle first.
 
         The tables are read in their declared order and the first hit wins;
         which one is reported does not change the answer, because a task any of
-        them names cannot be archived at all.
+        them names can neither be archived nor deleted.
         """
         for table, column, label in INTEGRATION_TASK_REFERENCES:
             row = (

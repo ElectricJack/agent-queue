@@ -545,3 +545,68 @@ class TestDeleteBranchPolicy:
         assert res["success"] is False
         assert res["code"] == "invalid_branches"
         assert await db.get_task("bad-choice") is not None
+
+
+class TestDeleteIntegrationOwned:
+    """The four integration foreign keys refuse through the surface, not past it.
+
+    ``_delete_one`` never clears the ``RESTRICT``/``NO ACTION`` keys the
+    integration control plane holds onto ``tasks.id``, which is deliberate — the
+    control plane's identity may not dangle.  What was not deliberate is the
+    shape: the database raised from the final ``DELETE FROM tasks``, and
+    ``_cmd_delete_task`` catches only :class:`HierarchyError`, so an expected
+    refusal surfaced as an unhandled ``IntegrityError`` — a traceback on the CLI
+    and a 500 over the API.  ``archive_task`` already answered
+    ``integration_owned`` here; the delete now matches it.
+    """
+
+    async def _repair_verified(self, db, task_id: str) -> None:
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_repair_operations
+
+        now = time.time()
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(integration_repair_operations).values(
+                    id="op-1",
+                    target_kind="batch",
+                    batch_id="b-1",
+                    parent_task_id=None,
+                    episode_id="ep-batch",
+                    active_stage=0,
+                    state="completed",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    required_check_version="v1",
+                    verifier_task_id=task_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    async def test_delete_reports_a_refusal_rather_than_raising(self, db, handler):
+        await mktask(db, "verifier", status=TaskStatus.COMPLETED)
+        await self._repair_verified(db, "verifier")
+
+        res = await handler.execute("delete_task", {"task_id": "verifier"})
+
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.integration_owned"
+        assert "op-1" in res["error"]
+        assert await db.get_task("verifier") is not None
+
+    async def test_cascade_delete_reports_the_same_refusal(self, db, handler):
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "c", status=TaskStatus.COMPLETED)
+        await db.add_dependency("c", "p", "parent-child")
+        await self._repair_verified(db, "c")
+
+        res = await handler.execute("delete_task", {"task_id": "p", "cascade": True})
+
+        assert res["success"] is False
+        assert res["code"] == "hierarchy.integration_owned"
+        # The cascade path checks and deletes inside one caller-owned
+        # transaction; the refusal has to roll it back, not commit half a tree.
+        assert await db.get_task("p") is not None
+        assert await db.get_task("c") is not None

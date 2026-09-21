@@ -66,6 +66,7 @@ It refuses when:
   `integration_candidate_resolutions.repair_task_id`. The task cannot leave the
   active view while it is part of an integration episode, so the archive says
   which row holds it rather than letting the database refuse the final `DELETE`.
+  [Deleting](#deleting) reads the same list for the same reason.
 
 What the archived row keeps: everything in `tasks` except `claim_epoch`,
 `deliverables`, `discord_thread_id`, `filed_count` and `next_child_ordinal` —
@@ -122,6 +123,14 @@ no bulk version of it on the operator surface.
 `delete_task` removes a task outright. With `--cascade` it removes the whole
 subtree; without it, a task that has children is refused.
 
+A task an integration control-plane row still names is refused too, with
+`integration_owned` — the same four foreign keys [Archiving](#archiving)
+refuses on, read over exactly the set this delete would remove. That check runs
+*after* the cascade refusal, so a plain `aq task delete <container>` still
+reports `has_children`: without `--cascade` the held descendant is not being
+deleted, and naming the row that holds it would point at something this delete
+never touches.
+
 Everything happens in one transaction: dependents are snapshotted while the
 edges still exist, the subtree is removed deepest-first, the former container is
 settled, and the blocked-state projection is recomputed for everything that was
@@ -166,10 +175,10 @@ These are working guards, not bugs.
 |---|---|---|
 | `hierarchy.open_children` | The task has non-terminal children and you did not pass `--cascade`. | Close the children, `aq task reparent` one you filed, or cascade. |
 | `live_descendants` | A session in the subtree is still running. | Let it drain, or stop it, then retry. |
-| `integration_owned` | An active repair operation owns a task in the subtree. | Let the operation finish or be cancelled. |
+| `integration_owned` | An active repair operation owns a task in the subtree. This one is the **archive**'s guard; `integration_repair_stages.repair_task_id` is a soft reference, so a delete is not refused by it. | Let the operation finish or be cancelled. |
+| `integration_owned`, naming a row | An integration control-plane row still names a task in the set being deleted, through a **named `RESTRICT`** (or `NO ACTION`) foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of an integration episode. Settle the episode, verification, operation or resolution the refusal names. [Archiving](#archiving) refuses the same four the same way. |
 | `hierarchy.branch_discard_required` | A materialised branch origin in the subtree. | Re-run with `--branches keep` or `--branches delete`. |
 | A paused task | A worker cannot close or resume a `PAUSED` task. | The operator resumes it; a worker should push its work and report. |
-| `ForeignKeyViolationError` naming an `integration_*` table | The task is referenced by integration control-plane rows with a **named `RESTRICT`** foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of a live integration episode. The *archive* path reports the same four as `integration_owned` instead, naming the row — see [Archiving](#archiving). |
 
 ### A known limitation
 
@@ -187,7 +196,9 @@ Practically:
 * The RESTRICT-protected integration tables are deliberately *not* cleaned up
   here. There is no supported way to delete a task that a live integration
   episode references, and there should not be — the alternative is a control
-  plane that points at nothing.
+  plane that points at nothing. They are listed in `INTEGRATION_TASK_REFERENCES`
+  and read up front by both the archive and the delete, so they refuse as
+  `integration_owned` rather than as a driver error from the final `DELETE`.
 * If you hit an FK violation naming a table not in the tables above, that is a
   genuine bug worth filing, naming the table from the error.
 
