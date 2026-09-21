@@ -7,7 +7,7 @@ const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
   container_id: null, kind, context_only: false,
   agg_children: 2, agg_descendants: 3, agg_completed: 1, agg_running: 0, agg_blocked: 0, agg_active: 2, ...extra,
 });
-const ctx = { projectId: "p1", offsetY: 0, expanded: new Set<string>(), handlers: { onOpenTask: () => {}, onToggleChildren: () => {}, onFocus: () => {} } };
+const ctx = { projectId: "p1", offsetY: 0, focusId: null, handlers: { onOpenTask: () => {}, onFocus: () => {} } };
 
 describe("toFlowElements", () => {
   it("maps kinds to node types and scales positions", () => {
@@ -22,7 +22,7 @@ describe("toFlowElements", () => {
     expect(byId.e!.position).toEqual({ x: 0, y: 0 });
     expect(byId.e!.width).toBe(720); expect(byId.e!.height).toBe(312);
     expect(byId.c!.type).toBe("task");
-    expect((byId.c!.data as { hierarchy: { expanded: boolean; descendantCount: number } }).hierarchy).toMatchObject({ expanded: false, descendantCount: 3 });
+    expect((byId.c!.data as { hierarchy: { descendantCount: number } }).hierarchy).toMatchObject({ descendantCount: 3 });
     expect(byId.z!.position).toEqual({ x: 480, y: 624 });
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({ source: "c", target: "z", label: "×2", sourceHandle: "out-right", targetHandle: "in-left" });

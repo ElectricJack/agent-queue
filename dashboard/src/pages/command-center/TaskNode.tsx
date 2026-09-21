@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { ChevronDownIcon, ChevronRightIcon, ExclamationTriangleIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { ExclamationTriangleIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position, type NodeProps, type Node } from "@xyflow/react";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { ProgressBar } from "./ProgressBar";
@@ -24,14 +24,6 @@ const STATUS_TONE: Record<string, string> = {
   CANCELED: "border-gray-700 bg-gray-900 text-gray-400",
 };
 
-/**
- * Terminal statuses. Toggling a card in one of these expands it as a
- * "finished" subtree (`onToggleChildren`'s second argument), which the
- * active-variant server rules use to decide whether the subtree still needs
- * a real tiles request or can stay collapsed.
- */
-const SETTLED = new Set(["COMPLETED", "CANCELLED", "CANCELED"]);
-
 interface CardProps {
   data: TaskNodeData;
   selected?: boolean;
@@ -39,21 +31,15 @@ interface CardProps {
   layoutScale?: number;
 }
 
-/** The task action and expansion action are sibling elements at the card
+/** The task action and the enter action are sibling elements at the card
  *  level. The card's open action is a `role="button"` div (not a `<button>`)
  *  so the copy-id button in its header can nest inside it validly. */
 export function TaskCard({ data, selected = false, fluid = false, layoutScale = 1 }: CardProps) {
-  const { task, gates, hierarchy, onOpenTask, onToggleChildren, onFocus, subtasks, phase } = data;
+  const { task, gates, hierarchy, onOpenTask, onFocus, subtasks, phase } = data;
   const blocked = isTaskBlocked(task);
   const tone = STATUS_TONE[task.status] ?? STATUS_TONE.DEFINED;
   const priority = task.priority ?? 100;
   const urgent = priority <= 20 ? "ring-2 ring-red-400" : priority <= 50 ? "ring-1 ring-amber-400" : "";
-  const cannotToggle = hierarchy.autoExpanded || hierarchy.visibleChildCount === 0;
-  const toggleHelp = hierarchy.autoExpanded
-    ? "Matching descendants are shown while filters are active."
-    : hierarchy.visibleChildCount === 0
-      ? "All children are hidden by the current filters."
-      : undefined;
   const openGates = gates.filter((gate) => gate.status.toLowerCase() === "open");
 
   return (
@@ -137,34 +123,23 @@ export function TaskCard({ data, selected = false, fluid = false, layoutScale = 
         )}
       </div>
       {hierarchy.childCount > 0 && (
-        <div className="flex shrink-0 items-stretch rounded-b-md border-t border-white/10">
-          <button
-            type="button"
-            aria-label={`${hierarchy.expanded ? "Collapse" : "Expand"} children of ${task.title}`}
-            aria-expanded={hierarchy.expanded}
-            disabled={cannotToggle}
-            title={toggleHelp}
-            className="nodrag nopan flex h-7 flex-1 items-center gap-1 rounded-bl-md px-2 text-[10px] hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300 disabled:cursor-default disabled:opacity-60"
-            onClick={(event) => { event.stopPropagation(); onToggleChildren?.(task.id, SETTLED.has(task.status)); }}
-            onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
-          >
-            {hierarchy.expanded ? <ChevronDownIcon aria-hidden className="h-3 w-3" /> : <ChevronRightIcon aria-hidden className="h-3 w-3" />}
-            <span className="rounded bg-white/10 px-1">
-              {hierarchy.expanded
-                ? `${hierarchy.childCount} ${hierarchy.childCount === 1 ? "child" : "children"}`
-                : `${hierarchy.descendantCount} hidden`}
-            </span>
-            {hierarchy.runningCount > 0 && <span className="ml-auto text-indigo-300">{hierarchy.runningCount} running</span>}
-            {hierarchy.blockedCount > 0 && <span className="ml-auto text-amber-300">{hierarchy.blockedCount} blocked</span>}
-          </button>
+        <div className="flex shrink-0 items-center gap-1 rounded-b-md border-t border-white/10 px-2 text-[10px]">
+          {/* A count, not a control: the children are reached by ENTERING the
+            * container, never by expanding it in place. */}
+          <span className="rounded bg-white/10 px-1">{hierarchy.descendantCount} hidden</span>
+          {hierarchy.runningCount > 0 && <span className="text-indigo-300">{hierarchy.runningCount} running</span>}
+          {hierarchy.blockedCount > 0 && <span className="text-amber-300">{hierarchy.blockedCount} blocked</span>}
           {onFocus && (
             <button
               type="button"
-              aria-label={`Focus on ${task.title}`}
-              className="nodrag nopan flex h-7 shrink-0 items-center rounded-br-md border-l border-white/10 px-2 hover:bg-white/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
+              aria-label={`Enter ${task.title}`}
+              title={`Enter ${task.title}`}
+              className="nodrag nopan ml-auto flex h-7 shrink-0 items-center gap-1 rounded px-1.5 font-medium hover:bg-white/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-300"
               onClick={(event) => { event.stopPropagation(); onFocus(task.id); }}
+              onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
             >
               <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />
+              Enter
             </button>
           )}
         </div>

@@ -28,16 +28,18 @@ import { refetchLayout } from "../pages/command-center/layout-v2/liveRegistry";
 
 export type Variant = "all" | "active";
 
+/**
+ * The canvas never expands a container in place (operator decision
+ * 2026-09-20): `expanded` is always empty and the scope is chosen with
+ * `root` instead. The wire request still carries the field, and the server
+ * still honors a non-empty one for other callers.
+ */
 export interface TilesParams {
   variant: Variant;
   expanded: string[];
   root?: string | null;
-  maxDepth?: number | null;
   q?: string;
   status?: string;
-  /** "Land on the active subgraph" (design A3). Only takes effect server-side
-   * when `expanded` is empty -- an explicit (even empty) expansion wins. */
-  autoExpand?: boolean;
 }
 
 export async function fetchTiles(
@@ -55,10 +57,8 @@ export async function fetchTiles(
       rect,
       expanded: params.expanded,
       root: params.root ?? null,
-      max_depth: params.maxDepth ?? null,
       q: params.q ?? "",
       status: params.status ?? "",
-      auto_expand: params.autoExpand ?? false,
     },
     throwOnError: true,
   });

@@ -4,7 +4,6 @@ import { DENSITY_SCALE, type LayoutDensity } from "./density";
 export const UNIT_W = NODE_WIDTH;
 export const UNIT_H = NODE_HEIGHT;
 export const CELL = 8;
-export const NODE_BUDGET = 400;
 export type Rect = { x0: number; y0: number; x1: number; y1: number };
 export type CellKey = `${number}:${number}`;
 
@@ -84,10 +83,4 @@ export function centreCell(rect: Rect): CellKey {
 export function cellDistance(a: CellKey, b: CellKey): number {
   const [ax, ay] = parseCell(a), [bx, by] = parseCell(b);
   return Math.max(Math.abs(ax - bx), Math.abs(ay - by));
-}
-
-export function maxDepthForZoom(zoom: number): number | null {
-  if (zoom < 0.35) return 0;
-  if (zoom < 0.6) return 1;
-  return null;
 }

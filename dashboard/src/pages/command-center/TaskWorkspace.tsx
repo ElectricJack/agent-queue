@@ -31,10 +31,12 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
   const focusId = rawFilters.focus || null;
+  // Entering a container no longer implies finished work: inside one the
+  // default is the same as at the root, unfinished children only.
   const filters = useMemo(() => ({
     ...rawFilters,
-    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window,
-  }), [rawFilters, focusId]);
+    showCompleted: rawFilters.showCompleted || !!rawFilters.window,
+  }), [rawFilters]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
@@ -48,7 +50,6 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const setShowCompleted = useCallback((show: boolean) => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      if (current.focus) return previous;
       return writeTaskFilters(previous, {
         ...current, showCompleted: show,
         status: !show && FINISHED_STATUSES.has(current.status) ? "" : current.status,
@@ -56,7 +57,11 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
     }, { replace: true });
   }, [setParams]);
   const setWindow = useCallback((window: string) => update({ window }), [update]);
-  const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
+  // Entering a container (or leaving one) is navigation, not a filter edit:
+  // it PUSHES, so the browser's Back button goes back up a level.
+  const setFocus = useCallback((id: string | null) => {
+    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), focus: id ?? "" }));
+  }, [setParams]);
   const clearFilters = useCallback(() => {
     setParams((previous) => {
       const current = readTaskFilters(previous);

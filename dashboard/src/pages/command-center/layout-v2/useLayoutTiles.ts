@@ -6,21 +6,10 @@ import {
   evictFar,
   mergeTiles,
   missingCells,
-  nodeCount,
   retainForReflow,
   type LayoutStore,
 } from "./layoutStore";
-import {
-  NODE_BUDGET, boundedBatch, cellRect, cellsForRect, centreCell, type CellKey, type Rect,
-} from "./units";
-
-interface Options {
-  onBudgetExceeded?: () => void;
-  /** Fired once per response that carries a non-null `expanded_applied`
-   * (design A3: the server computed and applied the active subgraph because
-   * this request's `auto_expand` was honored). */
-  onExpandedApplied?: (ids: string[]) => void;
-}
+import { boundedBatch, cellRect, cellsForRect, centreCell, type CellKey, type Rect } from "./units";
 
 /**
  * Trailing edge for a viewport-driven fetch. A drag hands the hook a new rect
@@ -39,7 +28,6 @@ export function useLayoutTiles(
   projectId: string | undefined,
   params: TilesParams,
   viewportRect: Rect | null,
-  opts: Options = {},
 ) {
   const [store, setStore] = useState<LayoutStore>(emptyStore);
   const [pending, setPending] = useState(false);
@@ -64,24 +52,6 @@ export function useLayoutTiles(
   const paramsKey = JSON.stringify(params);
   const paramsRef = useRef(params);
   paramsRef.current = params;
-  const onBudget = useRef(opts.onBudgetExceeded);
-  onBudget.current = opts.onBudgetExceeded;
-  const onExpandedApplied = useRef(opts.onExpandedApplied);
-  onExpandedApplied.current = opts.onExpandedApplied;
-  // One-shot latch for `auto_expand` (design A3), spent on an APPLIED
-  // response rather than on dispatch. Latching at dispatch spent the one
-  // shot on requests that never reached an expansion at all -- a 202
-  // layout-pending answer, an abort, a network error -- and left a fresh
-  // project collapsed with nothing to re-arm it. A request is still never
-  // duplicated: `inflight` serialises loads, so by the time a follow-up
-  // (a pan, a filter edit) runs, the response that would latch has landed.
-  const autoExpandSent = useRef(false);
-  // "Focus active" clears the project's stored expansion, which flips
-  // `params.autoExpand` back to true; that transition re-arms the latch, so
-  // the button works in a mount that has already auto-expanded once.
-  const autoExpandWanted = useRef(false);
-  if (!!params.autoExpand && !autoExpandWanted.current) autoExpandSent.current = false;
-  autoExpandWanted.current = !!params.autoExpand;
 
   const load = useCallback(async () => {
     if (!projectId || failed.current) return;
@@ -103,10 +73,8 @@ export function useLayoutTiles(
     const batch = boundedBatch(missing, centreRef.current);
     const ac = new AbortController();
     inflight.current = ac;
-    const effectiveAutoExpand = !!paramsRef.current.autoExpand && !autoExpandSent.current;
-    const requestParams = { ...paramsRef.current, autoExpand: effectiveAutoExpand };
     try {
-      const res = await fetchTiles(projectId, cellRect(batch), requestParams, ac.signal);
+      const res = await fetchTiles(projectId, cellRect(batch), paramsRef.current, ac.signal);
       if (ac.signal.aborted) return;
       if ("pending" in res) {
         setPending(true);
@@ -116,12 +84,6 @@ export function useLayoutTiles(
       setPending(false);
       setLoaded(true);
       setError(null);
-      if (res.expanded_applied != null) {
-        // The server honored `auto_expand` and computed a set: that, and
-        // only that, spends the one shot.
-        autoExpandSent.current = true;
-        onExpandedApplied.current?.(res.expanded_applied);
-      }
       // Under `root` the server ignores the rect and answers with the whole
       // subtree, so evicting by cell would throw away nodes the response just
       // delivered and make every pan re-download them.
@@ -137,10 +99,6 @@ export function useLayoutTiles(
         : fetched;
       storeRef.current = merged;
       setStore(merged);
-      const depth = paramsRef.current.maxDepth ?? null;
-      // `max_depth` is ignored under `root` too: stepping it down would only
-      // churn the params and refetch the same subtree.
-      if (!root && nodeCount(merged) > NODE_BUDGET && (depth === null || depth > 0)) onBudget.current?.();
       // A response carrying a new layout_version makes mergeTiles drop every
       // previously-loaded cell and re-add only this request's, so cells still
       // inside the viewport can come back unloaded. Ask for another pass
@@ -158,9 +116,9 @@ export function useLayoutTiles(
   }, [projectId]);
 
   // Params (or project) changed: every cell cached describes a different
-  // graph. The DRAWN nodes are kept, though — collapsing a container reflows
-  // its siblings, and the canvas animates them from where they were rather
-  // than blanking and re-mounting the whole graph. A different PROJECT shares
+  // graph. The DRAWN nodes are kept, though — a filter edit or a step into a
+  // container re-lays the same project out, and the canvas animates the cards
+  // from where they were rather than blanking and re-mounting the whole graph. A different PROJECT shares
   // nothing with what is drawn, so that case still starts empty.
   const drawnProject = useRef<string | undefined>(undefined);
   useEffect(() => {

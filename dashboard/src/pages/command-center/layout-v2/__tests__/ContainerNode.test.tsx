@@ -8,26 +8,25 @@ const node = { id: "e", title: "Epic", status: "IN_PROGRESS", priority: 100, is_
   container_id: null, kind: "container", context_only: false, agg_children: 3, agg_descendants: 5, agg_completed: 2, agg_running: 1, agg_blocked: 0, agg_active: 3 };
 
 describe("ContainerNode", () => {
-  it("shows aggregates and wires collapse, focus, and open", async () => {
-    const onFocus = vi.fn(), onToggleChildren = vi.fn(), onOpenTask = vi.fn();
-    render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus, onToggleChildren, onOpenTask }} selected={false} /> as never);
+  it("shows aggregates and wires enter and open", async () => {
+    const onFocus = vi.fn(), onOpenTask = vi.fn();
+    render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus, onOpenTask }} selected={false} /> as never);
     expect(screen.getByText("2/5 done")).toBeInTheDocument();
     expect(screen.getByText("1 running")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Focus on Epic" }));
-    await userEvent.click(screen.getByRole("button", { name: "Collapse children of Epic" }));
+    await userEvent.click(screen.getByRole("button", { name: "Enter Epic" }));
     await userEvent.click(screen.getByRole("button", { name: "Open task Epic" }));
     expect(onFocus).toHaveBeenCalledWith("e");
-    expect(onToggleChildren).toHaveBeenCalledWith("e", false);
     expect(onOpenTask).toHaveBeenCalledWith("e", { id: "e", playbook_run_id: undefined });
   });
 
-  it("reports when the expanded container is finished", async () => {
-    const onToggleChildren = vi.fn();
-    render(<ContainerNode id="e" data={{ node: { ...node, status: "COMPLETED" }, projectId: "p1", onToggleChildren }} /> as never);
+  it("offers no expand/collapse toggle: a container is entered, never expanded", () => {
+    render(<ContainerNode id="e" data={{ node, projectId: "p1", onFocus: vi.fn() }} /> as never);
+    expect(screen.queryByRole("button", { name: /children of/i })).not.toBeInTheDocument();
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: "Collapse children of Epic" }));
-
-    expect(onToggleChildren).toHaveBeenCalledWith("e", true);
+  it("offers no enter control for the container already entered", () => {
+    render(<ContainerNode id="e" data={{ node, projectId: "p1" }} /> as never);
+    expect(screen.queryByRole("button", { name: /^Enter/ })).not.toBeInTheDocument();
   });
 
   it("passes the container's own run id so a run task keeps its routing", async () => {

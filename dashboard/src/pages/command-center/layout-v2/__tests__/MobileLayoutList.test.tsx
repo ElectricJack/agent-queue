@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 
 const list = vi.hoisted(() => vi.fn());
-vi.mock("../../../../api/graphLayout", () => ({ fetchList: list }));
+const layoutNode = vi.hoisted(() => ({ data: undefined as unknown }));
+vi.mock("../../../../api/graphLayout", () => ({ fetchList: list, useLayoutNode: () => layoutNode }));
 
 import MobileLayoutList, { MobileLayoutLists } from "../MobileLayoutList";
 
@@ -15,11 +16,10 @@ const n = (id: string) => ({
 
 const filters = { query: "", status: "", showCompleted: false, focus: "", window: "" };
 const props = {
-  projectId: "p1", variant: "active" as const, filters,
-  expanded: new Set<string>(), toggleExpanded: () => {}, onTaskClick: () => {},
+  projectId: "p1", variant: "active" as const, filters, onTaskClick: () => {},
 };
 
-beforeEach(() => list.mockReset());
+beforeEach(() => { list.mockReset(); layoutNode.data = undefined; });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("MobileLayoutList", () => {
@@ -85,13 +85,46 @@ describe("MobileLayoutList", () => {
   });
 });
 
+describe("entering a container on a phone", () => {
+  it("offers an enter control on a container card and no expand toggle", async () => {
+    list.mockResolvedValue({
+      nodes: [{ ...n("a"), agg_children: 2, agg_descendants: 3 }], next_cursor: null, layout_version: 1,
+    });
+    const onFocus = vi.fn();
+    render(<MemoryRouter><MobileLayoutList {...props} onFocus={onFocus} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task a")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /children of/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Enter Task a" }));
+    expect(onFocus).toHaveBeenCalledWith("a");
+  });
+
+  it("asks for the entered container's scope and lists only its own children", async () => {
+    layoutNode.data = {
+      node: { ...n("pkg"), title: "Package", kind: "container" },
+      ancestors: [{ id: "e", title: "Epic" }],
+      layout_version: 1,
+    };
+    list.mockResolvedValue({
+      nodes: [n("e"), { ...n("g0"), container_id: "pkg" }, { ...n("g1"), container_id: "pkg" }],
+      next_cursor: null, layout_version: 1,
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} focusId="pkg" projectName="P1" onFocus={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task g0")).toBeInTheDocument();
+    expect(screen.getByText("Task g1")).toBeInTheDocument();
+    expect(screen.queryByText("Task e")).toBeNull();
+    expect(list).toHaveBeenLastCalledWith("p1", expect.objectContaining({ expanded: ["e", "pkg"] }));
+    expect(screen.getByRole("navigation", { name: "Focus path" })).toHaveTextContent("Package");
+  });
+});
+
 describe("MobileLayoutLists", () => {
   it("stacks one list per project under its own heading", async () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
-      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
-      onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument();
@@ -102,8 +135,7 @@ describe("MobileLayoutLists", () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1"]} projectNames={new Map([["p1", "Alpha"]])}
-      variant="active" filters={filters} expanded={new Set()} toggleExpanded={() => {}}
-      onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByText("Task a")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Alpha" })).toBeNull();

@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@xyflow/react", () => ({
@@ -16,9 +17,9 @@ const card = (status: string, over: Partial<TaskNodeData["hierarchy"]> = {}, ext
   gates: [],
   projectId: "p1",
   hierarchy: {
-    parentId: null, parentTitle: null, depth: 0, childCount: 2, visibleChildCount: 2,
+    parentId: null, parentTitle: null, depth: 0, childCount: 2,
     descendantCount: 4, completedCount: 3, runningCount: 0, blockedCount: 0,
-    expanded: true, autoExpanded: false, contextOnly: false, ...over,
+    contextOnly: false, ...over,
   },
   ...extra,
 });
@@ -58,6 +59,28 @@ describe("subtask progress", () => {
     render(<TaskCard data={card("READY", { descendantCount: 0 }, { subtasks: { total: 0, settled: 0 } })} />);
     expect(screen.queryByText(/subtasks/)).not.toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});
+
+describe("a container card is compact: you enter it, you never expand it", () => {
+  it("offers an enter control and no expand/collapse toggle", async () => {
+    const onFocus = vi.fn();
+    render(<TaskCard data={card("READY", {}, { onFocus })} />);
+    expect(screen.queryByRole("button", { name: /children of/i })).not.toBeInTheDocument();
+    const enter = screen.getByRole("button", { name: "Enter Ship it" });
+    await userEvent.click(enter);
+    expect(onFocus).toHaveBeenCalledWith("task-one");
+  });
+
+  it("keeps the hidden count as information", () => {
+    render(<TaskCard data={card("READY")} />);
+    expect(screen.getByText("4 hidden")).toBeInTheDocument();
+  });
+
+  it("shows no enter control on a leaf card", () => {
+    render(<TaskCard data={card("READY", { childCount: 0, descendantCount: 0 })} />);
+    expect(screen.queryByRole("button", { name: /^Enter/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open task Ship it" })).toBeInTheDocument();
   });
 });
 

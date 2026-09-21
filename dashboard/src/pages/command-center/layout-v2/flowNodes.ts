@@ -13,11 +13,13 @@ const OVERFLOW_W = 0.4;
 const OVERFLOW_H = 0.3;
 const OVERFLOW_GAP = 0.05;
 
-export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onToggleChildren: (id: string, finished?: boolean) => void; onFocus: (id: string) => void }
+export interface FlowHandlers { onOpenTask: (id: string, task?: SelectableTask) => void; onFocus: (id: string) => void }
 export interface FlowContext {
   projectId: string;
   offsetY: number;
-  expanded: ReadonlySet<string>;
+  /** The container the canvas has ENTERED, if any. It is the one node that
+   *  offers no enter control of its own. */
+  focusId?: string | null;
   handlers: FlowHandlers;
   /** Display names by project id, for stubs that live in another project. */
   projectNames?: ReadonlyMap<string, string>;
@@ -46,6 +48,12 @@ export interface FlowCache {
 
 export interface FlowElements { nodes: Node[]; edges: Edge[]; cache: FlowCache }
 
+/** Whether this node can be entered: it has children, and is not already the
+ *  scope on screen. A stub belongs to a subtree this view never loaded. */
+function canEnter(n: LayoutNode, ctx: FlowContext): boolean {
+  return (n.agg_children ?? 0) > 0 && n.kind !== "stub" && n.id !== ctx.focusId;
+}
+
 /** The card payload for one layout node; shared with the flat mobile list. */
 export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]): TaskNodeData {
   const task = {
@@ -57,11 +65,12 @@ export function taskNodeData(n: LayoutNode, ctx: FlowContext, gates: GraphGate[]
     task, gates, projectId: ctx.projectId,
     hierarchy: {
       parentId: n.container_id ?? null, parentTitle: null, depth: n.depth, childCount: n.agg_children ?? 0,
-      visibleChildCount: n.agg_children ?? 0, descendantCount: n.agg_descendants ?? 0, completedCount: n.agg_completed ?? 0,
-      runningCount: n.agg_running ?? 0, blockedCount: n.agg_blocked ?? 0, expanded: n.kind !== "collapsed" && n.kind !== "stub",
-      autoExpanded: false, contextOnly: n.context_only ?? false,
+      descendantCount: n.agg_descendants ?? 0, completedCount: n.agg_completed ?? 0,
+      runningCount: n.agg_running ?? 0, blockedCount: n.agg_blocked ?? 0,
+      contextOnly: n.context_only ?? false,
     },
-    onOpenTask: ctx.handlers.onOpenTask, onToggleChildren: ctx.handlers.onToggleChildren, onFocus: ctx.handlers.onFocus,
+    onOpenTask: ctx.handlers.onOpenTask,
+    onFocus: canEnter(n, ctx) ? ctx.handlers.onFocus : undefined,
     layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"],
     subtasks: { total: n.subtasks_total ?? 0, settled: n.subtasks_settled ?? 0 },
     phase: n.phase_order != null ? { order: n.phase_order, label: n.phase_label ?? "" } : null,
@@ -90,7 +99,7 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
 function sameContext(a: FlowContext | null, b: FlowContext): boolean {
   return !!a && a.projectId === b.projectId && a.offsetY === b.offsetY && a.density === b.density
     && a.handlers === b.handlers && a.projectNames === b.projectNames
-    && a.expanded === b.expanded && !!a.simpleEdges === !!b.simpleEdges;
+    && (a.focusId ?? null) === (b.focusId ?? null) && !!a.simpleEdges === !!b.simpleEdges;
 }
 
 export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: FlowCache): FlowElements {
@@ -124,7 +133,11 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     const sig = nodeSignature(n, gates);
     if (n.kind === "container") {
       push(n.id, sig, () => {
-        const data: ContainerNodeData = { node: n, projectId: ctx.projectId, ...ctx.handlers, layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"] };
+        const data: ContainerNodeData = {
+          node: n, projectId: ctx.projectId, onOpenTask: ctx.handlers.onOpenTask,
+          onFocus: canEnter(n, ctx) ? ctx.handlers.onFocus : undefined,
+          layoutScale: DENSITY_SCALE[ctx.density ?? "comfortable"],
+        };
         return { id: n.id, type: "container", position: toPx(n.x, n.y + ctx.offsetY, ctx.density), ...sizePx(n.w, n.h, ctx.density), zIndex: n.depth, selectable: false, draggable: false, connectable: false, data };
       });
     } else {

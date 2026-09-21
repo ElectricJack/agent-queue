@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ShortcutsProvider } from "../../../shell/hotkeys/useShortcuts";
 import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
-import { resetExpandedInitialisation, setExpandedTaskIds, useGraphState } from "../useGraphHierarchy";
+import { resetGraphStateFallback, useGraphState } from "../useGraphHierarchy";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
@@ -46,10 +46,9 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
 function Probe() {
   const workspace = useTaskWorkspace();
   const location = useLocation();
-  const { hasStoredExpansion, density } = useGraphState();
+  const { density } = useGraphState();
   return <><TaskToolbar /><output data-testid="scope">{workspace.projectIds.join(",")}</output>
     <output data-testid="query">{location.search}</output>
-    <output data-testid="expansion">{hasStoredExpansion("alpha") ? "stored" : "unset"}</output>
     <output data-testid="density">{density}</output></>;
 }
 function mount(path = "/projects/alpha/graph") {
@@ -60,7 +59,7 @@ function mount(path = "/projects/alpha/graph") {
 }
 afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
-  resetExpandedInitialisation();
+  resetGraphStateFallback();
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -81,7 +80,7 @@ describe("shared Command Center task controls", () => {
 
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
     expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
-    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", "", []));
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", ""));
   });
 
   it("re-enables completed work when a finished status is selected", async () => {
@@ -90,7 +89,7 @@ describe("shared Command Center task controls", () => {
 
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
     expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
-    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "", "COMPLETED", []));
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "", "COMPLETED"));
   });
 
   it("uses sidebar route scope and stores search/status in the URL", async () => {
@@ -183,7 +182,7 @@ describe("layout-aware task controls", () => {
   it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", []);
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "");
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));
@@ -193,35 +192,17 @@ describe("layout-aware task controls", () => {
     expect(mocks.tidy).toHaveBeenCalledOnce();
   });
 
-  it("puts Focus active in the toolbar, immediately left of Tidy layout", () => {
+  it("offers no Focus active button: there is no inline expansion to re-open", () => {
     mount("/projects/alpha/graph");
-    const focus = screen.getByRole("button", { name: "Focus active" });
-    const tidyButton = screen.getByRole("button", { name: "Tidy layout" });
-    expect(focus.parentElement).toBe(tidyButton.parentElement);
-    expect(focus.nextElementSibling).toBe(tidyButton);
-  });
-
-  it("re-arms the active expansion when Focus active is clicked", async () => {
-    setExpandedTaskIds(new Set(["e"]));
-    mount("/projects/alpha/graph");
-    expect(screen.getByTestId("expansion")).toHaveTextContent("stored");
-
-    await userEvent.click(screen.getByRole("button", { name: "Focus active" }));
-
-    expect(screen.getByTestId("expansion")).toHaveTextContent("unset");
-  });
-
-  it("keeps Focus active off the Tasks tab, which draws no graph", () => {
-    mount("/projects/alpha/tasks");
     expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
   });
 
-  it("puts Density in the toolbar, immediately left of Focus active", () => {
+  it("puts Density in the toolbar, immediately left of Tidy layout", () => {
     mount("/projects/alpha/graph");
     const density = screen.getByRole("combobox", { name: "Graph density" });
-    const focus = screen.getByRole("button", { name: "Focus active" });
-    expect(density.parentElement?.parentElement).toBe(focus.parentElement);
-    expect(density.parentElement?.nextElementSibling).toBe(focus);
+    const tidyButton = screen.getByRole("button", { name: "Tidy layout" });
+    expect(density.parentElement?.parentElement).toBe(tidyButton.parentElement);
+    expect(density.parentElement?.nextElementSibling).toBe(tidyButton);
   });
 
   it("changing Density updates it", async () => {
@@ -238,11 +219,11 @@ describe("layout-aware task controls", () => {
     expect(screen.queryByRole("combobox", { name: "Graph density" })).not.toBeInTheDocument();
   });
 
-  it("disables Show completed while a container is focused", () => {
+  it("leaves Show completed alone (off, and usable) inside a container", () => {
     mount("/projects/alpha/graph?focus=parent");
     const checkbox = screen.getByRole("checkbox", { name: "Show completed" });
-    expect(checkbox).toBeDisabled();
-    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeEnabled();
+    expect(checkbox).not.toBeChecked();
   });
 
   it("keeps Next result off the Tasks tab and issues no locate there", () => {

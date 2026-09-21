@@ -20,7 +20,7 @@ export default function TaskToolbar() {
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters);
-  const { clearGraphPositions, requestActiveExpansion, density, setDensity } = useGraphState();
+  const { clearGraphPositions, density, setDensity } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -51,9 +51,9 @@ export default function TaskToolbar() {
         <option value="">Any time</option>
         {ACTIVITY_WINDOWS.map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
       </select>
-      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={focusId ? "Disabled while focused" : filters.window ? "Included with a time range" : undefined}>
+      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={filters.window ? "Included with a time range" : undefined}>
         <input type="checkbox" checked={filters.showCompleted || FINISHED_STATUSES.has(filters.status)}
-          disabled={!!focusId || !!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
+          disabled={!!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
       {onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
@@ -72,11 +72,6 @@ export default function TaskToolbar() {
           <option value="spacious">Spacious</option>
         </select>
       </label>}
-      {onGraph && <button type="button" onClick={() => requestActiveExpansion()}
-        title="Re-open the active containers: anything running, or with open work if nothing is"
-        className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">
-        Focus active
-      </button>}
       {projectId && <button type="button" disabled={tidy.isPending}
         title="Re-arrange every node in this project"
         onClick={() => { if (window.confirm("Tidy re-arranges every node in this project. Continue?")) tidy.mutate(); }}

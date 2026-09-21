@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LocateHit } from "@aq/ts-client";
 import { locate, type Variant } from "../../../api/graphLayout";
 import type { TaskFilters } from "../taskFilters";
-import { useExpandedTaskIds } from "../useGraphHierarchy";
 
 // The toolbar and the canvas sit on opposite sides of the router outlet, so the
 // chosen hit travels through a module-level store rather than a shared parent.
@@ -32,10 +31,6 @@ export function useJumpToResult(projectId: string | undefined, variant: Variant,
   const [index, setIndex] = useState(-1);
   const query = filters.query.trim();
   const active = !!(query || filters.status);
-  // A hit's position depends on what is collapsed, so re-locate when the
-  // reader expands or collapses anything.
-  const { expandedTaskIds } = useExpandedTaskIds();
-  const expandedKey = [...expandedTaskIds].sort().join(",");
 
   useEffect(() => {
     setHits([]);
@@ -43,11 +38,13 @@ export function useJumpToResult(projectId: string | undefined, variant: Variant,
     publishJumpTarget(null);
     if (!projectId || !active) return;
     let stale = false;
-    void locate(projectId, variant, query, filters.status, expandedKey ? expandedKey.split(",") : [])
+    // Nothing is ever expanded, so a hit's position is the one the fully
+    // collapsed geometry gives it -- the same geometry the canvas draws.
+    void locate(projectId, variant, query, filters.status)
       .then((r) => { if (!stale) setHits(r.hits ?? []); })
       .catch(() => { if (!stale) setHits([]); });
     return () => { stale = true; };
-  }, [projectId, variant, query, filters.status, active, expandedKey]);
+  }, [projectId, variant, query, filters.status, active]);
 
   // The target outlives the toolbar otherwise, and a remount would fit the
   // canvas to a hit from a query nobody is running any more.

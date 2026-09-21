@@ -1,16 +1,14 @@
 import { memo } from "react";
-import { ChevronDownIcon, LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
+import { LockClosedIcon, MagnifyingGlassPlusIcon } from "@heroicons/react/24/outline";
 import { Handle, Position } from "@xyflow/react";
 import type { ContainerNodeData } from "../types";
 import { ProgressBar } from "../ProgressBar";
 import { UNIT_H } from "./units";
 
-const FINISHED = new Set(["COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"]);
-
 export interface ContainerNodeProps { id: string; data: ContainerNodeData; selected?: boolean }
 
 function ContainerNode({ data, selected }: ContainerNodeProps) {
-  const { node, onFocus, onToggleChildren, onOpenTask } = data;
+  const { node, onFocus, onOpenTask } = data;
   const headerPx = 0.35 * UNIT_H * (data.layoutScale ?? 1);
   const isPhase = node.phase_order != null;
   const phaseText = isPhase
@@ -51,10 +49,15 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         <span className="shrink-0 rounded bg-white/10 px-1">{node.agg_completed}/{node.agg_descendants} done</span>
         {(node.agg_running ?? 0) > 0 && <span className="shrink-0 text-indigo-300">{node.agg_running} running</span>}
         {(node.agg_blocked ?? 0) > 0 && <span className="shrink-0 text-amber-300">{node.agg_blocked} blocked</span>}
-        <button type="button" aria-label={`Focus on ${node.title}`} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
-          onClick={(e) => { e.stopPropagation(); onFocus?.(node.id); }}><MagnifyingGlassPlusIcon className="h-3.5 w-3.5" /></button>
-        <button type="button" aria-label={`Collapse children of ${node.title}`} aria-expanded={true} className="nodrag nopan rounded p-0.5 hover:bg-white/10"
-          onClick={(e) => { e.stopPropagation(); onToggleChildren?.(node.id, FINISHED.has(node.status)); }}><ChevronDownIcon className="h-3.5 w-3.5" /></button>
+        {/* Entering is the only way into a container; the container already
+          * entered gets no control of its own (`onFocus` is withheld). */}
+        {onFocus && (
+          <button type="button" aria-label={`Enter ${node.title}`} title={`Enter ${node.title}`}
+            className="nodrag nopan flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-medium hover:bg-white/10"
+            onClick={(e) => { e.stopPropagation(); onFocus(node.id); }}>
+            <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />Enter
+          </button>
+        )}
         {hasBar && (
           <div className="absolute inset-x-2 bottom-0">
             <ProgressBar

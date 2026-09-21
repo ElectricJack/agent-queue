@@ -14,10 +14,10 @@ export interface LayoutStore {
   cells: Map<CellKey, Set<string>>;
   loaded: Set<CellKey>;
   /**
-   * Nodes carried over from the previous expanded set, still drawn at their
-   * old positions until this generation re-delivers them. They are what the
-   * reflow animates FROM: emptying the store on a toggle would unmount every
-   * card and the move would be a jump-cut instead.
+   * Nodes carried over from the previous generation (another scope, another
+   * filter), still drawn at their old positions until this generation
+   * re-delivers them. They are what the reflow animates FROM: emptying the
+   * store would unmount every card and the move would be a jump-cut instead.
    */
   carried: Set<string>;
   /**
@@ -34,7 +34,7 @@ export const emptyStore = (): LayoutStore => ({
 });
 
 /**
- * Start a fresh generation (a new expanded set, filter or variant) while
+ * Start a fresh generation (a new scope, filter or variant) while
  * keeping the drawn nodes on screen. Cell bookkeeping is cleared, so every
  * visible cell is refetched; the retained nodes are marked `carried` and are
  * dropped by `dropCarried` once the new generation has fully landed.
@@ -144,14 +144,6 @@ export function missingCells(store: LayoutStore, wanted: CellKey[]): CellKey[] {
   if (store.whole) return [];
   return wanted.filter((c) => !store.loaded.has(c));
 }
-
-/**
- * How many nodes THIS generation has drawn. Nodes carried over from the
- * previous expanded set do not count: they are leftovers on their way out,
- * and counting them could trip the client's node budget mid-toggle and step
- * the level of detail down for a population that never existed.
- */
-export const nodeCount = (store: LayoutStore) => store.nodes.size - store.carried.size;
 
 export function evictFar(store: LayoutStore, keep: CellKey[], maxDistance = 3): LayoutStore {
   const near = (c: CellKey) => keep.some((k) => cellDistance(c, k) <= maxDistance);
