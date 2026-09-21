@@ -845,6 +845,10 @@ class PoolsMixin:
         minted_token = False
 
         async def _rollback(reason: str, *, quarantine: bool) -> None:
+            if availability is not None:
+                # A launch that never ran proves nothing either way: let the
+                # next one be the probation canary (provider-failover D4).
+                availability.release_canary(launch_provider)
             if not quarantine:
                 # A starved pool is expected; ``_quarantine_pool`` does the
                 # logging for the failures that are not.
