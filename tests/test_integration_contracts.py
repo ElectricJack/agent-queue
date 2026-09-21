@@ -275,6 +275,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_development_sweep",
         "integration_retry_cleanup",
         "integration_release_delegates",
+        "integration_release_owner",
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
     }

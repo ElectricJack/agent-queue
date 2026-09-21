@@ -19514,6 +19514,18 @@
             ],
             "title": "Dedup Key",
             "description": "Idempotency key for find-or-create semantics (see ensure_task)."
+          },
+          "after_review": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Review",
+            "description": "Attach this task to the named document review's gate until the review is approved."
           }
         },
         "type": "object",
@@ -22096,6 +22108,18 @@
             ],
             "title": "Workspace Mode",
             "description": "Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is DEPRECATED and behaves as 'exclusive' \u2014 see create_task."
+          },
+          "after_review": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Review",
+            "description": "Attach this task to the named document review's gate until the review is approved."
           },
           "needs_attention": {
             "anyOf": [

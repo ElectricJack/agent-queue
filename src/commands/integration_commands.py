@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+from src.commands.supervisor_authority import integration_operator
 from src.git.manager import GitError
 from src.git.manager import RemoteRefState
 from src.database.queries.hierarchy_queries import HierarchyError
@@ -142,7 +143,9 @@ class IntegrationCommandsMixin:
 
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is PrincipalKind.SESSION:
-            return _failure("human_required", "session principals cannot transfer branch ownership")
+            _label, refusal = await integration_operator(self.db, repository.project_id)
+            if refusal is not None:
+                return _failure("human_required", refusal)
         if principal.kind is PrincipalKind.PLAYBOOK:
             explicitly_capable = not principal.unresolved and principal.policy.allows(
                 "aq_commands", "integration_transfer_owner"
@@ -287,10 +290,34 @@ class IntegrationCommandsMixin:
             ),
         )
 
-    @staticmethod
-    def _integration_local_operator() -> tuple[bool, str]:
+    async def _integration_operator_for_operation(
+        self, operation_id: str
+    ) -> tuple[str | None, str | None]:
         principal = current_principal() or TRUSTED_LOCAL
-        return principal.kind is PrincipalKind.LOCAL, principal.describe()
+        if principal.kind is not PrincipalKind.LOCAL and not (
+            principal.kind is PrincipalKind.SESSION and principal.elevated
+        ):
+            return None, "a local operator or live supervisor session is required"
+        operation = await self.db.get_integration_operation(operation_id)
+        project_id = (
+            await self._integration_operation_project_id(operation)
+            if operation is not None
+            else None
+        )
+        return await integration_operator(self.db, project_id)
+
+    async def _integration_operator_for_batch(
+        self, batch_id: str
+    ) -> tuple[str | None, str | None]:
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL and not (
+            principal.kind is PrincipalKind.SESSION and principal.elevated
+        ):
+            return None, "a local operator or live supervisor session is required"
+        batch = await self.db.get_integration_batch(batch_id)
+        return await integration_operator(
+            self.db, str(batch["project_id"]) if batch is not None else None
+        )
 
     async def _cmd_integration_status(self, args: dict) -> dict:
         project_id = str(args.get("project_id") or "")
@@ -315,7 +342,13 @@ class IntegrationCommandsMixin:
         project_id = str(args.get("project_id") or "")
         if not project_id:
             return _failure("not_found", "project_id is required")
-        if not await self._integration_delivery_authorized(project_id, "integration_flush"):
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is PrincipalKind.PLAYBOOK:
+            authorized = await self._integration_delivery_authorized(project_id, "integration_flush")
+        else:
+            _label, refusal = await integration_operator(getattr(self, "db", None), project_id)
+            authorized = refusal is None
+        if not authorized:
             return _failure("unauthorized", "integration flush is outside the caller authority")
         project = await self.db.get_project(project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
@@ -340,9 +373,10 @@ class IntegrationCommandsMixin:
 
 
     async def _cmd_integration_enable(self, args: dict) -> dict:
-        authorized, operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "integration rollout controls require LOCAL operator authority")
+        project_id = str(args.get("project_id") or "")
+        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             project_id = str(args["project_id"])
             mode = str(args["mode"])
@@ -362,9 +396,10 @@ class IntegrationCommandsMixin:
         )
 
     async def _cmd_integration_waive_history(self, args: dict) -> dict:
-        authorized, operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "integration rollout controls require LOCAL operator authority")
+        project_id = str(args.get("project_id") or "")
+        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             return await self._integration_control_service().waive_history(
                 str(args["project_id"]),
@@ -376,11 +411,10 @@ class IntegrationCommandsMixin:
             return _failure("not_waivable", "project_id, reason, and blocker_digest are required")
 
     async def _cmd_integration_reconcile_unmaterialized(self, args: dict) -> dict:
-        authorized, operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "integration rollout controls require LOCAL operator authority"
-            )
+        project_id = str(args.get("project_id") or "")
+        operator_id, refusal = await integration_operator(getattr(self, "db", None), project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             project_id = str(args["project_id"])
             expected_generation = int(args["expected_generation"])
@@ -399,53 +433,45 @@ class IntegrationCommandsMixin:
             return _failure(f"hierarchy.{exc.code}", exc.detail)
 
     async def _cmd_integration_resume(self, args: dict) -> dict:
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "integration recovery controls require LOCAL operator authority"
-            )
         operation_id = str(args.get("operation_id") or "")
         if not operation_id:
             return _failure("not_found", "operation_id is required")
+        _label, refusal = await self._integration_operator_for_operation(operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         return await self._integration_control_service().resume(operation_id)
 
     async def _cmd_integration_abort(self, args: dict) -> dict:
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "integration recovery controls require LOCAL operator authority"
-            )
         operation_id = str(args.get("operation_id") or "")
         reason = str(args.get("reason") or "")
         if not operation_id or not reason.strip():
             return _failure("invalid_state", "operation_id and reason are required")
+        _label, refusal = await self._integration_operator_for_operation(operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         return await self._integration_control_service().abort(operation_id, reason=reason)
 
     async def _cmd_integration_retry_cleanup(self, args: dict) -> dict:
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "integration recovery controls require LOCAL operator authority"
-            )
         batch_id = str(args.get("batch_id") or "")
         if not batch_id:
             return _failure("not_found", "batch_id is required")
+        _label, refusal = await self._integration_operator_for_batch(batch_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         return await self._integration_control_service().retry_cleanup(batch_id)
 
     async def _cmd_integration_release_delegates(self, args: dict) -> dict:
         """Settle the delegates of one operation that already ended."""
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "integration recovery controls require LOCAL operator authority"
-            )
         operation_id = str(args.get("operation_id") or "")
         if not operation_id:
             return _failure("not_found", "operation_id is required")
+        _label, refusal = await self._integration_operator_for_operation(operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         return await self._integration_control_service().release_delegates(operation_id)
 
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
-        """LOCAL-only recovery for a durable pushed root-candidate repair."""
+        """Recover a durable pushed root-candidate repair."""
         from pydantic import ValidationError
         from sqlalchemy import select
 
@@ -453,11 +479,6 @@ class IntegrationCommandsMixin:
         from src.database.tables import integration_candidate_resolutions
         from src.integration.candidates import CandidateAuthorizationError
 
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "candidate recovery controls require LOCAL operator authority"
-            )
         try:
             request = IntegrationRecoverCandidateMemberArgs.model_validate(args)
         except ValidationError as exc:
@@ -475,6 +496,9 @@ class IntegrationCommandsMixin:
         batch = await self.db.get_integration_batch(reservation["batch_id"])
         if batch is None:
             return _failure("stale", "candidate repair batch does not exist")
+        _label, refusal = await integration_operator(getattr(self, "db", None), str(batch["project_id"]))
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             result = await (await self._integration_candidate_service(batch)).recover_repair(
                 request.reservation_id
@@ -483,6 +507,69 @@ class IntegrationCommandsMixin:
             return _failure("stale", str(exc))
         return {"success": result.outcome in {"accepted", "already_accepted", "rejected"},
                 **result.model_dump(mode="json")}
+
+    async def _cmd_integration_release_owner(self, args: dict) -> dict:
+        """Run the fenced owner-recovery check for one owner or task."""
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationReleaseOwnerArgs
+        from src.database.tables import integration_branch_owners
+        from src.integration.owner_recovery import RECOVERABLE_STATES, owner_recovery_for
+
+        try:
+            request = IntegrationReleaseOwnerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid owner recovery request: {exc}")
+
+        async with self.db._engine.connect() as conn:
+            statement = select(integration_branch_owners)
+            if request.owner_row_id is not None:
+                statement = statement.where(integration_branch_owners.c.id == request.owner_row_id)
+            else:
+                statement = statement.where(
+                    integration_branch_owners.c.owner_id == request.task_id,
+                    integration_branch_owners.c.handoff_state.in_(RECOVERABLE_STATES),
+                )
+            rows = [dict(row) for row in (await conn.execute(statement)).mappings().all()]
+
+        project_ids: set[str] = set()
+        for row in rows:
+            repository = await self.db.get_repo(row["repository_id"])
+            if repository is not None:
+                project_ids.add(repository.project_id)
+        if not project_ids and request.task_id is not None:
+            task = await self.db.get_task(request.task_id)
+            if task is not None:
+                project_ids.add(task.project_id)
+        if len(project_ids) > 1:
+            return _failure("unauthorized", "owner rows span multiple projects")
+        project_id = next(iter(project_ids), None)
+        principal, refusal = await integration_operator(self.db, project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+
+        recovery = owner_recovery_for(self.orchestrator)
+        if recovery is None:
+            return _failure("runtime_error", "owner recovery is unavailable")
+        owner_row_ids = [row["id"] for row in rows]
+        if request.owner_row_id is not None and not owner_row_ids:
+            owner_row_ids = [request.owner_row_id]
+        outcomes = await recovery.recover_many(
+            owner_row_ids, principal=principal, dry_run=request.dry_run
+        )
+        serialized = [outcome.to_dict() for outcome in outcomes]
+        if not serialized:
+            outcome = "not_found"
+        elif any(item["outcome"] == "preserved_and_released" for item in serialized):
+            outcome = "preserved_and_released"
+        elif any(item["outcome"] == "released" for item in serialized):
+            outcome = "released"
+        elif any(item.get("reason") == "not_found" for item in serialized):
+            outcome = "not_found"
+        else:
+            outcome = "not_eligible"
+        return {"success": True, "outcome": outcome, "outcomes": serialized}
 
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
@@ -1690,11 +1777,11 @@ class IntegrationCommandsMixin:
             parsed = IntegrationRecoverUnwrittenResolutionArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("not_recoverable", f"invalid resolution recovery: {exc}")
-        authorized, _operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure(
-                "unauthorized", "resolution recovery requires LOCAL operator authority"
-            )
+        intent = await self.db.get_integration_promotion_intent(parsed.intent_id)
+        project_id = intent.get("project_id") if intent is not None else None
+        _label, refusal = await integration_operator(self.db, project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             value, replay = await self._integration_promotion_service().recover_unwritten_resolution(
                 parsed.intent_id
@@ -1759,9 +1846,11 @@ class IntegrationCommandsMixin:
                                       git=self.orchestrator.git)
 
     async def _cmd_integration_develop(self, args: dict) -> dict:
-        authorized, operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "development policy requires LOCAL operator authority")
+        operator_id, refusal = await integration_operator(
+            getattr(self, "db", None), str(args.get("project_id") or "")
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             return await self._development_integration().configure(
                 args["project_id"], args["policy"], reason=args["reason"], operator_id=operator_id)
@@ -1769,9 +1858,11 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
 
     async def _cmd_integration_adopt(self, args: dict) -> dict:
-        authorized, operator_id = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "delivery adoption requires LOCAL operator authority")
+        operator_id, refusal = await integration_operator(
+            getattr(self, "db", None), str(args.get("project_id") or "")
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             return await self._development_integration().adopt(
                 project_id=args["project_id"], task_ids=args["task_ids"],
@@ -1781,18 +1872,21 @@ class IntegrationCommandsMixin:
             return _failure("blocked", str(exc))
 
     async def _cmd_integration_development_sweep(self, args: dict) -> dict:
-        authorized, _ = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "manual sweep requires LOCAL operator authority")
+        _label, refusal = await integration_operator(
+            getattr(self, "db", None), str(args.get("project_id") or "")
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             return await self._development_integration().sweep(args["project_id"], retry=args.get("retry", False))
         except (ValueError, RuntimeError, KeyError) as exc:
             return _failure("blocked", str(exc))
 
     async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
-        authorized, _ = self._integration_local_operator()
-        if not authorized:
-            return _failure("unauthorized", "cancellation requires LOCAL operator authority")
+        operation_id = str(args.get("operation_id") or "")
+        _label, refusal = await self._integration_operator_for_operation(operation_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
         try:
             return await self._development_integration().cancel_preserving(args["operation_id"], reason=args["reason"])
         except (ValueError, RuntimeError, KeyError) as exc:

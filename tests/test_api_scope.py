@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
-from src.api.scope import AGENT_COMMAND_SET, check_command_scope
+from src.api.scope import AGENT_COMMAND_SET, OPERATOR_INTEGRATION_CONTROLS, check_command_scope
 
 
 SESSION = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p1")
@@ -72,18 +72,13 @@ class TestCheckCommandScope:
             "out of scope: ask_human"
         )
 
-    def test_integration_controls_remain_local_even_for_elevated_session(self):
+    def test_integration_controls_reach_elevated_sessions_for_handler_authorization(self):
         elevated = RequestScope(
             kind="session", session_id="sup", project_id="p1", elevated=True
         )
-        for command in (
-            "integration_enable",
-            "integration_waive_history",
-            "integration_resume",
-            "integration_abort",
-            "integration_retry_cleanup",
-        ):
-            assert "local operator" in check_command_scope(command, {}, elevated)
+        for command in OPERATOR_INTEGRATION_CONTROLS:
+            assert check_command_scope(command, {}, elevated) is None
+            assert "local operator or supervisor" in check_command_scope(command, {}, SESSION)
         assert "local operator" in check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, elevated
         )
