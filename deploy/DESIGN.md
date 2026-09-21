@@ -194,6 +194,12 @@ outside a provider.
 
 ## Roadmap
 
+**Outstanding, not a phase:** two upstream bugs found while building this should
+be reported — `mcp_server.enabled` defaulting to `False` in the loader against a
+documented `True`, and `CLAUDE_CODE_OAUTH_TOKEN` being unreachable despite its
+allowlist entry. Both are described in [`README.md`](README.md). Neither is fixed
+here, because both belong upstream rather than in a deployment directory.
+
 1. **Phase 2 — harden.** Automated SQL backups, data-disk snapshots, log
    shipping, `aq doctor` wired into a healthcheck.
 2. **Phase 3 — container session provider.** `Dockerfile.worker`, the
@@ -210,8 +216,12 @@ outside a provider.
 
 ## Open questions
 
-- **Does an agent actually run to completion inside a container?** Unproven, and
-  the only question that could invalidate the current shape.
+- **Does an agent run to *completion* inside a container?** Partly answered. The
+  scheduler dispatches, the workspace is acquired, and `TmuxProvider` creates a
+  real tmux session in the container with the right prompt and working directory
+  — so session launch under Docker is no longer in doubt. What is untested is a
+  full run with an authenticated harness: tool use, file edits, git operations
+  and task closure. See "Verifying the stack" in [`README.md`](README.md#verifying-the-stack).
 - **Memory / `aq-memory`.** Off by default. Milvus needs no server (it defaults
   to embedded Milvus Lite), but embeddings default to a local Ollama, and
   `packages/memsearch` is not installed in the daemon image — its importers

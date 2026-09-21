@@ -92,6 +92,35 @@ docker compose -f docker-compose.prod.yml exec daemon claude auth login
 
 The credential lands in the `…_aq-home` volume and survives rebuilds.
 
+## Development workflow
+
+**This stack is not a development loop.** It is the deployment artifact. Keep
+developing against a native install and use these images to answer a different
+question: *does this still work when packaged?*
+
+| | Use |
+|---|---|
+| Features, fixes, tests | Native install. Edit, restart the daemon, done. |
+| Packaging, config shape, dependencies, harness CLIs | This stack, before a deploy. |
+| Cloud | This stack on a VM, pointed at managed SQL. |
+
+The daemon image installs the project editable, so **any `src/` edit invalidates
+the pip layer and costs a full rebuild**. That is the right trade for a
+deployment image — one build per release — and a poor one for iteration. There is
+no reason to accept a two-minute inner loop when the native install gives you an
+instant one.
+
+The payoff of building it this way is that moving to a cloud VM is a host change
+and a DSN change, not a new system: the same compose stack, with `--profile
+local-db` dropped and `AQ_DATABASE_URL` pointed at managed SQL. Container
+problems get found on a laptop, where debugging is cheap, rather than on a VM
+behind a tunnel.
+
+Two habits keep the two from interfering — see
+[Isolation from a native install](#isolation-from-a-native-install) for the full
+contract: never share a database between them, and think before bind-mounting
+host paths.
+
 ## What this is, and what it deliberately is not
 
 **It does not run `aq install`.** That installer exists to mutate a developer's
