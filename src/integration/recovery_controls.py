@@ -26,14 +26,13 @@ from src.database.tables import (
     sessions,
     task_integration_checkpoints,
     task_metadata,
-
     tasks,
     workspaces,
 )
+from src.integration.delegate_release import release_delegates_on
 from src.integration.models import RepairPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.models import TaskStatus
-
 
 LegacyResolutionObserver = Callable[[dict[str, Any]], Awaitable[str | None]]
 
@@ -597,11 +596,28 @@ class IntegrationRecoveryControls:
                     )
                     .values(lifecycle="aborted", human_abort_reason=reason, updated_at=now)
                 )
+            # Cancelling the operation obsoletes its delegates in the same
+            # breath, so settle them here rather than leaving tickets nothing
+            # will ever close until the next reconciliation tick happens to
+            # run.  A delegate with a live writer is skipped exactly as it is
+            # everywhere else; the tick picks it up once that writer is gone.
+            releases, transitions = await release_delegates_on(
+                self.db,
+                conn,
+                now=now,
+                released_by="integration_abort",
+                operation_ids=[operation_id],
+            )
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
         return {
             "outcome": "aborted",
             "operation_id": operation_id,
             "project_id": project_id,
             "reason": reason,
+            "released_delegates": [row["task_id"] for row in releases],
         }
 
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:

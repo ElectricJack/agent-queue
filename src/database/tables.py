@@ -2794,9 +2794,15 @@ integration_candidate_resolutions = Table(
         name="fk_integration_candidate_resolutions_stage",
         ondelete="RESTRICT",
     ),
-    ForeignKeyConstraint(
-        ["repair_task_id"], ["tasks.id"], name="fk_integration_candidate_resolutions_task"
-    ),
+    # Integration history names a task by id, never by foreign key: a finished
+    # episode/verification/resolution/operation is a *record* of what happened
+    # to a task and must not be able to veto that task leaving the active
+    # queue.  ``archive_task`` and ``delete_task`` both remove the ``tasks``
+    # row, so a constraint here raised ForeignKeyViolationError at the
+    # operator with no subject and no remedy.  Liveness is enforced instead by
+    # ``guard_integration_mutation``, which can name the operation, its state
+    # and the command that releases it.  See
+    # docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
     ForeignKeyConstraint(
         ["repair_session_id"],
         ["sessions.id"],
@@ -3041,12 +3047,15 @@ integration_repair_operations = Table(
         name="fk_integration_repair_operations_parent_episode",
         ondelete="RESTRICT",
     ),
-    ForeignKeyConstraint(
-        ["verifier_task_id"],
-        ["tasks.id"],
-        name="fk_integration_repair_operations_verifier_task",
-        ondelete="RESTRICT",
-    ),
+    # Integration history names a task by id, never by foreign key: a finished
+    # episode/verification/resolution/operation is a *record* of what happened
+    # to a task and must not be able to veto that task leaving the active
+    # queue.  ``archive_task`` and ``delete_task`` both remove the ``tasks``
+    # row, so a constraint here raised ForeignKeyViolationError at the
+    # operator with no subject and no remedy.  Liveness is enforced instead by
+    # ``guard_integration_mutation``, which can name the operation, its state
+    # and the command that releases it.  See
+    # docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
 )
 
 integration_parent_episodes = Table(
@@ -3060,12 +3069,15 @@ integration_parent_episodes = Table(
     Column("created_at", Float, nullable=False),
     UniqueConstraint("parent_task_id", "id", name="uq_integration_parent_episodes_parent_id"),
     CheckConstraint("generation >= 0", name="ck_integration_parent_episodes_generation"),
-    ForeignKeyConstraint(
-        ["parent_task_id"],
-        ["tasks.id"],
-        name="fk_integration_parent_episodes_parent_task",
-        ondelete="RESTRICT",
-    ),
+    # Integration history names a task by id, never by foreign key: a finished
+    # episode/verification/resolution/operation is a *record* of what happened
+    # to a task and must not be able to veto that task leaving the active
+    # queue.  ``archive_task`` and ``delete_task`` both remove the ``tasks``
+    # row, so a constraint here raised ForeignKeyViolationError at the
+    # operator with no subject and no remedy.  Liveness is enforced instead by
+    # ``guard_integration_mutation``, which can name the operation, its state
+    # and the command that releases it.  See
+    # docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
     ForeignKeyConstraint(
         ["repository_id"],
         ["repos.id"],
@@ -3143,6 +3155,45 @@ integration_repair_stages = Table(
         "state IN ('pending', 'active', 'awaiting_completion', 'passed', 'failed', "
         "'expired', 'cancelled')",
         name="ck_integration_repair_stages_state",
+    ),
+)
+
+#: One row per delegate released because its integration operation ended.
+#:
+#: The audit trail for the release described in
+#: docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
+#: It carries no foreign key to ``tasks`` or to
+#: ``integration_repair_operations`` on purpose: its whole job is to outlive
+#: both, so the answer to "why did this task end, and who ended it" survives
+#: the delete or archive the release exists to unblock.
+integration_delegate_releases = Table(
+    "integration_delegate_releases",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("operation_id", Text, nullable=False),
+    Column("operation_state", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("role", Text, nullable=False),
+    Column("disposition", Text, nullable=False),
+    Column("previous_status", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("released_by", Text, nullable=False),
+    Column("released_at", Float, nullable=False),
+    Column("cleanup", JSON, nullable=True),
+    Index("idx_integration_delegate_releases_task", "task_id", "released_at"),
+    Index("idx_integration_delegate_releases_operation", "operation_id"),
+    CheckConstraint(
+        "operation_state IN ('completed', 'cancelled')",
+        name="ck_integration_delegate_releases_operation_state",
+    ),
+    CheckConstraint(
+        "disposition IN ('cancelled', 'superseded')",
+        name="ck_integration_delegate_releases_disposition",
+    ),
+    CheckConstraint(
+        "role IN ('verifier', 'repair_stage', 'candidate_member')",
+        name="ck_integration_delegate_releases_role",
     ),
 )
 
@@ -3416,12 +3467,15 @@ integration_parent_verifications = Table(
         name="fk_integration_parent_verifications_operation",
         ondelete="RESTRICT",
     ),
-    ForeignKeyConstraint(
-        ["parent_task_id"],
-        ["tasks.id"],
-        name="fk_integration_parent_verifications_parent_task",
-        ondelete="RESTRICT",
-    ),
+    # Integration history names a task by id, never by foreign key: a finished
+    # episode/verification/resolution/operation is a *record* of what happened
+    # to a task and must not be able to veto that task leaving the active
+    # queue.  ``archive_task`` and ``delete_task`` both remove the ``tasks``
+    # row, so a constraint here raised ForeignKeyViolationError at the
+    # operator with no subject and no remedy.  Liveness is enforced instead by
+    # ``guard_integration_mutation``, which can name the operation, its state
+    # and the command that releases it.  See
+    # docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md.
     ForeignKeyConstraint(
         ["parent_task_id", "episode_id"],
         ["integration_parent_episodes.parent_task_id", "integration_parent_episodes.id"],

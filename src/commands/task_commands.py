@@ -3818,10 +3818,10 @@ class TaskCommandsMixin:
             try:
                 success = await self.db.archive_task(task_id)
             except HierarchyError as exc:
-                return {
-                    "error": f"hierarchy.{exc.code}: {exc.detail}",
-                    "code": f"hierarchy.{exc.code}",
-                }
+                # Same renderer as delete: an ``integration_owned`` refusal
+                # carries the operation it names, so a surface can act on it
+                # instead of just printing a code.
+                return self._hierarchy_failure(exc)
             if not success:
                 return {"error": f"Failed to archive task '{task_id}'"}
 
