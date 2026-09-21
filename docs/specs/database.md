@@ -279,6 +279,29 @@ Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`), `idx_
 
 Authorized project moves transfer known active-task comment ownership in the same transaction. Moves that would merge a source or destination archive identity, and archival over a different-project ID, are refused without modifying either history.
 
+### Table: `task_subtasks`
+
+Durable per-task checklist rows (revision `a00000000010`; `docs/specs/design/work-graph.md` §13c). A subtask is pure bookkeeping for whichever agent holds the parent task: it is never on the claim frontier, has no branch of its own and is delivered with the parent. Like `task_comments`, `task_id` plus `project_id` is a logical reference with no foreign key, so rows survive archiving and restoration; permanent task or project deletion removes that project's rows. Written by `src/database/queries/task_subtask_queries.py` and surfaced through `task_subtask_add` / `task_subtasks` / `task_subtask_get` / `task_subtask_update` (`src/commands/task_subtask_commands.py`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `<task_id>#s<ordinal>` |
+| `task_id` | TEXT | NOT NULL | Parent task (logical reference, no FK) |
+| `project_id` | TEXT | NOT NULL | Owning project of the parent task |
+| `ordinal` | INTEGER | NOT NULL | 1-based position; appends continue after the current max |
+| `title` | TEXT | NOT NULL | 1–300 characters |
+| `context` | TEXT | NOT NULL DEFAULT '' | Up to 16000 characters; returned only by single-row reads |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, in_progress, done, skipped |
+| `note` | TEXT | nullable | Worker's note; a close with `--skip-open-subtasks` fills an empty one with "skipped at close" |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+| `updated_at` | FLOAT | NOT NULL | Unix timestamp, bumped on every update |
+
+Constraints: `ck_task_subtasks_status` (status in the four values above), `ck_task_subtasks_title_length` (`length(title) BETWEEN 1 AND 300`), `ck_task_subtasks_context_length` (`length(context) <= 16000`), `uq_task_subtasks_task_ordinal` (`task_id`, `ordinal`) UNIQUE.
+
+Indexes: `idx_task_subtasks_task` (`task_id`, `ordinal`).
+
+At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_PER_CALL` (50) per authoring act; both are enforced by the writer, not the schema. `pending` and `in_progress` are open; `done` and `skipped` are settled.
+
 ### Table: `projects`
 
 | Column | Type | Constraints | Notes |
