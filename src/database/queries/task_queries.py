@@ -95,6 +95,10 @@ _READY_REASONS = {
     "resume_paused": "resumed",
     "slot_reset_failed": "released",
     "prepare_timeout": "released",
+    # provider-failover D13: a launch or session its provider killed hands the
+    # task back; the sweep resumes a provider pause early.
+    "provider_unavailable": "released",
+    "provider_failover_resume": "resumed",
 }
 
 
@@ -1189,6 +1193,19 @@ class TaskQueryMixin:
                     )
                 )
 
+            # ``provider_pause`` describes *this* pause (provider-failover
+            # D17): the re-route sweep reads it to tell a provider pause from
+            # every other automatic one, so it must not outlive the pause and
+            # mislabel the next, unrelated one.  Every way out of PAUSED
+            # passes here, in the write's own transaction.
+            if current_status == TaskStatus.PAUSED:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == "provider_pause",
+                    )
+                )
+
             # A task in flight or terminally completed has resolved the
             # previous operational incident.  Centralising this covers both
             # push and pull execution paths, including callers outside the
@@ -1304,6 +1321,42 @@ class TaskQueryMixin:
         await self._notify_settled(result.settled)
         await self._notify_ready(result.ready)
         return result.flipped
+
+    async def transition_task_with_meta(
+        self,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        meta: dict,
+        context: str = "",
+        extra_where=None,
+        **kwargs,
+    ) -> bool:
+        """A status write plus ``task_metadata`` rows, in **one** transaction.
+
+        For state that describes the transition itself -- a provider pause's
+        ``provider_pause`` record (provider-failover D17) -- so no reader can
+        see the pause without its cause, or the cause without the pause.
+        Returns False, writing nothing, when *extra_where* matched no row.
+        """
+        async with self.immediate() as conn:
+            result = await self._apply_transition(
+                conn,
+                task_id,
+                new_status,
+                context=context,
+                extra_where=extra_where,
+                returning=True,
+                **kwargs,
+            )
+            if result.row is None:
+                return False
+            for key, value in meta.items():
+                await self._upsert_meta(task_id, key, value, conn=conn)
+        await self.log_blocked_flips(result.flipped)
+        await self._notify_settled(result.settled)
+        await self._notify_ready(result.ready)
+        return True
 
     #: Statuses after which a task will not run again, so anything gated on
     #: it can never be satisfied by waiting.

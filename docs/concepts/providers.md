@@ -402,11 +402,21 @@ verdict rather than a crash verdict
 That is pane text — a hint, not a structured channel — so it is used only to
 choose between two safe outcomes.
 
-On that verdict the session goes to `sleeping`, and either the task is paused
-with a `resume_after` 15 minutes out, or (for a pool worker) the task returns to
-the frontier and the *pool key* is quarantined for the same window, so a
-different worker on a different account can pick the work straight back up
-([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py)).
+On that verdict the session goes to `sleeping` and the exit is recorded as
+provider evidence. Under `provider_failover.mode: enforce` (the default) it is
+the provider's failure, not the task's
+([`src/sessions/reconciler.py`](../../src/sessions/reconciler.py),
+[provider failover](../specs/provider-failover.md) D13): before the workspace is
+released the daemon commits uncommitted work as `aq-wip: provider failover
+checkpoint`, pushes the task branch and leaves a hand-off note the next
+worker's `aq prime` shows; no retry is spent and no pool key is quarantined.
+The first such exit pauses the task 30 s (`provider_suspect`); once the provider
+trips, the task returns to `READY` and the failover sweep moves it to another
+provider or holds it. If the push fails the task is held in place instead
+(an operator pause with `needs_attention: provider_failover_push_failed`), so
+nothing is discarded to make a move possible. In `observe`/`off` mode the old
+behaviour stands: the task pauses 15 minutes, or a pool worker's task returns
+to the frontier with its pool key quarantined for that window.
 
 > **A setting that looks relevant and is not.** The scheduler reads a
 > `provider_cooldowns` map, but nothing on `main` writes an entry into the
@@ -464,7 +474,8 @@ directory holds debugging material.
 | `aq costs` shows a large `unpriced` figure | Rows carry no matching `pricing:` entry, or no input/output split (older rows, and rows written by paths that only knew a total). | Add or widen a `pricing:` glob. AQ will not guess a rate. |
 | A playbook step returns `budget_exceeded` immediately | `max_total_tokens` is set and the resolved adapter's `reports_usage` is false. | Use a provider that reports usage, or drop `max_total_tokens` from the step. |
 | Metrics show a large `unattributed` token rate | Ledger rows whose four columns do not add up to `tokens_used` — typically written by a path that knew only a total. | Nothing to repair; it is the honest residue. Investigate the writer if it grows. |
-| A task keeps pausing with `reason: rate_limit` | A session died with rate-limit text in its final pane. | Wait out the cooldown, or spread work across accounts/harnesses. See [session troubleshooting](../guides/session-troubleshooting.md). |
+| A task keeps pausing with `reason: rate_limit` or `provider_suspect` | A session died with rate-limit text in its final pane (`rate_limit` outside enforce mode). | `aq provider status`; under enforce mode a second such exit trips the provider and the task is re-routed. See [session troubleshooting](../guides/session-troubleshooting.md). |
+| A task is paused with `needs_attention: provider_failover_push_failed` | Its session died on its provider and the WIP checkpoint could not be pushed, so it is held rather than moved. | Fix the push (network, credentials), then `aq task resume <id>`: the next slot restores the saved checkpoint. |
 | `llm: not configured` in the logs, playbook steps `unavailable` | No credential resolved for `llm.provider`. | [Set up credentials](../guides/llm-providers.md#give-the-daemon-a-provider). |
 | A Gemini session's tokens never appear | The shipped `gemini` harness declares no transcript reader, so nothing observes its usage. | Expected. Use the provider's own console for that spend. |
 

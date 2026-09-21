@@ -109,6 +109,7 @@ from src.orchestrator.layout_step import LayoutStepMixin
 from src.orchestrator.monitoring import MonitoringMixin
 from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.pr_polling import PRPollingMixin
+from src.orchestrator.provider_failover import ProviderFailoverMixin
 
 # Mixin imports — each provides one domain of methods
 from src.orchestrator.route_needed import RouteNeededMixin
@@ -190,6 +191,7 @@ class Orchestrator(
     PoolsMixin,
     LayoutStepMixin,
     RouteNeededMixin,
+    ProviderFailoverMixin,
 ):
     """Coordinates the full task lifecycle across multiple projects and agents.
 

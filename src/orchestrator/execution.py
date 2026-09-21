@@ -21,6 +21,7 @@ from src.notifications.events import (
     TaskThreadOpenEvent,
 )
 from src.review_keys import is_review_completion
+from src.providers.inflight import LAUNCH_REFUSED, ProviderFailure
 from src.models import (
     AgentOutput,
     AgentResult,
@@ -801,12 +802,23 @@ class ExecutionMixin:
         if availability is not None:
             admitted, refusal_reason = availability.admit_launch(launch_provider)
             if not admitted:
+                # A refusal is the provider's, never the task's (D13): an
+                # unavailable provider sends the task back to READY for the
+                # failover sweep; a recovering one whose canary is in flight
+                # pauses it briefly with its provider_pause record.
                 await self._fail_session_launch(
                     action,
                     task,
                     refusal_reason or f"provider {launch_provider} unavailable",
                     backoff=float(availability.config.launch.suspect_backoff_seconds),
                     notify=False,
+                    failure=ProviderFailure(
+                        kind=LAUNCH_REFUSED,
+                        provider=launch_provider,
+                        harness=harness_name,
+                        profile_id=getattr(profile, "id", None),
+                        detail=refusal_reason or "",
+                    ),
                 )
                 return
 
@@ -1010,6 +1022,7 @@ class ExecutionMixin:
                 await provider.start(spec)
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
+            failure = None
             if availability is not None:
                 # Only a startup death is provider evidence (D2): a typed
                 # login/usage dialog is strong, anything else is weak.
@@ -1021,11 +1034,22 @@ class ExecutionMixin:
                     session_id=session_id,
                     profile_id=getattr(profile, "id", None),
                 )
+                # The dialog, its signal, harness and profile travel as
+                # fields, not only as the formatted reason (D2): they decide
+                # whether this death is the provider's (D13).
+                failure = ProviderFailure.from_startup_death(
+                    exc,
+                    provider=launch_provider,
+                    harness=harness_name,
+                    profile_id=getattr(profile, "id", None),
+                    session_id=session_id,
+                )
             await self._fail_session_launch(
                 action,
                 task,
                 f"session died during startup: {exc}",
                 stderr_path=exc.start_stderr_path,
+                failure=failure,
             )
             return
         except Exception as exc:
@@ -1103,14 +1127,37 @@ class ExecutionMixin:
         integration_resources_released: bool = False,
         backoff: float = 60,
         notify: bool = True,
+        failure: ProviderFailure | None = None,
     ) -> None:
         """Pause the task with a backoff after a failed session launch.
 
         ``notify=False`` is for a launch the daemon refused on purpose (an
         unavailable provider, provider-failover D11): the task is held, not
         broken, and a "launch failed" notice would be noise.
+
+        *failure* carries the structured fields of a provider-shaped failure
+        (the startup dialog, its signal, harness, profile, provider -- D2).
+        When :func:`src.providers.inflight.decide` attributes it to the
+        provider (D13) the task spends no retry and is never paused into the
+        dead provider: ``tripped`` returns it to READY for the failover sweep,
+        ``suspect`` pauses it ``launch.suspect_backoff_seconds`` with its
+        ``provider_pause`` record.  Anything unattributed keeps the flat
+        ``session_launch_failed`` backoff below.
         """
-        if notify:
+        from src.providers import inflight
+
+        availability = getattr(self, "provider_availability", None)
+        disposition = inflight.decide(availability, failure)
+        if disposition == inflight.TRIPPED:
+            notify = False
+            logger.warning(
+                "Task %s: session launch failed on unavailable provider %s -- %s; "
+                "returning it to the queue for re-routing",
+                task.id,
+                failure.provider,
+                reason,
+            )
+        elif notify:
             logger.error("Task %s: session launch failed -- %s", task.id, reason)
         else:
             logger.info("Task %s: session launch refused -- %s", task.id, reason)
@@ -1119,14 +1166,9 @@ class ExecutionMixin:
                 task, reason="session_launch_failed"
             )
         )
-        await self.db.transition_task(
-            action.task_id,
-            TaskStatus.PAUSED,
-            context="session_launch_failed",
-            resume_after=time.time() + backoff,
-            assigned_agent_id=None,
-        )
-        if integration_released is not False:
+        now = time.time()
+
+        async def release_launch_claim() -> None:
             if integration_released is None:
                 # Preserve the legacy unmanaged launch cleanup contract.
                 await self.db.update_agent(
@@ -1135,6 +1177,57 @@ class ExecutionMixin:
             else:
                 await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
+
+        if disposition == inflight.TRIPPED and integration_released is not False:
+            # Release *before* the task becomes claimable again: the release
+            # frees every workspace locked by this task id, and a READY task
+            # can be reassigned the moment it is written.
+            await release_launch_claim()
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.READY,
+                context=inflight.CONTEXT_UNAVAILABLE,
+                resume_after=None,
+                assigned_agent_id=None,
+            )
+            return
+        if disposition != inflight.UNATTRIBUTED:
+            # ``suspect``, or ``tripped`` while an integration owner keeps the
+            # workspace: a short provider pause the sweep resumes at once
+            # when the provider is down.
+            backoff = float(availability.config.launch.suspect_backoff_seconds)
+            if disposition == inflight.TRIPPED:
+                context = inflight.CONTEXT_UNAVAILABLE
+            elif failure.kind == inflight.LAUNCH_REFUSED:
+                context = inflight.CONTEXT_RECOVERING
+            else:
+                context = inflight.CONTEXT_SUSPECT
+            await self.db.transition_task_with_meta(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context=context,
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+                meta={
+                    inflight.PROVIDER_PAUSE_META: inflight.provider_pause_record(
+                        availability,
+                        failure,
+                        context=context,
+                        resume_after=now + backoff,
+                        now=now,
+                    )
+                },
+            )
+        else:
+            await self.db.transition_task(
+                action.task_id,
+                TaskStatus.PAUSED,
+                context="session_launch_failed",
+                resume_after=now + backoff,
+                assigned_agent_id=None,
+            )
+        if integration_released is not False:
+            await release_launch_claim()
         if not notify:
             return
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""

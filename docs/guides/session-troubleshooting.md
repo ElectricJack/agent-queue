@@ -131,7 +131,7 @@ deliberately **quarantine** instead, because keystrokes cannot fix them:
 
 | Rule | Harness | Meaning | Fix |
 |---|---|---|---|
-| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | nothing on the host — the launch is retried every 60 s until the provider's window resets (see below) |
+| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | nothing on the host — the provider is marked `exhausted` and its work is re-routed or held until the window resets (see below) |
 | `login-required` | [codex](../../src/sessions/default_harnesses/codex.md) | the CLI is not authenticated | run `codex login` on the host |
 | `login-required` | [gemini](../../src/sessions/default_harnesses/gemini.md) | the CLI is not authenticated | run `gemini` interactively once, or set `GEMINI_API_KEY` in the daemon environment |
 
@@ -140,21 +140,32 @@ A quarantine rule kills the session *before* it is ever `running`
 handled as a failed launch, not as an exit. The session row ends `stopped`
 with `end_reason: startup_exit` — never `quarantined` — and the pane's last
 screen is saved to `<data_dir>/sessions/<session-name>/start-stderr.log`. The
-task is `PAUSED` with context `session_launch_failed` for a flat 60 s
+task's fate depends on whether the death is the *provider's*
 (`_fail_session_launch` in
-[`src/orchestrator/execution.py`](../../src/orchestrator/execution.py)), a
-**Session launch failed … Retrying in 60s** notice names the rule and that log,
-and the launch is tried again. A pool worker holds no task at that point and
-its session row is not written until the start succeeds, so there is nothing
-to pause: the `(project, profile)` pool key is quarantined for the same 60 s
-and `aq pool status` reports it as `quarantined_until` / `quarantined_reason`,
-with the tail of that log in the reason.
+[`src/orchestrator/execution.py`](../../src/orchestrator/execution.py), deciding
+through [`src/providers/inflight.py`](../../src/providers/inflight.py);
+[provider failover](../specs/provider-failover.md) D13):
 
-The exit classifier's 900 s `rate_limit` cooldown does **not** apply here. It
-only judges a session that reached `running` and then exited, so a provider
-that is already refusing work at startup is retried once a minute, not once
-every fifteen. To stop the churn while the window resets, `aq task pause` the
-task or `aq task route` it to a profile on another provider.
+* A rule that declares a `signal` (`auth`/`usage` — the three above), or any
+  startup death while the provider is already unavailable, is **provider
+  evidence**. It never spends the task's retry budget. The first such death
+  pauses the task for `provider_failover.launch.suspect_backoff_seconds` (30 s)
+  with context `provider_suspect` and a `provider_pause` record; once the
+  provider trips (usually on the second death, or on the first when the auth
+  probe confirms a logout) the task goes straight back to `READY` and the
+  `provider-failover` playbook's sweep moves it to the same class on another
+  provider, or holds it with a reason `aq task explain` shows.
+* Any other startup death is paused with context `session_launch_failed` for a
+  flat 60 s, and a **Session launch failed … Retrying in 60s** notice names the
+  rule and that log.
+
+Outside `provider_failover.mode: enforce` every startup death takes the flat
+60 s path. A pool worker holds no task at that point and its session row is
+not written until the start succeeds, so there is nothing to pause: an
+unattributed death quarantines the `(project, profile)` pool key for 60 s
+(`aq pool status` reports it as `quarantined_until` / `quarantined_reason`, with
+the tail of that log), while a provider-attributed one quarantines nothing —
+the provider's own state sizes its pools to zero.
 
 If the pane is empty and the session died immediately, the executable is
 probably not on the daemon's `PATH`. That failure is diagnosed before any file

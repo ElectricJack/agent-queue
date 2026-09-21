@@ -844,6 +844,15 @@ class ProviderRerouteService:
         if reroute_id is None:
             decision.detail = "a worker took the task (or it changed) before the move landed"
             return False
+        if decision.to_provider != decision.from_provider:
+            # The carried conversation id belongs to the old CLI (bold-rapids.4
+            # carries it so a same-provider relaunch resumes); a harness with
+            # no transcript reader would hand it to the new CLI unchecked.  The
+            # branch and the hand-off note are what move with the task.
+            try:
+                await self.db.delete_task_meta(decision.task_id, "session_resume_key")
+            except Exception:
+                logger.debug("provider reroute: resume key not cleared", exc_info=True)
         await self._comment(decision, batch, reason_code, actor)
         await self._emit(
             "task.rerouted",

@@ -677,6 +677,8 @@ class ClaimQueryMixin:
         preserve_terminal_task=False,
         stop_after_release=False,
         end_reason=None,
+        resume_after=None,
+        task_meta=None,
     ) -> TransitionResult:
         row = (
             (
@@ -774,6 +776,14 @@ class ClaimQueryMixin:
                     # assignment after a task moved out from under the claim.
                     _manual_pause_control=task_status is TaskStatus.PAUSED,
                 )
+                if resume_after is not None:
+                    # An automatic pause with a backoff, never a manual hold --
+                    # and never over one that landed meanwhile.
+                    transition["resume_after"] = resume_after
+                    if expected_task_status is None:
+                        transition["extra_where"] = tasks.c.status.in_(
+                            (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
+                        )
                 if expected_task_status is not None:
                     guards = [tasks.c.status == expected_task_status.value]
                     if expected_task_claim_epoch is not None:
@@ -798,6 +808,9 @@ class ClaimQueryMixin:
                 epoch = (out.row or {}).get("claim_epoch")
                 if needs_attention:
                     await self._upsert_meta(task_id, "needs_attention", needs_attention, conn=conn)
+                if out.row is not None:
+                    for key, value in (task_meta or {}).items():
+                        await self._upsert_meta(task_id, key, value, conn=conn)
                 if prepare_backoff:
                     raw_attempts = (
                         await conn.execute(
@@ -1011,8 +1024,21 @@ class ClaimQueryMixin:
         return out
 
     async def terminate_pool_session(
-        self, session_id, *, reason, task_status=TaskStatus.READY, conn=None
+        self,
+        session_id,
+        *,
+        reason,
+        task_status=TaskStatus.READY,
+        resume_after=None,
+        task_meta=None,
+        conn=None,
     ) -> TransitionResult:
+        """Release a stopped pool session's claim, workspace and worker.
+
+        *resume_after* and *task_meta* serve a provider-caused pause
+        (provider-failover D13/D17): the held task goes ``PAUSED`` with its
+        backoff and its ``provider_pause`` record in this one transaction.
+        """
         async def _run(c):
             out = await self._release_claim_on(
                 c,
@@ -1023,6 +1049,8 @@ class ClaimQueryMixin:
                 now=time.time(),
                 result="released",
                 needs_attention=None,
+                resume_after=resume_after,
+                task_meta=task_meta,
             )
             if not out.released:
                 return out
