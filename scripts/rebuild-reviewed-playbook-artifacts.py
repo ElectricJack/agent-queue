@@ -23,9 +23,12 @@ This writes the fixture bundle only.  Two trees hold byte-identical copies of
 a reviewed recording and are not touched here — copy them across by hand after
 a rebuild, and update each ``manifest.md``'s digests:
 
-* ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into a fresh
+* ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into the
   vault and activates (``src/playbooks/required.py``).  Guarded by
-  ``test_daemon_shipped_bundle_is_the_reviewed_fixture``.
+  ``test_daemon_shipped_bundle_is_the_reviewed_fixture``.  **This copy is the
+  only supply line an install has**: ``playbook_v2_import`` refuses every path
+  outside the vault root, so a rebuild that stops at the fixture leaves every
+  install importing the superseded bytes it already had.
 * ``docs/playbooks/integration-only/default-pipeline/`` — the operator-importable
   copy.  Guarded by ``test_integration_only_bundle_is_the_reviewed_fixture``.
 
