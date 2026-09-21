@@ -368,7 +368,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `id` | TEXT | PRIMARY KEY | Human-readable adjective-noun ID |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | |
 | `parent_task_id` | TEXT | nullable REFERENCES tasks(id) | Self-referential; for subtasks |
-| `repo_id` | TEXT | nullable REFERENCES repos(id) | |
+| `repo_id` | TEXT | nullable REFERENCES repos(id) | The repository whose publisher collects the task: the project's `integration_repository_id` in a `development`/`hierarchy`/`train` project at creation, NULL otherwise. A project move rebinds it, and the development sweep rebinds (and comments on) a live task still naming another project's repository |
 | `title` | TEXT | NOT NULL | Short display name |
 | `description` | TEXT | NOT NULL | Full prompt/instructions for the agent |
 | `priority` | INTEGER | NOT NULL DEFAULT 100 | Lower number = higher priority |

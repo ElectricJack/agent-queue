@@ -22,7 +22,7 @@ from src.commands.helpers import (
 )
 from src.commands.principal import matches_session_instance
 from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY, HierarchyError
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY, task_repository_id
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.models import (
@@ -2889,8 +2889,9 @@ class TaskCommandsMixin:
             provider_intent=provider_intent,
             created_by_kind="session" if creator_session_id else None,
             created_by_id=creator_session_id,
-            repo_id=project.integration_repository_id if (hierarchy_enabled or
-                project.hierarchical_integration_mode == "development") else None,
+            repo_id=task_repository_id(
+                project.hierarchical_integration_mode, project.integration_repository_id
+            ),
         )
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)

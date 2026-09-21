@@ -22,6 +22,8 @@ from src.database.tables import (
     gates,
     integration_repair_operations,
     integration_repair_stages,
+    projects,
+    repos,
     sessions,
     task_comments,
     task_completion_records,
@@ -59,6 +61,15 @@ _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 #: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
 _UNSET = object()
+
+
+#: Project integration modes whose publisher collects a task by ``repo_id``.
+REPOSITORY_BOUND_MODES = frozenset({"hierarchy", "train", "development"})
+
+
+def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
+    """The ``repo_id`` a task of a project in *mode* is created with."""
+    return integration_repository_id if mode in REPOSITORY_BOUND_MODES else None
 
 
 def supports_returning(conn) -> bool:
@@ -460,6 +471,10 @@ class TaskQueryMixin:
                         raise ValueError(
                             "Cannot move task: its ID is archived in the source or destination project."
                         )
+                    if "repo_id" not in kwargs:
+                        values["repo_id"] = await self._moved_task_repo_id(
+                            conn, task_id, values["project_id"]
+                        )
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():
@@ -479,9 +494,36 @@ class TaskQueryMixin:
                     task_comments.c.project_id == comment_source_project,
                 ).values(project_id=values["project_id"]))
             flipped: set[str] = set()
-            if PROJECTION_INPUT_COLUMNS & kwargs.keys():
+            if PROJECTION_INPUT_COLUMNS & values.keys():
                 flipped = await self.recompute_blocked({task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+
+    @staticmethod
+    async def _moved_task_repo_id(conn, task_id: str, project_id: str) -> str | None:
+        """The repository a task moved into *project_id* is delivered from.
+
+        Each publisher collects only its own project's tasks, and only those
+        on its repository.  A move that kept the source project's
+        ``repo_id`` left the task collected by nobody, and readiness counted
+        it as delivered: ``fleet-meadow`` and ``smart-orbit.10`` were re-filed
+        from agent-queue-web into agent-queue that way.  A repository the
+        destination owns is kept; any other becomes the repository task
+        creation gives the destination's tasks.
+        """
+        current = await conn.scalar(select(tasks.c.repo_id).where(tasks.c.id == task_id))
+        if current is not None and await conn.scalar(
+            select(repos.c.id).where(repos.c.id == current, repos.c.project_id == project_id)
+        ):
+            return current
+        destination = (
+            await conn.execute(
+                select(
+                    projects.c.hierarchical_integration_mode,
+                    projects.c.integration_repository_id,
+                ).where(projects.c.id == project_id)
+            )
+        ).one_or_none()
+        return task_repository_id(*destination) if destination is not None else None
 
     async def append_task_attachment(self, task_id: str, path: str) -> list[str] | None:
         """Append one attachment path without losing concurrent uploads."""

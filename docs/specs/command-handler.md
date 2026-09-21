@@ -373,7 +373,7 @@ Updates one or more mutable fields on a task.
 - `title` (optional)
 - `description` (optional)
 - `priority` (optional)
-- `project_id` (optional): Move task to a different project.
+- `project_id` (optional): Move task to a different project. The move also rebinds `repo_id` unless the destination owns the task's repository: it becomes the destination's `integration_repository_id` in a `development`/`hierarchy`/`train` project and NULL otherwise (the value task creation gives it), because every publisher collects only its own project's tasks.
 - `status` (optional): Change status (goes through proper transition logging).
 - `task_type` (optional): Change task type classification.
 - `max_retries` (optional): Update retry limit.
