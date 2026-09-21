@@ -45,8 +45,9 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
 
     Fetches the branch this installation follows, and if it is behind: backs up
     the database when the update changes its schema, stops the daemon (running
-    agents keep running), fast-forwards the code, reinstalls dependencies and
-    rebuilds the dashboard when they changed, and starts the daemon again.
+    agents keep running), fast-forwards the code, and then lets the new code
+    finish in a fresh process: reinstall dependencies and rebuild the dashboard
+    when they changed, and start the daemon again.
 
     If any of that fails, AQ is rolled back to the version it was on and
     started again — except after the new daemon has started with database
@@ -57,9 +58,12 @@ def update(check: bool, assume_yes: bool, no_backup: bool) -> None:
     when run inside an agent's worker slot, or while another update runs.
     Exit codes: 0 updated or already up to date, 10 refused, 20 failed.
     """
-    # Everything the update needs is imported before it moves the checkout:
+    # Everything this process needs is imported before it moves the checkout:
     # a module first imported after `git merge` would be the *new* code
-    # running inside the old process.
+    # running inside the old process.  What has to run *on* the new code --
+    # dependencies, the dashboard build, starting and validating the daemon --
+    # is not run here at all: `apply_update` hands it to a fresh
+    # `python -m src.install.update_finish` started from the new checkout.
     from src.install.dashboard import source_checkout_root
     from src.install.update import (
         EXIT_REFUSED,
