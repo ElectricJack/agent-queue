@@ -51,8 +51,9 @@ tasks.py           Hand-crafted `aq task` commands needing interactive features
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
 uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
                    resume record; destructive scopes are opt-in and confirmed one by one
-update.py          `aq update` — stop the daemon, fast-forward the source checkout, reinstall
-                   and rebuild what changed, restart; rolls back on failure (src/install/update.py)
+update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
+                   reinstall / rebuild / restart to a fresh process on the new code
+                   (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 
