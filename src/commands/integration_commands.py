@@ -432,6 +432,18 @@ class IntegrationCommandsMixin:
             return _failure("not_found", "batch_id is required")
         return await self._integration_control_service().retry_cleanup(batch_id)
 
+    async def _cmd_integration_release_delegates(self, args: dict) -> dict:
+        """Settle the delegates of one operation that already ended."""
+        authorized, _operator_id = self._integration_local_operator()
+        if not authorized:
+            return _failure(
+                "unauthorized", "integration recovery controls require LOCAL operator authority"
+            )
+        operation_id = str(args.get("operation_id") or "")
+        if not operation_id:
+            return _failure("not_found", "operation_id is required")
+        return await self._integration_control_service().release_delegates(operation_id)
+
     async def _cmd_integration_recover_candidate_member(self, args: dict) -> dict:
         """LOCAL-only recovery for a durable pushed root-candidate repair."""
         from pydantic import ValidationError

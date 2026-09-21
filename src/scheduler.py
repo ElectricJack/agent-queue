@@ -593,7 +593,7 @@ class PoolKey:
 class PoolProjectSupply:
     """One project's share of a pool's observed sessions, this tick.
 
-    The same five counters :class:`PoolSupply` carries, restricted to a
+    The same counters :class:`PoolSupply` carries, restricted to a
     single project.  Sizing never reads these — the aggregate is
     authoritative there — but placement does: this breakdown is what lets
     :func:`place_pool_actions` choose where a start goes, and which idle
@@ -604,6 +604,7 @@ class PoolProjectSupply:
     running_busy: int = 0
     starting: int = 0
     draining: int = 0
+    unresponsive: int = 0
     idle_session_ids: list[str] = field(default_factory=list)  # oldest first
 
 
@@ -617,10 +618,16 @@ class PoolSupply:
     placement step that follows.
     """
 
-    running_idle: int = 0  # running, claim_phase NULL, task_id NULL
+    running_idle: int = 0  # running, claim_phase NULL, task_id NULL, claim loop alive
     running_busy: int = 0  # running, task_id set (any claim_phase)
     starting: int = 0  # state == 'starting'
     draining: int = 0  # desired_state == 'stopped'
+    #: Idle-shaped but its claim loop has been silent past the stall grace
+    #: (``src.pool_claims.idle_pool_claim_loop_stalled``) — typically a
+    #: harness parked on a provider usage-limit or login screen.  Like
+    #: ``draining``, it is live but not supply: it neither satisfies demand
+    #: nor is offered to a drain, and the session reconciler recycles it.
+    unresponsive: int = 0
     idle_session_ids: list[str] = field(default_factory=list)  # oldest first
     by_project: dict[str, PoolProjectSupply] = field(default_factory=dict)
 

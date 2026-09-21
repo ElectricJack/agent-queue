@@ -205,8 +205,9 @@ clean — that check *does* read agent rows and would flag one left behind —
 and a replacement session appears.
 
 **S3 — worker-filed work.** A worker holding a task files another. It lands
-with a DEFINED creation result, pinned to the session's project, and inherits
-the caller's profile as its capability ceiling. Its `discovered-from` edge and
+with a DEFINED creation result, pinned to the session's project, and carries
+no profile: the filer's profile bounds an explicit `--profile` but is never the
+child's route, so the filing is routed like any unrouted task. Its `discovered-from` edge and
 open `routing` gate keep `is_blocked` true; with this fixture's non-authoritative
 blocked-state projection, its status may promote to READY before the next read.
 `aq task route` — the only resolver for a routing gate, and what a triage agent

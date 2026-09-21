@@ -281,7 +281,7 @@ Authorized project moves transfer known active-task comment ownership in the sam
 
 ### Table: `task_subtasks`
 
-Durable per-task checklist rows (work-graph spec §13c, revision `a00000000010`). A subtask is ticked off by the agent holding its task: it is never on the claim frontier, never assigned, and has no branch of its own — it is delivered with its parent task. Like `task_comments`, `task_id` plus `project_id` is a logical reference with no foreign key, so rows survive archiving and restoration; permanent task or project deletion removes them. Rows are appended after the task's current maximum `ordinal` (starting at 1), at most `MAX_SUBTASKS_PER_TASK` (200) per task, and `id` is `<task_id>#s<ordinal>`. Queries live in `src/database/queries/task_subtask_queries.py`.
+Durable per-task checklist rows (work-graph spec §13c, revision `a00000000010`). A subtask is ticked off by the agent holding its task: it is never on the claim frontier, never assigned, and has no branch of its own — it is delivered with its parent task. Like `task_comments`, `task_id` plus `project_id` is a logical reference with no foreign key, so rows survive archiving and restoration; permanent task or project deletion removes them. Rows are appended after the task's current maximum `ordinal` (starting at 1) and `id` is `<task_id>#s<ordinal>`. Queries live in `src/database/queries/task_subtask_queries.py`, surfaced through `task_subtask_add` / `task_subtasks` / `task_subtask_get` / `task_subtask_update` (`src/commands/task_subtask_commands.py`).
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -290,13 +290,15 @@ Durable per-task checklist rows (work-graph spec §13c, revision `a00000000010`)
 | `project_id` | TEXT | NOT NULL | Owning project |
 | `ordinal` | INTEGER | NOT NULL | 1-based position within the task; the CLI's subtask number |
 | `title` | TEXT | NOT NULL | 1–300 characters |
-| `context` | TEXT | NOT NULL DEFAULT '' | At most 16000 characters; never leaves the row in events |
+| `context` | TEXT | NOT NULL DEFAULT '' | At most 16000 characters; returned only by single-row reads and never leaves the row in events |
 | `status` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, in_progress, done, skipped |
-| `note` | TEXT | nullable | Set on update; `skipped at close` when a close skips open rows |
+| `note` | TEXT | nullable | Set on update; a close with `--skip-open-subtasks` fills an empty one with `skipped at close` |
 | `created_at` | FLOAT | NOT NULL | Unix timestamp |
-| `updated_at` | FLOAT | NOT NULL | Unix timestamp |
+| `updated_at` | FLOAT | NOT NULL | Unix timestamp, bumped on every update |
 
-Constraints: `ck_task_subtasks_status`, `ck_task_subtasks_title_length`, `ck_task_subtasks_context_length`, `uq_task_subtasks_task_ordinal` (`task_id`, `ordinal`). Index: `idx_task_subtasks_task` (`task_id`, `ordinal`).
+Constraints: `ck_task_subtasks_status` (status in the four values above), `ck_task_subtasks_title_length` (`length(title) BETWEEN 1 AND 300`), `ck_task_subtasks_context_length` (`length(context) <= 16000`), `uq_task_subtasks_task_ordinal` (`task_id`, `ordinal`) UNIQUE. Index: `idx_task_subtasks_task` (`task_id`, `ordinal`).
+
+At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_PER_CALL` (50) per authoring act; both are enforced by the writer, not the schema. `pending` and `in_progress` are open; `done` and `skipped` are settled.
 
 ### Table: `projects`
 
@@ -1940,6 +1942,32 @@ policy, writer and deadline.
 | `dossier` | JSON | nullable | Debug dossier handed to the next stage / human |
 | `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
 | `completed_at` | REAL | nullable | Unix timestamp |
+
+### Table: `integration_delegate_releases`
+
+Audit trail for delegates released because their integration operation ended
+(cancelled, superseded, or completed without them). One row per release.
+
+Deliberately carries **no** foreign key to `tasks` or to
+`integration_repair_operations`: its whole job is to outlive both, so the
+answer to "why did this task end, and who ended it" survives a later delete or
+archive of the task. See
+`docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PK | `rel-<uuid4[:12]>` |
+| `operation_id` | TEXT | NOT NULL | The operation that ended (plain id, no FK) |
+| `operation_state` | TEXT | NOT NULL | `completed` or `cancelled` |
+| `task_id` | TEXT | NOT NULL | The delegate (plain id, no FK) |
+| `project_id` | TEXT | NOT NULL | Project the delegate belonged to |
+| `role` | TEXT | NOT NULL | `verifier`, `repair_stage` or `candidate_member` |
+| `disposition` | TEXT | NOT NULL | `cancelled` (operation cancelled) or `superseded` (completed without it) |
+| `previous_status` | TEXT | NOT NULL | Ticket status before the release |
+| `reason` | TEXT | NOT NULL | Sentence shown to operators |
+| `released_by` | TEXT | NOT NULL | `integration_service`, `integration_abort`, `integration_cancel_preserving` or `doctor` |
+| `released_at` | REAL | NOT NULL | Unix timestamp |
+| `cleanup` | JSON | nullable | What the delegate still holds: `{"state": clear\|blocked, "blockers": [...]}` |
 
 ### Table: `integration_check_evidence`
 

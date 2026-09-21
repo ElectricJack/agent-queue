@@ -111,6 +111,7 @@ LOCAL_INTEGRATION_CONTROLS = frozenset(
         "integration_cancel_preserving",
         "integration_development_sweep",
         "integration_retry_cleanup",
+        "integration_release_delegates",
     }
 )
 INTEGRATION_ROLLOUT_FIELDS = frozenset(

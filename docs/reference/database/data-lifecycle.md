@@ -57,21 +57,23 @@ It refuses when:
   terminal while its worker is still draining, so this check is separate;
 * an active integration repair operation owns a task in the subtree —
   `integration_owned`;
-* an integration control-plane row still names a task in the subtree —
-  `integration_owned` again, this time naming the row. Four tables key a row to
-  a task with a `RESTRICT` (or `NO ACTION`) foreign key that neither the archive
-  nor the delete clears: `integration_parent_episodes.parent_task_id`,
+* durable integration bookkeeping still names a task in the subtree —
+  `integration_owned` again, this time naming the table and the task it holds
+  (`integration_parent_episodes(<task>)`). Four tables key an append-only audit
+  row to a task with a `RESTRICT` (or `NO ACTION`) foreign key that neither the
+  archive nor the delete clears: `integration_parent_episodes.parent_task_id`,
   `integration_parent_verifications.parent_task_id`,
   `integration_repair_operations.verifier_task_id` and
   `integration_candidate_resolutions.repair_task_id`. The task cannot leave the
-  active view while it is part of an integration episode, so the archive names
-  each table and the task it holds (`archive would orphan 1 integration
-  record(s): integration_parent_episodes(<task>)`, with the same list under
-  `references`) before anything is written, rather than letting the database
-  refuse the final `DELETE`. The list and every other foreign key onto `tasks`
-  are declared in
-  [`src/database/queries/task_references.py`](../../../src/database/queries/task_references.py).
-  [Deleting](#deleting) reads the same list for the same reason.
+  active view while it is part of an integration episode, and a held descendant
+  pins its root, since the subtree moves together. The archive names each table
+  and the task it holds (`archive would orphan 1 integration record(s):
+  integration_parent_episodes(<task>)`, with the same list under `references`)
+  before anything is written, rather than letting the database refuse the final
+  `DELETE`. The list and every other foreign key onto `tasks` are declared in
+  [`src/database/queries/task_references.py`](../../../src/database/queries/task_references.py),
+  and `tests/test_hierarchy_archive_delete.py` fails when a new one is
+  undeclared. [Deleting](#deleting) reads the same list for the same reason.
 
 What the archived row keeps: everything in `tasks` except `claim_epoch`,
 `deliverables`, `discord_thread_id`, `filed_count` and `next_child_ordinal` —
@@ -113,8 +115,10 @@ kept it from trying again for an hour, at which point it met the same row.
 
 The retention sweep records what it skipped in `task_metadata` under
 `archive_refusal` (`{"code", "detail", "at"}`, written only when the code
-changes), and `aq doctor --check tasks.archive_blocked` reads those records. An
-exception that is not a refusal is recorded as `unexpected` and logged at
+changes), and `aq doctor --check tasks.archive_blocked` and
+`aq task archive-settings` read those records — see
+[Session troubleshooting](../../guides/session-troubleshooting.md#finished-work-that-never-leaves-the-graph).
+An exception that is not a refusal is recorded as `unexpected` and logged at
 `warning`, one line per failure signature (`IntegrityError(<constraint>)`),
 because reaching it means a guard is missing.
 
@@ -186,8 +190,8 @@ These are working guards, not bugs.
 |---|---|---|
 | `hierarchy.open_children` | The task has non-terminal children and you did not pass `--cascade`. | Close the children, `aq task reparent` one you filed, or cascade. |
 | `live_descendants` | A session in the subtree is still running. | Let it drain, or stop it, then retry. |
-| `integration_owned` | An active repair operation owns a task in the subtree. This one is the **archive**'s guard; `integration_repair_stages.repair_task_id` is a soft reference, so a delete is not refused by it. | Let the operation finish or be cancelled. |
-| `integration_owned`, naming a row | An integration control-plane row still names a task in the set being deleted, through a **named `RESTRICT`** (or `NO ACTION`) foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of an integration episode. The refusal names each table and the task it holds (`references` carries the same list). [Archiving](#archiving) refuses the same four the same way. |
+| `integration_owned` naming an operation | A running integration operation (`active`, `escalated`, `human_required`) owns a task in the subtree. In a `hierarchy`/`train` project `guard_integration_mutation` checks every seat — verifier, parent, repair-stage writer, candidate-member resolver — for delete **and** archive, and names the operation, its state and the seat. In any mode the **archive** also refuses a task an active repair operation's stage names; `integration_repair_stages.repair_task_id` is a soft reference, so outside `hierarchy`/`train` a delete is not refused by it. | Let the operation finish, or `aq integration abort <id> --reason "..."`, then `aq doctor --check integration.stranded_delegates --fix`. |
+| `integration_owned`, naming a row | An integration control-plane row still names a task in the set being deleted, through a **named `RESTRICT`** (or `NO ACTION`) foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The rows are append-only audit and the control plane's identity may not dangle, so the task cannot be deleted while it is part of an integration episode. The refusal names each table and the task it holds (`references` carries the same list). [Archiving](#archiving) refuses the same four the same way. This holds even after the operation ended: settling a stranded delegate makes its ticket terminal, not removable — lifting it is the schema change `docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md` holds. |
 | `hierarchy.branch_discard_required` | A materialised branch origin in the subtree. | Re-run with `--branches keep` or `--branches delete`. |
 | A paused task | A worker cannot close or resume a `PAUSED` task. | The operator resumes it; a worker should push its work and report. |
 
@@ -202,20 +206,26 @@ Practically:
 
 * A new table that references `tasks.id` without either a `CASCADE`/`SET NULL`
   clause or an entry in `_delete_one` will make deletes fail once rows exist in
-  it. `tests/test_missing_fk_migration.py` and the delete tests are where this
-  is caught.
+  it. `TASK_REFERENCE_DISPOSITIONS` in
+  [`task_references.py`](../../../src/database/queries/task_references.py)
+  must declare every such key, and `tests/test_hierarchy_archive_delete.py`
+  (with `tests/test_missing_fk_migration.py` and the delete tests) is where an
+  undeclared one is caught.
 * The RESTRICT-protected integration tables are deliberately *not* cleaned up
-  here. There is no supported way to delete a task that a live integration
-  episode references, and there should not be — the alternative is a control
-  plane that points at nothing. They are the `"refused"` entries of
+  here. There is no supported way to delete a task that integration bookkeeping
+  references, and there should not be — the alternative is a control plane that
+  points at nothing. They are the `"refused"` entries of
   `TASK_REFERENCE_DISPOSITIONS` (`INTEGRATION_TASK_REFERENCES`, in
   `src/database/queries/task_references.py`) and are read up front by both the
   archive and the delete, so they refuse as `integration_owned` rather than as a
-  driver error from the final `DELETE`. `tests/test_hierarchy_archive_delete.py`
-  walks the schema and fails when a new foreign key onto `tasks` has no declared
-  disposition.
-* If you hit an FK violation naming a table not in the tables above, that is a
-  genuine bug worth filing, naming the table from the error.
+  driver error from the final `DELETE`.
+  In a `hierarchy`/`train` project a *running* operation is refused before
+  that, by a guard that names the operation and the command that releases it
+  (see
+  [the delegate-release spec](../../superpowers/specs/2026-09-20-integration-delegate-release-design.md)).
+* If you hit a raw `ForeignKeyViolationError` from a delete or archive, a
+  foreign key is missing from that declaration. That is a genuine bug worth
+  filing, naming the table from the error.
 
 ## What is kept, and for how long
 

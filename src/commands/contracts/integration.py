@@ -67,6 +67,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_development_sweep",
         "integration_cancel_preserving",
         "integration_retry_cleanup",
+        "integration_release_delegates",
         "integration_resolve_candidate_member",
     }
 )
@@ -156,6 +157,7 @@ class IntegrationOperationalValue(CommandValue):
     pending_publications: tuple[str, ...] = ()
     parked: tuple[Any, ...] = ()
     preserved_owners: tuple[str, ...] = ()
+    released_delegates: tuple[str, ...] = ()
     project_id: str | None = None
     operation_id: str | None = None
     batch_id: str | None = None
@@ -648,6 +650,14 @@ INTEGRATION_RETRY_CLEANUP = _operational_contract(
     IntegrationRetryCleanupArgs,
     ("requeued", "ambiguous", "nothing_to_retry", "not_found"),
     successes=frozenset({"requeued", "nothing_to_retry"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RELEASE_DELEGATES = _operational_contract(
+    "integration_release_delegates",
+    IntegrationOperationControlArgs,
+    ("released", "nothing_to_release", "invalid_state", "not_found"),
+    successes=frozenset({"released", "nothing_to_release"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -1927,6 +1937,18 @@ async def _retry_cleanup_adapter(
     )
 
 
+async def _release_delegates_adapter(
+    args: IntegrationOperationControlArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_release_delegates",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"released", "nothing_to_release", "invalid_state", "not_found"},
+    )
+
+
 async def _recover_candidate_member_adapter(
     args: IntegrationRecoverCandidateMemberArgs, ctx: CommandContext | None
 ):
@@ -1986,6 +2008,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RESUME, _resume_adapter),
         (INTEGRATION_ABORT, _abort_adapter),
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
+        (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),

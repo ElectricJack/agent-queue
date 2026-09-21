@@ -341,7 +341,7 @@ At no point did anything edit a row that had already been written as evidence.
 | `database.url must be a PostgreSQL DSN` | `database.url` in `~/.agent-queue/config.yaml` is empty or misspelled. There is no fallback backend. | Fix the DSN. To carry a pre-PostgreSQL database across, `aq db import-sqlite <path>`. |
 | `hierarchy.branch_discard_required` | You asked to delete a subtree that owns a branch already pushed to the remote. | Re-run with `--branches keep` or `--branches delete`. [Data lifecycle](data-lifecycle.md#deleting-a-task-that-owns-a-branch). |
 | `hierarchy.open_children` | The task has children that are not terminal. | Close or move the children; `aq task reparent` moves one you filed. |
-| A `ForeignKeyViolationError` naming an `integration_*` table on delete | The task is referenced by integration control-plane rows protected by `RESTRICT`. | Expected, not a bug. [Data lifecycle](data-lifecycle.md#what-refuses-to-delete). |
+| `integration_owned` naming an `integration_*` table on delete or archive | Append-only integration bookkeeping still names a task in the subtree through a `RESTRICT` foreign key. | Expected, not a bug; the task stays. A raw `ForeignKeyViolationError` instead means an undeclared foreign key — file it. [Data lifecycle](data-lifecycle.md#what-refuses-to-delete). |
 
 ## Contributor internals
 

@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
     agents,
@@ -31,7 +30,6 @@ from src.database.tables import (
     sessions,
     task_delivery_receipts,
     task_integration_checkpoints,
-    task_metadata,
     tasks,
     workspaces,
 )
@@ -55,14 +53,6 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
     """
     raw = subject or {}
     return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
-
-
-def _decoded(raw: Any) -> Any:
-    """A ``task_metadata`` value; older rows may hold an unencoded string."""
-    try:
-        return json.loads(raw)
-    except (TypeError, ValueError):
-        return raw
 
 
 # Ownership states in which the stage-0 writer can still be recognised as this
@@ -98,105 +88,19 @@ class RepairService:
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
         """Settle unfinished delegates whose owning operation has already ended.
 
-        The ticket's execution disposition and the cleanup of what it still
-        holds are separate facts.  A delegate with no live session or claim
-        becomes terminal ``FAILED`` -- non-success and never runnable again --
-        with ``integration_retirement.disposition`` ``cancelled`` (its
-        operation was cancelled) or ``superseded`` (the operation completed
-        without it), so nothing schedules it, reminds about it or waits on it
-        as paused work.  A retained branch owner or workspace lock does not
-        keep the ticket open: it is preserved exactly as found and recorded as
-        a named cleanup blocker, which ``explain`` re-reads live.  A live
-        writer still defers retirement; its authority is never taken here.
-        Branches, stage evidence and retry counters are untouched, and no
-        successful completion is manufactured.  A delegate an earlier version
-        of this pass left ``PAUSED`` rolls forward on the next tick.
+        One line of glue over :mod:`src.integration.delegate_release`, which
+        the orchestrator tick, ``integration_abort`` and
+        ``aq doctor --check integration.stranded_delegates --fix`` all share.
+        Keeping one implementation is the point: three callers settling a
+        delegate three slightly different ways is how the earlier version
+        left tickets ``PAUSED`` that a later one had to roll forward.
         """
-        operation = integration_repair_operations
-        stage = integration_repair_stages
-        owned = or_(
-            operation.c.verifier_task_id == tasks.c.id,
-            select(stage.c.operation_id).where(
-                stage.c.operation_id == operation.c.id,
-                stage.c.repair_task_id == tasks.c.id,
-            ).correlate(operation, tasks).exists(),
+        from src.integration.delegate_release import release_delegates
+
+        released = await release_delegates(
+            self.db, now=now, released_by="integration_service", limit=limit
         )
-        attached_session = select(sessions.c.id).where(
-            sessions.c.task_id == tasks.c.id,
-            or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped",
-                sessions.c.claim_phase.is_not(None)),
-        ).exists()
-        results = []
-        transitions = []
-        async with self.db.immediate() as conn:
-            rows = (await conn.execute(
-                select(tasks, operation.c.id.label("operation_id"),
-                       operation.c.state.label("operation_state"))
-                .select_from(tasks.join(operation, owned))
-                .where(
-                    operation.c.state.in_(("completed", "cancelled")),
-                    tasks.c.status.in_(("DEFINED", "READY", "BLOCKED", "PAUSED")),
-                    tasks.c.assigned_agent_id.is_(None),
-                    ~attached_session,
-                )
-                .order_by(operation.c.updated_at, tasks.c.id)
-                .limit(limit)
-                .with_for_update(of=(tasks, operation), skip_locked=True)
-            )).mappings().all()
-            for task in rows:
-                if task["id"] in results:
-                    continue  # owned by more than one ended operation
-                state = task["operation_state"]
-                disposition = "cancelled" if state == "cancelled" else "superseded"
-                reason = f"integration operation {task['operation_id']} is {state}"
-                meta = {
-                    key: _decoded(value)
-                    for key, value in (await conn.execute(
-                        select(task_metadata.c.key, task_metadata.c.value).where(
-                            task_metadata.c.task_id == task["id"],
-                            task_metadata.c.key.in_((
-                                "integration_retirement", "needs_attention", "manual_pause",
-                            )),
-                        )
-                    )).all()
-                }
-                earlier = meta.get("integration_retirement")
-                earlier = earlier if isinstance(earlier, dict) else {}
-                cleanup = await self.db.get_integration_delegate_cleanup(task["id"], conn=conn)
-                transition = await self.db._apply_transition(
-                    conn, task["id"], TaskStatus.FAILED,
-                    context="integration_delegate_retired", force=True,
-                    _manual_pause_control=True, resume_after=None,
-                )
-                transitions.append(transition)
-                await self.db._upsert_meta(task["id"], "integration_retirement", {
-                    "operation_id": task["operation_id"], "state": state,
-                    "disposition": disposition,
-                    "previous_status": earlier.get("previous_status", task["status"]),
-                    "retired_at": now, "reason": reason,
-                    "previous_attention": meta.get("needs_attention",
-                                                   earlier.get("previous_attention")),
-                    "previous_hold": meta.get("manual_pause"),
-                    **({"paused_at": earlier["retired_at"]} if "retired_at" in earlier else {}),
-                    "cleanup": {"state": "blocked" if cleanup else "clear", "blockers": cleanup},
-                }, conn=conn)
-                # The hold a cancellation placed is superseded by the terminal
-                # disposition; its snapshot is kept above as evidence.
-                await conn.execute(delete(task_metadata).where(
-                    task_metadata.c.task_id == task["id"],
-                    task_metadata.c.key.in_(("needs_attention", "claim_prepare_backoff_until",
-                                            "blocked_terminal", "manual_pause")),
-                ))
-                await self.db.log_event(
-                    "task.updated", project_id=task["project_id"], task_id=task["id"],
-                    payload=f"{reason}; delegate retired as {disposition}", conn=conn,
-                )
-                results.append(task["id"])
-        for transition in transitions:
-            await self.db.log_blocked_flips(transition.flipped)
-            await self.db._notify_settled(transition.settled)
-            await self.db._notify_ready(transition.ready)
-        return results
+        return [row["task_id"] for row in released]
 
     async def reserve_batch_operation_on(
         self, conn, batch_id: str, *, now: float | None = None
