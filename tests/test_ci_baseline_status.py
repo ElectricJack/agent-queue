@@ -550,12 +550,12 @@ def test_a_new_repair_key_never_reuses_an_index_of_its_signature():
     assert plan.next_key == _key([THIRD], 4) and plan.prior_attempts == ("t1", "t3")
 
 
-async def test_task_meta_values_reads_one_key_for_a_set_of_tasks(db):
+async def test_task_meta_bulk_reads_one_key_for_a_set_of_tasks(db):
     first = await _attempt(db, "ci-baseline:abc:1", TaskStatus.READY)
     second = await _attempt(db, "ci-baseline:abc:2", TaskStatus.READY)
     await db.set_task_meta(first, REPAIR_RECORD_META, {"ref": "main"})
     await db.set_task_meta(second, "other", "x")
-    assert await db.get_task_meta_values([first, second], REPAIR_RECORD_META) == {
+    assert await db.get_task_meta_bulk([first, second], REPAIR_RECORD_META) == {
         first: {"ref": "main"}
     }
-    assert await db.get_task_meta_values([], REPAIR_RECORD_META) == {}
+    assert await db.get_task_meta_bulk([], REPAIR_RECORD_META) == {}
