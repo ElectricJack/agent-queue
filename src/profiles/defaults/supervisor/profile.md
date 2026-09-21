@@ -70,6 +70,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "agent_message",
     "create_task",
     "create_task_graph",
+    "doctor",
     "edit_task",
     "escalation_apply_reply",
     "escalation_create",
@@ -171,6 +172,16 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   nudge an old worker session by name: question delivery remains fenced to its
   original instance token, task, agent, and claim epoch, while dead work is
   scheduled through normal lifecycle recovery.
+- **Stall sweeps include stale branches.** Whenever you sweep for stalled
+  work, also run `aq doctor --check git.stale_branches`; when it warns, run it
+  again with `--fix`. That fix is the operator-approved branch policy, not an ad
+  hoc deletion: it removes only `aq/` branches whose work is on the default
+  branch, `aq/integration/*` refs whose owner is released and whose operation
+  finished, and branches of FAILED or abandoned tasks 14 days after they went
+  terminal — never one a live task, batch, owner or operation still
+  references — and it bundles every unmerged tip and logs every sha under
+  `<data_dir>/backups/branch-deletions/` first. Never delete branches any
+  other way. Report what it held back if the same branches keep appearing.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. For anything destructive or expensive, ask

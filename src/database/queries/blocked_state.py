@@ -83,15 +83,32 @@ _WITHHOLDING_PARENT_STATUSES = (
 # every edge as ``status != COMPLETED``.
 
 
-def _development_delivery_pending(task):
+def _development_delivery_pending(task, *, include_foreign_repos=False):
     """Completed code is usable only after publication to the configured default ref.
 
     Candidate preservation and parent aggregates are not worker checkout bases.
     A delivery of an older revision cannot release a new completion revision.
     Branchless tasks have no repository artifact to publish.
+
+    *include_foreign_repos* also counts a task whose ``repo_id`` names a
+    repository that is not one of its project's own.  The publisher never
+    collects such a task, so readiness leaves it out, but its work has not
+    reached the default branch either: the archive sweep asks with this set,
+    because ``fleet-meadow`` carried another project's repository id and was
+    archived undelivered.
     """
     project = projects.alias()
     repo = repos.alias()
+    repo_scope = or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id)
+    if include_foreign_repos:
+        own = repos.alias()
+        repo_scope = or_(
+            repo_scope,
+            ~select(literal(1))
+            .where(own.c.id == task.c.repo_id, own.c.project_id == task.c.project_id)
+            .correlate(task)
+            .exists(),
+        )
     delivery = development_deliveries.alias()
     completion = task_completion_records.alias()
     source_sha = (
@@ -144,7 +161,7 @@ def _development_delivery_pending(task):
             project.c.id == task.c.project_id,
             project.c.hierarchical_integration_mode == "development",
             task.c.branch_name.is_not(None),
-            or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id),
+            repo_scope,
             ~delivered,
         )
         .correlate(task)

@@ -4649,7 +4649,9 @@ class TaskCommandsMixin:
         skipped: list[dict] = []
         for task, result, deps in task_data:
             try:
-                success = await self.db.archive_task(task.id)
+                # A bulk sweep never archives work the development publisher
+                # has not delivered yet (``hierarchy.delivery_pending``).
+                success = await self.db.archive_task(task.id, hold_undelivered=True)
             except HierarchyError as exc:
                 skipped.append(
                     {

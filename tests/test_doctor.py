@@ -77,6 +77,7 @@ class TestRegistry:
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
         from src.doctor.formula_checks import formula_checks
+        from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
         from src.doctor.integration_checks import integration_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
@@ -104,6 +105,7 @@ class TestRegistry:
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
+            | {c.id for c in git_checks()}
             | {c.id for c in capability_checks()}
             | {c.id for c in workspace_checks()}
             | {c.id for c in profile_checks()}

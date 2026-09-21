@@ -33,6 +33,7 @@ aq doctor --check integration.finished_branch_owners
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
+aq doctor --check git.stale_branches
 ```
 
 ## Symptom index
@@ -53,6 +54,8 @@ aq doctor --check integration.development_publisher_stalled
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
+| Stale `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
+| `hierarchy.delivery_pending` when archiving | The work has not reached `main` | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
 | Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
@@ -393,6 +396,72 @@ remote moved — never retries on its own, because it is a statement about the
 repository rather than about the network. `--fix` re-arms parked discards for
 another attempt.
 
+## Delivered branches are still on the remote
+
+Delivery pushes a branch per task (`aq/<task-id>`), a candidate per batch
+(`aq/development/<project>/<head>`), parent assemblies
+(`aq/development/parent/…`) and a branch per repair. Once a batch is confirmed
+on the default branch, the publisher deletes what it made obsolete on the next
+tick: each member's branch (still at the delivered revision, or on `main`), a
+`-wip` sibling that is on `main`, every assembly whose members have all landed,
+and the branch of a failed repair whose sources reached `main` on their own.
+
+What happened is recorded on the batch's journal row, under
+`evidence.branch_cleanup`: `deleted` (branch, sha, kind, and `backup` when it
+was bundled), `kept` (branch and why), `missing`, `attempts`, `log`, and
+`state` — `pending`, `complete`, or `exhausted` after eight unconfirmed
+attempts. Each run that deletes something also logs a
+`development.branches_deleted` event.
+
+Everything else is `git.stale_branches` — the supervisor's stall sweep runs it:
+
+```bash
+aq doctor --check git.stale_branches        # what is stale, and what holds the rest
+aq doctor --check git.stale_branches --fix  # back up and delete the stale ones
+```
+
+An `aq/` branch is stale by exactly one rule:
+
+| Rule | When |
+|---|---|
+| `landed` | Its head is on `main`, or every commit beyond `main` has a twin there with the same author e-mail, author time and subject (a rebased or cherry-picked copy) and every merge beyond `main` is exactly Git's own merge of its parents. |
+| `integration` | An `aq/integration/*` ref with at least one `integration_branch_owners` row, all `released`, and every operation tied to it finished. Nothing else lets one go. |
+| `expired` | The branch of a FAILED or abandoned (`work_outcome: abandoned`) task, 14 days after it went terminal (the later of its last update and its last close). |
+
+A stale branch stays when anything still references it: a task that can still
+run or has a live session, COMPLETED work not delivered yet, an unsettled batch
+(and every assembly carrying one of its members), an open repair's sources, an
+`integration_branch_owners` row that is not `released`, a live legacy
+operation, batch or promotion intent, a live hierarchy branch origin, or a
+pending branch discard. `data.projects[].held_examples` names the reference;
+on older installs the common one is an owner row left `reserved` by the
+hierarchy era. Nothing outside `aq/`, the default branch, `main` or `gh-pages`
+is ever deleted — the delete itself refuses.
+
+### Every deletion is restorable
+
+Before anything is pushed, each branch is appended to
+`<data_dir>/backups/branch-deletions/<yyyy-mm>.tsv` as
+`branch, sha, reason, bundle, recorded_at, repository` (the first two columns
+match the supervisor's 2026-09-21 `deleted-branches-*.tsv`), and every tip the
+default branch cannot reach is written to a new, verified bundle
+`<data_dir>/backups/branch-deletions/<yyyy-mm>/<utc>-<repository>.bundle`. To
+put one back, from any clone of the repository:
+
+```bash
+git bundle unbundle <bundle>                 # skip when the log says "-": it is on main
+git push origin <sha>:refs/heads/<branch>
+```
+
+### Undelivered work is not archived
+
+The archive sweeps (hourly auto-archive, and bulk `aq task archive --project-id`)
+refuse a COMPLETED task whose delivery has not landed with
+`hierarchy.delivery_pending`, including a task whose `repo_id` names another
+project's repository, which the publisher never collects.
+`aq doctor --check tasks.archive_blocked` lists them. An explicit single-task
+archive is not held.
+
 ## Slot reset keeps failing
 
 A claim that cannot prepare its worktree slot releases the claim and records
@@ -524,9 +593,11 @@ refused.
 
 [`src/integration/development.py`](../../src/integration/development.py),
 [`src/integration/branch_discard.py`](../../src/integration/branch_discard.py),
+[`src/integration/delivery_branches.py`](../../src/integration/delivery_branches.py),
 [`src/doctor/integration_checks.py`](../../src/doctor/integration_checks.py),
+[`src/doctor/git_checks.py`](../../src/doctor/git_checks.py),
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py).
 
 ```bash
-aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py
+aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
 ```
