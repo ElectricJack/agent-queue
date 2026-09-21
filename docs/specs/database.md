@@ -1922,6 +1922,33 @@ policy, writer and deadline.
 | `state` | TEXT | NOT NULL | One of: pending, active, awaiting_completion, passed, failed, expired, cancelled |
 | `completed_at` | REAL | nullable | Unix timestamp |
 
+### Table: `integration_delegate_releases`
+
+Audit trail for delegates released because their integration operation ended
+(cancelled, superseded, or completed without them). One row per release.
+
+Deliberately carries **no** foreign key to `tasks` or to
+`integration_repair_operations`: its whole job is to outlive both, so the
+answer to "why did this task end, and who ended it" survives the delete or
+archive the release exists to unblock. The same rule applies to every
+integration history table — see
+`docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PK | `rel-<uuid4[:12]>` |
+| `operation_id` | TEXT | NOT NULL | The operation that ended (plain id, no FK) |
+| `operation_state` | TEXT | NOT NULL | `completed` or `cancelled` |
+| `task_id` | TEXT | NOT NULL | The delegate (plain id, no FK) |
+| `project_id` | TEXT | NOT NULL | Project the delegate belonged to |
+| `role` | TEXT | NOT NULL | `verifier`, `repair_stage` or `candidate_member` |
+| `disposition` | TEXT | NOT NULL | `cancelled` (operation cancelled) or `superseded` (completed without it) |
+| `previous_status` | TEXT | NOT NULL | Ticket status before the release |
+| `reason` | TEXT | NOT NULL | Sentence shown to operators |
+| `released_by` | TEXT | NOT NULL | `integration_service`, `integration_abort`, `integration_cancel_preserving` or `doctor` |
+| `released_at` | REAL | NOT NULL | Unix timestamp |
+| `cleanup` | JSON | nullable | What the delegate still holds: `{"state": clear\|blocked, "blockers": [...]}` |
+
 ### Table: `integration_check_evidence`
 
 Authenticated CI evidence for exactly one subject: a candidate revision

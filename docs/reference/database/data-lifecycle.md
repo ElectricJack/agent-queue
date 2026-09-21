@@ -147,10 +147,9 @@ These are working guards, not bugs.
 |---|---|---|
 | `hierarchy.open_children` | The task has non-terminal children and you did not pass `--cascade`. | Close the children, `aq task reparent` one you filed, or cascade. |
 | `live_descendants` | A session in the subtree is still running. | Let it drain, or stop it, then retry. |
-| `integration_owned` | An active repair operation owns a task in the subtree. | Let the operation finish or be cancelled. |
+| `integration_owned` | An integration operation that is still running (`active`, `escalated`, `human_required`) owns a task in the subtree, or an unfinished candidate reservation of such an operation names it. The refusal names the operation, its state and the seat the task occupies. | Let the operation finish, or `aq integration abort <id> --reason "..."`, then `aq doctor --check integration.stranded_delegates --fix`. |
 | `hierarchy.branch_discard_required` | A materialised branch origin in the subtree. | Re-run with `--branches keep` or `--branches delete`. |
 | A paused task | A worker cannot close or resume a `PAUSED` task. | The operator resumes it; a worker should push its work and report. |
-| `ForeignKeyViolationError` naming an `integration_*` table | The task is referenced by integration control-plane rows with a **named `RESTRICT`** foreign key: `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, or `integration_candidate_resolutions.repair_task_id`. | Expected. The control plane's identity may not dangle; the task cannot be deleted while it is part of a live integration episode. |
 
 ### A known limitation
 
@@ -165,10 +164,19 @@ Practically:
   clause or an entry in `_delete_one` will make deletes fail once rows exist in
   it. `tests/test_missing_fk_migration.py` and the delete tests are where this
   is caught.
-* The RESTRICT-protected integration tables are deliberately *not* cleaned up
-  here. There is no supported way to delete a task that a live integration
-  episode references, and there should not be — the alternative is a control
-  plane that points at nothing.
+* Integration tables are deliberately *not* in that list, because since
+  `a00000000010` they no longer reference `tasks.id` by foreign key at all.
+  **Integration history names a task by id, never by a constraint**: a finished
+  episode, verification, resolution or operation records what happened to a
+  task and must not be able to veto that task leaving the queue. Four `RESTRICT`
+  / `NO ACTION` constraints used to, which is how five completed roots became
+  permanently unarchivable and the operator saw a bare
+  `ForeignKeyViolationError` with no subject and no remedy. Liveness is now a
+  guard (`integration_owned`, above) that can explain itself, and it covers more
+  than the constraints did — `integration_repair_stages.repair_task_id` never
+  had one, so the repair delegate of a *running* operation was deletable out
+  from under its writer. See
+  [the design spec](../../superpowers/specs/2026-09-20-integration-delegate-release-design.md).
 * If you hit an FK violation naming a table not in the tables above, that is a
   genuine bug worth filing, naming the table from the error.
 

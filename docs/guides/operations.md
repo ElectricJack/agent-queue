@@ -157,10 +157,16 @@ The repair returns task-backed stale preparations to `READY` and records a prepa
 ### 3. Recover a stalled integration without rewriting delivery history
 
 1. Read `aq integration status PROJECT_ID` and record the project, operation/batch ids, task ids, target ref and heads it reports.
-2. Run `aq doctor --check integration.operational --check integration.stranded_fences --check integration.branch_discards`.
+2. Run `aq doctor --check integration.operational --check integration.stranded_fences --check integration.stranded_delegates --check integration.branch_discards`.
 3. For a safe human-required operation, use `aq integration resume OPERATION_ID`; use `aq integration retry-cleanup BATCH_ID` only for the exact safe cleanup reported by status.
 4. If an already-delivered task must be recorded without replaying old repair checkpoints, use `aq integration adopt` with the observed target ref/head, every affected task, an explicit reason, and `--accept-equivalent` only when accepting operator-edited or evidence-only delivery is intentional.
 5. Re-run `aq integration status PROJECT_ID`; verify the target ref independently in the repository before retiring evidence.
+
+> **Note.** `integration.stranded_delegates` *does* have a fix, and it is safe to repeat: it settles a
+> ticket whose integration operation already ended, as a terminal non-success, and records the
+> operation and disposition in `integration_delegate_releases`. It never releases a branch owner, a
+> workspace lock or a live writer, and it never manufactures a pass. A delegate of an operation that
+> is still running is refused, not settled.
 
 > **Warning.** `integration.stranded_fences` has no doctor fix. It names a branch that looks held by a writer that disappeared, but only the guarded recovery workflow can establish that the checkout is clean and work is published. Keep refs and workspaces intact until that proof exists.
 

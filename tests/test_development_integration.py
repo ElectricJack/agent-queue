@@ -707,11 +707,18 @@ async def test_cancel_retires_verifier_with_stop_proof(setup, operation_state, v
             == "cancelled"
         )
     assert (await service.rows("p"))[-1]["evidence"]["kind"] == "cancel_preserving"
+    assert sorted(result["released_delegates"]) == ["repair", "verifier"]
+    # Cancelling settles the delegates in its own transaction rather than
+    # leaving them PAUSED for a later tick: terminal, non-success, and never
+    # runnable again.  The hold it placed is kept as evidence on the release.
     for task_id in ("repair", "verifier"):
         task = await db.get_task(task_id)
-        assert task.status == TaskStatus.PAUSED
+        assert task.status == TaskStatus.FAILED
         assert task.resume_after is None
-        assert (await db.get_task_meta(task_id, "manual_pause"))["cleanup_pending"] is False
+        assert await db.get_task_meta(task_id, "manual_pause") is None
+        record = await db.get_task_meta(task_id, "integration_retirement")
+        assert record["disposition"] == "cancelled"
+        assert record["previous_hold"]["cleanup_pending"] is False
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(operations.c.verifier_task_id)) == "verifier"
     before_rows = await service.rows("p")
