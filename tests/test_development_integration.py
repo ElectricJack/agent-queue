@@ -618,6 +618,128 @@ async def test_development_task_explanation_uses_publisher_repository_rules(setu
     assert ("repository_not_designated" in codes) == (repository == "other")
 
 
+async def _second_project(db, *, mode="development"):
+    """Project ``web`` with its own repository, as agent-queue-web is to agent-queue."""
+    await db.create_project(Project(id="web", name="Web"))
+    await db.create_repo(RepoConfig(
+        id="web-repo", project_id="web", source_type=RepoSourceType.CLONE, url="/web.git",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "web")
+            .values(integration_repository_id="web-repo", hierarchical_integration_mode=mode)
+        )
+
+
+async def _completed_elsewhere(setup, task_id, *, project_id, repo_id):
+    """A completed task whose branch is on ``p``'s remote but which names *repo_id*."""
+    db, _service, source, _remote, _repo = setup
+    git(source, "checkout", "-B", task_id, "main")
+    (source / (task_id + ".txt")).write_text("moved\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", task_id)
+    git(source, "push", "origin", task_id)
+    await db.create_task(Task(
+        id=task_id, project_id=project_id, repo_id=repo_id, title=task_id, description="",
+        branch_name=task_id, status=TaskStatus.COMPLETED,
+    ))
+    return git(source, "rev-parse", "HEAD")
+
+
+async def test_a_task_moved_between_projects_is_delivered_by_its_new_project(setup):
+    """fleet-meadow: filed in agent-queue-web, re-filed into agent-queue by a project
+    move that kept agent-queue-web's repository.  The sweep skipped it and readiness
+    counted it delivered.  The move now takes the destination's repository."""
+    db, service, _source, remote, _repo = setup
+    await _second_project(db)
+    head = await _completed_elsewhere(setup, "moved", project_id="web", repo_id="web-repo")
+    await db.update_task("moved", project_id="p")
+    assert (await db.get_task("moved")).repo_id == "r"
+    assert await _delivery_pending(db, "moved"), "readiness now waits for its delivery"
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert not await _delivery_pending(db, "moved")
+
+
+@pytest.mark.parametrize(
+    ("destination_mode", "start_repo", "expected"),
+    [
+        # A repository the destination does not own gives way to the one
+        # creation would have chosen there: its designated repository in a
+        # delivery mode, none otherwise.
+        ("development", "web-repo", "r"),
+        ("disabled", "web-repo", None),
+        # A repository the destination owns is a deliberate binding.
+        ("development", "other", "other"),
+        ("development", None, "r"),
+    ],
+)
+async def test_project_move_binds_the_destinations_repository(
+    setup, destination_mode, start_repo, expected
+):
+    db, _service, _source, _remote, _repo = setup
+    await _second_project(db)
+    await db.create_repo(RepoConfig(
+        id="other", project_id="p", source_type=RepoSourceType.CLONE, url="/other.git",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(hierarchical_integration_mode=destination_mode)
+        )
+    await db.create_task(Task(
+        id="moved", project_id="web", repo_id=start_repo, title="moved", description="",
+    ))
+    await db.update_task("moved", project_id="p")
+    assert (await db.get_task("moved")).repo_id == expected
+
+
+async def test_project_move_keeps_an_explicit_repository_and_same_project_edits(setup):
+    db, _service, _source, _remote, _repo = setup
+    await _second_project(db)
+    await db.create_task(Task(
+        id="moved", project_id="web", repo_id="web-repo", title="moved", description="",
+    ))
+    await db.update_task("moved", project_id="web", title="renamed")
+    assert (await db.get_task("moved")).repo_id == "web-repo", "not a move"
+    await db.update_task("moved", project_id="p", repo_id=None)
+    assert (await db.get_task("moved")).repo_id is None, "the caller chose the repository"
+
+
+async def test_sweep_collects_and_reports_a_task_naming_another_projects_repository(setup):
+    """Rows a project move left behind before the move rebound are healed by the
+    sweep: rebound to the publisher's repository, delivered, and reported."""
+    db, service, _source, remote, _repo = setup
+    await _second_project(db)
+    head = await _completed_elsewhere(setup, "stranded", project_id="p", repo_id="web-repo")
+    assert not await _delivery_pending(db, "stranded"), "the defect: counted as delivered"
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert (await db.get_task("stranded")).repo_id == "r"
+    comments = (await db.list_task_comments("stranded"))["comments"]
+    assert [c["author_id"] for c in comments] == ["development-integration"]
+    assert "`web-repo` to `r`" in comments[0]["body"]
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert len((await db.list_task_comments("stranded"))["comments"]) == 1, "reported once"
+
+
+async def test_sweep_leaves_a_task_on_another_repository_of_its_own_project(setup):
+    db, service, _source, remote, _repo = setup
+    await db.create_repo(RepoConfig(
+        id="other", project_id="p", source_type=RepoSourceType.CLONE, url="/other.git",
+    ))
+    before = git(remote, "rev-parse", "main")
+    await _completed_elsewhere(setup, "pinned", project_id="p", repo_id="other")
+    assert await service.rebind_foreign_repositories("p", _repo) == []
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task("pinned")).repo_id == "other"
+    assert git(remote, "rev-parse", "main") == before
+
+
 @pytest.mark.parametrize("confirmed", [True, False])
 @pytest.mark.parametrize("attachment", ["attached", "detached", "missing_attempt", "successor"])
 async def test_stopped_writer_preserves_dirty_checkout_before_unlock(setup, confirmed, attachment):
@@ -1367,125 +1489,3 @@ async def test_invalid_policy_arms_its_own_deadline_instead_of_spinning(setup):
     service.next_due.clear()
     await service.tick(now)
     assert service.next_due["p"] > now, "the deadline is armed even though validation failed"
-
-
-async def _second_project(db, *, mode="development"):
-    """Project ``web`` with its own repository, as agent-queue-web is to agent-queue."""
-    await db.create_project(Project(id="web", name="Web"))
-    await db.create_repo(RepoConfig(
-        id="web-repo", project_id="web", source_type=RepoSourceType.CLONE, url="/web.git",
-    ))
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(projects)
-            .where(projects.c.id == "web")
-            .values(integration_repository_id="web-repo", hierarchical_integration_mode=mode)
-        )
-
-
-async def _completed_elsewhere(setup, task_id, *, project_id, repo_id):
-    """A completed task whose branch is on ``p``'s remote but which names *repo_id*."""
-    db, _service, source, _remote, _repo = setup
-    git(source, "checkout", "-B", task_id, "main")
-    (source / (task_id + ".txt")).write_text("moved\n")
-    git(source, "add", ".")
-    git(source, "commit", "-m", task_id)
-    git(source, "push", "origin", task_id)
-    await db.create_task(Task(
-        id=task_id, project_id=project_id, repo_id=repo_id, title=task_id, description="",
-        branch_name=task_id, status=TaskStatus.COMPLETED,
-    ))
-    return git(source, "rev-parse", "HEAD")
-
-
-async def test_a_task_moved_between_projects_is_delivered_by_its_new_project(setup):
-    """fleet-meadow: filed in agent-queue-web, re-filed into agent-queue by a project
-    move that kept agent-queue-web's repository.  The sweep skipped it and readiness
-    counted it delivered.  The move now takes the destination's repository."""
-    db, service, _source, remote, _repo = setup
-    await _second_project(db)
-    head = await _completed_elsewhere(setup, "moved", project_id="web", repo_id="web-repo")
-    await db.update_task("moved", project_id="p")
-    assert (await db.get_task("moved")).repo_id == "r"
-    assert await _delivery_pending(db, "moved"), "readiness now waits for its delivery"
-    result = await service.sweep("p")
-    assert result["outcome"] == "delivered"
-    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
-    assert not await _delivery_pending(db, "moved")
-
-
-@pytest.mark.parametrize(
-    ("destination_mode", "start_repo", "expected"),
-    [
-        # A repository the destination does not own gives way to the one
-        # creation would have chosen there: its designated repository in a
-        # delivery mode, none otherwise.
-        ("development", "web-repo", "r"),
-        ("disabled", "web-repo", None),
-        # A repository the destination owns is a deliberate binding.
-        ("development", "other", "other"),
-        ("development", None, "r"),
-    ],
-)
-async def test_project_move_binds_the_destinations_repository(
-    setup, destination_mode, start_repo, expected
-):
-    db, _service, _source, _remote, _repo = setup
-    await _second_project(db)
-    await db.create_repo(RepoConfig(
-        id="other", project_id="p", source_type=RepoSourceType.CLONE, url="/other.git",
-    ))
-    async with db.immediate() as conn:
-        await conn.execute(
-            update(projects)
-            .where(projects.c.id == "p")
-            .values(hierarchical_integration_mode=destination_mode)
-        )
-    await db.create_task(Task(
-        id="moved", project_id="web", repo_id=start_repo, title="moved", description="",
-    ))
-    await db.update_task("moved", project_id="p")
-    assert (await db.get_task("moved")).repo_id == expected
-
-
-async def test_project_move_keeps_an_explicit_repository_and_same_project_edits(setup):
-    db, _service, _source, _remote, _repo = setup
-    await _second_project(db)
-    await db.create_task(Task(
-        id="moved", project_id="web", repo_id="web-repo", title="moved", description="",
-    ))
-    await db.update_task("moved", project_id="web", title="renamed")
-    assert (await db.get_task("moved")).repo_id == "web-repo", "not a move"
-    await db.update_task("moved", project_id="p", repo_id=None)
-    assert (await db.get_task("moved")).repo_id is None, "the caller chose the repository"
-
-
-async def test_sweep_collects_and_reports_a_task_naming_another_projects_repository(setup):
-    """Rows a project move left behind before the move rebound are healed by the
-    sweep: rebound to the publisher's repository, delivered, and reported."""
-    db, service, _source, remote, _repo = setup
-    await _second_project(db)
-    head = await _completed_elsewhere(setup, "stranded", project_id="p", repo_id="web-repo")
-    assert not await _delivery_pending(db, "stranded"), "the defect: counted as delivered"
-    result = await service.sweep("p")
-    assert result["outcome"] == "delivered"
-    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
-    assert (await db.get_task("stranded")).repo_id == "r"
-    comments = (await db.list_task_comments("stranded"))["comments"]
-    assert [c["author_id"] for c in comments] == ["development-integration"]
-    assert "`web-repo` to `r`" in comments[0]["body"]
-    assert (await service.sweep("p"))["outcome"] == "idle"
-    assert len((await db.list_task_comments("stranded"))["comments"]) == 1, "reported once"
-
-
-async def test_sweep_leaves_a_task_on_another_repository_of_its_own_project(setup):
-    db, service, _source, remote, _repo = setup
-    await db.create_repo(RepoConfig(
-        id="other", project_id="p", source_type=RepoSourceType.CLONE, url="/other.git",
-    ))
-    before = git(remote, "rev-parse", "main")
-    await _completed_elsewhere(setup, "pinned", project_id="p", repo_id="other")
-    assert await service.rebind_foreign_repositories("p", _repo) == []
-    assert (await service.sweep("p"))["outcome"] == "idle"
-    assert (await db.get_task("pinned")).repo_id == "other"
-    assert git(remote, "rev-parse", "main") == before
