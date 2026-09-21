@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import time
@@ -908,6 +909,18 @@ class PlaybookV2CommandsMixin:
                 return exact[0]
         return matches[0] if matches else None
 
+    async def _v2_refresh_required_status(self) -> None:
+        """Publish required-playbook readiness after an activation write.
+
+        ``/health`` and the runtime's required-inactive set used to keep the
+        startup verdict, so activating a repaired required playbook by hand
+        changed nothing visible until the daemon restarted.
+        """
+        orchestrator = getattr(self, "orchestrator", None)
+        refresh = getattr(orchestrator, "refresh_required_playbook_status", None)
+        if inspect.iscoroutinefunction(refresh):
+            await refresh()
+
     async def _v2_activation_payload(self, record) -> dict[str, Any]:
         payload = record.as_dict()
         if hasattr(self.db, "count_pending_events"):
@@ -1589,6 +1602,7 @@ class PlaybookV2CommandsMixin:
         refreshed, _contracts, _profiles = await self._v2_health_records()
         activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)
         replay = await self._v2_replay_on_activation(playbook_id, activation)
+        await self._v2_refresh_required_status()
         return {
             "success": True,
             "activation": (
@@ -1685,6 +1699,7 @@ class PlaybookV2CommandsMixin:
         manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
         if manager is not None:
             await manager.refresh()
+        await self._v2_refresh_required_status()
         return {"success": True, "deleted": result.rowcount == 1,
                 "playbook_id": name, "scope": scope, "scope_identifier": identifier}
 
@@ -1748,6 +1763,7 @@ class PlaybookV2CommandsMixin:
             from src.playbooks.routing import refresh_routing_activation_snapshot
 
             await refresh_routing_activation_snapshot(manager, self.db)
+        await self._v2_refresh_required_status()
         return {"success": True, "playbook_id": playbook_id, "enabled": enabled, "noop": False}
 
     def _v2_replay_policy(self) -> str:

@@ -36,7 +36,7 @@ from src.playbooks.definition import (
     source_digest,
 )
 from src.playbooks.profiles import shipped_profile_fingerprints, shipped_profile_lookup
-from src.playbooks.required import REQUIRED_SYSTEM_PLAYBOOK_IDS
+from src.playbooks.required import shipped_reviewed_playbook_ids
 from src.playbooks.validation import (
     RegisteredEventLookup,
     RegistryContractLookup,
@@ -422,9 +422,13 @@ def test_integration_only_bundle_is_the_reviewed_fixture() -> None:
         ).read_bytes(), f"docs/playbooks/integration-only/default-pipeline/{name} drifted"
 
 
-@pytest.mark.parametrize("playbook_id", REQUIRED_SYSTEM_PLAYBOOK_IDS)
+@pytest.mark.parametrize("playbook_id", shipped_reviewed_playbook_ids())
 def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None:
-    """A required bundle is seeded verbatim, so it may not drift from the recording.
+    """A shipped bundle is seeded verbatim, so it may not drift from the recording.
+
+    Every directory under `src/prompts/reviewed_playbooks/` is covered, not
+    only the required ids: seeding refreshes a drifted vault copy on every
+    start, so each of these bundles reaches every existing install.
 
     `ensure_reviewed_playbook_bundles` copies these bytes into a new vault and
     the reconciler activates them; nothing recompiles them from the shipped
