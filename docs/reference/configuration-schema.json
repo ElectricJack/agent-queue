@@ -704,6 +704,7 @@
         "api_key": "",
         "base_url": "",
         "default_class": "",
+        "fallback": null,
         "max_tokens": 4096,
         "model": "",
         "provider": "anthropic"
@@ -720,6 +721,36 @@
         "default_class": {
           "default": "",
           "type": "string"
+        },
+        "fallback": {
+          "additionalProperties": false,
+          "default": null,
+          "properties": {
+            "api_key": {
+              "default": "",
+              "type": "string"
+            },
+            "base_url": {
+              "default": "",
+              "type": "string"
+            },
+            "default_class": {
+              "default": "",
+              "type": "string"
+            },
+            "model": {
+              "default": "",
+              "type": "string"
+            },
+            "provider": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
         },
         "max_tokens": {
           "default": 4096,
@@ -2056,6 +2087,7 @@
         "dialog_budget_seconds": 8,
         "dialog_settle_seconds": 1.5,
         "enabled": true,
+        "fake_script_file": "",
         "lease_ttl_seconds": 480,
         "max_restarts": 3,
         "nudge_debounce_ms": 500,
@@ -2088,6 +2120,10 @@
         "enabled": {
           "default": true,
           "type": "boolean"
+        },
+        "fake_script_file": {
+          "default": "",
+          "type": "string"
         },
         "lease_ttl_seconds": {
           "default": 480,

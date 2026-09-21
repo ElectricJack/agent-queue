@@ -358,3 +358,40 @@ def test_provider_commands_land_in_the_provider_cli_group() -> None:
 
     for name in ("provider_status", "provider_history", "provider_recheck", "provider_set_state"):
         assert _TOOL_CATEGORIES[name] == "provider"
+
+
+async def _claude_profile(handler) -> None:
+    from src.models import AgentProfile
+
+    await handler.orchestrator.db.create_profile(
+        AgentProfile(id="standard-high-claude", name="c", harness="claude",
+                     default_class="standard-high")
+    )
+
+
+async def test_a_stale_empty_tracked_set_never_refuses_a_known_provider(handler, service) -> None:
+    """Right after a start the tracked set can be read before the profiles
+    sync; neither the cache nor the resolver may then refuse ``claude``."""
+    service._tracked = set()
+    service._tracked_at = service.now()  # a fresh, empty cache entry
+    await _claude_profile(handler)  # ... and then the profiles arrive
+    result = await handler.execute("provider_status", {"provider": "claude"})
+    assert result["success"] is True, result
+    assert [row["provider"] for row in result["providers"]] == ["claude"]
+
+
+async def test_an_empty_profile_read_is_not_cached(handler, service) -> None:
+    await _claude_profile(handler)
+    real = service._db.list_profiles
+    service._db.list_profiles = AsyncMock(return_value=[])
+    try:
+        assert await service.tracked_providers(force=True) == set(service.rows())
+    finally:
+        service._db.list_profiles = real
+    assert "claude" in await service.tracked_providers()
+
+
+def test_held_tasks_lands_in_the_provider_cli_group() -> None:
+    from src.tools import _TOOL_CATEGORIES
+
+    assert _TOOL_CATEGORIES["provider_held_tasks"] == "provider"

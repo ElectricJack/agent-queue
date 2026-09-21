@@ -423,7 +423,10 @@ class ProviderAvailabilityService:
             if key:
                 tracked.add(key)
         self._tracked = tracked
-        self._tracked_at = now
+        # An empty answer is not cached: at startup the profiles may not have
+        # reached the database yet, and caching "none" would hide every
+        # provider from ``aq provider status`` / ``set-state`` for a minute.
+        self._tracked_at = now if tracked else 0.0
         return tracked | set(self._rows)
 
     async def tick(self) -> list[Transition]:
@@ -947,7 +950,68 @@ class ProviderAvailabilityService:
 
     # -- the derived hold (D11 mechanism 2, D18) ---------------------------------
 
-    async def hold_for(self, task: Any, *, project: Any = None) -> dict[str, Any] | None:
+    async def held_tasks(self, *, project_id: str | None = None) -> list[dict[str, Any]]:
+        """Every queued, unassigned task an unavailable provider is holding (D18, D20).
+
+        One row per task: its id, project, title, status and priority plus
+        the :meth:`hold_for` explanation.  What the dashboard's *held by
+        provider* filter and ``aq provider held-tasks`` read, so neither
+        re-derives a hold in the client.  Free while every provider is
+        launchable: nothing is listed until something is suppressed.
+        """
+        from src.models import TaskStatus
+
+        if not self.enforcing or not self.suppressed_providers():
+            return []
+        try:
+            profiles = {p.id: p for p in await self._db.list_profiles()}
+        except Exception:  # without profiles there is no provider to name
+            logger.debug("held tasks: profiles unreadable", exc_info=True)
+            return []
+        projects: dict[str, Any] = {}
+        held: list[dict[str, Any]] = []
+        filters = {"project_id": project_id} if project_id else {}
+        for status in (TaskStatus.READY, TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.PAUSED):
+            try:
+                tasks = await self._db.list_tasks(status=status, **filters)
+            except Exception:  # a status we cannot list holds nothing we can report
+                logger.debug("held tasks: %s tasks unreadable", status, exc_info=True)
+                continue
+            for task in tasks:
+                if task.assigned_agent_id:
+                    continue
+                if task.project_id not in projects:
+                    try:
+                        projects[task.project_id] = await self._db.get_project(task.project_id)
+                    except Exception:
+                        logger.debug("held tasks: project unreadable", exc_info=True)
+                        projects[task.project_id] = None
+                project = projects[task.project_id]
+                if project is None:
+                    continue
+                hold = await self.hold_for(task, project=project, profiles=profiles)
+                if hold is None:
+                    continue
+                held.append(
+                    {
+                        "task_id": task.id,
+                        "project_id": task.project_id,
+                        "title": task.title,
+                        "status": task.status.value,
+                        "priority": task.priority,
+                        **hold,
+                    }
+                )
+        held.sort(key=lambda row: (row["priority"], row["task_id"]))
+        return held
+
+    async def hold_for(
+        self,
+        task: Any,
+        *,
+        project: Any = None,
+        profiles: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """Why *task* is held by its provider, or ``None`` when it is not.
 
         A hold is derived, never a status: a queued task whose effective
@@ -977,11 +1041,12 @@ class ProviderAvailabilityService:
         profile_id = task.profile_id or getattr(project, "default_profile_id", None)
         if not profile_id:
             return None
-        try:
-            profiles = {p.id: p for p in await self._db.list_profiles()}
-        except Exception:  # without profiles there is no provider to name
-            logger.debug("provider hold: profiles unreadable", exc_info=True)
-            return None
+        if profiles is None:
+            try:
+                profiles = {p.id: p for p in await self._db.list_profiles()}
+            except Exception:  # without profiles there is no provider to name
+                logger.debug("provider hold: profiles unreadable", exc_info=True)
+                return None
         if not task.profile_id and self.reroute is not None:
             # An unrouted task follows the default's equivalent rung while the
             # default's provider is down (D13); it is held only without one.
@@ -1187,7 +1252,7 @@ class ProviderAvailabilityService:
                 f"Provider {provider} is flapping ({len(half_changes)} changes in "
                 f"{window / 3600:g} h); per-change messages are paused until it holds one "
                 f"state for a full window. Now: {view['state']} — {view['reason']}.\n"
-                f"`aq provider status {provider} --verbose` shows the evidence."
+                f"`aq provider status --provider {provider} --verbose` shows the evidence."
             )
         else:
             subject = f"Provider {provider}: {view['state']}"
@@ -1211,9 +1276,11 @@ class ProviderAvailabilityService:
                         + ", ".join(affected["roles"])
                     )
             lines.append(
-                f"Commands: `aq provider status {provider}`, `aq provider reroute --dry-run`, "
-                f"`aq provider set-state {provider} disabled|available|auto --reason ...`, "
-                f"`aq provider recheck {provider}`."
+                f"Commands: `aq provider status --provider {provider}`, "
+                "`aq provider reroute --dry-run`, "
+                f"`aq provider set-state --provider {provider} "
+                "--state disabled|available|auto --reason ...`, "
+                f"`aq provider recheck --provider {provider}`."
             )
             body = "\n".join(lines)
         from_kind, from_id = NOTIFY_FROM
@@ -1601,7 +1668,8 @@ class ProviderAvailabilityService:
         if evidence:
             lines.append("Latest evidence: " + ", ".join(evidence) + ".")
         lines.append(
-            f"`aq provider status {provider} --verbose` shows the evidence and transitions."
+            f"`aq provider status --provider {provider} --verbose` shows the evidence "
+            "and transitions."
         )
         return "\n".join(lines)
 
@@ -1612,8 +1680,8 @@ class ProviderAvailabilityService:
         if trigger == "all_providers_unavailable":
             text += (
                 " Every provider is unavailable, so no queued work can run until one returns;"
-                " `aq provider set-state <provider> available --for 1h --reason ...` re-admits"
-                " one you know to be healthy."
+                " `aq provider set-state --provider <provider> --state available --for 1h"
+                " --reason ...` re-admits one you know to be healthy."
             )
         return text
 
@@ -1626,20 +1694,22 @@ class ProviderAvailabilityService:
             command = getattr(login, "login_command", None) or f"{provider} login"
             return (
                 f"run `{command}` on the host; if the account is out of usage the login "
-                f"will not stick until it resets. Then `aq provider recheck {provider}`."
+                f"will not stick until it resets. Then `aq provider recheck --provider {provider}`."
             )
         if state == EXHAUSTED:
             return (
-                f"wait for the usage window to reset, or `aq provider set-state {provider} "
-                "available --for 1h --reason ...` if this is a false positive"
+                "wait for the usage window to reset, or `aq provider set-state "
+                f"--provider {provider} --state available --for 1h --reason ...` if this "
+                "is a false positive"
             )
         if state == FAILING:
             return (
                 "launches die during startup for a reason AQ cannot name; check the CLI "
-                f"on the host (`aq session logs`), then `aq provider set-state {provider} auto`"
+                "on the host (`aq session logs`), then "
+                f"`aq provider set-state --provider {provider} --state auto`"
             )
         if state == DISABLED:
-            return f"`aq provider set-state {provider} auto` clears the override"
+            return f"`aq provider set-state --provider {provider} --state auto` clears the override"
         return ""
 
     def headline(self, transition: Transition) -> str:

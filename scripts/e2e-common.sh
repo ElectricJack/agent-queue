@@ -40,6 +40,9 @@ E2E_ONBOARDING_ROOT="$AQ_E2E_HOME/onboarding"
 E2E_STATEFUL_WORKSPACE="$AQ_E2E_HOME/workspaces/stateful-cli"
 AQ_E2E_PLUGIN_FIXTURE="$AQ_E2E_HOME/plugin-fixture"
 E2E_LOG="$AQ_E2E_HOME/daemon.log"
+# The fake session provider's script (Tier 1): harness -> ok | login_required
+# | usage_limit | crash | rate_limit_midtask.  S16 rewrites it mid-run.
+E2E_FAKE_SCRIPT="$AQ_E2E_HOME/fake-provider-script.json"
 E2E_PID_FILE="$AQ_E2E_HOME/daemon.pid"
 # An `aq` on PATH that resolves to *this* worktree.  Prepended to the
 # daemon's PATH by e2e-daemon.sh so that Tier 2 sessions — which inherit
@@ -51,6 +54,7 @@ E2E_BIN="$AQ_E2E_HOME/bin"
 export AQ_E2E_HOME AQ_E2E_PORT AQ_E2E_API_URL AQ_E2E_TMUX_SOCKET
 export AQ_E2E_SESSION_PROVIDER
 export E2E_CONFIG E2E_VAULT E2E_REPO E2E_OTHER_REPO E2E_LOG E2E_PID_FILE E2E_BIN
+export E2E_FAKE_SCRIPT
 export E2E_ONBOARDING_ROOT
 export E2E_STATEFUL_WORKSPACE AQ_E2E_PLUGIN_FIXTURE
 export E2E_DB_NAME E2E_DB_URL E2E_ADMIN_DSN

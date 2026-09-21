@@ -184,6 +184,12 @@ class ProviderCommandsMixin:
         known = await service.tracked_providers()
         provider = service.resolve_provider(name)
         if provider not in known:
+            # The tracked set is cached for a minute; a profile that appeared
+            # since (or a daemon that has just started) must not refuse an
+            # operator's override, so re-read once before saying no.
+            known = await service.tracked_providers(force=True)
+            provider = service.resolve_provider(name)
+        if provider not in known:
             listing = ", ".join(sorted(known)) or "none"
             return None, {
                 "success": False,
@@ -314,6 +320,35 @@ class ProviderCommandsMixin:
             "mode": getattr(service.config, "mode", "enforce"),
             "now": now,
             "providers": rows,
+        }
+
+    async def _cmd_provider_held_tasks(self, args: dict) -> dict:
+        """Queued tasks an unavailable provider is holding (``aq provider held-tasks``).
+
+        Args:
+            project_id: Only this project's tasks.
+
+        Returns:
+            ``tasks``: one row per held task -- id, project, title, status,
+            priority and the derived hold (``provider``, ``state``, ``kind``,
+            ``ahead``, ``since``, ``until``, ``reason``, ``remediation``) that
+            ``aq task explain`` reports for it (D18).  Empty while every
+            provider is launchable.
+        """
+        service = self._availability()
+        if service is None:
+            return {"success": False, "error": "provider availability is not running"}
+        project_id = str(args.get("project_id") or "").strip() or None
+        tasks = await service.held_tasks(project_id=project_id)
+        by_kind: dict[str, int] = {}
+        for row in tasks:
+            by_kind[row["kind"]] = by_kind.get(row["kind"], 0) + 1
+        return {
+            "success": True,
+            "now": service.now(),
+            "tasks": tasks,
+            "total": len(tasks),
+            "by_kind": by_kind,
         }
 
     async def _cmd_provider_history(self, args: dict) -> dict:

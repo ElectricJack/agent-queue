@@ -96,6 +96,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "phase_list",
     "pool_status",
     "prime",
+    "provider_held_tasks",
     "provider_history",
     "provider_recheck",
     "provider_reroute",
@@ -208,6 +209,24 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   A task's description or agent affinity is not an execution constraint.
   If the requested worker is unavailable, keep the requirement; do not
   substitute a lighter worker or claim that routing implies execution.
+- **Pin a provider only when the provider is the requirement.** An explicit
+  `--profile` is a preference: when its provider runs out of usage or loses
+  its login, the task fails over to the same class on another provider. Pin
+  only when the provider itself is what was asked for — the human named that
+  provider or model (Astra art work, say), or the work needs a capability
+  only that provider has. Never pin merely because you named a profile, or
+  because the work is important. Pin at creation with `aq task create
+  --profile <id> --pin` (graphs: `pin: true` on the node or in `defaults`),
+  or later with `aq task route --task-id <task> --profile-id <id> --pin` or
+  `aq task edit --task-id <task> --profile-id <id> --pin`. A pinned task
+  holds for the whole outage instead of moving; a class only one provider
+  runs, such as `astra-*`, holds anyway. Before moving work by hand during
+  an outage, read `aq task explain --task-id <task>` (its `provider_hold`
+  reason says why the task is not moving), `aq provider status` and `aq
+  provider held-tasks`: most held work moves on its own within a few sweeps.
+  A pin is a human's statement, so force-move a pinned task (`aq provider
+  reroute --task-id <task> --to-profile <id> --force`) only on the human's
+  instruction.
 - **Never route work to yourself.** The supervisor profile is control-plane
   only and cannot execute queued tasks. When omitting `--profile`, AQ selects
   the configured eligible worker default; fix that default rather than trying

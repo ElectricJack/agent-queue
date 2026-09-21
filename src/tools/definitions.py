@@ -287,6 +287,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # provider availability — state, overrides, recheck (provider-failover D20)
     "provider_status": "provider",
     "provider_history": "provider",
+    "provider_held_tasks": "provider",
     "provider_recheck": "provider",
     "provider_set_state": "provider",
     "provider_reroute": "provider",
@@ -5480,6 +5481,27 @@ _ALL_TOOL_DEFINITIONS = [
                 "verbose": {
                     "type": "boolean",
                     "description": "Include the evidence ring and the last ten transitions.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_held_tasks",
+        "description": (
+            "List the queued tasks an unavailable provider is holding, each with "
+            "why it is not moving (provider_pinned, no_equivalent_rung, "
+            "awaiting_failover_capacity with how many are ahead, ...), the "
+            "provider's state, since when and the expected recovery -- the same "
+            "hold `aq task explain` reports.  Empty while every provider is "
+            "launchable."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Only this project's tasks. Default: every project.",
                 },
             },
             "required": [],

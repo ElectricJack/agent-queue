@@ -219,8 +219,8 @@ async def _check_recovery_stuck(ctx: DoctorContext) -> CheckResult:
         detail=(
             "the provider recovery loop has stopped: "
             + "; ".join(item["detail"] for item in stuck)
-            + ". Check the daemon is running its cycle; `aq provider recheck <provider>` "
-            "probes now."
+            + ". Check the daemon is running its cycle; "
+            "`aq provider recheck --provider <provider>` probes now."
         ),
         data={"stuck": stuck},
     )
@@ -308,31 +308,18 @@ async def _check_held_tasks(ctx: DoctorContext) -> CheckResult:
             severity=Severity.OK,
             detail="no provider is holding work",
         )
-    from src.models import TaskStatus
-
     threshold = float(service.config.doctor.held_warn_seconds)
     now = service.now()
-    held: list[dict[str, Any]] = []
-    for status in (TaskStatus.READY, TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.PAUSED):
-        try:
-            tasks = await ctx.db.list_tasks(status=status)
-        except Exception:  # a status we cannot list holds nothing we can report
-            logger.debug("held_tasks: %s tasks unreadable", status, exc_info=True)
-            continue
-        for task in tasks:
-            hold = await service.hold_for(task)
-            if hold is None:
-                continue
-            since = float(hold.get("since") or now)
-            held.append(
-                {
-                    "task_id": task.id,
-                    "project_id": task.project_id,
-                    "provider": hold["provider"],
-                    "kind": hold["kind"],
-                    "held_seconds": max(0.0, now - since),
-                }
-            )
+    held: list[dict[str, Any]] = [
+        {
+            "task_id": hold["task_id"],
+            "project_id": hold["project_id"],
+            "provider": hold["provider"],
+            "kind": hold["kind"],
+            "held_seconds": max(0.0, now - float(hold.get("since") or now)),
+        }
+        for hold in await service.held_tasks()
+    ]
     if not held:
         return CheckResult(
             id=HELD_TASKS_CHECK_ID,

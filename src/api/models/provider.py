@@ -155,6 +155,42 @@ class ProviderStatusResponse(BaseModel):
     providers: list[ProviderAvailabilityStatus] = []
 
 
+class ProviderHeldTask(BaseModel):
+    """One queued task an unavailable provider is holding (D18, D20).
+
+    The task's own identity plus the derived hold ``aq task explain``
+    reports: ``kind`` says why it is not moving, ``ahead`` its place in the
+    failover trickle for ``awaiting_failover_capacity``.
+    """
+
+    task_id: str
+    project_id: str
+    title: str = ""
+    status: str = ""
+    priority: int = 100
+    provider: str
+    vendor: str = ""
+    state: str
+    since: float | None = None
+    until: float | None = None
+    kind: str
+    ahead: int | None = None
+    detail: str = ""
+    profile_id: str | None = None
+    reason: str = ""
+    remediation: str = ""
+
+
+class ProviderHeldTasksResponse(BaseModel):
+    """``provider_held_tasks``: every held task, and how many per ``kind``."""
+
+    success: bool = True
+    now: float
+    tasks: list[ProviderHeldTask] = []
+    total: int = 0
+    by_kind: dict[str, int] = {}
+
+
 class ProviderHistoryResponse(BaseModel):
     success: bool = True
     provider: str
@@ -298,6 +334,7 @@ class ProviderRerouteUndoBody(BaseModel):
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "provider_status": ProviderStatusResponse,
     "provider_history": ProviderHistoryResponse,
+    "provider_held_tasks": ProviderHeldTasksResponse,
     "provider_recheck": ProviderRecheckResponse,
     "provider_set_state": ProviderSetStateResponse,
     "provider_reroute": ProviderRerouteResponse,

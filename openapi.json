@@ -9754,6 +9754,53 @@
         }
       }
     },
+    "/api/provider/held-tasks": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, ...), the provider's state, since when and the expected recovery -- the same hold `aq task explain` reports.  Empty while every provider is launchable.",
+        "description": "List the queued tasks an unavailable provider is holding, each with why it is not moving (provider_pinned, no_equivalent_rung, awaiting_failover_capacity with how many are ahead, ...), the provider's state, since when and the expected recovery -- the same hold `aq task explain` reports.  Empty while every provider is launchable.",
+        "operationId": "provider_held_tasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderHeldTasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderHeldTasksResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/provider/history": {
       "post": {
         "tags": [
@@ -37821,6 +37868,177 @@
         ],
         "title": "ProviderAvailabilityStatus",
         "description": "One provider's availability, as the CLI, API, doctor and cards show it.\n\nEvery field is server-derived; the dashboard never recomputes a state.\n``state`` is the *effective* state (the override while one is active);\n``derived_*`` is what the evidence alone says.  ``until`` is the expected\nrecovery -- the provider's own reset clock or a backoff deadline -- and\n``None`` when nothing is known (``unauthenticated`` needs a human)."
+      },
+      "ProviderHeldTask": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "project_id",
+          "provider",
+          "state",
+          "kind"
+        ],
+        "title": "ProviderHeldTask",
+        "description": "One queued task an unavailable provider is holding (D18, D20).\n\nThe task's own identity plus the derived hold ``aq task explain``\nreports: ``kind`` says why it is not moving, ``ahead`` its place in the\nfailover trickle for ``awaiting_failover_capacity``."
+      },
+      "ProviderHeldTasksRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Only this project's tasks. Default: every project."
+          }
+        },
+        "type": "object",
+        "title": "ProviderHeldTasksRequest"
+      },
+      "ProviderHeldTasksResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHeldTask"
+            },
+            "type": "array",
+            "title": "Tasks",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Kind",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderHeldTasksResponse",
+        "description": "``provider_held_tasks``: every held task, and how many per ``kind``."
       },
       "ProviderHistoryRequest": {
         "properties": {

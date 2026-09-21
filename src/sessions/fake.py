@@ -20,6 +20,10 @@ Test knobs (all keyed by session *name*, settable before or after start):
     :meth:`resubmit_pending` recovers it (``sessions.stuck_composer``).
 ``script_partial_list(exc)``
     The next :meth:`list_running` raises :class:`PartialListError`.
+``sessions.fake_script_file`` (config)
+    A JSON file mapping a harness command to a mode, re-read on every
+    start, so a process other than the test -- the end-to-end kit -- can
+    exhaust and restore a provider mid-run (:mod:`src.sessions.fake_script`).
 ``sent_nudges``
     Every accepted ``(name, text)`` in order.
 """
@@ -31,6 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import ClassVar
 
+from src.sessions import fake_script
 from src.sessions.provider import (
     Cap,
     NotSubmitted,
@@ -128,6 +133,30 @@ class FakeProvider(SessionProvider):
                 return scripted
         return None
 
+    def _file_entry(self, spec: SessionSpec) -> fake_script.ScriptedMode | None:
+        """This start's entry in ``sessions.fake_script_file``, re-read every time."""
+        path = fake_script.script_file_for(self.config)
+        if not path:
+            return None
+        script = fake_script.read_script(path)
+        for arg in spec.command:
+            entry = script.get(os.path.basename(str(arg)))
+            if entry is not None:
+                return entry
+        return None
+
+    def _file_scripted_dialog(self, spec: SessionSpec) -> tuple[str, str | None] | None:
+        entry = self._file_entry(spec)
+        if entry is None:
+            return None
+        if entry.mode == "login_required":
+            return "login-required", "auth"
+        if entry.mode == "usage_limit":
+            return "usage-limit", "usage"
+        if entry.mode == "crash":
+            raise SessionDiedDuringStartup(spec.session_name, detail="scripted crash")
+        return None
+
     def script_start_error(self, name: str, exc: Exception) -> None:
         self._start_error[name] = exc
 
@@ -175,7 +204,7 @@ class FakeProvider(SessionProvider):
         if spec.session_name in self._startup_death:
             self._startup_death.discard(spec.session_name)
             raise SessionDiedDuringStartup(spec.session_name, detail="scripted startup death")
-        scripted = self._scripted_dialog(spec)
+        scripted = self._scripted_dialog(spec) or self._file_scripted_dialog(spec)
         if scripted is not None:
             dialog, signal = scripted
             self.dialog_deaths.append(spec)
@@ -186,13 +215,22 @@ class FakeProvider(SessionProvider):
                 signal=signal,
             )
         now = time.time()
-        self.sessions[spec.session_name] = FakeSession(
+        session = FakeSession(
             spec=spec,
             handle=handle,
             started_at=now,
             activity=now,
         )
+        self.sessions[spec.session_name] = session
         self.starts.append(spec)
+        entry = self._file_entry(spec)
+        if entry is not None and entry.mode == "rate_limit_midtask":
+            # The CLI prints its usage-limit notice and exits: what the exit
+            # classifier reads as ``RATE_LIMIT`` from the last capture.
+            session.output.append(fake_script.RATE_LIMIT_LINE)
+            session.dead_at = now + max(0.0, entry.after_s)
+            if entry.after_s <= 0:
+                session.process_alive = False
         return handle
 
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:

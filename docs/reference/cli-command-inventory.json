@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 360,
+    "leaf_commands": 361,
     "registration": {
-      "generated": 251,
+      "generated": 252,
       "handwritten": 109
     },
     "ownership": {
-      "core": 321,
+      "core": 322,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 359
+      "supported": 360
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 251,
+      "dispatch": 252,
       "registration": 95
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 300
+      "untested": 301
     }
   },
   "commands": [
@@ -6830,6 +6830,38 @@
         "optional": [
           "--workspace-id",
           "--all-retired",
+          "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider held-tasks",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_held_tasks",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--project-id",
           "--json",
           "--brief",

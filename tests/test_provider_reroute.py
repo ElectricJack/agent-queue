@@ -579,6 +579,47 @@ async def test_recovery_leaves_moved_tasks_and_releases_holds(orch):
     assert result["outcome"] == "idle"
 
 
+async def test_held_tasks_lists_each_held_task_with_its_kind(orch):
+    """``provider_held_tasks`` is the server-derived list behind the dashboard's
+    *held by provider* filter (D20): every queued task a suppressed provider
+    holds, with the same hold ``aq task explain`` reports -- and nothing while
+    every provider is launchable."""
+    await _task(orch, "pref", "standard-high-codex", priority=10)
+    await _task(orch, "pin", "standard-high-codex", intent=PINNED, priority=20)
+    await _task(orch, "astra", "astra-high-codex", cls="astra-high", priority=30)
+    await _task(orch, "native", "standard-high-claude")
+    handler = _handler(orch)
+
+    idle = await handler.execute("provider_held_tasks", {})
+    assert idle["success"] is True and idle["tasks"] == [] and idle["total"] == 0
+
+    await _codex_down(orch)
+    result = await handler.execute("provider_held_tasks", {})
+    assert result["success"] is True, result
+    rows = {row["task_id"]: row for row in result["tasks"]}
+    # The queued preferred task is held until the sweep moves it; the pin and
+    # the single-provider class hold for good; claude work is not held.
+    assert set(rows) == {"pref", "pin", "astra"}
+    assert [row["task_id"] for row in result["tasks"]] == ["pref", "pin", "astra"]
+    assert rows["pin"]["kind"] == "provider_pinned"
+    assert rows["astra"]["kind"] == "no_equivalent_rung"
+    # The sweep would move it, but this fixture never activates the
+    # ``provider-failover`` playbook, so nothing will: ``failover_inactive``.
+    assert rows["pref"]["kind"] == "failover_inactive"
+    assert all(row["provider"] == "codex" and row["state"] == DISABLED for row in rows.values())
+    assert rows["pin"]["title"] == "pin" and rows["pin"]["status"] == "READY"
+    assert result["by_kind"]["provider_pinned"] == 1
+    for task_id, row in rows.items():
+        explained = await orch.provider_availability.hold_for(await orch.db.get_task(task_id))
+        assert explained["kind"] == row["kind"]
+
+    # After the sweep moves ``pref`` to claude only the two holds remain.
+    await handler.execute("provider_reroute", {})
+    after = await handler.execute("provider_held_tasks", {"project_id": "p-1"})
+    assert {row["task_id"] for row in after["tasks"]} == {"pin", "astra"}
+    assert (await handler.execute("provider_held_tasks", {"project_id": "nope"}))["tasks"] == []
+
+
 async def test_claim_sql_references_no_provider_table():
     """D14: availability is enforced on the claiming session, never per candidate."""
     import inspect

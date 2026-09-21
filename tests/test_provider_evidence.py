@@ -255,7 +255,7 @@ async def test_notification_is_idempotent_per_generation(env):
     inbox = await env.db.list_messages(to_kind="user", to_id="dashboard")
     assert len([m for m in inbox if "codex" in (m.subject or "")]) == 1
     body = inbox[0].body
-    assert "unauthenticated" in body and "aq provider status codex" in body
+    assert "unauthenticated" in body and "aq provider status --provider codex" in body
 
 
 async def test_a_launchable_change_is_not_a_half_change_notification(env):

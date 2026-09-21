@@ -394,12 +394,23 @@ class Orchestrator(
         # Replaces the never-written ``_provider_cooldowns`` map.  Reads the
         # config through a getter so a hot reload bites on the next evidence.
         from src.providers.availability_service import ProviderAvailabilityService
+        from src.sessions.fake_script import probe_answer, script_file_for
+
+        fake_login_probe = None
+        if script_file_for(config):
+            # The end-to-end kit's fake logins (provider-failover D23): the
+            # scripted harnesses answer from the script file, and nothing
+            # else is probed -- a fake-session daemon never shells out to a
+            # real ``claude`` / ``codex`` login check.
+            async def fake_login_probe(provider: str, timeout: float) -> str | None:
+                return probe_answer(script_file_for(self.config), provider)
 
         self.provider_availability = ProviderAvailabilityService(
             db_getter=lambda: self.db,
             config_getter=lambda: self.config,
             bus=self.bus,
             harness_registry=self.harness_registry,
+            probe=fake_login_probe,
         )
         self.provider_availability.on_half_change = self._notify_provider_half_change
         from src.task_graph.formulas import FormulaRegistry

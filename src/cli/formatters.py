@@ -1429,6 +1429,44 @@ def format_provider_table(providers: list[dict]):
     return table if not extras else Group(table, Text(), *extras)
 
 
+def format_provider_held_tasks(tasks: list[dict]) -> Table:
+    """Format ``provider_held_tasks`` rows for ``aq provider held-tasks`` (D18, D20)."""
+    table = Table(
+        title="Held by provider",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Task", style="bold cyan", no_wrap=True)
+    table.add_column("Pri", justify="right")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Profile", no_wrap=True)
+    table.add_column("Provider", no_wrap=True)
+    table.add_column("Hold", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Title", overflow="fold")
+
+    for row in tasks:
+        state = str(row.get("state") or "")
+        kind = str(row.get("kind") or "")
+        if row.get("ahead") is not None:
+            kind += f" ({row['ahead']} ahead)"
+        table.add_row(
+            str(row.get("task_id") or ""),
+            str(row.get("priority", "")),
+            str(row.get("status") or ""),
+            str(row.get("profile_id") or "—"),
+            Text(
+                f"{row.get('provider', '')} {state}".strip(),
+                style=_PROVIDER_STATE_STYLES.get(state, ""),
+            ),
+            kind,
+            _until_text(row.get("until")),
+            _truncate(str(row.get("title") or ""), 60),
+        )
+    return table
+
+
 def format_formula_list(data: dict) -> Table:
     """Format ``formula_list``'s ``formulas`` array as a Rich table."""
     table = Table(

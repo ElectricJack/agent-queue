@@ -844,6 +844,11 @@ from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
 from .provider_availability_status import ProviderAvailabilityStatus
 from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
+from .provider_held_task import ProviderHeldTask
+from .provider_held_tasks_request import ProviderHeldTasksRequest
+from .provider_held_tasks_response import ProviderHeldTasksResponse
+from .provider_held_tasks_response_422 import ProviderHeldTasksResponse422
+from .provider_held_tasks_response_by_kind import ProviderHeldTasksResponseByKind
 from .provider_history_request import ProviderHistoryRequest
 from .provider_history_response import ProviderHistoryResponse
 from .provider_history_response_422 import ProviderHistoryResponse422
@@ -2082,6 +2087,11 @@ __all__ = (
     "ProvideInputResponse422",
     "ProviderAvailabilityStatus",
     "ProviderAvailabilityStatusEvidenceItem",
+    "ProviderHeldTask",
+    "ProviderHeldTasksRequest",
+    "ProviderHeldTasksResponse",
+    "ProviderHeldTasksResponse422",
+    "ProviderHeldTasksResponseByKind",
     "ProviderHistoryRequest",
     "ProviderHistoryResponse",
     "ProviderHistoryResponse422",

@@ -1332,6 +1332,14 @@ class SessionsConfig:
     pane_stream_interval_seconds: float = 1.0
     pane_stream_max_sessions: int = 12
     pane_stream_lines: int = 60
+    #: Test-only: with ``provider: fake``, a JSON file mapping a harness
+    #: command to a scripted mode (``ok``, ``login_required``,
+    #: ``usage_limit``, ``crash``, ``rate_limit_midtask``), re-read on every
+    #: start and answering the login probe for the harnesses it names --
+    #: how the end-to-end kit exhausts and restores a provider mid-run
+    #: (:mod:`src.sessions.fake_script`, provider-failover D23).  Ignored by
+    #: every other provider.
+    fake_script_file: str = ""
 
     _VALID_PROVIDERS = ("tmux", "subprocess", "fake")
 
@@ -4111,6 +4119,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,
                     "pane_stream_lines": int,
+                    "fake_script_file": str,
                 },
             )
         )
