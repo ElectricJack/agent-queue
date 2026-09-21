@@ -434,8 +434,11 @@ this delegate). The record keeps the previous status, the previous
 `needs_attention` code and any cancellation hold as evidence; retry counters,
 branches and stage evidence are untouched, and nothing claims the delegate
 passed. A delegate an earlier release left `PAUSED` rolls forward on the next
-reconciler tick. Only a live session or claim defers retirement: the writer's
-authority is never taken from it. Active operations and operations waiting for a
+reconciler tick. Only a session that is not fully stopped defers retirement: the
+writer's authority is never taken from it. A pool writer whose process was
+confirmed stopped can keep its claim (`claim_phase`) on the stopped session row
+as handoff evidence; that row is history, not a writer, and does not defer
+retirement. Active operations and operations waiting for a
 human decision are unchanged.
 
 Retirement and cleanup are separate. A retained branch-owner row (an attached
