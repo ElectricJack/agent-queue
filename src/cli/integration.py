@@ -197,6 +197,20 @@ def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
     _execute(ctx, "integration_retry_cleanup", {"batch_id": batch_id})
 
 
+@integration.command("release-delegates")
+@click.argument("operation_id")
+@click.pass_context
+@_handle_errors
+def integration_release_delegates(ctx: click.Context, operation_id: str) -> None:
+    """Settle the delegate tasks of an OPERATION_ID that has already ended.
+
+    For one operation that was cancelled or completed before its delegates were
+    released. The fleet-wide equivalent is
+    `aq doctor --check integration.stranded_delegates --fix`.
+    """
+    _execute(ctx, "integration_release_delegates", {"operation_id": operation_id})
+
+
 @integration.command("recover-candidate-member")
 @click.argument("reservation_id")
 @click.pass_context
