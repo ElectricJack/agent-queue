@@ -212,7 +212,8 @@ def _create_task_graph(
     "profile_id",
     default=None,
     help=(
-        "Worker profile id; supervisor is control-plane only. Omit to use the project default. "
+        "Worker profile id; supervisor is control-plane only. Omit to let "
+        "--intelligence-class pick it, else the project default. "
         "Run `aq agent list-profiles` for the profile ids this install currently has; "
         "prefer an enabled lifecycle: pool profile for ordinary worker work."
     ),
@@ -220,7 +221,12 @@ def _create_task_graph(
 @click.option(
     "--intelligence-class",
     default=None,
-    help="Intelligence class id (e.g. deep-high); also fills missing graph node classes",
+    help=(
+        "Intelligence class id (e.g. deep-high); also fills missing graph node classes. "
+        "Without --profile, a class the project default does not run picks an enabled "
+        "worker whose default_class matches (pool first, project default's provider, "
+        "then Claude) before the task is created; no match is an error"
+    ),
 )
 @click.option(
     "--agent-type",
@@ -318,12 +324,15 @@ def task_create(
     task runs under when no explicit profile is given.
 
     ``--intelligence-class`` without ``--profile`` chooses the profile from
-    the class before the task is written: if the project default (or the
-    caller's own profile) runs another class, an enabled worker whose
-    default_class matches is selected — pool first, then the default's
-    provider, then Claude — and a class no enabled worker runs is an error
-    listing the classes that are available. The result's ``profile_source``
-    reports the rule: explicit, class_match, project_default or inherited.
+    the class before the task is written: if the implicit route — the project
+    default, or the caller's own profile when a worker files it — runs
+    another class, an enabled worker whose default_class matches is selected
+    (pool first, then that route's provider, then Claude). A class that is
+    not in the vault, or that no enabled worker runs, is refused, and the
+    second refusal lists the classes that are available. The result's
+    ``profile_source`` reports the rule: explicit, class_match,
+    project_default or inherited. Pass ``--profile`` with it to pin a
+    provider or a specific worker.
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
