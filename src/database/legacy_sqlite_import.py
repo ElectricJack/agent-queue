@@ -46,6 +46,7 @@ from src.database.tables import (
     integration_batches,
     integration_branch_owners,
     integration_delegate_releases,
+    integration_owner_recoveries,
     integration_candidate_member_results,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
@@ -165,6 +166,8 @@ _ORDERED_TABLES = [
     task_subtasks,
     # Soft-referenced audit of retired integration delegates; no FKs.
     integration_delegate_releases,
+    # Soft-referenced audit of integration owner recoveries; no FKs.
+    integration_owner_recoveries,
     # Document reviews: soft task references, no FK to tasks; revisions and
     # comments reference doc_reviews.
     doc_reviews,

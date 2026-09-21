@@ -300,13 +300,7 @@ async def _blocker(conn, row: dict[str, Any], integrating) -> str | None:
                     "task's branch is still its parent's to transfer; the hierarchy "
                     "recovery path owns this row"
                 )
-    live_session = (
-        await conn.execute(
-            select(sessions.c.id)
-            .where(sessions.c.task_id == owner_id, session_attached_clause())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    live_session = await _live_task_session(conn, owner_id)
     if live_session is not None:
         return f"session {live_session} is still live for {owner_id}"
     locked = (
@@ -340,11 +334,27 @@ async def _blocker(conn, row: dict[str, Any], integrating) -> str | None:
     return None
 
 
+async def _live_task_session(conn, task_id: str) -> str | None:
+    """A session that may still write for *task_id*, or ``None``."""
+    return (
+        await conn.execute(
+            select(sessions.c.id)
+            .where(sessions.c.task_id == task_id, session_attached_clause())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def _stopped_writer(
-    conn, row: dict[str, Any], *, lock: bool
+    conn, row: dict[str, Any], *, lock: bool, require_workspace: bool = True
 ) -> tuple[dict[str, Any] | None, str | None]:
-    """The attached row's writer session, or why its stop cannot be proven."""
-    if not row["session_id"] or not row["workspace_id"]:
+    """The attached row's writer session, or why its stop cannot be proven.
+
+    *require_workspace* ``False`` accepts a row whose checkout binding is
+    already gone (a ``handoff_pending`` row may name only its session); the
+    session itself must still exist and be stopped.
+    """
+    if not row["session_id"] or (require_workspace and not row["workspace_id"]):
         return None, (
             f"{row['handoff_state']} row names no session and workspace, so its writer's "
             "stop cannot be proven"
