@@ -95,6 +95,18 @@ Two rules in `_cmd_create_task`:
    `child.mcp_servers ⊆ parent.mcp_servers`. Equal-or-stricter is fine;
    anything broader is rejected with a clear error.
 
+Worker-filed work (a non-elevated session holding a task, swarm work
+model §12) does not default-inherit: the filer's profile is its own
+execution route, and inheriting it pinned every finding to the rung that
+found it. A worker filing with no `profile_id` carries no profile, skips
+the project default, and is routed by the `default-assignment-routing`
+playbook. Rule 2 still applies to an explicit `profile_id`. The routed
+child is bounded instead by `task_route`: a task carrying the
+`filed_by_profile_id` marker may be routed only to an ordinary worker
+profile unless the operator, a daemon service or an elevated supervisor
+routes it. A strict `child ⊆ filer` bound cannot be applied there, because
+worker rungs on different harnesses carry disjoint command lists.
+
 System-prompt subsetting is not enforced — there's no mechanical notion
 of "subset of prose". The parent profile's author owns the prompt they
 delegate; the runtime guards the tool/server bound.
