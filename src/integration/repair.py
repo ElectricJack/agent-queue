@@ -78,12 +78,14 @@ class RepairService:
         confirm_handoff=None,
         confirm_stopped=None,
         route_validator: Callable[[str, str | None], bool | Awaitable[bool]] | None = None,
+        owner_recovery=None,
     ) -> None:
         self.db = db
         self.clock = clock
         self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff, clock=clock)
         self._confirm_stopped = confirm_stopped
         self._route_validator = route_validator
+        self._owner_recovery = owner_recovery
 
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
         """Settle unfinished delegates whose owning operation has already ended.
@@ -100,6 +102,19 @@ class RepairService:
         released = await release_delegates(
             self.db, now=now, released_by="integration_service", limit=limit
         )
+        owner_row_ids = list(
+            dict.fromkeys(
+                blocker["owner_row_id"]
+                for release in released
+                for blocker in release.get("cleanup", {}).get("blockers", [])
+                if blocker.get("code") == "branch_owner_retained"
+                and blocker.get("owner_row_id")
+            )
+        )
+        if self._owner_recovery is not None and owner_row_ids:
+            await self._owner_recovery.recover_many(
+                owner_row_ids, principal="delegate_retirement"
+            )
         return [row["task_id"] for row in released]
 
     async def reserve_batch_operation_on(

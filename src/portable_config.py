@@ -72,6 +72,7 @@ PORTABLE_SECTION_KEYS: dict[str, frozenset[str]] = {
             "merge_ci_policy",
             "merge_required_checks",
             "merge_require_up_to_date",
+            "owner_recovery_sweep",
         }
     ),
 }

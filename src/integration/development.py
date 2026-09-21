@@ -16,6 +16,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,7 +117,9 @@ class DevelopmentBusy(RuntimeError):
 
 
 class DevelopmentIntegration:
-    def __init__(self, db, *, data_dir, git=None, confirm_stopped=None):
+    def __init__(
+        self, db, *, data_dir, git=None, confirm_stopped=None, owner_recovery: Any | None = None
+    ):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
         #: Bundles and the deletion log every branch delete writes first.
@@ -125,6 +128,7 @@ class DevelopmentIntegration:
         self.next_due = {}
         self._project_faults = {}
         self.confirm_stopped = confirm_stopped
+        self.owner_recovery = owner_recovery
 
     async def on_task_completed(self, event):
         """Wake delivery without doing Git or validation in the completion path.
@@ -1756,9 +1760,11 @@ class DevelopmentIntegration:
         from src.database.tables import integration_branch_owners as owners
         from src.database.tables import integration_repair_operations as operations
         from src.database.tables import integration_repair_stages as stages
+        from src.integration.owner_recovery import RECOVERABLE_STATES
 
         if not reason.strip():
             raise ValueError("cancellation reason is required")
+        recovery_owner_ids: list[str] = []
         async with self.db.immediate() as conn:
             operation = (
                 (
@@ -1856,6 +1862,11 @@ class DevelopmentIntegration:
                 retained, key=lambda r: r["id"]
             ):
                 raise DevelopmentBusy("writer changed during cancellation")
+            recovery_owner_ids = [
+                row["id"]
+                for row in current_owners
+                if row["handoff_state"] in RECOVERABLE_STATES
+            ]
             now = time.time()
             for delegate in delegates:
                 task = (
@@ -1992,6 +2003,10 @@ class DevelopmentIntegration:
             await self.db.log_blocked_flips(transition.flipped)
             await self.db._notify_settled(transition.settled)
             await self.db._notify_ready(transition.ready)
+        if self.owner_recovery is not None and recovery_owner_ids:
+            await self.owner_recovery.recover_many(
+                recovery_owner_ids, principal="cancel_preserving"
+            )
         return result
 
     async def preserve_stopped_owners(self, project_id):
