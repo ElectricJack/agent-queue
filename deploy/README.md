@@ -294,17 +294,24 @@ $D aq project create --name smoke --default-branch main
 $D aq project add-workspace --project-id smoke --source link \
       --path /data/workspaces/smoke-repo --name smoke-main
 
-# 3. A task. --intelligence-class is required here: without it the task parks
-#    on `awaiting_intelligence_route`, because the routing playbook that would
-#    assign one needs `playbooks.enabled`, which is off by default.
+# 3. A task. Both flags matter:
+#    --intelligence-class, or the task parks on `awaiting_intelligence_route`
+#      (the routing playbook that would assign one needs `playbooks.enabled`,
+#      which is off by default) while sitting in READY looking dispatchable.
+#    -P <profile>, or it may route to a harness this image does not install.
+#    The class and profile must also match an agent that exists, or the task
+#    parks on `no_idle_agent`.
 $D aq task create -p smoke -t "Add subtract to calc.py" \
       -d "In calc.py add subtract(a, b) returning a - b. Then stop." \
-      --intelligence-class fast-low
+      --intelligence-class standard-high -P standard-high-claude
 
 # 4. Watch it
-$D aq task explain --task-id <id>      # why it is or is not running
+$D aq task explain --task-id <id>      # why it is or is not running ([] = nothing blocking)
 $D tmux -L aq ls                       # the live agent session
-$D aq task show <id>
+$D aq task show <id>                   # 🟢 COMPLETED when done
+
+# 5. Confirm the agent really did the work
+$D sh -c 'cd /data/workspaces/smoke-repo && git show aq/<id>:calc.py'
 ```
 
 `aq doctor` inside the container is the other health signal; a good run is
@@ -312,35 +319,64 @@ $D aq task show <id>
 stack: optional harness binaries absent, no project root configured, and no
 `claude /usage` probe until the harness is authenticated.
 
-### What a missing login looks like
+### Harness authentication
 
-Without `claude auth login`, the chain runs correctly right up to the harness
-and then fails cleanly:
+Log in once, inside the container:
 
-```
-SessionDiedDuringStartup: session 's-<task>' died during startup
-```
-
-`start-stderr.log` is empty, because the CLI writes to the pane rather than
-stderr and the pane is killed with the session. Running the harness by hand
-shows the real cause:
-
-```console
-$ claude -p "reply OK"
-Not logged in · Please run /login
+```bash
+docker compose -f docker-compose.prod.yml exec daemon claude auth login
 ```
 
-AQ handles this correctly rather than crashing: it kills the session and parks
-the task in `paused_backoff`, which resumes on its own. A task created before
-you log in will therefore start working once you do.
+This persists because the image sets `CLAUDE_CONFIG_DIR=/home/aq/.claude`, which
+puts the CLI's *entire* configuration inside the one persisted volume. Without
+it, `.credentials.json` lives in `~/.claude` (persisted) while `.claude.json` —
+which carries the OAuth **account linkage** — sits beside that directory and is
+not, so every `--build` leaves a credential file in place and still drops you
+back to "Select login method". That failure is especially confusing because
+`claude auth status` run by hand reports `loggedIn: true`.
+
+### Only bake in harnesses you will route to
+
+`AQ_HARNESSES` controls which CLIs the image installs (default: `claude` only).
+AQ nonetheless derives worker profiles for **every** harness — `*-codex`,
+`*-gemini` — and will happily route a task to one whose binary is absent. The
+session then dies instantly with an empty `start-stderr.log`, because the error
+goes to the tmux pane:
+
+```
+nice: 'codex': No such file or directory
+```
+
+Retire the rungs you cannot run, once per install:
+
+```bash
+for p in astra-high astra-low deep-high deep-low fast-high fast-low standard-high; do
+  docker compose -f docker-compose.prod.yml exec -T daemon \
+    aq agent delete-profile --profile-id "$p-codex" --reason "CLI not installed in this image"
+done
+```
+
+Or add the harness to `AQ_HARNESSES` and authenticate it too.
+
+### Diagnosing a session that dies at startup
+
+`start-stderr.log` is written from a *pane capture*, so when the process dies
+before tmux can be read it is empty — which is the common case and tells you
+nothing. To see the real output, have tmux log every pane:
+
+```bash
+docker compose -f docker-compose.prod.yml exec -T daemon sh -c \
+  'printf %s "set-hook -g after-new-session \"pipe-pane -o \x27cat >> /data/agent-queue/pane.log\x27\"" > ~/.tmux.conf'
+# then, after the next attempt:
+docker compose -f docker-compose.prod.yml exec -T daemon cat -v /data/agent-queue/pane.log
+```
 
 ## Known gaps
 
-- **Partly proven: agents launch in a container, completion is untested.** The
-  scheduler dispatches, the workspace is acquired, and `TmuxProvider` creates a
-  real tmux session inside the container with the right prompt and work dir. The
-  harness then exits because it is not authenticated. Everything up to the
-  harness is verified; whether a run *completes* needs a logged-in harness.
+- **Verified: an agent completes a task inside the container.** A smoke task
+  created its branch, edited the file and committed — `aq/<task>` containing the
+  requested change, task `COMPLETED`. What is *not* yet exercised: long runs,
+  multiple concurrent agents, and anything beyond a trivial single-file edit.
 - The dashboard image regenerates its typed client from the committed
   `openapi.json`. If that file drifts from the API, the dashboard builds against
   a stale spec.

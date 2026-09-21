@@ -4,7 +4,8 @@ Why the deployment is shaped the way it is, what constrains it, and what is
 planned next. [`README.md`](README.md) is the task guide — how to actually run
 it. This page is the argument behind that guide.
 
-**Status:** Phase 1 built and running locally. Phases 2–4 are proposed, not
+**Status:** Phase 1 built, running locally, and verified end to end — an agent
+completes a task inside the container. Phases 2–4 are proposed, not
 shipped. Anything under [Roadmap](#roadmap) and [Open questions](#open-questions)
 describes intent, not current behaviour.
 
@@ -194,10 +195,12 @@ outside a provider.
 
 ## Roadmap
 
-**Outstanding, not a phase:** two upstream bugs found while building this should
-be reported — `mcp_server.enabled` defaulting to `False` in the loader against a
-documented `True`, and `CLAUDE_CODE_OAUTH_TOKEN` being unreachable despite its
-allowlist entry. Both are described in [`README.md`](README.md). Neither is fixed
+**Outstanding, not a phase:** three upstream issues found while building this
+should be reported — `mcp_server.enabled` defaulting to `False` in the loader
+against a documented `True`; `CLAUDE_CODE_OAUTH_TOKEN` being unreachable despite
+its allowlist entry; and worker rungs being derived for harnesses whose CLI is
+not installed, which routes tasks to a binary that does not exist and fails with
+an empty `start-stderr.log`. Both are described in [`README.md`](README.md). Neither is fixed
 here, because both belong upstream rather than in a deployment directory.
 
 1. **Phase 2 — harden.** Automated SQL backups, data-disk snapshots, log
@@ -216,12 +219,13 @@ here, because both belong upstream rather than in a deployment directory.
 
 ## Open questions
 
-- **Does an agent run to *completion* inside a container?** Partly answered. The
-  scheduler dispatches, the workspace is acquired, and `TmuxProvider` creates a
-  real tmux session in the container with the right prompt and working directory
-  — so session launch under Docker is no longer in doubt. What is untested is a
-  full run with an authenticated harness: tool use, file edits, git operations
-  and task closure. See "Verifying the stack" in [`README.md`](README.md#verifying-the-stack).
+- ~~**Does an agent run to completion inside a container?**~~ **Answered: yes.**
+  A smoke task dispatched, acquired its worktree slot, ran Claude Code in a tmux
+  session inside the container, edited the file and committed to `aq/<task>`,
+  and closed as `COMPLETED`. Shape C is therefore viable as shipped. Still
+  unexercised: long runs, several concurrent agents, and anything beyond a
+  trivial single-file edit. See
+  [Verifying the stack](README.md#verifying-the-stack).
 - **Memory / `aq-memory`.** Off by default. Milvus needs no server (it defaults
   to embedded Milvus Lite), but embeddings default to a local Ollama, and
   `packages/memsearch` is not installed in the daemon image — its importers

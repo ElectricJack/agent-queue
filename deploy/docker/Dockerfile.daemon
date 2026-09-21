@@ -36,7 +36,13 @@ ARG AQ_GID=1000
 RUN groupadd -g "${AQ_GID}" aq \
     && useradd -m -u "${AQ_UID}" -g "${AQ_GID}" -s /bin/bash aq
 
+# CLAUDE_CONFIG_DIR moves the CLI's whole config — credentials *and*
+# ~/.claude.json, which carries the OAuth account linkage — inside the single
+# persisted directory. Without it, .claude.json sits beside that directory
+# rather than in it, is therefore not on the volume, and every rebuild silently
+# logs the harness out while leaving .credentials.json in place.
 ENV HOME=/home/aq \
+    CLAUDE_CONFIG_DIR=/home/aq/.claude \
     PATH=/home/aq/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -97,6 +103,18 @@ RUN set -eu; \
 # Only .claude is mounted, never /home/aq: a volume over the whole home would
 # hide the harness CLI installed above at ~/.local/bin.
 RUN mkdir -p /home/aq/.claude
+
+# The CLI has three first-run gates — theme, "do you trust this folder", and
+# bypass-permissions consent — and an agent session cannot click through them:
+# it hangs on the prompt until the session is reaped as "died during startup"
+# with an *empty* stderr log, because the CLI writes to the tmux pane.
+#
+# AQ answers all three itself, via the `dialogs` patterns in the harness
+# definition (src/sessions/default_harnesses/claude.md), so nothing here needs
+# to pre-empt them. Seeding the global consent anyway costs one line and saves
+# a round trip on the very first session.
+RUN printf '{\n  "skipDangerousModePermissionPrompt": true\n}\n' \
+        > /home/aq/.claude/settings.json
 
 # Baked with ${ENV_VAR} placeholders. src/config.py substitutes them
 # recursively across every string at load time, so one image is configured
