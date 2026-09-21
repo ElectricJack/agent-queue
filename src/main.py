@@ -23,6 +23,7 @@ See specs/main.md for the full specification.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import shutil
@@ -440,7 +441,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
         "running_tasks": len(orch._running_tasks),
     }
 
-    required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
+    # Recomputed on every read: a startup snapshot kept /health at 503 for a
+    # required playbook an operator had already repaired, until a restart.
+    refresh_required = getattr(orch, "refresh_required_playbook_status", None)
+    if inspect.iscoroutinefunction(refresh_required):
+        required_playbooks = await refresh_required()
+    else:
+        required_playbooks = getattr(orch, "required_playbook_status", {"ok": True})
     checks["required_playbooks"] = required_playbooks
 
     # Agent status
