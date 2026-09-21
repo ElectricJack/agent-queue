@@ -1370,6 +1370,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "Idempotency key for find-or-create semantics (see ensure_task)."
                     ),
                 },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach this task to the named document review's gate until the review "
+                        "is approved."
+                    ),
+                },
             },
             "required": ["title"],
         },
@@ -2142,6 +2149,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "Workspace lock mode. Set to null to clear (optional). "
                         "'branch-isolated' is DEPRECATED and behaves as "
                         "'exclusive' — see create_task."
+                    ),
+                },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach this task to the named document review's gate until the review "
+                        "is approved."
                     ),
                 },
                 "needs_attention": {

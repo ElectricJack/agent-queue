@@ -182,6 +182,17 @@ class GateCommandsMixin:
         if gate is None:
             return {"success": False, "error": f"gate '{gate_id}' not found"}
 
+        if gate["gate_type"] == "review":
+            return {
+                "success": False,
+                "error_code": "review_gate",
+                "error": (
+                    "review gates are decided in the review: "
+                    f"aq review decide --review-id {gate.get('await_id')} "
+                    "--revision <n> --decision approve"
+                ),
+            }
+
         # dv2 phase 1: ``routing`` gates carry a pinned cross-phase
         # contract — ONLY ``task_route`` writes the profile/class/workspace
         # fields on the task and then resolves the gate.  Refuse the
