@@ -25,7 +25,10 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import os
+import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -45,6 +48,75 @@ RETRY_MAX_SECONDS = 3600.0
 #: ``failed`` for an operator.  Conflicts never retry — they are a statement
 #: about the remote, not about the transport.
 MAX_ATTEMPTS = 8
+
+#: Temporary refs the bundle step pins the doomed heads under.  The bundle is
+#: the durable copy; the refs themselves are deleted in the same step, so
+#: nothing lingers in the retained store.
+BACKUP_REF_PREFIX = "refs/aq-backup/heads/"
+
+
+def _month(now: float) -> str:
+    return datetime.fromtimestamp(now, UTC).strftime("%Y-%m")
+
+
+async def _bundle(
+    run_git, store, heads: dict[str, str], *, main_head, backup_dir, repository_id, now
+) -> Path:
+    """Write *heads* to a new verified bundle; raise rather than return an unproved one."""
+    stamp = datetime.fromtimestamp(now, UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", repository_id) or "repository"
+    directory = Path(backup_dir) / _month(now)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stamp}-{slug}.bundle"
+    refs = {f"{BACKUP_REF_PREFIX}{branch}": sha for branch, sha in heads.items()}
+    try:
+        for ref, sha in refs.items():
+            await run_git(store, "update-ref", ref, sha)
+        await run_git(store, "bundle", "create", str(path), *sorted(refs), "--not", main_head)
+        await run_git(store, "bundle", "verify", str(path))
+        listed = await run_git(store, "bundle", "list-heads", str(path))
+    finally:
+        for ref in refs:
+            try:
+                await run_git(store, "update-ref", "-d", ref)
+            except GitError:
+                logger.warning("could not remove temporary backup ref %s", ref)
+    present = {tuple(line.split(" ", 1)) for line in listed.splitlines() if " " in line}
+    missing = sorted(ref for ref, sha in refs.items() if (sha, ref) not in present)
+    if missing:
+        raise GitError(f"branch backup {path} is missing {missing}")
+    return path
+
+
+def _record_deletions(
+    backup_dir, targets, *, bundled, bundle, repository_id, now
+) -> Path:
+    """Append one line per branch to the month's deletion log, durably."""
+    directory = Path(backup_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{_month(now)}.tsv"
+    recorded_at = datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds")
+
+    def clean(value) -> str:
+        return re.sub(r"[\t\r\n]+", " ", str(value))
+
+    lines = [
+        "\t".join((
+            branch,
+            targets[branch]["head"],
+            clean(targets[branch].get("reason") or "-"),
+            str(bundle) if branch in bundled else "-",
+            recorded_at,
+            clean(repository_id),
+        ))
+        + "\n"
+        for branch in sorted(targets)
+    ]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.writelines(lines)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return path
 
 
 class BranchDiscardResult(BaseModel):
@@ -189,14 +261,28 @@ class BranchDiscardService:
         client = await self._app_client(binding)
         if client is None or self.git is None:
             return "retryable", "authenticated discard transport is unavailable"
+        token = await client.installation_token()
         head = await client.exact_head_ref(branch)
         if head is None:
             return "complete", None
+        main_head = await client.exact_head_ref(repository.default_branch)
+        if not main_head:
+            # Cannot assess reachability without the default branch head, and a
+            # thin ``--not <main>`` bundle needs it; refuse rather than guess.
+            return "retryable", f"cannot back up without the {repository.default_branch} head"
+        await self._backup_before_delete(
+            row,
+            binding=binding,
+            token=token,
+            branch=branch,
+            head=head,
+            main_head=main_head,
+        )
         try:
             await self.git.adelete_ref_with_app_auth(
                 str(self.retained_store(row["repository_id"])),
                 repository=binding,
-                token=await client.installation_token(),
+                token=token,
                 branch=branch,
                 expected_old_oid=head,
             )
@@ -242,6 +328,89 @@ class BranchDiscardService:
         if client is None or client.repository != binding:
             return None
         return client
+
+    # -- the pre-delete backup ------------------------------------------
+
+    async def _backup_before_delete(
+        self,
+        row: dict[str, Any],
+        *,
+        binding: GitHubRepositoryBinding,
+        token: str,
+        branch: str,
+        head: str,
+        main_head: str,
+    ) -> None:
+        """Bundle a doomed head and record the row *before* the ref is deleted.
+
+        Nothing is deleted that cannot be put back: the head (and its commits
+        not on the default branch) is written to a verified bundle under
+        ``<data_dir>/backups/branch-deletions/`` and a TSV log line is
+        appended.  Any failure raises, which parks the discard as retryable;
+        the delete must not run without a restorable copy.
+        """
+        repository_id = row["repository_id"]
+        now = self.clock()
+        store = self.retained_store(repository_id)
+        await self._ensure_store(store)
+        # The retained store may not hold the head or the default-branch head
+        # yet; both must be local before anything can be proven, bundled or
+        # deleted against.
+        await self.git.afetch_exact_oid_with_app_auth(
+            str(store),
+            repository=binding,
+            token=token,
+            oid=head,
+            destination_ref=f"refs/aq/discard-backup/heads/{branch}",
+        )
+        await self.git.afetch_exact_oid_with_app_auth(
+            str(store),
+            repository=binding,
+            token=token,
+            oid=main_head,
+            destination_ref="refs/aq/discard-backup/default",
+        )
+        bundle = None
+        if not await self.git.ais_ancestor(str(store), head, main_head):
+            # ``False`` covers "already on the default branch" and "could not
+            # be established"; bundling the unknown case is the one that keeps
+            # the deletion restorable.
+            bundle = await _bundle(
+                self._run_git,
+                store,
+                {branch: head},
+                main_head=main_head,
+                backup_dir=self.backup_dir,
+                repository_id=repository_id,
+                now=now,
+            )
+        _record_deletions(
+            self.backup_dir,
+            {branch: {"head": head, "reason": f"task {row['task_id']} discarded"}},
+            bundled={branch} if bundle is not None else set(),
+            bundle=bundle,
+            repository_id=repository_id,
+            now=now,
+        )
+
+    @property
+    def backup_dir(self) -> Path:
+        return self.data_dir / "backups" / "branch-deletions"
+
+    async def _run_git(self, store: Path, *args: str) -> str:
+        result = await self.git.arun_git_result(list(args), cwd=str(store))
+        if result.returncode:
+            raise GitError(result.stderr or result.stdout or "Git command failed")
+        return result.stdout.strip()
+
+    async def _ensure_store(self, store: Path) -> None:
+        store.parent.mkdir(parents=True, exist_ok=True)
+        if not store.exists():
+            result = await self.git.arun_git_result(
+                ["init", "--bare", "--template=", str(store)], cwd=str(store.parent)
+            )
+            if result.returncode != 0:
+                raise GitError(result.stderr or "retained store initialization failed")
 
     # -- bookkeeping ----------------------------------------------------
 
