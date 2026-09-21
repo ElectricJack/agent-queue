@@ -375,6 +375,22 @@ class DevelopmentIntegration:
                     raise ValueError(f"required child {outside} is still open")
                 now = time.time()
                 identity = str(uuid4())
+                # The completion recorded below reports the adopted head, while
+                # the manifest names each task by its branch head, so readiness
+                # cannot match the two on its own. Bind them in the same row.
+                recorded = {t["id"]: str(uuid4()) for t in selected if t["status"] != "COMPLETED"}
+                sources = {member["task_id"]: member["source_sha"] for member in manifest}
+                evidence = {
+                    "kind": "operator_accepted",
+                    "operator_id": operator_id,
+                    "validation": "operator_decision",
+                    "conclusion": "not_ci_attested",
+                }
+                if recorded:
+                    evidence["completion_sources"] = [
+                        self._completion_proof(task_id, completion_id, head_sha, sources[task_id])
+                        for task_id, completion_id in sorted(recorded.items())
+                    ]
                 await conn.execute(
                     insert(deliveries).values(
                         id=identity,
@@ -385,12 +401,7 @@ class DevelopmentIntegration:
                         prepared_sha=head_sha,
                         state="adopted",
                         manifest=manifest,
-                        evidence={
-                            "kind": "operator_accepted",
-                            "operator_id": operator_id,
-                            "validation": "operator_decision",
-                            "conclusion": "not_ci_attested",
-                        },
+                        evidence=evidence,
                         reason=reason,
                         created_at=now,
                         updated_at=now,
@@ -412,10 +423,10 @@ class DevelopmentIntegration:
                 from src.database.tables import task_completion_records
 
                 for task_id in close_order:
-                    if next(t for t in selected if t["id"] == task_id)["status"] != "COMPLETED":
+                    if task_id in recorded:
                         await conn.execute(
                             insert(task_completion_records).values(
-                                id=str(uuid4()),
+                                id=recorded[task_id],
                                 task_id=task_id,
                                 outcome="pass",
                                 summary=reason,
@@ -799,8 +810,20 @@ class DevelopmentIntegration:
         except GitError:
             return None
 
+    @staticmethod
+    def _completion_proof(task_id, completion_id, reported_sha, source_sha):
+        """One ``completion_sources`` entry, the shape readiness matches on."""
+        return {"task_id": task_id, "completion_id": completion_id,
+                "reported_sha": reported_sha, "source_sha": source_sha}
+
     async def reconcile_completion_sources(self, repo, store, history):
-        """Bind unique abbreviated completion IDs to exact delivered revisions.
+        """Bind completions to delivered revisions the manifest does not name.
+
+        Two cases: a unique abbreviated completion ID that Git resolves to the
+        member's source, and a completion that reports the row's own prepared
+        head, which is on the target ref. The second is what :meth:`adopt`
+        records for a task it closes; adopt binds it as it writes the row, and
+        this pass backfills rows journaled before it did.
 
         Keep the original completion evidence intact. Readiness consumes this
         publisher proof, never a SQL prefix match that could accept ambiguity.
@@ -820,12 +843,17 @@ class DevelopmentIntegration:
                     canonical = await self._completion_source(store, completion)
                     completions[identity] = completion, canonical
                 completion, canonical = completions[identity]
-                if (completion is None or not completion.commits or canonical is None
-                        or canonical != member.get("source_sha")
-                        or canonical == completion.commits[-1]):
+                if completion is None or not completion.commits or canonical is None:
                     continue
-                proof = {"task_id": identity, "completion_id": completion.id,
-                         "reported_sha": completion.commits[-1], "source_sha": canonical}
+                reported = completion.commits[-1]
+                if canonical == member.get("source_sha"):
+                    if canonical == reported:
+                        continue  # The manifest itself names this close.
+                elif canonical != row["prepared_sha"]:
+                    continue
+                proof = self._completion_proof(
+                    identity, completion.id, reported, member.get("source_sha")
+                )
                 if proof not in proofs:
                     proofs.append(proof)
                     changed = True
