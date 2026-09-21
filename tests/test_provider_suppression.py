@@ -279,6 +279,13 @@ async def test_pool_startup_dialogs_arm_no_key_quarantine_and_size_the_pool_to_z
     await _pool_round(orch)
     assert len(fake.dialog_deaths) == deaths
 
+    # ``aq pool status`` says why the pool is empty -- not placement_starved.
+    status = await CommandHandler(orch, orch.config)._cmd_pool_status({})
+    row = next(pool for pool in status["pools"] if pool["profile_id"] == "worker")
+    assert row["desired"] == 0
+    assert row["provider_unavailable"]["provider"] == "codex"
+    assert row["provider_unavailable"]["state"] == UNAUTHENTICATED
+
 
 async def test_a_generic_startup_death_still_quarantines_the_key(pool_orch):
     """Only provider-attributed deaths are exempt; a broken checkout is not."""

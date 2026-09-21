@@ -804,6 +804,19 @@ class PoolProjectStatus(BaseModel):
     quarantined_reason: str | None = None
 
 
+class PoolProviderUnavailable(BaseModel):
+    """The pool's provider is unavailable, so it is sized to zero (provider-failover D13).
+
+    Distinct from ``placement_starved``: nothing is wrong with the pool, its
+    projects or their workspaces -- the login it draws on is down.
+    """
+
+    provider: str
+    state: str
+    reason: str = ""
+    until: float | None = None
+
+
 class PoolStatusRow(BaseModel):
     """One worker pool -- a profile, fleet-wide (global-worker-pools §6.1).
 
@@ -837,6 +850,9 @@ class PoolStatusRow(BaseModel):
     #: Live task-lifecycle sessions whose harness/class route is also served
     #: by this pool. They consume project capacity but are not pool supply.
     outside_pools: list[OutsidePoolSessionStatus] = []
+    #: Set while the pool's provider is unavailable: the pool targets zero,
+    #: busy sessions finish, idle ones drain on their next claim.
+    provider_unavailable: PoolProviderUnavailable | None = None
 
 
 class PoolStatusResponse(BaseModel):
