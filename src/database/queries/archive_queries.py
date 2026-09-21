@@ -12,16 +12,36 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import (
     agents,
     archived_tasks,
+    development_deliveries,
     integration_repair_operations,
     integration_repair_stages,
     sessions,
     task_comments,
     task_completion_records,
+    task_metadata,
     tasks,
 )
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
+
+#: The statuses ``archive_task`` treats as "this task will not run again".
+TERMINAL_STATUSES = (
+    TaskStatus.COMPLETED.value,
+    TaskStatus.FAILED.value,
+    TaskStatus.BLOCKED.value,
+)
+
+#: Development delivery states that are finished with the tasks their manifest
+#: names.  ``delivered``/``adopted`` published or absorbed those revisions and
+#: ``cancelled`` abandoned the attempt; every other state still owes work to
+#: each member, so archiving one out from under the publisher would leave the
+#: batch naming a task that no longer exists.
+SETTLED_DEVELOPMENT_DELIVERY_STATES = ("delivered", "adopted", "cancelled")
+
+#: Metadata key holding a development repair's source manifest, written by
+#: :meth:`src.integration.development.DevelopmentIntegration.ensure_repair`.
+DEVELOPMENT_REPAIR_SOURCES_KEY = "development_repair_sources"
 
 
 class ArchiveQueryMixin:
@@ -35,7 +55,7 @@ class ArchiveQueryMixin:
         """
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
 
-        terminal = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value)
+        terminal = TERMINAL_STATUSES
         async with self.immediate() as conn:
             # Archiving moves a task out of the active view; it never destroys
             # work, so the branch always stays on the remote.  Retiring the
@@ -47,6 +67,12 @@ class ArchiveQueryMixin:
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
+            # Read once: the integration guards below scope their reads to this
+            # project, and the layout mark needs it before the rows leave
+            # ``tasks``.  A task never changes project.
+            project_id = (
+                await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
+            ).scalar_one_or_none()
             repair = (await conn.execute(
                 select(integration_repair_operations.c.id)
                 .join(integration_repair_stages,
@@ -58,6 +84,9 @@ class ArchiveQueryMixin:
             )).scalar_one_or_none()
             if repair is not None:
                 raise HierarchyError("integration_owned", f"active repair operation {repair}")
+            held = await self._development_integration_hold(ids, project_id, conn=conn)
+            if held is not None:
+                raise HierarchyError("integration_owned", held)
             # Follow the existing sessions-before-tasks lock order. A task
             # can be terminal while its worker is still draining.
             live = await self.live_descendant_sessions(task_id, conn=conn)
@@ -100,9 +129,6 @@ class ArchiveQueryMixin:
             # find the former container from a stored row, so without this
             # the container never re-flows and its ancestors' aggregates go
             # stale.
-            project_id = (
-                await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
-            ).scalar_one_or_none()
             if project_id is not None:
                 await self.mark_layout_dirty(
                     project_id,
@@ -128,6 +154,97 @@ class ArchiveQueryMixin:
         await self._notify_settled(settle_result.settled)
         await self._notify_ready(ready + list(settle_result.ready))
         return True
+
+    async def _development_integration_hold(self, ids, project_id, *, conn) -> str | None:
+        """Say why development delivery still owns one of *ids*, or ``None``.
+
+        Development mode keeps its claim on a source task in two places, and
+        neither is a foreign key onto ``tasks``: an unfinished
+        ``development_deliveries`` manifest, and the source manifest an open
+        repair task carries in its metadata.  Archiving a task named by either
+        leaves the publisher holding an id that no longer resolves — the batch
+        can no longer explain what it is publishing, and the repair can no
+        longer show where its work came from.  Both are reported as
+        ``integration_owned``, naming the batch or repair that holds the task
+        so an operator can see what to settle first.
+
+        A repair that has reached a terminal status is not open: it will not
+        consult its sources again, and if the batch that spawned it is still
+        unresolved the manifest check above already holds those sources.
+        """
+        wanted = set(ids)
+        batches = (
+            (
+                await conn.execute(
+                    select(
+                        development_deliveries.c.id,
+                        development_deliveries.c.state,
+                        development_deliveries.c.manifest,
+                    )
+                    .where(development_deliveries.c.project_id == project_id)
+                    .where(
+                        development_deliveries.c.state.notin_(
+                            SETTLED_DEVELOPMENT_DELIVERY_STATES
+                        )
+                    )
+                    .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in batches:
+            named = self._named_task_ids(row["manifest"], wanted)
+            if named:
+                return (
+                    f"development batch {row['id']} ({row['state']}) lists {', '.join(named)}"
+                )
+        # The join to ``tasks`` is what bounds this read: only a repair still
+        # in the queue, and still able to run, can hold a source.
+        repair_task = tasks.alias("development_repair_task")
+        repairs = (
+            await conn.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value)
+                .select_from(
+                    task_metadata.join(
+                        repair_task, repair_task.c.id == task_metadata.c.task_id
+                    )
+                )
+                .where(task_metadata.c.key == DEVELOPMENT_REPAIR_SOURCES_KEY)
+                .where(repair_task.c.project_id == project_id)
+                .where(repair_task.c.status.notin_(TERMINAL_STATUSES))
+                .order_by(task_metadata.c.task_id)
+            )
+        ).all()
+        for repair_id, raw in repairs:
+            try:
+                manifest = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            named = self._named_task_ids(manifest, wanted)
+            if named:
+                return (
+                    f"open development repair {repair_id} lists "
+                    f"{', '.join(named)} as a source"
+                )
+        return None
+
+    @staticmethod
+    def _named_task_ids(manifest, wanted: set[str]) -> list[str]:
+        """Return the members of *manifest* that name a task in *wanted*.
+
+        A manifest is written by the publisher, but it is stored as free JSON
+        and old rows predate later shape changes, so read it defensively.
+        """
+        if not isinstance(manifest, list):
+            return []
+        return sorted(
+            {
+                member["task_id"]
+                for member in manifest
+                if isinstance(member, dict) and member.get("task_id") in wanted
+            }
+        )
 
     async def _archive_one(self, task, *, conn) -> None:
         """Move a single task row from ``tasks`` into ``archived_tasks``."""
