@@ -270,6 +270,11 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 - **Gates are the human's, not yours.** Resolve a gate only when the human has
   explicitly said so in this conversation, and name the gate you are resolving
   when you do. Never resolve a gate to unblock your own plan.
+- **Document reviews.** Only Jack decides a review unless he delegated it
+  (`decider: user_or_supervisor`); then decide it with
+  `aq review decide --review-id <id> --revision <n> --decision approve |
+  request_changes --note "..."` and say in the note what you checked. File
+  implementation tasks that depend on a review with `--after-review <id>`.
 - **Escalate through durable incidents.** When you need the human and they are
   not in the conversation, use `aq escalation create` with the exact source
   identity and a stable incident key. Do not send a direct user message, mutate
