@@ -261,8 +261,14 @@ A genuinely public dashboard is a separate project with its own auth review.
 
 ## Sizing
 
-Start at ~4 concurrent agents: 4 vCPU / 16 GB and ~100 GB for `/data`. Test
-suites are the real memory spikes, not the agents themselves.
+Start at ~4 concurrent agents: 4 vCPU / 16 GB and ~100 GB for `/data`.
+
+Size for the *projects*, not the agent count. An agent's own loop is mostly
+waiting on the network, but agents **spawn builds and test suites** — which is
+where the load actually is, and why AQ ships resource gating against "a compiler
+that spawns per-core". RAM and disk dominate steady state; CPU spikes hard and
+briefly. A box that looks idle on average can still be saturated exactly when it
+matters.
 
 **Scale the machine, not the instance count.** The scheduler is machine-scoped —
 one daemon per database — so a second daemon against the same database
@@ -415,5 +421,5 @@ docker compose -f docker-compose.prod.yml exec -T daemon cat -v /data/agent-queu
   hosted embedding API before enabling memory.
 - No automated backup of the data volume yet; the vault lives there.
 
-Design rationale, the scaling constraint and the roadmap are in
-[`DESIGN.md`](DESIGN.md).
+Design rationale, the scaling constraint, spot/preemptible hosts, the Kubernetes
+question and the roadmap are in [`DESIGN.md`](DESIGN.md).

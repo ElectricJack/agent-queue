@@ -193,6 +193,133 @@ Also outstanding: `src/orchestrator/worktree_manager.py` imports `proctable`
 directly for a host-local `/proc` scan — the one place the host assumption leaks
 outside a provider.
 
+## 6. Spot and other ephemeral hosts
+
+AQ's recovery model is built for abrupt death, which makes preemptible hosts a
+better fit than they first appear. `Orchestrator` documents the contract:
+
+> "After a restart, no adapter processes are actually running, so any tasks
+> marked IN_PROGRESS or agents marked BUSY are stale artifacts from the previous
+> run."
+>
+> 1. Reset BUSY agents → IDLE
+> 2. **Release all workspace locks** — "no agents hold them after restart"
+> 3. Reset IN_PROGRESS tasks → **READY, not BLOCKED** — "a fresh retry is
+>    appropriate"
+>
+> "Agent work is designed to be **idempotent** (the agent sees the workspace as
+> the previous agent left it, including any partial commits)."
+
+Supporting pieces: SIGTERM triggers a graceful shutdown that waits at most 10s
+for in-flight tasks; the session reconciler's orphan step releases an open task
+whose session row is not live, under the rule that **unknown is not dead**; and
+`salvage_dirty` archives a crashed predecessor's uncommitted changes as a patch
+on a `task_context` row — in PostgreSQL, so it outlives the machine — rather
+than `git stash`, whose stack is shared by every worktree of a repository.
+
+### 6.1 The notice window is not a drain window
+
+GCP Spot gives roughly 30 seconds (AWS ~2 minutes, Azure ~30s), best-effort.
+**That is nowhere near enough for an agent to finish a task**, and never will
+be — runs take minutes. Do not design for draining in-flight work. Design for
+being killed, which is what the contract above already does. The cost of a
+preemption is the partial work of whatever was mid-task, mitigated by
+`salvage_dirty` and by the workspace retaining prior commits.
+
+### 6.2 What must survive: the disk
+
+Every property that keeps repository cost flat (§4) lives on disk, and so do the
+slot rows that reference those paths — restart recovery deliberately preserves
+slots as durable inventory. Therefore:
+
+- **Use Persistent Disk or Hyperdisk, never Local SSD.** Local SSD is physically
+  attached and is wiped on preemption, which would destroy every worktree slot
+  and every warm cache while leaving the database rows pointing at nothing.
+- Keep auto-delete off so the disk outlives the instance; a replacement attaches
+  the same disk and resumes warm.
+- Cold-start a genuinely new host from a **snapshot** that already contains the
+  base clone and caches, rather than cloning from scratch.
+- A PD attaches read-write to exactly **one** VM at a time. That is a useful
+  accident: the disk itself enforces the one-daemon-per-database rule (§3).
+
+### 6.3 Two failure modes to design around
+
+**Nothing restarts the daemon.** Those workspace locks are released *by the
+daemon restarting*. A preempted VM that nothing replaces leaves them held, and
+the queue stalls behind them.
+
+**Two daemons overlap.** A replacement coming up while the old host is merely
+stopped rather than dead gives two daemons converging the same fleet-wide pool
+bounds. The single-writer disk attachment guards this if both use it.
+
+### 6.4 Getting work, and knowing when it is safe to stop
+
+**There is no worker registration protocol.** Identity flows top-down: the
+daemon writes the `sessions` row, mints the nine `AQ_*` variables
+(`src/sessions/env.py`), and spawns the process already carrying them. There is
+no `/register` endpoint — only `/api/task/{claim,heartbeat,close}`, which is how
+an already-spawned pool worker asks for *work*, not for membership. Adoption on
+restart scans `/proc` for `AQ_SESSION_ID`, but that is the daemon re-finding
+sessions it started.
+
+**Consequence: a fleet of spot boxes cannot share one queue today.** Each would
+need its own daemon and its own database, which is not a fleet. One spot host
+running the whole stack works; several do not. Several become possible only with
+the container session provider (§5) plus host-aware placement (§3.1).
+
+**Draining before a planned stop** is well supported, and is the right procedure
+before suspending or resizing a host:
+
+```bash
+aq system orchestrator-control --action pause   # stop assigning new tasks
+# wait for in-flight work to finish:
+curl -s localhost:8081/health | jq '.checks | {tasks, agents}'
+#   safe when tasks.in_progress == 0 and agents.busy == 0
+aq system orchestrator-control --action resume  # or stop the host
+```
+
+`aq --json status` gives the same signal as `tasks.in_progress` and
+`tasks.ready_to_work`. Pausing only stops *new* assignment; it does not
+interrupt running agents, which is exactly what a clean spin-down wants.
+
+### 6.5 Sizing: it is not mostly idle
+
+A reasonable-sounding assumption is that agents are LLM-bound and therefore need
+little CPU. The agent's own loop is indeed mostly waiting on the network — but
+**agents spawn builds and test suites**, and that is where the load is. AQ's
+resource gating exists precisely because of it, naming "a shell script that
+hardcodes `-n 24`, a compiler that spawns per-core" as the runaway it defends
+against.
+
+So size for the *projects*, not the agent count: RAM and disk dominate
+steady-state, CPU spikes hard and briefly during builds. A box that looks idle
+on average can still be saturated exactly when it matters.
+
+## 7. Kubernetes
+
+**Not yet, and not for the daemon.** K8s exists to schedule many pods across
+many nodes, and AQ cannot use that today:
+
+- The scheduler is machine-scoped (§3) — you would run `replicas: 1`. A
+  Deployment of one is not a reason to adopt Kubernetes.
+- There is no worker registration (§6.4), so worker pods have nothing to join.
+- Worktree slots, warm caches and the vault make this a pet, not cattle.
+- The daemon types into tmux panes and streams them to the dashboard, which is
+  about as far from cloud-native as a workload gets.
+
+You would get a single stateful pod with a ReadWriteOnce PVC: all of the
+operational cost, and almost none of the benefit. The one genuine gain — a PVC
+enforcing a single daemon — a Persistent Disk already provides (§6.2).
+
+**When it becomes the right answer:** once the container session provider (§5)
+exists and is pointed at the Kubernetes API rather than a local Docker socket.
+Then each *agent* is a pod and K8s does real work — placement across nodes,
+per-pod limits, preemption handling. That path also needs the host-awareness of
+§3.1, because workspaces are path-based and locked in the database.
+
+Build the provider first. It is what makes Kubernetes worth having, and it is
+useful on a single box regardless.
+
 ## Roadmap
 
 **Outstanding, not a phase:** three upstream issues found while building this
