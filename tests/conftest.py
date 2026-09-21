@@ -104,6 +104,24 @@ async def _dispose_pg_pool():
 
 
 @pytest.fixture(autouse=True)
+def _no_provider_login_probes(monkeypatch):
+    """Never shell out to ``codex login status`` / ``claude auth status``.
+
+    Every initialised orchestrator seeds provider availability with an auth
+    probe (provider-failover D5).  On a developer box those CLIs exist and
+    their answer is whatever the developer's own login says, so a test's
+    outcome would depend on the machine.  The probe reports "not probeable"
+    here; tests that exercise it inject ``probe=`` into the service.
+    """
+    from src.providers.availability_service import ProviderAvailabilityService
+
+    async def _not_probeable(self, provider, timeout):
+        return None, {}
+
+    monkeypatch.setattr(ProviderAvailabilityService, "_login_probe", _not_probeable)
+
+
+@pytest.fixture(autouse=True)
 async def _pg_backend():
     """Arm this test's pool of leasable Postgres databases.
 

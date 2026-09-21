@@ -142,6 +142,12 @@ class DialogRule:
         with ``sleep_reason=rate_limit``) rather than a dismissal.
     once:
         Fire at most once per startup.
+    signal:
+        What a *quarantine* dialog means about the provider: ``"auth"`` (the
+        CLI is not logged in) or ``"usage"`` (the account is out of usage).
+        Read by provider availability (``docs/specs/provider-failover.md``
+        D2); ``None`` falls back to a built-in dialog-name map so an
+        operator-edited vault harness without the field still classifies.
     """
 
     name: str
@@ -150,6 +156,7 @@ class DialogRule:
     is_regex: bool = False
     quarantine: bool = False
     once: bool = True
+    signal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -318,10 +325,23 @@ class SessionDiedDuringStartup(SessionError):
     is diagnosable without a live pane.
     """
 
-    def __init__(self, name: str, start_stderr_path: str | None = None, detail: str = ""):
+    def __init__(
+        self,
+        name: str,
+        start_stderr_path: str | None = None,
+        detail: str = "",
+        *,
+        dialog: str | None = None,
+        signal: str | None = None,
+    ):
         self.name = name
         self.start_stderr_path = start_stderr_path
         self.detail = detail
+        #: The quarantine dialog that killed startup, when one did, and what
+        #: it means (``auth``/``usage``) -- the typed signal provider
+        #: availability acts on instead of parsing ``detail`` (D2).
+        self.dialog = dialog
+        self.signal = signal
         super().__init__(
             f"session {name!r} died during startup"
             + (f": {detail}" if detail else "")
