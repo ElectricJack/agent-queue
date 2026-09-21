@@ -30,6 +30,7 @@ aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
+aq doctor --check integration.development_publisher_stalled
 ```
 
 ## Symptom index
@@ -51,6 +52,8 @@ aq doctor --check integration.unreviewed_prs
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | Claim after claim fails preparing the slot | Bounded slot-reset retries | [Slot reset keeps failing](#slot-reset-keeps-failing) |
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
+| Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
+| A repair closed `pass` but its branch is in no batch | The publisher is not collecting | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 
 ## Nothing is wrong yet
 
@@ -237,6 +240,43 @@ adopt a ref it did not create.
 
 This does not apply to development-mode projects: they cut ordinary task
 branches with no reservation step.
+
+## The development publisher has stopped making progress
+
+In development mode the publisher sweeps every project on a timer, assembles a
+batch, and files a repair task for each batch it had to park. Two durable
+symptoms say it has stopped:
+
+```bash
+aq doctor --check integration.development_publisher_stalled
+```
+
+* **A batch carries a repeated diagnostic.** When the publisher cannot dispatch
+  a parked batch it records `publisher_diagnostic` on that batch's `evidence`
+  and moves on to the next one, counting `consecutive_ticks`. Two consecutive
+  ticks on the same fault is a stall: the batch state the publisher reads is
+  durable, so the tick that failed will keep failing. The check names the batch
+  and the cause; read the batch with `aq integration status <project>` and
+  either resolve it or cancel it.
+* **A passing repair branch was never collected.** A repair closes `pass` on
+  `aq/<repair-id>` and the next sweep should pick the branch up. An hour later
+  — twelve sweeps at the default interval — with the branch in no batch
+  manifest at all, the publisher is not collecting.
+
+The check is report-only. Clearing the diagnostic by hand would only hide the
+stall, because the next tick rewrites it.
+
+Two faults this guards against are already fixed, and both came from the
+publisher resolving tasks through the live `tasks` table alone. Archiving a
+terminal task removes its row, so an archived source read back as *missing*:
+the repair generation reset to 1 and defeated the chain bound, an archived
+repair was re-filed as a fresh `READY` task on every tick, and a missing source
+raised out of the whole sweep — starving every other parked batch in the
+project and writing a rich traceback every five minutes. The publisher now
+resolves sources and repairs through `archived_tasks` as well, treats an
+archived terminal source as already satisfied (its provenance edge is
+schema-impossible, since `task_dependencies.depends_on_task_id` references
+`tasks.id`, so it is skipped and logged), and isolates each batch and project.
 
 ## A branch discard is parked
 

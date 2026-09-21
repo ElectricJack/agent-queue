@@ -38,6 +38,17 @@ OWNER = "integration"
 #: report.
 _WINDOW_SECONDS = 24 * 60 * 60
 
+#: A publisher fault that survives two consecutive ticks is a stall, not a
+#: transient: the batch state it reads is durable, so the same tick that failed
+#: will keep failing until someone looks.  One tick is allowed to be noise.
+_STALL_TICKS = 2
+
+#: A repair branch closes ``pass`` and the very next sweep should collect it.
+#: An hour is twelve sweeps at the default five-minute interval — long enough
+#: that a busy or briefly-stopped daemon is not reported, short enough that a
+#: publisher which has stopped collecting is caught the same working session.
+_UNCOLLECTED_AFTER_SECONDS = 60 * 60
+
 #: Cap on ``gh pr view`` calls per run.  Doctor is meant to be fast and to work
 #: offline; a backlog of 200 stranded PRs is already diagnosed by the first
 #: handful, and the count in ``data`` stays accurate regardless.
@@ -514,6 +525,161 @@ async def _check_stranded_fences(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
+    """Two durable symptoms of a development publisher that stopped making progress.
+
+    Both are read straight out of state the publisher already writes, so the
+    check works against a stopped daemon and needs no process-local memory.
+    """
+    from sqlalchemy import func, select
+
+    from src.database.tables import (
+        archived_tasks,
+        development_deliveries,
+        projects,
+        task_completion_records,
+        tasks,
+    )
+
+    async with ctx.db._engine.connect() as conn:
+        development = set(
+            (
+                await conn.execute(
+                    select(projects.c.id).where(
+                        projects.c.hierarchical_integration_mode == "development"
+                    )
+                )
+            ).scalars()
+        )
+        if not development:
+            return []
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        development_deliveries.c.id,
+                        development_deliveries.c.project_id,
+                        development_deliveries.c.state,
+                        development_deliveries.c.manifest,
+                        development_deliveries.c.evidence,
+                    ).where(development_deliveries.c.project_id.in_(development))
+                )
+            )
+            .mappings()
+            .all()
+        )
+        owners = dict(
+            (
+                await conn.execute(
+                    select(tasks.c.id, tasks.c.project_id).where(
+                        tasks.c.id.like("development-repair-%")
+                    )
+                )
+            ).all()
+        )
+        for task_id, project_id in (
+            await conn.execute(
+                select(archived_tasks.c.id, archived_tasks.c.project_id).where(
+                    archived_tasks.c.id.like("development-repair-%")
+                )
+            )
+        ).all():
+            owners.setdefault(task_id, project_id)
+        passing = (
+            await conn.execute(
+                select(
+                    task_completion_records.c.task_id,
+                    func.max(task_completion_records.c.completed_at),
+                )
+                .where(
+                    task_completion_records.c.outcome == "pass",
+                    task_completion_records.c.task_id.like("development-repair-%"),
+                )
+                .group_by(task_completion_records.c.task_id)
+            )
+        ).all()
+
+    findings, collected = [], set()
+    for row in rows:
+        for member in row["manifest"] or []:
+            # Any manifest counts: a source the publisher picked up and then
+            # parked was collected.  "Uncollected" means never picked up.
+            collected.add((row["project_id"], member["task_id"]))
+    for row in rows:
+        if row["state"] not in {"parked", "prepared", "publishing"}:
+            continue
+        diagnostic = (row["evidence"] or {}).get("publisher_diagnostic") or {}
+        ticks = diagnostic.get("consecutive_ticks", 0)
+        if ticks < _STALL_TICKS:
+            continue
+        findings.append(
+            {
+                "project_id": row["project_id"],
+                "batch_id": row["id"],
+                "cause": diagnostic.get("kind", "unknown"),
+                "detail": diagnostic.get("detail", ""),
+                "consecutive_ticks": ticks,
+                "task_ids": diagnostic.get("task_ids", []),
+                "first_failed_at": diagnostic.get("first_failed_at"),
+            }
+        )
+
+    cutoff = time.time() - _UNCOLLECTED_AFTER_SECONDS
+    for task_id, completed_at in passing:
+        project_id = owners.get(task_id)
+        if project_id not in development or (completed_at or 0) > cutoff:
+            continue
+        if (project_id, task_id) in collected:
+            continue
+        findings.append(
+            {
+                "project_id": project_id,
+                "batch_id": None,
+                "cause": "repair_branch_uncollected",
+                "detail": (
+                    f"repair {task_id} closed pass on branch aq/{task_id} "
+                    f"{int((time.time() - (completed_at or 0)) // 60)} minute(s) ago and has "
+                    "not appeared in any development batch manifest"
+                ),
+                "consecutive_ticks": None,
+                "task_ids": [task_id],
+                "first_failed_at": completed_at,
+            }
+        )
+    findings.sort(key=lambda f: (f["first_failed_at"] or 0))
+    return findings
+
+
+async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.development_publisher_stalled",
+            severity=Severity.INFO,
+            detail="database not initialised — development publisher state unknown",
+        )
+    stalls = await _find_publisher_stalls(ctx)
+    if not stalls:
+        return CheckResult(
+            id="integration.development_publisher_stalled",
+            severity=Severity.OK,
+            detail="every development publisher is making progress",
+        )
+    first = stalls[0]
+    where = f"batch {first['batch_id']}" if first["batch_id"] else f"project {first['project_id']}"
+    return CheckResult(
+        id="integration.development_publisher_stalled",
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(stalls)} development publisher stall(s) — e.g. {where} "
+            f"({first['project_id']}): {first['cause']}: {first['detail']}. "
+            "The publisher cannot clear this by itself; read the batch with "
+            "`aq integration status` and resolve or cancel it"
+        ),
+        fixable=False,
+        data={"count": len(stalls), "stalls": stalls[:50]},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -557,6 +723,16 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.stranded_fences",
             run=_check_stranded_fences,
+            owner=OWNER,
+        ),
+        # Report-only.  Both symptoms are durable publisher state, and the
+        # repairs they call for — resolving a parked batch, cancelling one,
+        # re-filing a repair — are the operator's judgement, not doctor's.
+        # Clearing the diagnostic from here would only hide the stall: the
+        # next tick rewrites it.
+        DoctorCheck(
+            id="integration.development_publisher_stalled",
+            run=_check_publisher_stalled,
             owner=OWNER,
         ),
     ]
