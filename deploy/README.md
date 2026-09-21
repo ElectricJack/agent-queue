@@ -92,6 +92,71 @@ docker compose -f docker-compose.prod.yml exec daemon claude auth login
 
 The credential lands in the `…_aq-home` volume and survives rebuilds.
 
+## Deploying to GCP
+
+`terraform/gcp/` provisions step 1 of [`DESIGN.md` §8](DESIGN.md#8-the-committed-target):
+one ordinary VM running this compose stack, a persistent data disk that outlives
+it, and Cloud SQL on a private IP.
+
+```bash
+cd deploy/terraform/gcp
+cp terraform.tfvars.example terraform.tfvars   # project_id is the only required value
+terraform init
+terraform plan
+terraform apply
+```
+
+Then, from the outputs:
+
+```bash
+$(terraform output -raw ssh_command)                 # IAP SSH; there is no external IP
+$(terraform output -raw dashboard_tunnel_command)    # then open http://127.0.0.1:8088
+```
+
+Finally, log the harnesses in on the VM — once each, persisted on their own
+volumes:
+
+```bash
+cd /opt/aq/agent-queue/deploy
+sudo docker compose -f docker-compose.prod.yml exec daemon claude auth login
+sudo docker compose -f docker-compose.prod.yml exec daemon codex login --device-auth
+```
+
+### What it builds, and the three decisions inside it
+
+- **No external IP.** Egress is Cloud NAT (agents must reach LLM APIs); ingress
+  is a single firewall rule for IAP's `35.235.240.0/20`. Given the web layer has
+  effectively no authentication, the network *is* the security model — see
+  [Security posture](#security-posture).
+- **The data disk is separate and `prevent_destroy`.** It holds the vault, the
+  base clones and every worktree slot, and PostgreSQL rows reference those
+  paths. Docker's `data-root` is moved onto it so named volumes live there
+  rather than on the boot disk. `data_disk_type` rejects Local SSD, which is
+  wiped on preemption.
+- **`provisioning_model` is a variable, defaulted to `STANDARD`.** Flipping to
+  `SPOT` later is that one value — same disk, same image, same DSN. Read
+  [`DESIGN.md` §6.3](DESIGN.md#63-two-failure-modes-to-design-around) first:
+  something must restart the daemon after a preemption, because workspace locks
+  are released *by the daemon restarting*.
+
+`cloud-init.yaml` is idempotent and re-runs on every boot, so a preempted
+instance brings the stack back up by itself. It formats the data disk **only**
+when it has no filesystem — getting that wrong on a restart would erase every
+worktree slot.
+
+### Before you apply
+
+- **Terraform state contains the generated database password in plaintext.** It
+  is gitignored. For anything beyond a single operator, move to a GCS backend
+  with versioning and restricted IAM before the first `apply`.
+- `terraform validate` passes and the config is `fmt`-clean, but it has never
+  been applied to a real project. Validation checks syntax and schema, not
+  whether the APIs, quotas and IAM in *your* project cooperate — treat the first
+  `plan` as the review step.
+- `db_version` defaults to `POSTGRES_17`; the local compose stack uses
+  PostgreSQL 18. Neither needs server-side extensions, so the version is a free
+  choice — align them if you care.
+
 ## Development workflow
 
 **This stack is not a development loop.** It is the deployment artifact. Keep

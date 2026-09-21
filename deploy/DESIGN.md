@@ -320,6 +320,36 @@ per-pod limits, preemption handling. That path also needs the host-awareness of
 Build the provider first. It is what makes Kubernetes worth having, and it is
 useful on a single box regardless.
 
+## 8. The committed target
+
+**Shape C on one ordinary VM.** Not spot, not per-worker containers, not
+Kubernetes — those all come after, and none of them is wasted by starting here.
+
+```
+1. NOW     Shape C on one regular VM + Persistent Disk + Cloud SQL
+2. THEN    flip that same VM to spot (a machine-type change)
+3. THEN    Phase 3 container workers — hard CPU/memory limits
+4. MAYBE   multi-node — needs host-tagged workspaces first (§3.1)
+```
+
+**Why an ordinary VM before spot.** Shape C is already proven: an agent
+completes a real task in the container. So the unknowns in a first deploy are
+*infrastructure* — VPC, Cloud SQL connectivity, IAM, the tunnel, the disk — not
+the application. Debugging those and preemption simultaneously is a bad trade.
+Switching later costs one `provisioning_model` flag: same disk, same image, same
+DSN. The Terraform carries that flag from the start, defaulted off.
+
+**Why not Phase 3 first.** It buys isolation, and a runaway test suite killing
+the box is roughly equivalent to a preemption — which §6 shows the system
+already recovers from. Worth doing when the workload is build-heavy; not a
+blocker for a first deploy.
+
+**What step 2 additionally needs**, and why it is not free: something must
+restart the daemon after preemption, because workspace locks are released *by
+the daemon restarting* (§6.3). A managed instance group of size one is the
+obvious answer, and it also prevents the two-daemon overlap — but it wants the
+baseline to be boring first.
+
 ## Roadmap
 
 **Outstanding, not a phase:** three upstream issues found while building this
@@ -327,8 +357,9 @@ should be reported — `mcp_server.enabled` defaulting to `False` in the loader
 against a documented `True`; `CLAUDE_CODE_OAUTH_TOKEN` being unreachable despite
 its allowlist entry; and worker rungs being derived for harnesses whose CLI is
 not installed, which routes tasks to a binary that does not exist and fails with
-an empty `start-stderr.log`. Both are described in [`README.md`](README.md). Neither is fixed
-here, because both belong upstream rather than in a deployment directory.
+an empty `start-stderr.log`. All three are described in [`README.md`](README.md);
+none is fixed here, because they belong upstream rather than in a deployment
+directory.
 
 1. **Phase 2 — harden.** Automated SQL backups, data-disk snapshots, log
    shipping, `aq doctor` wired into a healthcheck.
@@ -336,9 +367,10 @@ here, because both belong upstream rather than in a deployment directory.
    `TmuxProvider` subclass above, the volume/path design in §5.1, per-worker
    `--cpus`/`--memory`, and the `proctable` leak. Upstreamable as the fourth
    planned provider.
-3. **Phase 4 — Terraform.** VM, disks, VPC, IAM, Secret Manager, managed SQL on
-   a private IP. Structured so a non-GCP sibling is a new directory rather than a
-   rewrite.
+3. ~~**Phase 4 — Terraform.**~~ Promoted to step 1 of §8 and in progress:
+   `deploy/terraform/gcp/`. VM, disks, VPC, NAT, IAM, Secret Manager and Cloud
+   SQL on a private IP, structured so a non-GCP sibling is a new directory
+   rather than a rewrite.
 4. **Phase 5 — agent-runnable install** (only if bare-metal Linux support is
    pursued). `aq install --non-interactive --yes --json` already emits one
    machine-readable object with meaningful exit codes (0 ready, 10 needs_user,

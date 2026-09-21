@@ -1,0 +1,102 @@
+#cloud-config
+# Bootstrap for the Agent Queue VM.
+#
+# Deliberately thin: it installs Docker, makes the persistent disk Docker's
+# storage root, clones the repo and runs the compose stack from deploy/. All
+# machine configuration lives in the images, so there is no configuration
+# management here and no `aq install` — whose supported-platform matrix refuses
+# non-WSL Linux anyway.
+#
+# It must be safe to run again on every boot, because on SPOT that is exactly
+# what happens after a preemption.
+
+write_files:
+  - path: /opt/aq/bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Idempotent by construction: every step checks before acting, so a
+      # preemption-restart is a no-op that ends with `compose up`.
+      set -euo pipefail
+      exec >> /var/log/aq-bootstrap.log 2>&1
+      echo "=== bootstrap $(date -Is) ==="
+
+      DATA_DEV=/dev/disk/by-id/google-aqdata
+      DATA_MNT=/mnt/aqdata
+      CHECKOUT=/opt/aq/agent-queue
+
+      # --- persistent disk ---------------------------------------------------
+      # Format ONLY when there is no filesystem. Getting this wrong on a spot
+      # restart would erase every worktree slot and warm cache on the disk.
+      if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+          echo "no filesystem on $DATA_DEV — creating ext4"
+          mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard "$DATA_DEV"
+      fi
+      mkdir -p "$DATA_MNT"
+      grep -q "$DATA_MNT" /etc/fstab || \
+          echo "$DATA_DEV $DATA_MNT ext4 discard,defaults,nofail 0 2" >> /etc/fstab
+      mountpoint -q "$DATA_MNT" || mount "$DATA_MNT"
+
+      # --- docker ------------------------------------------------------------
+      if ! command -v docker >/dev/null 2>&1; then
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+              -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+              > /etc/apt/sources.list.d/docker.list
+          apt-get update -y
+          apt-get install -y --no-install-recommends \
+              docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin git
+      fi
+
+      # Docker's storage root goes on the persistent disk, so named volumes —
+      # the vault, the base clones, every worktree slot — survive the instance
+      # rather than living on the boot disk.
+      if [ ! -f /etc/docker/daemon.json ]; then
+          mkdir -p /etc/docker "$DATA_MNT/docker"
+          printf '{\n  "data-root": "%s/docker",\n  "log-driver": "json-file",\n  "log-opts": {"max-size": "50m", "max-file": "3"}\n}\n' \
+              "$DATA_MNT" > /etc/docker/daemon.json
+          systemctl restart docker
+      fi
+      systemctl enable --now docker
+
+      # --- checkout ----------------------------------------------------------
+      if [ ! -d "$CHECKOUT/.git" ]; then
+          git clone --branch "${repo_ref}" "${repo_url}" "$CHECKOUT"
+      else
+          git -C "$CHECKOUT" fetch --all --prune
+          git -C "$CHECKOUT" checkout "${repo_ref}"
+          git -C "$CHECKOUT" pull --ff-only || true
+      fi
+
+      # --- configuration -----------------------------------------------------
+      # One whole DSN out of Secret Manager, never split into parts. Read with
+      # the VM's own service account; nothing is baked into the image.
+      DSN="$(gcloud secrets versions access latest \
+                --secret="${database_url_secret}" \
+                --project="${project_id}")"
+
+      umask 077
+      cat > "$CHECKOUT/deploy/.env" <<ENVEOF
+      AQ_DATABASE_URL=$DSN
+      AQ_HARNESSES=${harnesses}
+      AQ_DASHBOARD_PORT=${dashboard_port}
+      ENVEOF
+      umask 022
+
+      # --- run ---------------------------------------------------------------
+      # No --profile local-db: PostgreSQL is Cloud SQL on a private IP.
+      cd "$CHECKOUT/deploy"
+      docker compose -f docker-compose.prod.yml up -d --build
+
+      echo "=== bootstrap finished $(date -Is) ==="
+
+runcmd:
+  - [/opt/aq/bootstrap.sh]
+
+# Re-run on every boot so a preempted SPOT instance brings the stack back up by
+# itself. The daemon restarting is also what releases the workspace locks its
+# predecessor was holding (deploy/DESIGN.md §6.3).
+bootcmd:
+  - [cloud-init-per, always, aq-bootstrap, /bin/sh, -c, "test -x /opt/aq/bootstrap.sh && /opt/aq/bootstrap.sh || true"]

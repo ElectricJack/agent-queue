@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars and fill in. Only project_id is required.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   terraform init && terraform plan
+
+project_id = ""            # required
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# --- The box -----------------------------------------------------------------
+# Sized for ~4 concurrent agents. The constraint is what agents *spawn* —
+# builds and test suites — not the agents, which measure ~200 MB each.
+machine_type = "e2-standard-4"
+
+# STANDARD first. Flip to SPOT once the baseline is boring; it is the only
+# change needed, but read DESIGN.md §6.3 first — something must restart the
+# daemon after a preemption or its workspace locks stay held.
+provisioning_model = "STANDARD"
+
+# Driver is N_slots x (working tree + node_modules/.venv/target), since slots
+# keep their gitignored caches by design. pd-balanced resizes online.
+data_disk_gb = 100
+
+# --- Application -------------------------------------------------------------
+# Keep codex: the shipped `pr-merger` profile declares `harness: codex`.
+harnesses = "claude,codex"
+
+# repo_ref = "main"
+# dashboard_port = 8088
+
+# --- Database ----------------------------------------------------------------
+# db_tier = "db-g1-small"
+# db_deletion_protection = true

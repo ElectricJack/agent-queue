@@ -59,3 +59,13 @@ htmlcov/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# Terraform. State is NOT safe to commit: it contains the generated database
+# password in plaintext. The provider lock file is committed on purpose.
+deploy/terraform/**/.terraform/
+deploy/terraform/**/*.tfstate
+deploy/terraform/**/*.tfstate.*
+deploy/terraform/**/*.tfplan
+deploy/terraform/**/terraform.tfvars
+deploy/terraform/**/*.auto.tfvars
+!deploy/terraform/**/terraform.tfvars.example
