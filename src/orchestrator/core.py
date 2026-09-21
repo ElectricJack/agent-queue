@@ -2747,6 +2747,11 @@ class Orchestrator(
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.
 
+            # 12a. Resume playbook runs suspended on a child task that has
+            #      settled.  Before the timeout sweep on purpose: a child that
+            #      finished in the same tick as its deadline is a completion.
+            await self._reconcile_playbook_child_tasks()
+
             # 12. Check paused playbook runs for timeout (roadmap 5.4.4).
             #     Sweeps paused runs and handles expired timeouts — either
             #     transitioning to a timeout node or marking as timed_out.
