@@ -354,6 +354,19 @@ def test_dashboard_server_config_reads_both_spellings(tmp_path):
     assert both.dashboard_server.port == 9292
 
 
+def test_dashboard_public_url_is_loaded_independently_of_server_settings(tmp_path):
+    config = _dashboard_server_config(
+        tmp_path,
+        dashboard={
+            "public_url": "https://queue.example.test",
+            "server": {"port": 9090},
+        },
+    )
+
+    assert config.dashboard_server.public_url == "https://queue.example.test"
+    assert config.dashboard_server.port == 9090
+
+
 @pytest.mark.parametrize(
     ("server", "field", "fragment"),
     [

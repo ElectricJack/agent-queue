@@ -310,8 +310,13 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # surface.
         cutover_report = getattr(bot, "_cutover_report", None)
         cutover_ready = cutover_report is not None and cutover_report.status == "complete"
-        if bot is not None and config.discord.channel_id and cutover_ready:
+        discord_transport = None
+        if bot is not None and cutover_ready:
             from src.discord.escalation_transport import DiscordEscalationTransport
+
+            discord_transport = DiscordEscalationTransport(bot, config)
+
+        if discord_transport is not None and config.discord.channel_id:
             from src.escalations import EscalationDeliveryService
 
             handler = orch._get_handler()
@@ -321,7 +326,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             remote_link_base = resolve_remote_link_base(local_base_url)
             orch.escalation_delivery = EscalationDeliveryService(
                 orch.db,
-                DiscordEscalationTransport(bot, config),
+                discord_transport,
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
                 base_url=remote_link_base.url,
@@ -341,7 +346,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
 
             orch.digest_schedule = DigestScheduleService(
                 orch.db,
-                DiscordEscalationTransport(bot, config),
+                discord_transport,
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
                 base_url=remote_link_base.url,
@@ -357,7 +362,30 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 "is disabled"
             )
 
-        await _run_scheduler_cycles(orch, shutdown_event)
+        # Document review delivery is a much smaller durable outbox than
+        # escalations: without a Discord bot or destination it intentionally
+        # settles its cursor without posting, so it must run in that degraded
+        # mode too.  The cancellation lifecycle mirrors the scheduler's
+        # services: start only after the adapter is ready and stop with it.
+        from src.reviews.notifier import ReviewNotifier
+
+        review_base_url = config.dashboard_server.public_url or (
+            f"http://{config.dashboard_server.host}:{config.dashboard_server.port}"
+        )
+        review_notifier_task = asyncio.create_task(
+            ReviewNotifier(
+                orch.db,
+                discord_transport,
+                config.discord.channel_id,
+                review_base_url,
+            ).run(),
+            name="aq-review-notifier",
+        )
+        try:
+            await _run_scheduler_cycles(orch, shutdown_event)
+        finally:
+            review_notifier_task.cancel()
+            await asyncio.gather(review_notifier_task, return_exceptions=True)
 
     # Start embedded MCP server (if enabled).  Lazy-imports the MCP SDK
     # (~3s) inside the task so it never blocks orchestrator startup.
