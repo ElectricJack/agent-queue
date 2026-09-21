@@ -51,8 +51,9 @@ page does not duplicate their reference material.
 The daemon is **API only**. Its HTTP app ([`src/api/app.py`](../../src/api/app.py))
 exposes `/api`, `/health`, `/ready`, the `/ws` sockets and the embedded MCP
 server, on `mcp_server.port` (8081 by default), and serves no dashboard page,
-script or stylesheet; the only HTML it returns is FastAPI's interactive API
-reference at `/docs` and `/redoc` and the plan viewer at `/plans/<task_id>`. Its old `/dashboard` path answers a `307` redirect to the
+script or stylesheet; the only HTML it returns is the plan viewer at
+`/plans/<task_id>` (the API reference is JSON only at `/openapi.json`). Its old
+`/dashboard` path answers a `307` redirect to the
 same route on the dashboard server, with a JSON pointer naming that URL as the
 body, so an old bookmark still lands on the dashboard; with the dashboard server
 disabled it answers `404` and the pointer's URL is `null`. The redirect also

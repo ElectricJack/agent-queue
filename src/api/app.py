@@ -87,8 +87,8 @@ def create_app(
         title="Agent Q API",
         description="REST API for the agent-queue daemon.",
         version="0.1.0",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url=None,
+        redoc_url=None,
     )
 
     # Wire up shared state via the dependencies module

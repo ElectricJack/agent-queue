@@ -35,7 +35,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 _EXEMPT_PATHS: frozenset[str] = frozenset(
-    {"/api/health", "/health", "/ready", "/docs", "/redoc", "/openapi.json"}
+    {"/api/health", "/health", "/ready", "/openapi.json"}
 )
 
 

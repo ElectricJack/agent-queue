@@ -131,11 +131,12 @@ the generated client's base URL.
 | `/ws` | `/ws/events?after_seq=` (`ws/useEventStream.ts`), `/ws/terminal/{session}?cols=&rows=` (`ws/terminalSocket.ts`) | WebSocket |
 
 A prefix matches on a segment boundary (`/api` and `/api/…`, never `/apix`).
-Nothing else is forwarded. The daemon's other prefixes — `/mcp`, `/docs`,
-`/redoc`, `/openapi.json`, `/plans` and `/dashboard` — answer `404` at the
-dashboard server and never fall back to `index.html`, so a client pointed at the
-wrong port gets an error, not HTML; no SPA route uses them. A proxied path whose
-percent-decoded form contains a `.` or `..` segment is answered `400`. The
+Nothing else is forwarded. The daemon's non-dashboard prefixes and retired
+documentation paths — `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans` and
+`/dashboard` — answer `404` at the dashboard server and never fall back to
+`index.html`, so a client pointed at the wrong port gets an error, not HTML; no
+SPA route uses them. A proxied path whose percent-decoded form contains a `.` or
+`..` segment is answered `400`. The
 spec-document pane's `useHostedDoc` fetches an arbitrary same-origin URL that is
 not a daemon route; it keeps answering `404`, as under the daemon mount.
 

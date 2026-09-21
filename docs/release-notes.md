@@ -16,12 +16,15 @@ on port 8081 no longer serves it.
 
 ### What changed
 
-* **The daemon no longer serves the dashboard.** Since 2026-09-16 it had
-  mounted the built dashboard at `http://127.0.0.1:8081/dashboard/`. That mount
-  is gone ([src/api/app.py](../src/api/app.py)). The daemon answers `/api`,
-  `/health`, `/ready`, the `/ws` sockets and `/mcp`; the only HTML it still
-  returns is FastAPI's interactive API reference at `/docs` and `/redoc` and the
-  plan viewer at `/plans/<task_id>` (see [known issues](#known-issues)). A request
+* **The daemon no longer serves the dashboard or HTML API reference pages.**
+  Since 2026-09-16 it had mounted the built dashboard at
+  `http://127.0.0.1:8081/dashboard/`; that mount is gone
+  ([src/api/app.py](../src/api/app.py)). It also no longer serves FastAPI's
+  interactive API reference at `/docs` (Swagger UI) and `/redoc` (ReDoc), both
+  of which loaded scripts from a CDN. The daemon answers `/api`, `/health`,
+  `/ready`, the `/ws` sockets and `/mcp`; the only HTML it returns is the plan
+  viewer at `/plans/<task_id>`, and `/openapi.json` still serves the schema as
+  JSON for generated clients. A request
   for `/dashboard` or anything under it is redirected (`307`) to the same route
   on the dashboard server — `/dashboard/tasks/abc` to
   `http://127.0.0.1:8082/tasks/abc` — with a pointer as the body instead of a
@@ -155,7 +158,7 @@ driving it; they do not stop a person on that network with `curl`.
 
 What stays unreachable from another machine even then: interactive terminals
 and any request carrying a bearer token (`403 loopback_only`); the daemon's
-`/mcp`, `/docs`, `/redoc`, `/openapi.json` and `/plans`; port 8081 itself, which
+`/mcp`, `/openapi.json` and `/plans`; port 8081 itself, which
 stays on `mcp_server.host`; PostgreSQL; and any file outside the bundle
 manifest. `aq doctor --check dashboard.server.exposure` warns for as long as the
 bind is not loopback. The full statement is in the
@@ -184,12 +187,11 @@ bind is not loopback. The full statement is in the
   `aq restart` instead: it stops the dashboard server first, then starts both.
   For the same reason, do not run `aq stop --no-dashboard-server` while the
   daemon is down — it stops the dashboard server.
-* **The daemon still serves a few HTML pages:** FastAPI's interactive API
-  reference at `/docs`, `/docs/oauth2-redirect` and `/redoc`, and the plan
-  viewer at `/plans/<task_id>` ([src/api/health.py](../src/api/health.py)) — all
-  of which load their scripts from a CDN. None is the dashboard, and the
-  dashboard server relays none of them. Whether to keep them is open
-  (`smart-meadow.8`).
+* **The daemon still serves one HTML page:** the plan viewer at
+  `/plans/<task_id>` ([src/api/health.py](../src/api/health.py)), which loads
+  its markdown renderer from a CDN. It is not the dashboard, and the dashboard
+  server does not relay it. FastAPI's Swagger UI at `/docs` and ReDoc at
+  `/redoc` are no longer served.
 * **With the daemon down, the dashboard does not say so.** The page loads, but
   shows *Preferences unavailable* and *Loading…* until the daemon answers
   again; `aq dashboard status` reports `the daemon is not answering it`.

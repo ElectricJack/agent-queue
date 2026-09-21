@@ -52,7 +52,7 @@ session runtime sets alongside `AQ_API_URL`.
 > **Note.** Ships with `api_auth.require_session_token: false`: a request
 > without a token is trusted, which is what makes the local CLI work with no
 > setup. Turning it on makes every non-exempt path require a token;
-> `/api/health`, `/health`, `/ready`, `/docs`, `/redoc` and `/openapi.json`
+> `/api/health`, `/health`, `/ready` and `/openapi.json`
 > stay open either way.
 
 Two identity fields are never taken from the client. `profile_id` and

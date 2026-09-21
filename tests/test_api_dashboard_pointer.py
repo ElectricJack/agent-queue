@@ -120,6 +120,24 @@ async def test_daemon_registers_no_static_file_mount(live_app):
     assert all(not isinstance(route, Mount) for route in dashboard_routes)
 
 
+async def test_daemon_disables_docs_ui_but_still_serves_openapi(live_app):
+    """The API-only daemon offers the schema JSON but no generated HTML UI."""
+    app = live_app
+    assert app.docs_url is None
+    assert app.redoc_url is None
+
+    with TestClient(app) as client:
+        for path in ("/docs", "/docs/oauth2-redirect", "/redoc"):
+            response = client.get(path, headers={"Accept": "text/html"})
+            assert response.status_code == 404, path
+            assert "text/html" not in response.headers.get("content-type", ""), path
+
+        response = client.get("/openapi.json", headers={"Accept": "text/html"})
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json")
+        assert response.json() == app.openapi()
+
+
 async def test_dashboard_paths_redirect_307_to_the_dashboard_server_with_the_pointer_body(
     live_app,
 ):
