@@ -669,6 +669,68 @@ def normalize_llm_provider(name: str) -> str:
     return _LEGACY_LLM_PROVIDER_IDS.get(name, name)
 
 
+def _llm_credential_errors(
+    provider: str, api_key: str, base_url: str, *, prefix: str
+) -> list[ConfigError]:
+    """The provider-id and OpenAI-endpoint checks one direct-path credential needs."""
+    errors: list[ConfigError] = []
+    if provider not in LLM_PROVIDER_IDS:
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}provider",
+                f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{provider}'",
+            )
+        )
+    if provider == "openai" and not (base_url or api_key or os.environ.get("OPENAI_API_KEY")):
+        errors.append(
+            ConfigError(
+                "llm",
+                f"{prefix}base_url",
+                "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
+                "or an API key (api_key / OPENAI_API_KEY)",
+            )
+        )
+    return errors
+
+
+@dataclass
+class LLMFallbackConfig:
+    """``llm.fallback`` — an optional second credential for the direct path.
+
+    Provider-failover D13a: while provider availability holds the reserved
+    ``llm`` key unavailable, direct-path calls resolve their intelligence
+    class against this block's provider slice and are made with this block's
+    credential instead of failing fast.  It is a full block of its own — its
+    ``default_class`` and ``model`` stand in for the primary's, and only
+    ``max_tokens`` is shared.  A session harness's login is never borrowed:
+    this credential is the only other one the direct path ever uses.
+    """
+
+    provider: str = ""  # required: "anthropic" | "google" | "openai"
+    model: str = ""  # explicit model id; empty = intelligence class, else provider default
+    api_key: str = ""  # optional; the provider's *_API_KEY variable otherwise
+    base_url: str = ""  # openai only: OpenAI-compatible endpoint
+    default_class: str = ""  # intelligence class used when a call names none
+
+    def __post_init__(self) -> None:
+        if self.model and not isinstance(self.model, str):
+            object.__setattr__(self, "model", str(self.model))
+
+    def validate(self) -> list[ConfigError]:
+        if not self.provider:
+            return [
+                ConfigError(
+                    "llm",
+                    "fallback.provider",
+                    f"is required; one of {sorted(LLM_PROVIDER_IDS)}",
+                )
+            ]
+        return _llm_credential_errors(
+            self.provider, self.api_key, self.base_url, prefix="fallback."
+        )
+
+
 @dataclass
 class LLMConfig:
     """The direct LLM path (``src/llm``): playbook nodes and transitions, plugin
@@ -681,6 +743,8 @@ class LLMConfig:
     base_url: str = ""  # openai only: OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1)
     max_tokens: int = 4096
     default_class: str = ""  # intelligence class used when a call names none
+    #: Used only while the primary credential is unavailable (provider-failover D13a).
+    fallback: LLMFallbackConfig | None = None
 
     def __post_init__(self) -> None:
         # YAML may parse ``model: 4`` as an int; APIs require a string.
@@ -688,26 +752,25 @@ class LLMConfig:
             object.__setattr__(self, "model", str(self.model))
 
     def validate(self) -> list[ConfigError]:
-        errors: list[ConfigError] = []
-        if self.provider not in LLM_PROVIDER_IDS:
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "provider",
-                    f"must be one of {sorted(LLM_PROVIDER_IDS)}, got '{self.provider}'",
+        errors = _llm_credential_errors(self.provider, self.api_key, self.base_url, prefix="")
+        fallback = self.fallback
+        if fallback is not None:
+            errors.extend(fallback.validate())
+            if (fallback.provider, fallback.api_key, fallback.base_url) == (
+                self.provider,
+                self.api_key,
+                self.base_url,
+            ):
+                # Same provider, key and endpoint is the same credential: it is
+                # unavailable exactly when the primary is, so it can never help.
+                errors.append(
+                    ConfigError(
+                        "llm",
+                        "fallback",
+                        "names the same credential as llm (provider, api_key and "
+                        "base_url all match); a fallback must differ in at least one",
+                    )
                 )
-            )
-        if self.provider == "openai" and not (
-            self.base_url or self.api_key or os.environ.get("OPENAI_API_KEY")
-        ):
-            errors.append(
-                ConfigError(
-                    "llm",
-                    "base_url",
-                    "provider 'openai' needs base_url (a local OpenAI-compatible endpoint) "
-                    "or an API key (api_key / OPENAI_API_KEY)",
-                )
-            )
         return errors
 
 
@@ -3572,6 +3635,35 @@ def _llm_config_from_mapping(m: dict, *, legacy: bool) -> LLMConfig:
         base_url=base_url,
         max_tokens=int(m.get("max_tokens", 4096)),
         default_class=str(m.get("default_class", "") or ""),
+        fallback=_llm_fallback_from_mapping(m.get("fallback")),
+    )
+
+
+_LLM_FALLBACK_KEYS = frozenset(f.name for f in dataclasses.fields(LLMFallbackConfig))
+
+
+def _llm_fallback_from_mapping(raw: object) -> LLMFallbackConfig | None:
+    """``llm.fallback``: absent or ``null`` means no fallback (provider-failover D13a)."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        keys = ", ".join(sorted(_LLM_FALLBACK_KEYS))
+        raise ConfigValidationError([f"[llm] fallback: must be a mapping of {keys}, or null"])
+    unknown = sorted(str(key) for key in raw if key not in _LLM_FALLBACK_KEYS)
+    if unknown:
+        # Names only: a mistyped key may be holding a pasted credential.
+        logger.warning(
+            "llm.fallback: ignoring unsupported keys %s (supported: %s)",
+            unknown,
+            sorted(_LLM_FALLBACK_KEYS),
+        )
+    raw_model = raw.get("model", "")
+    return LLMFallbackConfig(
+        provider=normalize_llm_provider(str(raw.get("provider", "") or "")),
+        model=str(raw_model) if raw_model else "",
+        api_key=str(raw.get("api_key", "") or ""),
+        base_url=str(raw.get("base_url", "") or ""),
+        default_class=str(raw.get("default_class", "") or ""),
     )
 
 

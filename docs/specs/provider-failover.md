@@ -565,6 +565,16 @@ So:
   their class against the fallback's provider slice and use it; a class with no
   slice there returns `provider_error`. Rejected: borrowing a session harness's
   login for the direct path — AQ never holds those credentials.
+  As built (`LLMFallbackConfig`, `resolve_fallback_call` in `src/llm/spec.py`):
+  the block is self-contained — a call naming no class uses
+  `fallback.default_class`, else `fallback.model`, and only `max_tokens` is
+  shared with the primary. An explicit model id is honoured only when the
+  fallback is the same vendor (a second key); otherwise it is `provider_error`
+  too. The gate is read on every call, so a tool loop moves between the two
+  credentials turn by turn. Fallback calls are **not** `llm` evidence: they say
+  nothing about the primary credential, and the primary's recovery is still
+  its own canary after `until`. A fallback that repeats the primary's provider,
+  `api_key` and `base_url` is a validation error — it is the same credential.
 * Knock-on effect, stated so nobody is surprised: `default-assignment-routing`
   uses an `llm` step to choose a class for *undecided* tasks. With `llm` down and
   no fallback, undecided tasks stay unrouted (`awaiting_intelligence_route`) and

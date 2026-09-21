@@ -16,7 +16,13 @@ from src.config import LLMConfig
 from src.intelligence_classes import IntelligenceClass
 from src.llm.providers import create_provider
 from src.llm.providers.base import LLMProvider
-from src.llm.spec import LLMCallSpec, ResolvedCall, resolve_call
+from src.llm.spec import (
+    LLMCallSpec,
+    NoFallbackRoute,
+    ResolvedCall,
+    resolve_call,
+    resolve_fallback_call,
+)
 from src.llm.types import ChatResponse, TokenUsage, serialize_canonical
 from src.llm_logger import LLMLogger
 
@@ -127,9 +133,14 @@ class LLMClient:
         self.on_outcome: Callable[[str, dict], None] | None = None
         #: Returns why direct-path calls must not be made right now, or
         #: ``None``.  The orchestrator wires it to provider availability's
-        #: ``llm`` key: while that is unavailable every call fails fast with
-        #: :class:`ProviderUnavailableError` (provider-failover D13a).
+        #: ``llm`` key: while that is unavailable every call is made with
+        #: ``llm.fallback`` when one is configured and can serve it, and
+        #: otherwise fails fast with :class:`ProviderUnavailableError`
+        #: (provider-failover D13a).
         self.availability_gate: Callable[[], str | None] | None = None
+        # Whether the last gated call went to the fallback; only so the
+        # switch in each direction is logged once, not on every call.
+        self._serving_fallback = False
 
     @classmethod
     def with_provider(
@@ -155,6 +166,63 @@ class LLMClient:
 
     def resolve(self, spec: LLMCallSpec) -> ResolvedCall:
         return resolve_call(spec, self._config, self._classes_loader())
+
+    def resolve_current(self, spec: LLMCallSpec) -> ResolvedCall:
+        """What a call on *spec* made right now would run on.
+
+        The ``llm.fallback`` resolution while the primary credential is
+        unavailable and the fallback can serve *spec*; otherwise the primary
+        one.  Makes no call and logs no switch -- it is for naming the model
+        in a receipt, not for routing.
+        """
+        resolved = self.resolve(spec)
+        if self._block_reason() and self._config.fallback is not None:
+            try:
+                return resolve_fallback_call(spec, self._config, self._classes_loader())
+            except NoFallbackRoute:
+                pass
+        return resolved
+
+    def _block_reason(self) -> str | None:
+        gate = self.availability_gate
+        if gate is None:
+            return None
+        try:
+            return gate()
+        except Exception:  # a broken gate must never block the direct path
+            logger.debug("llm: availability gate failed", exc_info=True)
+            return None
+
+    def _resolve_gated(self, spec: LLMCallSpec, resolved: ResolvedCall) -> ResolvedCall:
+        """The resolution a call made right now uses (provider-failover D13a).
+
+        *resolved* while the primary credential is available; otherwise the
+        call resolved against ``llm.fallback``.  Raises
+        :class:`ProviderUnavailableError` when there is no fallback or it
+        cannot serve this call, without calling any vendor.
+        """
+        blocked = self._block_reason()
+        if not blocked:
+            if self._serving_fallback:
+                self._serving_fallback = False
+                logger.info("llm: primary credential is back; direct-path calls use it again")
+            return resolved
+        from src.llm.providers.errors import ProviderUnavailableError
+
+        try:
+            fallback = resolve_fallback_call(spec, self._config, self._classes_loader())
+        except NoFallbackRoute as exc:
+            if self._config.fallback is None:
+                raise ProviderUnavailableError(blocked) from None
+            raise ProviderUnavailableError(f"{blocked}; {exc}") from None
+        if not self._serving_fallback:
+            self._serving_fallback = True
+            logger.warning(
+                "llm: %s — direct-path calls use llm.fallback (provider %s)",
+                blocked,
+                fallback.provider,
+            )
+        return fallback
 
     def _provider_for(self, resolved: ResolvedCall) -> LLMProvider:
         key = resolved.cache_key
@@ -191,7 +259,7 @@ class LLMClient:
     ) -> LLMResponse:
         resolved = self.resolve(spec)
         resp = await self._create_message(
-            resolved, messages=_as_messages(messages), system=system, tools=None
+            resolved, spec=spec, messages=_as_messages(messages), system=system, tools=None
         )
         return LLMResponse.from_chat_response(resp)
 
@@ -273,6 +341,7 @@ class LLMClient:
                 resp = await _within_deadline(
                     lambda: self._create_message(
                         resolved,
+                        spec=spec,
                         messages=transcript,
                         system=system,
                         tools=tools or None,
@@ -383,21 +452,18 @@ class LLMClient:
         self,
         resolved: ResolvedCall,
         *,
+        spec: LLMCallSpec,
         messages: list[dict],
         system: str,
         tools: list[dict] | None,
     ) -> ChatResponse:
-        gate = self.availability_gate
-        if gate is not None:
-            try:
-                blocked = gate()
-            except Exception:  # a broken gate must never block the direct path
-                logger.debug("llm: availability gate failed", exc_info=True)
-                blocked = None
-            if blocked:
-                from src.llm.providers.errors import ProviderUnavailableError
-
-                raise ProviderUnavailableError(blocked)
+        # Re-evaluated on every call, so a tool loop that outlives an outage
+        # (or starts inside one) moves between the credentials turn by turn.
+        resolved = self._resolve_gated(spec, resolved)
+        # Only the primary's calls are ``llm`` evidence: the fallback's say
+        # nothing about the primary credential, and a success there must not
+        # read as the primary's recovery.
+        primary = resolved.credential == "llm"
         provider = self._provider_for(resolved)
         start = time.monotonic()
         response: ChatResponse | None = None
@@ -406,15 +472,17 @@ class LLMClient:
             response = await provider.create_message(
                 messages=messages, system=system, tools=tools, max_tokens=resolved.max_tokens
             )
-            self._report_outcome("ok", {})
+            if primary:
+                self._report_outcome("ok", {})
             return response
         except Exception as exc:
             error = str(exc)
-            from src.llm.providers.errors import classify_llm_error
+            if primary:
+                from src.llm.providers.errors import classify_llm_error
 
-            signal, detail = classify_llm_error(exc)
-            if signal is not None:
-                self._report_outcome(signal, detail)
+                signal, detail = classify_llm_error(exc)
+                if signal is not None:
+                    self._report_outcome(signal, detail)
             raise
         finally:
             if self._logger is not None:
