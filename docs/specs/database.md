@@ -1041,6 +1041,65 @@ Provider quota readings from transcripts and probes. Repeated readings update
 The series index covers `(provider, window, scope, observed_at DESC)`.
 This table has no foreign keys.
 
+### Table: `provider_availability`
+
+One row per provider key (the harness login: `claude`, `codex`, ... and the
+reserved `llm` for the direct path), written only by the daemon's availability
+service ([provider failover](provider-failover.md) D7). `state` is the state
+derived from evidence and never holds `disabled`; an operator override lives in
+the `override_*` columns and the effective state is computed from both.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| provider | TEXT | Primary key: the provider key |
+| vendor | TEXT | Display attribute (`anthropic`, `openai`, ...); defaults to empty |
+| state | TEXT | Derived state; `ck_provider_availability_state` names the six values |
+| reason_code | TEXT | Machine-readable reason; defaults to empty |
+| reason | TEXT | Human reason; defaults to empty |
+| since | FLOAT | When the derived state began, Unix epoch seconds |
+| until | FLOAT | Nullable expected recovery |
+| level | INTEGER | Flap backoff level; defaults to 0 |
+| last_trip_at | FLOAT | Nullable time of the last trip |
+| consecutive_failures | INTEGER | Generic launch failures since the last success |
+| last_failure_at | FLOAT | Nullable |
+| last_success_at | FLOAT | Nullable |
+| evidence | JSON | Bounded evidence ring, newest first; defaults to `[]` |
+| override_state | TEXT | Nullable `disabled` or `available` (`ck_provider_availability_override_state`) |
+| override_until | FLOAT | Nullable override expiry |
+| override_by | TEXT | Nullable principal |
+| override_reason | TEXT | Nullable |
+| override_set_at | FLOAT | Nullable |
+| generation | INTEGER | Incremented on every change of effective state |
+| probation_from | TEXT | Nullable unavailable state a recovering provider came from |
+| counters_reset_at | FLOAT | Nullable; evidence at or before it no longer counts toward a trip |
+| last_probe_at | FLOAT | Nullable time the auth probe last answered |
+| notified_generation | INTEGER | Generation the state-change message last went out for |
+| updated_at | FLOAT | Last write, Unix epoch seconds |
+
+This table has no foreign keys.
+
+### Table: `provider_availability_transitions`
+
+Append-only audit trail of effective provider state changes: `aq provider
+history` and the dashboard card's history.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| id | INTEGER | Auto-increment primary key |
+| provider | TEXT | Provider key |
+| from_state | TEXT | Effective state before |
+| to_state | TEXT | Effective state after |
+| reason_code | TEXT | Defaults to empty |
+| reason | TEXT | Defaults to empty |
+| until | FLOAT | Nullable expected recovery |
+| generation | INTEGER | The row's generation after the change |
+| actor | TEXT | `system` or a principal; defaults to `system` |
+| detail | JSON | Derived states and the evidence that caused it; defaults to `{}` |
+| at | FLOAT | Unix epoch seconds |
+
+Index `idx_provider_availability_transitions_provider_at` covers (`provider`,
+`at DESC`). This table has no foreign keys.
+
 ### Table: `metrics_samples`
 
 Fleet Metrics tab time-series buckets. Each row stores one JSON metric sample

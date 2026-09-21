@@ -38,7 +38,6 @@ PORTABLE_CONFIG_SECTIONS = frozenset(
         "agents_config",
         "integration",
         "scheduling",
-        "pause_retry",
         "monitoring",
         "archive",
         "auto_task",

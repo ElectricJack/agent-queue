@@ -171,6 +171,13 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="pool",
         description=("Worker pool sizing — supply/demand status and min/max bounds"),
     ),
+    "provider": CategoryMeta(
+        name="provider",
+        description=(
+            "Provider availability — whether each harness login is usable, why "
+            "not, operator overrides and an immediate login recheck"
+        ),
+    ),
     "formula": CategoryMeta(
         name="formula",
         description=(

@@ -76,6 +76,9 @@ DEFAULT_EXCLUDED_COMMANDS = {
     # decides incidents with ``task_recover``; nothing outside the daemon
     # needs to file one.
     "task_recovery_notify",
+    # Provider state-change notice (provider-failover D19): fired by the
+    # daemon on every half change and by the provider-failover playbook.
+    "provider_availability_notify",
 }
 
 

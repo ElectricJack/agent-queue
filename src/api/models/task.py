@@ -592,11 +592,33 @@ class AssignmentRouteDetail(BaseModel):
     freshness: str
 
 
+class ProviderHoldDetail(BaseModel):
+    """Why a queued task is held by its provider (provider-failover D18).
+
+    ``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or
+    ``failover_inactive`` today; the re-route engine adds the rest of D18's
+    vocabulary.  ``ahead`` is the queue position for
+    ``awaiting_failover_capacity`` and ``None`` otherwise.
+    """
+
+    provider: str
+    vendor: str = ""
+    state: str
+    since: float | None = None
+    until: float | None = None
+    kind: str
+    ahead: int | None = None
+    profile_id: str | None = None
+    reason: str = ""
+    remediation: str = ""
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
     reason_codes: list[str] = []
     assignment_route: AssignmentRouteDetail | None = None
+    provider_hold: ProviderHoldDetail | None = None
 
 
 class ReadyTask(BaseModel):
@@ -782,6 +804,19 @@ class PoolProjectStatus(BaseModel):
     quarantined_reason: str | None = None
 
 
+class PoolProviderUnavailable(BaseModel):
+    """The pool's provider is unavailable, so it is sized to zero (provider-failover D13).
+
+    Distinct from ``placement_starved``: nothing is wrong with the pool, its
+    projects or their workspaces -- the login it draws on is down.
+    """
+
+    provider: str
+    state: str
+    reason: str = ""
+    until: float | None = None
+
+
 class PoolStatusRow(BaseModel):
     """One worker pool -- a profile, fleet-wide (global-worker-pools §6.1).
 
@@ -815,6 +850,9 @@ class PoolStatusRow(BaseModel):
     #: Live task-lifecycle sessions whose harness/class route is also served
     #: by this pool. They consume project capacity but are not pool supply.
     outside_pools: list[OutsidePoolSessionStatus] = []
+    #: Set while the pool's provider is unavailable: the pool targets zero,
+    #: busy sessions finish, idle ones drain on their next claim.
+    provider_unavailable: PoolProviderUnavailable | None = None
 
 
 class PoolStatusResponse(BaseModel):

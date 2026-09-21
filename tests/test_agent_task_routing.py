@@ -473,13 +473,18 @@ def test_explain_reports_incompatible_workers_instead_of_fake_project_ownership(
     assert all(reason["code"] != "no_idle_agent" for reason in reasons)
 
 
-def test_explain_reports_global_compatible_worker_cooldown():
+def test_suppressed_worker_is_not_scheduled_and_not_called_incompatible():
+    """A worker on an unavailable provider takes nothing (provider-failover D11)."""
+    from dataclasses import replace
+
     from src.explain import build_capacity_reasons
 
     state = routing_state(agents=[workers()[-1]])
-    state.provider_cooldowns["worker-deep-codex"] = state.now + 100
+    worker = state.agents[0]
+    state = replace(state, suppressed_agent_ids=frozenset({worker.id}))
+    assert Scheduler.schedule(state) == []
     reasons = build_capacity_reasons(state.tasks[0], state, {"p": 1}, {"p": 1})
-    assert any(reason["code"] == "rate_limited" for reason in reasons)
+    assert all(reason["code"] != "no_compatible_agent" for reason in reasons)
 
 
 def test_classified_codex_project_default_binds_provider_without_task_profile():

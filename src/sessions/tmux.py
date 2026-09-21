@@ -40,6 +40,7 @@ from src.sessions import proctable
 from src.sessions.dialogs import DialogBudget, first_match, run_dialog_dismissal
 from src.sessions.provider import (
     Cap,
+    DialogRule,
     NotSubmitted,
     NudgeDeferred,
     PartialListError,
@@ -375,7 +376,7 @@ class TmuxProvider(SessionProvider):
             lines = out.split()
             return bool(lines) and all(line == "1" for line in lines)
 
-        async def die(detail: str) -> None:
+        async def die(detail: str, *, dialog: DialogRule | None = None) -> None:
             text = await capture()
             state_dir = self._state_dir(h.name)
             path = state_dir / "start-stderr.log"
@@ -390,6 +391,8 @@ class TmuxProvider(SessionProvider):
                 h.name,
                 start_stderr_path=str(path) if path else None,
                 detail=detail,
+                dialog=dialog.name if dialog is not None else None,
+                signal=dialog.signal if dialog is not None else None,
             )
 
         # Phase 1: wait for the pane's command to stop being a shell.
@@ -439,7 +442,10 @@ class TmuxProvider(SessionProvider):
                 quiet_seconds=quiet_seconds,
             )
             if outcome.quarantined is not None:
-                await die(f"quarantine dialog {outcome.quarantined.name!r} matched during startup")
+                await die(
+                    f"quarantine dialog {outcome.quarantined.name!r} matched during startup",
+                    dialog=outcome.quarantined,
+                )
             return outcome
 
         await dismiss()

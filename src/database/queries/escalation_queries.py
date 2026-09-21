@@ -193,6 +193,7 @@ class EscalationQueriesMixin:
         project_ids: Sequence[str] | None = None,
         states: Sequence[str] | None = None,
         task_id: str | None = None,
+        source_kind: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Incidents, optionally narrowed to one project or a set of them.
@@ -200,7 +201,8 @@ class EscalationQueriesMixin:
         ``project_ids`` is the caller's *visibility*: an empty sequence means
         "no project is visible" and matches nothing, which is what a scoped
         reader outside the configured selection must see.  ``None`` means the
-        caller is unrestricted.
+        caller is unrestricted.  ``source_kind`` lets a core producer find its
+        own incidents wherever they were filed.
         """
         if limit <= 0:
             return []
@@ -213,6 +215,8 @@ class EscalationQueriesMixin:
             statement = statement.where(escalations.c.state.in_(tuple(states)))
         if task_id is not None:
             statement = statement.where(escalations.c.task_id == task_id)
+        if source_kind is not None:
+            statement = statement.where(escalations.c.source_kind == source_kind)
         statement = statement.order_by(escalations.c.updated_at.desc(), escalations.c.id).limit(limit)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(statement)).mappings().all()
@@ -493,6 +497,57 @@ class EscalationQueriesMixin:
                             updated_at=now,
                             terminal_at=now,
                             terminal_outcome="Answer was accepted before the Discord cutover.",
+                            terminal_evidence=dict(terminal_evidence),
+                        )
+                        .returning(escalations)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        return _row_dict(row)
+
+    async def resolve_escalation_on_recovery(
+        self,
+        escalation_id: str,
+        *,
+        expected_revision: int,
+        source_kind: str,
+        terminal_outcome: str,
+        terminal_evidence: Mapping[str, Any],
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Close an open incident whose source condition cleared on its own.
+
+        The other narrow path to ``resolved`` without passing through
+        ``reply_received``: a core producer raised the incident for a
+        condition it observes (a provider that is logged out), and the
+        condition ended -- the recorded outcome and evidence are what §4
+        asks ``resolved`` to carry.  A compare-and-set on the revision *and*
+        the source kind, so it can never close another producer's incident,
+        and ``None`` when the row changed underneath (a human reply, a
+        supervisor turn) so the caller re-reads rather than overwrites.
+        """
+        if not terminal_outcome:
+            raise EscalationStateError("terminal escalation state requires an outcome")
+        at = float(now if now is not None else time.time())
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        update(escalations)
+                        .where(
+                            escalations.c.id == escalation_id,
+                            escalations.c.source_kind == source_kind,
+                            escalations.c.revision == expected_revision,
+                            escalations.c.state.in_(tuple(OPEN_ESCALATION_STATES)),
+                        )
+                        .values(
+                            state="resolved",
+                            revision=escalations.c.revision + 1,
+                            updated_at=at,
+                            terminal_at=at,
+                            terminal_outcome=terminal_outcome[:4000],
                             terminal_evidence=dict(terminal_evidence),
                         )
                         .returning(escalations)

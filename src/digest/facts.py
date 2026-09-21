@@ -24,18 +24,22 @@ from dataclasses import dataclass, field
 
 #: Selectable digest categories.  ``work`` is task lifecycle and progress,
 #: ``vcs`` is PR/branch milestones, ``budget`` is spend, ``system`` is daemon
-#: health.  The last two have no in-tree producer yet; they exist so the
-#: configured category filter has a stable vocabulary to validate against.
+#: health -- today a provider changing between launchable and unavailable
+#: (provider-failover D19).  ``budget`` has no in-tree producer yet; it exists
+#: so the configured category filter has a stable vocabulary to validate
+#: against.
 CATEGORIES: tuple[str, ...] = ("work", "vcs", "budget", "system")
 
-#: Fact kinds, in the order a highlight list prefers them: a completion says
-#: more than a start, and a start says more than a note.
+#: Fact kinds, in the order a highlight list prefers them: a provider outage
+#: says more than any one task (it is why nothing else happened), a
+#: completion more than a start, and a start more than a note.
+KIND_PROVIDER = "provider"
 KIND_COMPLETED = "completed"
 KIND_PROGRESS = "progress"
 KIND_STARTED = "started"
 
 #: Rank used to keep the most informative highlights when truncating.
-_KIND_RANK = {KIND_COMPLETED: 0, KIND_PROGRESS: 1, KIND_STARTED: 2}
+_KIND_RANK = {KIND_PROVIDER: -1, KIND_COMPLETED: 0, KIND_PROGRESS: 1, KIND_STARTED: 2}
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +66,13 @@ class DigestWindow:
 
 @dataclass(frozen=True, slots=True)
 class WorkFact:
-    """One recorded thing that happened, with a stable identity."""
+    """One recorded thing that happened, with a stable identity.
+
+    A *fleet* fact -- daemon health such as a provider outage -- belongs to no
+    project and no task: both ids are empty.  It is visible to every
+    destination whatever its project selection (it is nobody's private work,
+    and it affects all of them) and is still subject to the category filter.
+    """
 
     key: str
     kind: str
@@ -76,6 +86,20 @@ class WorkFact:
     @property
     def rank(self) -> int:
         return _KIND_RANK.get(self.kind, len(_KIND_RANK))
+
+    @property
+    def fleet(self) -> bool:
+        return not self.project_id and not self.task_id
+
+    @property
+    def scope(self) -> str:
+        """What a highlight's wording is remembered against: its task, or itself.
+
+        A fleet fact has no task, and its wording legitimately repeats -- the
+        same provider can fail the same way next week -- so it is scoped to
+        its own key rather than to a shared empty task id.
+        """
+        return self.task_id or self.key
 
 
 @dataclass(frozen=True, slots=True)

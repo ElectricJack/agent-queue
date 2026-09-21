@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 #: ``build_capacity_reasons`` produces still applies to the pull path: a
 #: paused project or an exhausted budget fails ``_admission_reason`` on the
 #: claim, and no free workspace starves ``_launch_pool_session``.
-_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent", "rate_limited"})
+_PUSH_ONLY_REASON_CODES = frozenset({"no_idle_agent", "no_compatible_agent"})
 
 #: Two-key PostgreSQL advisory-lock namespace "AQPK" — the standing-parent
 #: resolver (graph-visibility A2).  Deliberately **not**
@@ -4887,6 +4887,27 @@ class TaskCommandsMixin:
         if route_reason is not None:
             reasons.append(route_reason)
 
+        # 4b. Provider hold (provider-failover D18): a persistent reason read
+        # from the task row and the availability snapshot, beside the gate
+        # and dependency reasons -- not a capacity reason, which would be
+        # stripped for pool-routed work, where most tasks live.
+        provider_hold = None
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is not None and not retirement:
+            provider_hold = await availability.hold_for(task)
+        if provider_hold is not None:
+            until = provider_hold.get("until")
+            reasons.append(Reason(
+                code="provider_hold",
+                detail=(
+                    f"provider {provider_hold['provider']} is {provider_hold['state']}"
+                    + (f" ({provider_hold['reason']})" if provider_hold.get("reason") else "")
+                    + (f" until {_fmt_epoch(until)}" if until else "")
+                    + f"; held: {provider_hold['kind']}"
+                ),
+                ref=provider_hold["provider"],
+            ))
+
         # 5. Pool-routed work never reaches the push scheduler at all, so the
         # capacity reasons below (which describe *that* path) would answer a
         # question this task never asks. Say what it is actually waiting on.
@@ -4940,6 +4961,7 @@ class TaskCommandsMixin:
             "reasons": reasons,
             "reason_codes": [reason["code"] for reason in reasons],
             "assignment_route": assignment_route,
+            "provider_hold": provider_hold,
         }
 
     async def _assignment_route_state(self, task):

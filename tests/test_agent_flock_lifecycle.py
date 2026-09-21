@@ -233,23 +233,20 @@ async def test_ready_retry_cannot_bypass_its_old_live_session_with_other_worker(
     assert (await db.get_agent("new")).state == AgentState.IDLE
 
 
-async def test_cooled_worker_does_not_suppress_other_provider_supply(db):
-    import time
-
+async def test_suppressed_worker_does_not_suppress_other_provider_supply(db):
     await seed_project(db)
     await db.create_profile(AgentProfile(id="cooled", name="Cooled", harness="codex"))
     await db.create_agent(Agent(id="a1", name="Cooled", profile_id="cooled"))
-    report = await AgentReconciler(db).reconcile(provider_cooldowns={"cooled": time.time() + 60})
+    report = await AgentReconciler(db).reconcile(suppressed_profile_ids=frozenset({"cooled"}))
     assert report.created == [("p1", "p1")]
     assert (await db.get_agent("a1")).profile_id == "cooled"
 
 
-async def test_cooldown_does_not_create_more_unusable_durable_workers(db):
-    import time
+async def test_suppression_does_not_create_more_unusable_durable_workers(db):
     await seed_project(db)
     await db.create_agent(Agent(id="a1", name="Waiting", profile_id="p1"))
     reconciler = AgentReconciler(db)
     for _ in range(2):
-        report = await reconciler.reconcile(provider_cooldowns={"p1": time.time() + 60})
+        report = await reconciler.reconcile(suppressed_profile_ids=frozenset({"p1"}))
         assert report.created == []
     assert len(await db.list_agents()) == 1

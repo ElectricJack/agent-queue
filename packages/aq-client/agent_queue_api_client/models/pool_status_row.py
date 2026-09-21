@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.outside_pool_session_status import OutsidePoolSessionStatus
     from ..models.pool_instance_status import PoolInstanceStatus
     from ..models.pool_project_status import PoolProjectStatus
+    from ..models.pool_provider_unavailable import PoolProviderUnavailable
 
 
 T = TypeVar("T", bound="PoolStatusRow")
@@ -41,6 +42,7 @@ class PoolStatusRow:
             projects (list[PoolProjectStatus] | Unset):
             instances (list[PoolInstanceStatus] | Unset):
             outside_pools (list[OutsidePoolSessionStatus] | Unset):
+            provider_unavailable (None | PoolProviderUnavailable | Unset):
     """
 
     profile_id: str
@@ -57,9 +59,12 @@ class PoolStatusRow:
     projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
     outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
+    provider_unavailable: None | PoolProviderUnavailable | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.pool_provider_unavailable import PoolProviderUnavailable
+
         profile_id = self.profile_id
 
         min_active = self.min_active
@@ -107,6 +112,14 @@ class PoolStatusRow:
                 outside_pools_item = outside_pools_item_data.to_dict()
                 outside_pools.append(outside_pools_item)
 
+        provider_unavailable: dict[str, Any] | None | Unset
+        if isinstance(self.provider_unavailable, Unset):
+            provider_unavailable = UNSET
+        elif isinstance(self.provider_unavailable, PoolProviderUnavailable):
+            provider_unavailable = self.provider_unavailable.to_dict()
+        else:
+            provider_unavailable = self.provider_unavailable
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -133,6 +146,8 @@ class PoolStatusRow:
             field_dict["instances"] = instances
         if outside_pools is not UNSET:
             field_dict["outside_pools"] = outside_pools
+        if provider_unavailable is not UNSET:
+            field_dict["provider_unavailable"] = provider_unavailable
 
         return field_dict
 
@@ -141,6 +156,7 @@ class PoolStatusRow:
         from ..models.outside_pool_session_status import OutsidePoolSessionStatus
         from ..models.pool_instance_status import PoolInstanceStatus
         from ..models.pool_project_status import PoolProjectStatus
+        from ..models.pool_provider_unavailable import PoolProviderUnavailable
 
         d = dict(src_dict)
         profile_id = d.pop("profile_id")
@@ -199,6 +215,23 @@ class PoolStatusRow:
 
                 outside_pools.append(outside_pools_item)
 
+        def _parse_provider_unavailable(data: object) -> None | PoolProviderUnavailable | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provider_unavailable_type_0 = PoolProviderUnavailable.from_dict(data)
+
+                return provider_unavailable_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PoolProviderUnavailable | Unset, data)
+
+        provider_unavailable = _parse_provider_unavailable(d.pop("provider_unavailable", UNSET))
+
         pool_status_row = cls(
             profile_id=profile_id,
             min_active=min_active,
@@ -214,6 +247,7 @@ class PoolStatusRow:
             projects=projects,
             instances=instances,
             outside_pools=outside_pools,
+            provider_unavailable=provider_unavailable,
         )
 
         pool_status_row.additional_properties = d

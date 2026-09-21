@@ -34,6 +34,8 @@ NON_DEFAULT_VALUES = {
     # ``"ollama-probe"`` is not one of the five accepted providers, and the
     # probe sets ``enabled: true``, which is when that check applies.
     ("memory", "embedding_provider"): "openai",
+    ("provider_failover", "mode"): "observe",
+    ("provider_failover", "default_policy"): "hold",
     # An IP literal or ``localhost`` only; a name DNS could re-point is refused.
     ("dashboard_server", "host"): "0.0.0.0",
 }

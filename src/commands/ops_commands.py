@@ -240,6 +240,22 @@ class OpsCommandsMixin:
     # worker pools — sizing and bounds (swarm-work-model §11)
     # -----------------------------------------------------------------------
 
+    def _pool_provider_unavailable(self, profile, now: float) -> dict | None:
+        """``provider_unavailable`` for a pool row, or ``None`` (provider-failover D13)."""
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is None or profile is None:
+            return None
+        provider = availability.provider_for_profile(profile)
+        if not availability.suppresses(provider, now):
+            return None
+        row = availability.row(provider)
+        return {
+            "provider": provider,
+            "state": availability.effective_state(provider, now),
+            "reason": row.effective_reason(now) if row is not None else "",
+            "until": row.effective_until(now) if row is not None else None,
+        }
+
     async def _cmd_pool_status(self, args: dict) -> dict:
         """Supply/demand/bounds snapshot for every worker pool.  Backs ``aq pool status``.
 
@@ -397,6 +413,7 @@ class OpsCommandsMixin:
                     "projects": projects,
                     "instances": instances,
                     "outside_pools": outside_by_profile.get(key.profile_id, []),
+                    "provider_unavailable": self._pool_provider_unavailable(profile, now),
                 }
             )
 

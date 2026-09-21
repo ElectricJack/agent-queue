@@ -1277,8 +1277,138 @@ def format_pool_table(pools: list[dict]):
             _pool_project_summary(row),
         )
 
-    notes = _pool_quarantine_notes(pools)
-    return table if notes is None else Group(table, Text(), notes)
+    notes = [n for n in (_pool_provider_notes(pools), _pool_quarantine_notes(pools)) if n]
+    return table if not notes else Group(table, *(part for n in notes for part in (Text(), n)))
+
+
+def _pool_provider_notes(pools: list[dict]) -> Text | None:
+    """Pools sized to zero because their provider is unavailable (provider-failover D13).
+
+    Kept apart from quarantine and ``placement_starved``: nothing is wrong
+    with the pool or its projects -- the login it draws on is down.
+    """
+    notes = Text()
+    for row in pools:
+        down = row.get("provider_unavailable")
+        if not down:
+            continue
+        if notes:
+            notes.append("\n")
+        until = down.get("until")
+        notes.append(
+            "  {} — provider {} {}{}".format(
+                row.get("profile_id", "?"),
+                down.get("provider", "?"),
+                down.get("state", "unavailable"),
+                (
+                    " until " + time.strftime("%H:%M:%S", time.localtime(until))
+                    if until
+                    else ""
+                ),
+            ),
+            style="red",
+        )
+        if down.get("reason"):
+            notes.append(f" — {down['reason']}", style="dim red")
+    if not notes:
+        return None
+    return Text("Provider unavailable (sized to zero)\n", style="bold red") + notes
+
+
+#: Effective provider state -> Rich style for ``aq provider status``.
+_PROVIDER_STATE_STYLES = {
+    "available": "bold green",
+    "degraded": "bold yellow",
+    "exhausted": "bold red",
+    "unauthenticated": "bold red",
+    "failing": "bold red",
+    "disabled": "bold bright_black",
+}
+
+
+def _until_text(ts: float | None) -> str:
+    """``in 42m`` for an expected recovery, ``—`` when none is known."""
+    if not ts:
+        return "—"
+    delta = ts - time.time()
+    if delta <= 0:
+        return "due"
+    if delta < 3600:
+        return f"in {max(1, int(delta / 60))}m"
+    if delta < 86400:
+        return f"in {delta / 3600:.1f}h"
+    return f"in {delta / 86400:.1f}d"
+
+
+def format_provider_table(providers: list[dict]):
+    """Format ``provider_status`` rows (one per provider) for ``aq provider status``.
+
+    The evidence ring and transitions of ``--verbose`` follow the table per
+    provider, newest first.
+    """
+    table = Table(
+        title="Provider availability",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("Provider", style="bold cyan", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Since", no_wrap=True)
+    table.add_column("Recovery", no_wrap=True)
+    table.add_column("Held", justify="right")
+    table.add_column("Last OK", no_wrap=True)
+    table.add_column("Usage", no_wrap=True)
+    table.add_column("Reason", overflow="fold")
+
+    extras: list = []
+    for row in providers:
+        state = str(row.get("state") or "")
+        label = Text(state, style=_PROVIDER_STATE_STYLES.get(state, ""))
+        override = row.get("override")
+        if override:
+            label.append(f" (override, {_until_text(override.get('until'))})", style="magenta")
+        usage = row.get("usage")
+        usage_text = (
+            f"{usage.get('window')} {float(usage.get('used_percent') or 0):g}%" if usage else "—"
+        )
+        vendor = row.get("vendor")
+        name = f"{row.get('provider', '')}" + (f" ({vendor})" if vendor else "")
+        table.add_row(
+            name,
+            label,
+            _relative_time(row.get("since")),
+            _until_text(row.get("until")),
+            str(row.get("held", 0)),
+            _relative_time(row.get("last_success_at")),
+            usage_text,
+            str(row.get("reason") or "—"),
+        )
+        if row.get("remediation") and state not in ("available", "degraded"):
+            extras.append(
+                Text(f"{row.get('provider')}: ", style="bold")
+                + Text(str(row["remediation"]), style="yellow")
+            )
+        for entry in row.get("evidence") or []:
+            signal = f"/{entry['signal']}" if entry.get("signal") else ""
+            where = entry.get("project_id") or ""
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} evidence {_relative_time(entry.get('at'))}: "
+                    f"{entry.get('kind')}{signal} {where}".rstrip(),
+                    style="dim",
+                )
+            )
+        for tr in row.get("transitions") or []:
+            extras.append(
+                Text(
+                    f"  {row.get('provider')} {_relative_time(tr.get('at'))}: "
+                    f"{tr.get('from_state')} -> {tr.get('to_state')} "
+                    f"({tr.get('actor')}) {tr.get('reason') or ''}".rstrip(),
+                    style="dim",
+                )
+            )
+    return table if not extras else Group(table, Text(), *extras)
 
 
 def format_formula_list(data: dict) -> Table:

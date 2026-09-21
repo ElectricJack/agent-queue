@@ -782,6 +782,7 @@ from .plugin_update_response_422 import PluginUpdateResponse422
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
+from .pool_provider_unavailable import PoolProviderUnavailable
 from .pool_scale_request import PoolScaleRequest
 from .pool_scale_response import PoolScaleResponse
 from .pool_scale_response_422 import PoolScaleResponse422
@@ -841,6 +842,29 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_availability_status import ProviderAvailabilityStatus
+from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
+from .provider_history_request import ProviderHistoryRequest
+from .provider_history_response import ProviderHistoryResponse
+from .provider_history_response_422 import ProviderHistoryResponse422
+from .provider_hold_detail import ProviderHoldDetail
+from .provider_override import ProviderOverride
+from .provider_recheck_request import ProviderRecheckRequest
+from .provider_recheck_response import ProviderRecheckResponse
+from .provider_recheck_response_422 import ProviderRecheckResponse422
+from .provider_recheck_response_probe_detail import ProviderRecheckResponseProbeDetail
+from .provider_recheck_response_transition_type_0 import ProviderRecheckResponseTransitionType0
+from .provider_set_state_request import ProviderSetStateRequest
+from .provider_set_state_response import ProviderSetStateResponse
+from .provider_set_state_response_422 import ProviderSetStateResponse422
+from .provider_set_state_response_transition_type_0 import ProviderSetStateResponseTransitionType0
+from .provider_state_request import ProviderStateRequest
+from .provider_status_request import ProviderStatusRequest
+from .provider_status_response import ProviderStatusResponse
+from .provider_status_response_422 import ProviderStatusResponse422
+from .provider_transition import ProviderTransition
+from .provider_transition_detail import ProviderTransitionDetail
+from .provider_usage_reading import ProviderUsageReading
 from .provider_usage_response import ProviderUsageResponse
 from .provider_usage_response_series import ProviderUsageResponseSeries
 from .provider_usage_snapshot import ProviderUsageSnapshot
@@ -1985,6 +2009,7 @@ __all__ = (
     "PoolInstanceStatus",
     "PoolProjectCap",
     "PoolProjectStatus",
+    "PoolProviderUnavailable",
     "PoolScaleRequest",
     "PoolScaleResponse",
     "PoolScaleResponse422",
@@ -2042,6 +2067,29 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAvailabilityStatus",
+    "ProviderAvailabilityStatusEvidenceItem",
+    "ProviderHistoryRequest",
+    "ProviderHistoryResponse",
+    "ProviderHistoryResponse422",
+    "ProviderHoldDetail",
+    "ProviderOverride",
+    "ProviderRecheckRequest",
+    "ProviderRecheckResponse",
+    "ProviderRecheckResponse422",
+    "ProviderRecheckResponseProbeDetail",
+    "ProviderRecheckResponseTransitionType0",
+    "ProviderSetStateRequest",
+    "ProviderSetStateResponse",
+    "ProviderSetStateResponse422",
+    "ProviderSetStateResponseTransitionType0",
+    "ProviderStateRequest",
+    "ProviderStatusRequest",
+    "ProviderStatusResponse",
+    "ProviderStatusResponse422",
+    "ProviderTransition",
+    "ProviderTransitionDetail",
+    "ProviderUsageReading",
     "ProviderUsageResponse",
     "ProviderUsageResponseSeries",
     "ProviderUsageSnapshot",

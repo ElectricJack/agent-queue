@@ -1257,6 +1257,171 @@
         }
       }
     },
+    "/api/providers/availability": {
+      "get": {
+        "summary": "Get Provider Availability",
+        "operationId": "get_provider_availability_api_providers_availability_get",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "name": "verbose",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Verbose"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderStatusResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/{provider}/state": {
+      "post": {
+        "summary": "Post Provider State",
+        "operationId": "post_provider_state_api_providers__provider__state_post",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderStateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSetStateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid override"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/{provider}/recheck": {
+      "post": {
+        "summary": "Post Provider Recheck",
+        "operationId": "post_provider_recheck_api_providers__provider__recheck_post",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRecheckResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/graph/extent": {
       "get": {
         "summary": "Get Extent",
@@ -9477,6 +9642,194 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/history": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it (system or an operator).",
+        "description": "List a provider's effective-state transitions, newest first: from/to state, reason, expected recovery, generation and who caused it (system or an operator).",
+        "operationId": "provider_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/recheck": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state.  An authenticated answer moves an unauthenticated provider to probation; the next successful launch completes recovery.  Operators and supervisors only.",
+        "description": "Run the provider's login probe now (e.g. `codex login status`) and fold the answer into its state.  An authenticated answer moves an unauthenticated provider to probation; the next successful launch completes recovery.  Operators and supervisors only.",
+        "operationId": "provider_recheck",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRecheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRecheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/set-state": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Override a provider's availability.  'disabled' stops every launch against it; 'available' forces it launchable against the evidence and always expires; 'auto' clears the override, resets the failure counters and re-derives the state from evidence.  An override lasts --for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else provider_failover.override.default_ttl_seconds, and never longer than override.max_ttl_seconds; --no-expiry is accepted for 'disabled' only.  Operators and supervisors only.",
+        "description": "Override a provider's availability.  'disabled' stops every launch against it; 'available' forces it launchable against the evidence and always expires; 'auto' clears the override, resets the failure counters and re-derives the state from evidence.  An override lasts --for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else provider_failover.override.default_ttl_seconds, and never longer than override.max_ttl_seconds; --no-expiry is accepted for 'disabled' only.  Operators and supervisors only.",
+        "operationId": "provider_set_state",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSetStateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSetStateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/status": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Show each provider's availability: the effective state (available, degraded, exhausted, unauthenticated, failing, disabled), its reason, since when, the expected recovery, any operator override and its expiry, how many queued tasks it is holding, the last successful launch and the newest account-wide usage reading.  A provider is the harness login (claude, codex); a vendor name (openai, anthropic) is accepted as an alias.  --verbose adds the evidence ring and the last ten transitions.",
+        "description": "Show each provider's availability: the effective state (available, degraded, exhausted, unauthenticated, failing, disabled), its reason, since when, the expected recovery, any operator override and its expiry, how many queued tasks it is holding, the last successful launch and the newest account-wide usage reading.  A provider is the harness login (claude, codex); a vendor name (openai, anthropic) is accepted as an alias.  --verbose adds the evidence ring and the last ten transitions.",
+        "operationId": "provider_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderStatusResponse"
+                }
               }
             }
           },
@@ -22355,6 +22708,16 @@
                 "type": "null"
               }
             ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -35174,6 +35537,41 @@
         "title": "PoolProjectStatus",
         "description": "Where one pool's workers actually are, in a single project.\n\nSizing is fleet-wide, but a worker still lives in one project for its\nlifetime, so \"where are my workers running\" has to stay answerable.\nThese are the placement inputs and the per-project share of the pool's\nsupply, for the one project named by ``project_id``."
       },
+      "PoolProviderUnavailable": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "PoolProviderUnavailable",
+        "description": "The pool's provider is unavailable, so it is sized to zero (provider-failover D13).\n\nDistinct from ``placement_starved``: nothing is wrong with the pool, its\nprojects or their workspaces -- the login it draws on is down."
+      },
       "PoolScaleRequest": {
         "properties": {
           "project_id": {
@@ -35604,6 +36002,16 @@
             "type": "array",
             "title": "Outside Pools",
             "default": []
+          },
+          "provider_unavailable": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PoolProviderUnavailable"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -36895,6 +37303,818 @@
           "task_id"
         ],
         "title": "ProvideInputResponse"
+      },
+      "ProviderAvailabilityStatus": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "half": {
+            "type": "string",
+            "title": "Half"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "derived_state": {
+            "type": "string",
+            "title": "Derived State",
+            "default": ""
+          },
+          "derived_reason": {
+            "type": "string",
+            "title": "Derived Reason",
+            "default": ""
+          },
+          "derived_until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Derived Until"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "held": {
+            "type": "integer",
+            "title": "Held",
+            "default": 0
+          },
+          "level": {
+            "type": "integer",
+            "title": "Level",
+            "default": 0
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation",
+            "default": 0
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures",
+            "default": 0
+          },
+          "last_failure_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Failure At"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "last_probe_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Probe At"
+          },
+          "probation": {
+            "type": "boolean",
+            "title": "Probation",
+            "default": false
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "enforce"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsageReading"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Evidence",
+            "default": []
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTransition"
+            },
+            "type": "array",
+            "title": "Transitions",
+            "default": []
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state",
+          "half"
+        ],
+        "title": "ProviderAvailabilityStatus",
+        "description": "One provider's availability, as the CLI, API, doctor and cards show it.\n\nEvery field is server-derived; the dashboard never recomputes a state.\n``state`` is the *effective* state (the override while one is active);\n``derived_*`` is what the evidence alone says.  ``until`` is the expected\nrecovery -- the provider's own reset clock or a backoff deadline -- and\n``None`` when nothing is known (``unauthenticated`` needs a human)."
+      },
+      "ProviderHistoryRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Most transitions to return. Default 50."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderHistoryRequest"
+      },
+      "ProviderHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "transitions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderTransition"
+            },
+            "type": "array",
+            "title": "Transitions",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderHistoryResponse"
+      },
+      "ProviderHoldDetail": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "remediation": {
+            "type": "string",
+            "title": "Remediation",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state",
+          "kind"
+        ],
+        "title": "ProviderHoldDetail",
+        "description": "Why a queued task is held by its provider (provider-failover D18).\n\n``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or\n``failover_inactive`` today; the re-route engine adds the rest of D18's\nvocabulary.  ``ahead`` is the queue position for\n``awaiting_failover_capacity`` and ``None`` otherwise."
+      },
+      "ProviderOverride": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "By"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "set_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ProviderOverride",
+        "description": "An operator override (D6).  ``until`` is ``None`` only for ``disabled``."
+      },
+      "ProviderRecheckRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderRecheckRequest"
+      },
+      "ProviderRecheckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "probe": {
+            "type": "string",
+            "title": "Probe"
+          },
+          "probe_detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Probe Detail",
+            "default": {}
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "probe",
+          "state"
+        ],
+        "title": "ProviderRecheckResponse",
+        "description": "``provider_recheck``: the probe's answer and the resulting state.\n\n``probe`` is ``authenticated``, ``not_authenticated``, ``cannot_tell`` or\n``not_probeable`` (the provider has no login probe)."
+      },
+      "ProviderSetStateRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "Provider key (claude, codex) or vendor alias."
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "description": "disabled | available | auto (clear the override)."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why; required for disabled and available."
+          },
+          "for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "For",
+            "description": "How long the override lasts: 90s, 30m, 4h, 2d, or seconds."
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until",
+            "description": "When the override expires: epoch seconds or ISO-8601."
+          },
+          "no_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Expiry",
+            "description": "Never expire (disabled only)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "ProviderSetStateRequest"
+      },
+      "ProviderSetStateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "transition": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transition"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "state"
+        ],
+        "title": "ProviderSetStateResponse"
+      },
+      "ProviderStateRequest": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "for": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "For"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "no_expiry": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Expiry"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state"
+        ],
+        "title": "ProviderStateRequest",
+        "description": "``POST /api/providers/{provider}/state`` (D6).\n\n``for`` is a duration (``90s``, ``30m``, ``4h``, ``2d``, or seconds);\n``until`` an epoch or ISO-8601 time.  Give at most one of ``for``,\n``until`` and ``no_expiry``."
+      },
+      "ProviderStatusRequest": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Only this provider (key or vendor alias). Default: every tracked provider."
+          },
+          "verbose": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verbose",
+            "description": "Include the evidence ring and the last ten transitions."
+          }
+        },
+        "type": "object",
+        "title": "ProviderStatusRequest"
+      },
+      "ProviderStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "default": "enforce"
+          },
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAvailabilityStatus"
+            },
+            "type": "array",
+            "title": "Providers",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderStatusResponse",
+        "description": "``provider_status`` and ``GET /api/providers/availability``."
+      },
+      "ProviderTransition": {
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "from_state": {
+            "type": "string",
+            "title": "From State"
+          },
+          "to_state": {
+            "type": "string",
+            "title": "To State"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code",
+            "default": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor",
+            "default": "system"
+          },
+          "detail": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Detail",
+            "default": {}
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "from_state",
+          "to_state",
+          "generation",
+          "at"
+        ],
+        "title": "ProviderTransition",
+        "description": "One change of effective state, from the audit trail."
+      },
+      "ProviderUsageReading": {
+        "properties": {
+          "window": {
+            "type": "string",
+            "title": "Window"
+          },
+          "scope": {
+            "type": "string",
+            "title": "Scope",
+            "default": ""
+          },
+          "used_percent": {
+            "type": "number",
+            "title": "Used Percent"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resets At"
+          },
+          "observed_at": {
+            "type": "number",
+            "title": "Observed At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "window",
+          "used_percent",
+          "observed_at"
+        ],
+        "title": "ProviderUsageReading",
+        "description": "The newest fresh account-wide usage window (the fullest one)."
       },
       "ProviderUsageResponse": {
         "properties": {

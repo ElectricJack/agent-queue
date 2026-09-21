@@ -76,8 +76,9 @@ aq system config schema
 | database, database_path | PostgreSQL pool settings and a legacy alias. | database.url is required; database_path is compatibility-only. |
 | env, profile, validate_events | Overlay selection and event payload validation. | env defaults to production; profiles are optional. |
 | messaging_platform, discord | No messaging or the one Discord destination, digest, and escalation controls. | Platform defaults to discord; Discord connection values are installation policy. |
-| agents_config, agent_profiles, scheduling, pause_retry | Agent defaults, legacy in-config profiles, task cadence, and retry pauses. | Vault profiles are the current editable source; in-config profiles remain for compatibility. |
+| agents_config, agent_profiles, scheduling | Agent defaults, legacy in-config profiles, and task cadence. | Vault profiles are the current editable source; in-config profiles remain for compatibility. `pause_retry` was retired (it was never read) and is ignored with a warning. |
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
+| provider_failover | Provider availability: when a harness login counts as exhausted, logged out or failing (usage thresholds, trip counts, windows), recovery and the auth probe, operator override expiry, and the failover policy the re-route engine reads. `mode: off \| observe \| enforce` — `observe` tracks and reports without suppressing launches. | `mode: enforce`; see [provider failover](../specs/provider-failover.md) D22 for every key. `aq provider status` shows the state. |
 | docs | Base URL used to link contracted playbook commands to their reference pages. | Defaults to this repository's `main/docs/` tree; private mirrors can override it. |
 | supervisor, supervisor_agent, sessions, worktrees, streams | Session execution, supervisor delivery, worktree behavior, and stream handling. | Some flags gate service construction and require restart. |
 | memory, memory_extractor, inbox | Optional memory extension behavior, extraction, and inbox polling. | Memory data is preserved if disabled; plugin availability is separate. |
@@ -104,7 +105,7 @@ aq system reload-config
 
 | Changes applied without daemon restart | Changes that require restart |
 |---|---|
-| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pause_retry, pricing, project_roots, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
+| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
 
 The dashboard/CLI editor reads raw YAML so ${NAME} references survive an edit. Its
 round-trip writer preserves comments, order, and quote style outside the changed section;

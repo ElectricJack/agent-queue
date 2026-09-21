@@ -26,6 +26,7 @@ Test knobs (all keyed by session *name*, settable before or after start):
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import ClassVar
@@ -73,6 +74,8 @@ class FakeProvider(SessionProvider):
         self.sessions: dict[str, FakeSession] = {}
         self.sent_nudges: list[tuple[str, str]] = []
         self.starts: list[SessionSpec] = []
+        #: Specs whose start died on a scripted quarantine dialog.
+        self.dialog_deaths: list[SessionSpec] = []
         self._swallow: set[str] = set()
         #: name -> text left unsubmitted in the composer by a swallowed
         #: nudge.  The fake's stand-in for tmux's marker bookkeeping.
@@ -81,6 +84,9 @@ class FakeProvider(SessionProvider):
         self._partial_list: Exception | None = None
         #: Names whose ``start`` should raise a generic failure.
         self._start_error: dict[str, Exception] = {}
+        #: Harness command -> (dialog name, signal): every start of that CLI
+        #: dies on the quarantine dialog until cleared (provider-failover D23).
+        self._startup_dialogs: dict[str, tuple[str, str | None]] = {}
 
     # -- test knobs --------------------------------------------------------
 
@@ -100,6 +106,27 @@ class FakeProvider(SessionProvider):
 
     def script_startup_death(self, name: str) -> None:
         self._startup_death.add(name)
+
+    def script_startup_dialog(
+        self, command: str, dialog: str = "login-required", *, signal: str | None = None
+    ) -> None:
+        """Every start of the *command* CLI dies on quarantine *dialog*.
+
+        The fake's stand-in for a logged-out or exhausted provider: the
+        raised :class:`SessionDiedDuringStartup` carries the dialog the way
+        the tmux provider's does.  Sticky until :meth:`clear_startup_dialog`.
+        """
+        self._startup_dialogs[command] = (dialog, signal)
+
+    def clear_startup_dialog(self, command: str) -> None:
+        self._startup_dialogs.pop(command, None)
+
+    def _scripted_dialog(self, spec: SessionSpec) -> tuple[str, str | None] | None:
+        for arg in spec.command:
+            scripted = self._startup_dialogs.get(os.path.basename(str(arg)))
+            if scripted is not None:
+                return scripted
+        return None
 
     def script_start_error(self, name: str, exc: Exception) -> None:
         self._start_error[name] = exc
@@ -148,6 +175,16 @@ class FakeProvider(SessionProvider):
         if spec.session_name in self._startup_death:
             self._startup_death.discard(spec.session_name)
             raise SessionDiedDuringStartup(spec.session_name, detail="scripted startup death")
+        scripted = self._scripted_dialog(spec)
+        if scripted is not None:
+            dialog, signal = scripted
+            self.dialog_deaths.append(spec)
+            raise SessionDiedDuringStartup(
+                spec.session_name,
+                detail=f"quarantine dialog {dialog!r} matched during startup",
+                dialog=dialog,
+                signal=signal,
+            )
         now = time.time()
         self.sessions[spec.session_name] = FakeSession(
             spec=spec,
