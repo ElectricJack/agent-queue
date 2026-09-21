@@ -279,6 +279,25 @@ Indexes: `idx_task_comments_task_created` (`task_id`, `created_at`, `id`), `idx_
 
 Authorized project moves transfer known active-task comment ownership in the same transaction. Moves that would merge a source or destination archive identity, and archival over a different-project ID, are refused without modifying either history.
 
+### Table: `task_subtasks`
+
+Durable per-task checklist rows (work-graph spec §13c, revision `a00000000010`). A subtask is ticked off by the agent holding its task: it is never on the claim frontier, never assigned, and has no branch of its own — it is delivered with its parent task. Like `task_comments`, `task_id` plus `project_id` is a logical reference with no foreign key, so rows survive archiving and restoration; permanent task or project deletion removes them. Rows are appended after the task's current maximum `ordinal` (starting at 1), at most `MAX_SUBTASKS_PER_TASK` (200) per task, and `id` is `<task_id>#s<ordinal>`. Queries live in `src/database/queries/task_subtask_queries.py`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `<task_id>#s<ordinal>` |
+| `task_id` | TEXT | NOT NULL | Owning task (no FK) |
+| `project_id` | TEXT | NOT NULL | Owning project |
+| `ordinal` | INTEGER | NOT NULL | 1-based position within the task; the CLI's subtask number |
+| `title` | TEXT | NOT NULL | 1–300 characters |
+| `context` | TEXT | NOT NULL DEFAULT '' | At most 16000 characters; never leaves the row in events |
+| `status` | TEXT | NOT NULL DEFAULT 'pending' | One of: pending, in_progress, done, skipped |
+| `note` | TEXT | nullable | Set on update; `skipped at close` when a close skips open rows |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+| `updated_at` | FLOAT | NOT NULL | Unix timestamp |
+
+Constraints: `ck_task_subtasks_status`, `ck_task_subtasks_title_length`, `ck_task_subtasks_context_length`, `uq_task_subtasks_task_ordinal` (`task_id`, `ordinal`). Index: `idx_task_subtasks_task` (`task_id`, `ordinal`).
+
 ### Table: `projects`
 
 | Column | Type | Constraints | Notes |
