@@ -457,6 +457,49 @@ playbooks and knowledge extraction. Nothing calls it with the shipped defaults,
 because `playbooks.enabled` and `memory.enabled` are both off; enable either and
 you need a real API key in `llm.api_key`.
 
+### GitHub access
+
+AQ uses GitHub two ways, and they need separate thinking. **Plain git** handles
+clone, fetch, branch, commit and push — run with `GIT_TERMINAL_PROMPT=0` and
+`GIT_ASKPASS=/bin/false` so it can never prompt or silently pick up a stray
+credential, with pushes served by a one-shot credential broker
+(`src/git/askpass_broker.py`) that pins the whole git → remote-helper →
+askpass chain by path, device, inode and owner. **The `gh` CLI** handles
+everything PR-shaped: `gh pr merge`, `gh pr view --json statusCheckRollup` for
+CI gating, and repository search during project onboarding.
+
+Three ways to authenticate `gh`, with very different blast radii:
+
+| | Who ends up holding it | Lifetime |
+|---|---|---|
+| `GH_TOKEN` / `GITHUB_TOKEN` | **every agent session** — it is in `HARNESS_CREDENTIAL_ALLOWLIST` | until revoked |
+| `gh auth login` (device flow) | `hosts.yml` on the `…_aq-gh` volume, readable by anything running as `aq` | until revoked |
+| GitHub App | **the daemon only** — `env.py` strips `AQ_INTEGRATION_GITHUB_APP_*` from every child env | ~1 hour, auto-refreshed |
+
+**Recommended: a fine-grained PAT** for agent forge access, scoped to exactly
+the repositories AQ works on, with only `contents: write` and
+`pull_requests: write`. Set it in `.env` as `GH_TOKEN`.
+
+The reasoning is the allowlist entry, which is deliberate and comments itself
+as *"Forge access — agents open PRs from inside their worktree"*. Agents run
+LLM-authored code, so **whatever you put there is a credential that
+LLM-authored code holds**. A classic account-wide PAT gives a confused or
+compromised agent your whole account; a fine-grained one gives it a bad PR on a
+known repository — annoying, and revocable.
+
+Note the asymmetry this creates: the most secure option is the one agents
+cannot use. The GitHub App path is short-lived and daemon-only by construction,
+which is exactly why it is unavailable to a worker. Use the App for the
+daemon's own integration and merge path
+(`integration.github_app`: `app_id`, `client_id`, `installation_id`,
+`private_key_path`) and a fine-grained PAT for agents, rather than trying to
+make one credential serve both.
+
+**Scope the token as if it will leak.** Anything with execution on the daemon
+container can read its environment — and per [Security posture](#security-posture)
+the web layer currently offers no resistance to that. The network boundary is
+doing all the work; the token's scope is the second line.
+
 ### Diagnosing a session that dies at startup
 
 `start-stderr.log` is written from a *pane capture*, so when the process dies
