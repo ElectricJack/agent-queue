@@ -31,6 +31,7 @@ class TilesResponse:
         stub_overflow (list[StubOverflow] | Unset):
         workers (list[LayoutWorker] | Unset):
         gates (list[GraphGate] | Unset):
+        variant_applied (str | Unset):  Default: 'active'.
         expanded_applied (list[str] | None | Unset):
     """
 
@@ -41,6 +42,7 @@ class TilesResponse:
     stub_overflow: list[StubOverflow] | Unset = UNSET
     workers: list[LayoutWorker] | Unset = UNSET
     gates: list[GraphGate] | Unset = UNSET
+    variant_applied: str | Unset = "active"
     expanded_applied: list[str] | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -89,6 +91,8 @@ class TilesResponse:
                 gates_item = gates_item_data.to_dict()
                 gates.append(gates_item)
 
+        variant_applied = self.variant_applied
+
         expanded_applied: list[str] | None | Unset
         if isinstance(self.expanded_applied, Unset):
             expanded_applied = UNSET
@@ -117,6 +121,8 @@ class TilesResponse:
             field_dict["workers"] = workers
         if gates is not UNSET:
             field_dict["gates"] = gates
+        if variant_applied is not UNSET:
+            field_dict["variant_applied"] = variant_applied
         if expanded_applied is not UNSET:
             field_dict["expanded_applied"] = expanded_applied
 
@@ -188,6 +194,8 @@ class TilesResponse:
 
                 gates.append(gates_item)
 
+        variant_applied = d.pop("variant_applied", UNSET)
+
         def _parse_expanded_applied(data: object) -> list[str] | None | Unset:
             if data is None:
                 return data
@@ -213,6 +221,7 @@ class TilesResponse:
             stub_overflow=stub_overflow,
             workers=workers,
             gates=gates,
+            variant_applied=variant_applied,
             expanded_applied=expanded_applied,
         )
 

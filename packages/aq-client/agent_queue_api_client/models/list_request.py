@@ -17,6 +17,7 @@ class ListRequest:
     Attributes:
         variant (str | Unset):  Default: 'active'.
         expanded (list[str] | Unset):
+        root (None | str | Unset):
         q (str | Unset):  Default: ''.
         status (str | Unset):  Default: ''.
         cursor (None | str | Unset):
@@ -25,6 +26,7 @@ class ListRequest:
 
     variant: str | Unset = "active"
     expanded: list[str] | Unset = UNSET
+    root: None | str | Unset = UNSET
     q: str | Unset = ""
     status: str | Unset = ""
     cursor: None | str | Unset = UNSET
@@ -37,6 +39,12 @@ class ListRequest:
         expanded: list[str] | Unset = UNSET
         if not isinstance(self.expanded, Unset):
             expanded = self.expanded
+
+        root: None | str | Unset
+        if isinstance(self.root, Unset):
+            root = UNSET
+        else:
+            root = self.root
 
         q = self.q
 
@@ -57,6 +65,8 @@ class ListRequest:
             field_dict["variant"] = variant
         if expanded is not UNSET:
             field_dict["expanded"] = expanded
+        if root is not UNSET:
+            field_dict["root"] = root
         if q is not UNSET:
             field_dict["q"] = q
         if status is not UNSET:
@@ -74,6 +84,15 @@ class ListRequest:
         variant = d.pop("variant", UNSET)
 
         expanded = cast(list[str], d.pop("expanded", UNSET))
+
+        def _parse_root(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        root = _parse_root(d.pop("root", UNSET))
 
         q = d.pop("q", UNSET)
 
@@ -93,6 +112,7 @@ class ListRequest:
         list_request = cls(
             variant=variant,
             expanded=expanded,
+            root=root,
             q=q,
             status=status,
             cursor=cursor,

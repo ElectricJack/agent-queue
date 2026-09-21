@@ -1606,3 +1606,208 @@ async def test_tiles_auto_expand_costs_exactly_one_statement_when_used_and_zero_
         assert r2.status_code == 200
         assert r2.json()["expanded_applied"] is not None
         assert len(_active_container_reads(statements_with)) == 1
+
+
+async def _nested_project(db):
+    """``first{f0,f1}`` then ``p{a{a0,a1}, b}`` at the project root.
+
+    Two containers ahead of what we look for, in reading order: the root
+    scope's own packing moves ``p`` (and with it ``b``) when it is
+    re-packed, and ``a``'s collapse moves ``b`` within ``p``. Entering
+    ``p`` re-packs ``p``'s scope and leaves the root scope alone, so the
+    focused geometry is genuinely a different one.
+    """
+
+    async def create(tid, parent=None):
+        await db.create_task(
+            Task(id=tid, project_id="p1", title=tid, description="", status=TaskStatus.DEFINED)
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+
+    await create("first")
+    await create("f0", "first")
+    await create("f1", "first")
+    await create("p")
+    await create("a", "p")
+    await create("a0", "a")
+    await create("a1", "a")
+    await create("b", "p")
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+
+
+async def test_tiles_report_the_variant_they_applied(db, client_factory):
+    """The client cannot infer the promotion, so the response states it."""
+    await seed(db)
+    async with client_factory() as ac:
+        root = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
+                  "expanded": []},
+        )
+        focused = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                  "expanded": [], "root": "e"},
+        )
+        asked_for_all = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert root.json()["variant_applied"] == "active"
+    assert focused.json()["variant_applied"] == "active"
+    assert asked_for_all.json()["variant_applied"] == "all"
+
+
+async def test_tiles_report_all_when_the_entered_container_forced_the_promotion(
+    db, client_factory
+):
+    """A container the active variant dropped: `active` was asked for, `all` served."""
+    await _finished_epic_project(db, anchored=False)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                  "expanded": [], "root": "done"},
+        )
+    assert r.status_code == 200
+    assert r.json()["variant_applied"] == "all"
+    assert {node["id"] for node in r.json()["nodes"]} == {"done", "child"}
+
+
+async def test_tiles_report_all_for_an_unfinished_container_the_active_view_stubbed(
+    db, client_factory
+):
+    """The container's STATUS is not the signal, which is why this is reported.
+
+    ``open`` is DEFINED — unfinished — but every descendant it has is
+    finished, so the active layout keeps it as a stub and entering it is
+    served from ``all``. A client inferring the promotion from the status
+    would draw the completed children with no explanation.
+    """
+
+    async def create(tid, parent=None):
+        await db.create_task(
+            Task(id=tid, project_id="p1", title=tid, description="", status=TaskStatus.DEFINED)
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+
+    await create("open")
+    await create("kid", "open")
+    await create("live")
+    await db.transition_task("kid", TaskStatus.COMPLETED, force=True)
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                  "expanded": [], "root": "open"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["variant_applied"] == "all"
+    assert {node["id"] for node in body["nodes"]} == {"open", "kid"}
+    assert next(n for n in body["nodes"] if n["id"] == "open")["status"] == "DEFINED"
+
+
+async def test_list_root_pages_only_the_entered_container(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": [], "root": "e", "limit": 50},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    kinds = {node["id"]: node["kind"] for node in body["nodes"]}
+    assert set(kinds) == {"e", "c0", "c1", "pkg"}
+    assert kinds["e"] == "container" and kinds["pkg"] == "collapsed"
+    assert body["variant_applied"] == "all"
+
+
+async def test_list_root_pages_every_child_across_pages(db, client_factory):
+    """Paging inside a container must never truncate its own children."""
+    await seed(db)
+    seen: list[str] = []
+    cursor = None
+    async with client_factory() as ac:
+        for _ in range(10):
+            r = await ac.post(
+                "/api/projects/p1/graph/list",
+                json={"variant": "all", "expanded": [], "root": "e", "limit": 2,
+                      "cursor": cursor},
+            )
+            assert r.status_code == 200
+            body = r.json()
+            seen.extend(node["id"] for node in body["nodes"])
+            cursor = body["next_cursor"]
+            if not cursor:
+                break
+    assert set(seen) == {"e", "c0", "c1", "pkg"}
+    assert "z" not in seen and "g0" not in seen
+
+
+async def test_list_root_keeps_the_active_variant_and_reports_it(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "active", "expanded": [], "root": "e", "limit": 50},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["variant_applied"] == "active"
+    assert {node["id"] for node in body["nodes"]} == {"e", "c0", "pkg"}
+
+
+async def test_list_unknown_root_is_404(db, client_factory):
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "all", "expanded": [], "root": "nope", "limit": 50},
+        )
+    assert r.status_code == 404
+
+
+async def test_locate_places_a_hit_where_the_focused_view_draws_it(db, client_factory):
+    """Hit boxes must come from the geometry the focused canvas draws."""
+    await _nested_project(db)
+    async with client_factory() as ac:
+        tiles = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={"variant": "all", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                  "expanded": [], "root": "p"},
+        )
+        focused = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "all", "q": "b", "expanded": [], "root": "p"},
+        )
+        rootless = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "all", "q": "b", "expanded": []},
+        )
+    drawn = next(node for node in tiles.json()["nodes"] if node["id"] == "b")
+    hit = next(h for h in focused.json()["hits"] if h["id"] == "b")
+    assert (hit["x"], hit["y"]) == (drawn["x"], drawn["y"])
+    # ...and that is not where the un-focused geometry puts it, which is the
+    # coordinate the canvas used to pan to.
+    stale = next(h for h in rootless.json()["hits"] if h["id"] == "b")
+    assert (stale["x"], stale["y"]) != (drawn["x"], drawn["y"])
+
+
+async def test_locate_under_a_finished_root_searches_the_full_layout(db, client_factory):
+    """Search inside an entered container the active variant dropped."""
+    await _finished_epic_project(db, anchored=False)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/locate",
+            json={"variant": "active", "q": "child", "expanded": [], "root": "done"},
+        )
+    assert r.status_code == 200
+    assert [hit["id"] for hit in r.json()["hits"]] == ["child"]

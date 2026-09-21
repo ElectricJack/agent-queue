@@ -590,6 +590,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             workers=workers,
             gates=gates_out,
             layout_version=meta["layout_version"],
+            variant_applied=variant,
             expanded_applied=expanded_applied,
         )
 
@@ -636,15 +637,32 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
         if status not in FINISHED_STATUSES:
-            variant = await _variant_for_scope(project_id, variant, None, req.expanded)
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
-        # Only the rows that can possibly be visible: the roots plus the
-        # direct children of every open container.  Under `max_depth=None,
-        # root=None` that set IS the visible set, so a page costs
-        # |expanded| + |matches| rather than a whole project (design §5.3).
-        all_rows = await db.load_rows_for_containers(project_id, variant, [None, *req.expanded])
+        # Only the rows that can possibly be visible: the scope's roots plus
+        # the direct children of every open container.  Under `max_depth=None`
+        # that set IS the visible set, so a page costs |expanded| + |matches|
+        # rather than a whole project (design §5.3).  Under `root` the scope
+        # is the entered container instead of the project root, so paging
+        # never spends a page on rows from another scope.
+        all_rows = await db.load_rows_for_containers(
+            project_id, variant, [req.root if req.root is not None else None, *req.expanded]
+        )
+        if req.root is not None:
+            root_rows = await db.load_rows_with_tasks(project_id, variant, [req.root])
+            if req.root not in root_rows:
+                raise HTTPException(status_code=404, detail=f"No layout node '{req.root}'")
+            all_rows.update(root_rows)
+            # `resolve_visible` walks each row's ancestor chain and treats a
+            # missing link as not visible, so the root's own ancestors have
+            # to be present even though they are never returned.
+            root_anc = [
+                a for a in ancestors_of(root_rows[req.root][0].path) if a not in all_rows
+            ]
+            if root_anc:
+                all_rows.update(await db.load_rows_with_tasks(project_id, variant, root_anc))
         matches: set[str] | None = None
         forced: set[str] = set()
         if req.q.strip() or status:
@@ -659,7 +677,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 all_rows.update(await db.load_rows_with_tasks(project_id, variant, missing))
         rows = {t: rt[0] for t, rt in all_rows.items()}
         vis = resolve_visible(
-            rows, expanded=set(req.expanded), max_depth=None, root=None, forced_expanded=forced
+            rows, expanded=set(req.expanded), max_depth=None, root=req.root,
+            forced_expanded=forced,
         )
         # The same derived geometry the tiles endpoint serves, so the
         # coordinates this response carries are the ones the canvas draws.
@@ -668,7 +687,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # (the mobile list pages its cards rather than positioning them, so
         # only the unfiltered geometry is actually consumed).
         boxes = compact_layout(
-            rows, collapsed=set(vis.collapsed_paths), scopes_loaded={None, *req.expanded}
+            rows, collapsed=set(vis.collapsed_paths), scopes_loaded={req.root, *req.expanded}
         )
         ordered = [
             t
@@ -694,7 +713,12 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         nxt = None
         if offset + req.limit < len(ordered):
             nxt = base64.urlsafe_b64encode(str(offset + req.limit).encode()).decode()
-        return ListResponse(nodes=nodes, next_cursor=nxt, layout_version=meta["layout_version"])
+        return ListResponse(
+            nodes=nodes,
+            next_cursor=nxt,
+            layout_version=meta["layout_version"],
+            variant_applied=variant,
+        )
 
     @router.get(
         "/api/projects/{project_id}/graph/node/{task_id}",
@@ -761,6 +785,8 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
         if status in FINISHED_STATUSES:
             variant = "all"
+        else:
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
         limit = max(1, min(req.limit, LOCATE_CAP))
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
@@ -771,11 +797,12 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         rows, truncated = await db.load_matching_rows_ordered(
             project_id, variant, q=q, status=status, limit=limit
         )
-        # Where the canvas will DRAW each hit, which after a collapse is not
+        # Where the canvas will DRAW each hit, which after a collapse -- or
+        # inside an entered container, whose scope is re-packed -- is not
         # where the engine persisted it. This is the same geometry the
-        # matching tiles request resolves, filter-forced expansion included,
-        # so jumping to a result lands on the card rather than on the hole it
-        # left behind.
+        # matching tiles request resolves, `root` and filter-forced expansion
+        # included, so jumping to a result lands on the card rather than on
+        # the hole it left behind.
         geo = await _geometry(
             project_id,
             variant,
@@ -783,6 +810,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 variant=variant,
                 rect=LayoutRect(x0=0.0, y0=0.0, x1=0.0, y1=0.0),
                 expanded=list(req.expanded),
+                root=req.root,
                 q=q,
                 status=status,
             ),

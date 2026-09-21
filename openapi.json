@@ -29193,6 +29193,17 @@
             "title": "Expanded",
             "default": []
           },
+          "root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root"
+          },
           "q": {
             "type": "string",
             "title": "Q",
@@ -29247,6 +29258,11 @@
           "layout_version": {
             "type": "integer",
             "title": "Layout Version"
+          },
+          "variant_applied": {
+            "type": "string",
+            "title": "Variant Applied",
+            "default": "active"
           }
         },
         "type": "object",
@@ -29523,6 +29539,17 @@
             "title": "Expanded",
             "default": []
           },
+          "root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root"
+          },
           "q": {
             "type": "string",
             "title": "Q",
@@ -29541,7 +29568,7 @@
         },
         "type": "object",
         "title": "LocateRequest",
-        "description": "Where the matches for a filter are, in the geometry the canvas draws.\n\nCarries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:\ncollapsing a container reflows everything after it, so a match's position\ndepends on the viewer's expanded set and cannot be answered from the\npersisted layout alone."
+        "description": "Where the matches for a filter are, in the geometry the canvas draws.\n\nCarries ``expanded`` and ``root`` for the same reason ``tiles`` and\n``list`` are POSTs: collapsing a container reflows everything after it\nand entering one re-packs its scope, so a match's position depends on\nthe viewer's own view state and cannot be answered from the persisted\nlayout alone."
       },
       "LocateResponse": {
         "properties": {
@@ -45910,6 +45937,11 @@
           "layout_version": {
             "type": "integer",
             "title": "Layout Version"
+          },
+          "variant_applied": {
+            "type": "string",
+            "title": "Variant Applied",
+            "default": "active"
           },
           "expanded_applied": {
             "anyOf": [

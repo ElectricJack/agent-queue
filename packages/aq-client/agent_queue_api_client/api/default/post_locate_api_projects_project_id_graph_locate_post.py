@@ -81,10 +81,11 @@ def sync_detailed(
         body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
             draws.
 
-            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-            collapsing a container reflows everything after it, so a match's position
-            depends on the viewer's expanded set and cannot be answered from the
-            persisted layout alone.
+            Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+            ``list`` are POSTs: collapsing a container reflows everything after it
+            and entering one re-packs its scope, so a match's position depends on
+            the viewer's own view state and cannot be answered from the persisted
+            layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -119,10 +120,11 @@ def sync(
         body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
             draws.
 
-            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-            collapsing a container reflows everything after it, so a match's position
-            depends on the viewer's expanded set and cannot be answered from the
-            persisted layout alone.
+            Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+            ``list`` are POSTs: collapsing a container reflows everything after it
+            and entering one re-packs its scope, so a match's position depends on
+            the viewer's own view state and cannot be answered from the persisted
+            layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -152,10 +154,11 @@ async def asyncio_detailed(
         body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
             draws.
 
-            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-            collapsing a container reflows everything after it, so a match's position
-            depends on the viewer's expanded set and cannot be answered from the
-            persisted layout alone.
+            Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+            ``list`` are POSTs: collapsing a container reflows everything after it
+            and entering one re-packs its scope, so a match's position depends on
+            the viewer's own view state and cannot be answered from the persisted
+            layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -188,10 +191,11 @@ async def asyncio(
         body (LocateRequest): Where the matches for a filter are, in the geometry the canvas
             draws.
 
-            Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-            collapsing a container reflows everything after it, so a match's position
-            depends on the viewer's expanded set and cannot be answered from the
-            persisted layout alone.
+            Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+            ``list`` are POSTs: collapsing a container reflows everything after it
+            and entering one re-packs its scope, so a match's position depends on
+            the viewer's own view state and cannot be answered from the persisted
+            layout alone.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
