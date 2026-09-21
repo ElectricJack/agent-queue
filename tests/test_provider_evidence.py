@@ -374,6 +374,67 @@ async def test_unauthenticated_recovers_through_the_recovery_probe_and_a_canary(
     assert env.service.admit_launch("codex") == (True, None)
 
 
+async def _codex_on_probation(env) -> None:
+    await env.db.create_project(Project(id="p1", name="p1"))
+    env.probe.answer = "not_authenticated"
+    await env.service.record_startup_death(login_death(), harness="codex", project_id="p1")
+    await env.service.wait_for_probes()
+    await env.service.set_state("codex", "auto", by="human:cli")
+    row = env.service.row("codex")
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+
+
+async def test_a_canary_session_that_ends_without_evidence_frees_the_next_launch(env):
+    """Killed, reaped or dead after startup: nothing is in flight any more (D4)."""
+    await _codex_on_probation(env)
+    assert env.service.admit_launch("codex", session_id="sess-canary") == (True, None)
+
+    # Still starting (no row yet), then running: the canary is in flight.
+    await env.service.tick()
+    assert not env.service.admit_launch("codex")[0]
+    await env.db.create_session(SessionRecord(
+        id="sess-canary", project_id="p1", profile_id="std-codex", harness="codex",
+        provider="fake", name="n", lifecycle="pool", state="running",
+        work_dir="/tmp", epoch="e", instance_token="i", started_at=T0,
+    ))
+    await env.service.tick()
+    assert not env.service.admit_launch("codex")[0]
+
+    # ``aq session kill`` before its first authenticated call: no evidence.
+    await env.db.update_session(
+        "sess-canary", state="stopped", desired_state="stopped",
+        ended_at=T0 + 30, end_reason="killed",
+    )
+    env.clock.tick(30)
+    await env.service.tick()
+    assert env.service.admit_launch("codex", session_id="sess-next") == (True, None)
+    assert not env.service.admit_launch("codex")[0]
+    # The end proved nothing about the provider: still on probation, no failure.
+    row = env.service.row("codex")
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+    assert not [e for e in row.evidence if e.get("session_id") == "sess-canary"]
+
+
+async def test_a_launch_releases_only_its_own_canary(env):
+    await _codex_on_probation(env)
+    assert env.service.admit_launch("codex", session_id="sess-a") == (True, None)
+    env.service.release_canary("codex", session_id="sess-b")
+    assert not env.service.admit_launch("codex")[0]
+    env.service.release_canary("codex", session_id="sess-a")
+    assert env.service.admit_launch("codex") == (True, None)
+
+
+async def test_a_canary_with_no_session_to_watch_waits_out_its_timeout(env):
+    from src.providers.availability_service import CANARY_TIMEOUT_SECONDS
+
+    await _codex_on_probation(env)
+    assert env.service.admit_launch("codex") == (True, None)
+    await env.service.tick()
+    assert not env.service.admit_launch("codex")[0]
+    env.clock.tick(CANARY_TIMEOUT_SECONDS)
+    assert env.service.admit_launch("codex") == (True, None)
+
+
 async def test_recheck_runs_the_probe_now(env):
     env.probe.answer = "not_authenticated"
     result = await env.service.recheck("codex")

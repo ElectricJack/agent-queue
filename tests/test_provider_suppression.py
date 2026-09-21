@@ -189,6 +189,72 @@ async def test_a_pre_launch_refusal_does_not_notify_a_launch_failure(push_orch):
     assert paused.resume_after <= time.time() + 31
 
 
+async def test_a_killed_push_canary_lets_the_next_launch_be_the_canary(push_orch):
+    orch = push_orch
+    availability = orch.provider_availability
+    availability._probe_impl = Probe("not_authenticated")
+    await availability.record(
+        "codex", "startup_dialog", "auth", detail={"dialog": "login-required"}
+    )
+    await availability.wait_for_probes()
+    await availability.set_state("codex", "auto", by="human:cli")
+    assert availability.row("codex").reason_code == "recovering"
+    availability._probe_impl = Probe("authenticated")
+
+    async def task_launches():
+        return [row for row in await orch.db.list_sessions() if row.lifecycle == "task"]
+
+    await _cycle(orch)
+    (canary,) = await task_launches()
+    assert canary.state == "running"
+
+    await orch.db.update_session(
+        canary.id, state="stopped", desired_state="stopped",
+        ended_at=time.time(), end_reason="killed",
+    )
+    # The refused launches were held briefly (D13); bring them straight back.
+    for task in await orch.db.list_tasks(project_id="p-1"):
+        if task.status == TaskStatus.PAUSED:
+            await orch.db.transition_task(task.id, TaskStatus.READY, context="test")
+    # One workspace: the reconciler frees it after this cycle has scheduled.
+    for _ in range(2):
+        await _cycle(orch)
+    assert len(await task_launches()) == 2
+
+
+async def test_a_push_canary_that_never_starts_frees_the_next_launch(push_orch, monkeypatch):
+    """A launch refused after admission never ran; it is not a canary in flight."""
+    orch = push_orch
+    availability = orch.provider_availability
+    availability._probe_impl = Probe("not_authenticated")
+    await availability.record(
+        "codex", "startup_dialog", "auth", detail={"dialog": "login-required"}
+    )
+    await availability.wait_for_probes()
+    await availability.set_state("codex", "auto", by="human:cli")
+    availability._probe_impl = Probe("authenticated")
+    fake = fake_provider(orch)
+
+    from src.orchestrator import execution
+
+    refusals = ["refusing to run an agent in the base checkout"]
+
+    async def refuse_once(*_args, **_kwargs):
+        return refusals.pop() if refusals else None
+
+    monkeypatch.setattr(execution, "base_checkout_refusal", refuse_once)
+    await _cycle(orch)
+    assert not refusals
+    assert not [row for row in await orch.db.list_sessions() if row.lifecycle == "task"]
+
+    for task in await orch.db.list_tasks(project_id="p-1"):
+        if task.status == TaskStatus.PAUSED:
+            await orch.db.transition_task(task.id, TaskStatus.READY, context="test")
+    await _cycle(orch)
+    assert [row for row in await orch.db.list_sessions() if row.lifecycle == "task"]
+    assert [spec for spec in fake.starts if spec.session_name.startswith("s-")]
+
+
 # -- pool path -------------------------------------------------------------------------
 
 POOL_PROJECT = "proj"
@@ -325,6 +391,36 @@ async def test_a_recovering_provider_admits_one_pool_canary(pool_orch):
     await _pool_round(orch)
     # Demand is three tasks and max_active two, but probation admits one.
     assert len(fake.starts) == 1
+
+
+async def test_a_killed_pool_canary_lets_the_next_launch_be_the_canary(pool_orch):
+    """The canary died before any evidence; the provider must not wait 10 minutes."""
+    orch = pool_orch
+    fake = fake_provider(orch)
+    fake.script_startup_dialog("codex", "login-required", signal="auth")
+    for _ in range(3):
+        await _pool_round(orch)
+    fake.clear_startup_dialog("codex")
+    orch.provider_availability._probe_impl = Probe("authenticated")
+    await orch.provider_availability.recheck("codex")
+    await _pool_round(orch)
+    assert len(fake.starts) == 1
+    (canary,) = [row for row in await orch.db.list_sessions() if row.state == "running"]
+
+    await _pool_round(orch)
+    assert len(fake.starts) == 1  # still in flight
+
+    # Killed (``aq session kill``, a claim-loop reap) before its first
+    # authenticated call: no launch evidence either way.
+    await orch.db.update_session(
+        canary.id, state="stopped", desired_state="stopped",
+        ended_at=time.time(), end_reason="killed",
+    )
+    await orch.provider_availability.tick()
+    await _pool_round(orch)
+    assert len(fake.starts) == 2
+    row = orch.provider_availability.row("codex")
+    assert (row.state, row.reason_code) == (DEGRADED, "recovering")
 
 
 # -- claim admission -----------------------------------------------------------------------

@@ -848,7 +848,9 @@ class PoolsMixin:
             else ""
         )
         if availability is not None:
-            admitted, refusal_reason = availability.admit_launch(launch_provider)
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=launch.session_id
+            )
             if not admitted:
                 logger.debug(
                     "pool %s/%s: launch refused: %s", project.id, profile.id, refusal_reason
@@ -868,7 +870,7 @@ class PoolsMixin:
             if availability is not None:
                 # A launch that never ran proves nothing either way: let the
                 # next one be the probation canary (provider-failover D4).
-                availability.release_canary(launch_provider)
+                availability.release_canary(launch_provider, session_id=session_id)
             if not quarantine:
                 # A starved pool is expected; ``_quarantine_pool`` does the
                 # logging for the failures that are not.
@@ -1062,8 +1064,6 @@ class PoolsMixin:
                 )
                 return None
         except Exception as exc:
-            if availability is not None:
-                availability.release_canary(launch_provider)
             await _rollback(f"launch failed: {exc}", quarantine=True)
             return None
 

@@ -799,8 +799,15 @@ class ExecutionMixin:
         launch_provider = availability.provider_for_harness(harness_name, task.project_id) if (
             availability is not None
         ) else ""
+        # Canonical dashed form: this id rides the harness's session-id flag
+        # (``claude --session-id``) and Claude Code rejects a dashless hex
+        # string with "Invalid session ID. Must be a valid UUID."  Minted
+        # here so a probation canary is admitted as this session (D4).
+        session_id = str(_uuid.uuid4())
         if availability is not None:
-            admitted, refusal_reason = availability.admit_launch(launch_provider)
+            admitted, refusal_reason = availability.admit_launch(
+                launch_provider, session_id=session_id
+            )
             if not admitted:
                 # A refusal is the provider's, never the task's (D13): an
                 # unavailable provider sends the task back to READY for the
@@ -822,15 +829,23 @@ class ExecutionMixin:
                 )
                 return
 
+        def release_canary() -> None:
+            # A launch that never ran proves nothing either way: let the next
+            # one be the probation canary (D4), as the pool path's rollback does.
+            if availability is not None:
+                availability.release_canary(launch_provider, session_id=session_id)
+
         provider_name = self.config.sessions.provider
         try:
             provider = self.session_providers.create(provider_name, self.config)
         except ValueError as exc:
+            release_canary()
             await self._fail_session_launch(action, task, str(exc))
             return
 
         work_dir = workspace or ""
         if not work_dir:
+            release_canary()
             await self._fail_session_launch(
                 action, task, "session launch needs a work_dir but none was prepared"
             )
@@ -845,13 +860,10 @@ class ExecutionMixin:
             self.db, work_dir, profile, project_id=task.project_id
         )
         if refusal:
+            release_canary()
             await self._fail_session_launch(action, task, refusal)
             return
 
-        # Canonical dashed form: this id rides the harness's session-id flag
-        # (``claude --session-id``) and Claude Code rejects a dashless hex
-        # string with "Invalid session ID. Must be a valid UUID."
-        session_id = str(_uuid.uuid4())
         instance_token = _uuid.uuid4().hex
         # A per-session bearer token.  aq-surface Phase S2 wired real
         # session-scoped mint via :class:`SessionTokenStore`; the sha256
@@ -978,6 +990,7 @@ class ExecutionMixin:
                         workspace_id=ws_row.id,
                     )
                 )
+                release_canary()
                 await self._fail_session_launch(
                     action,
                     task,
@@ -1054,8 +1067,7 @@ class ExecutionMixin:
             return
         except Exception as exc:
             await record_failed_launch("launch_failed")
-            if availability is not None:
-                availability.release_canary(launch_provider)
+            release_canary()
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
@@ -1091,6 +1103,7 @@ class ExecutionMixin:
                         spec.session_name,
                         exc_info=True,
                     )
+                release_canary()
                 await self._fail_session_launch(
                     action, task, f"session started but its row could not be written: {exc}"
                 )
