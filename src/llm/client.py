@@ -120,6 +120,11 @@ class LLMClient:
         self._logger = llm_logger
         self._factory = provider_factory
         self._providers: dict[tuple, LLMProvider] = {}
+        #: Called with ``(signal, detail)`` after every provider call:
+        #: ``("ok", {})`` or :func:`classify_llm_error`'s verdict.  The
+        #: orchestrator wires it to provider availability's ``llm`` key
+        #: (provider-failover D13a).  Must be cheap and must not raise.
+        self.on_outcome: Callable[[str, dict], None] | None = None
 
     @classmethod
     def with_provider(
@@ -360,6 +365,15 @@ class LLMClient:
                 )
             )
 
+    def _report_outcome(self, signal: str, detail: dict) -> None:
+        hook = self.on_outcome
+        if hook is None:
+            return
+        try:
+            hook(signal, detail)
+        except Exception:  # evidence must never break an LLM call
+            logger.debug("llm: outcome hook failed", exc_info=True)
+
     async def _create_message(
         self,
         resolved: ResolvedCall,
@@ -376,9 +390,15 @@ class LLMClient:
             response = await provider.create_message(
                 messages=messages, system=system, tools=tools, max_tokens=resolved.max_tokens
             )
+            self._report_outcome("ok", {})
             return response
         except Exception as exc:
             error = str(exc)
+            from src.llm.providers.errors import classify_llm_error
+
+            signal, detail = classify_llm_error(exc)
+            if signal is not None:
+                self._report_outcome(signal, detail)
             raise
         finally:
             if self._logger is not None:

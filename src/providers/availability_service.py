@@ -173,6 +173,9 @@ class ProviderAvailabilityService:
         self._tracked: set[str] = set()
         self._tracked_at: float = 0.0
         self._flap_notice_at: dict[str, float] = {}
+        #: Fire-and-forget evidence writes, held so the loop cannot collect
+        #: them mid-flight and so a test (or shutdown) can wait for them.
+        self._background: set[asyncio.Task] = set()
         self._loaded = False
         #: Called with each transition that changed half; the orchestrator
         #: wires it to :meth:`notify_state_change`.  Overridable in tests.
@@ -394,6 +397,7 @@ class ProviderAvailabilityService:
 
     async def close(self) -> None:
         tasks = [task for task in self._probe_tasks.values() if not task.done()]
+        tasks += [task for task in self._background if not task.done()]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -554,15 +558,37 @@ class ProviderAvailabilityService:
             project_id=getattr(session, "project_id", None),
         )
 
+    def note_llm_outcome(self, signal: str, detail: dict) -> None:
+        """``LLMClient.on_outcome``: direct-path calls as ``llm_call`` evidence (D13a).
+
+        Successes are only recorded while the ``llm`` key is not plainly
+        healthy -- a busy playbook makes many calls, and a success on an
+        available provider changes nothing.
+        """
+        if not self.tracking:
+            return
+        row = self._rows.get("llm")
+        if signal == "ok" and (
+            row is None or (row.state == AVAILABLE and not row.consecutive_failures)
+        ):
+            return
+        self._spawn(self.record("llm", "llm_call", signal, detail=detail))
+
+    def _spawn(self, coro) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()
+            return
+        task = loop.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
     def note_session_authenticated_soon(self, session_id: str | None) -> None:
         """Fire-and-forget form for synchronous-ish hot paths (token validation)."""
         if not session_id or not self.tracking or session_id in self._seen_sessions:
             return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        loop.create_task(self.note_session_authenticated(session_id))
+        self._spawn(self.note_session_authenticated(session_id))
 
     # -- operator ---------------------------------------------------------------
 
@@ -643,9 +669,12 @@ class ProviderAvailabilityService:
         self._probe_tasks[provider] = loop.create_task(_probe_and_record())
 
     async def wait_for_probes(self) -> None:
-        """Test seam: let every in-flight probe finish."""
-        pending = [task for task in self._probe_tasks.values() if not task.done()]
-        if pending:
+        """Let every in-flight probe and background evidence write finish."""
+        while True:
+            pending = [task for task in self._probe_tasks.values() if not task.done()]
+            pending += [task for task in self._background if not task.done()]
+            if not pending:
+                return
             await asyncio.gather(*pending, return_exceptions=True)
 
     async def _run_probe(self, provider: str) -> tuple[str | None, dict[str, Any]]:

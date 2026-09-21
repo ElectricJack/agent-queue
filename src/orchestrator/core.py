@@ -420,6 +420,9 @@ class Orchestrator(
             classes_loader=lambda: self.intelligence_classes.snapshot(),
             llm_logger=self.llm_logger if self.llm_logger._enabled else None,
         )
+        # The direct path's own credential is tracked as provider ``llm``
+        # (provider-failover D13a).
+        self.llm.on_outcome = self.provider_availability.note_llm_outcome
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.

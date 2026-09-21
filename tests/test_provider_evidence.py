@@ -449,3 +449,78 @@ async def test_off_mode_records_nothing(env):
     assert await env.service.record("codex", STARTUP_DIALOG, "auth") is None
     assert env.service.row("codex") is None
     assert await env.service.tick() == []
+
+
+# -- the direct path (D13a) ------------------------------------------------------------
+
+
+class _HTTPError(Exception):
+    def __init__(self, message, status_code, headers=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+        class _Response:
+            pass
+
+        self.response = _Response()
+        self.response.headers = headers or {}
+
+
+@pytest.mark.parametrize(
+    ("exc", "signal"),
+    [
+        (_HTTPError("invalid x-api-key", 401), "auth"),
+        (_HTTPError("forbidden", 403), "auth"),
+        (_HTTPError("You exceeded your current quota (insufficient_quota)", 429), "usage"),
+        (_HTTPError("rate limit reached for requests", 429), "rate_limit"),
+        (_HTTPError("upstream error", 503), "error"),
+        (TimeoutError("read timed out"), "error"),
+        (_HTTPError("messages: field required", 400), None),
+    ],
+)
+def test_classify_llm_error(exc, signal):
+    from src.llm.providers.errors import classify_llm_error
+
+    assert classify_llm_error(exc)[0] == signal
+
+
+def test_classify_llm_error_reads_retry_after():
+    from src.llm.providers.errors import classify_llm_error
+
+    _signal, detail = classify_llm_error(
+        _HTTPError("insufficient_quota", 429, headers={"retry-after": "120"})
+    )
+    assert detail["retry_after"] == 120.0
+
+
+async def test_the_llm_client_reports_each_call_outcome():
+    from src.llm import LLMClient
+    from src.llm.fake import FakeProvider
+
+    class Failing(FakeProvider):
+        async def create_message(self, **kwargs):
+            raise _HTTPError("invalid x-api-key", 401)
+
+    outcomes = []
+    fake = FakeProvider()
+    fake.add_text("hi")
+    ok = LLMClient.with_provider(fake)
+    ok.on_outcome = lambda signal, detail: outcomes.append(signal)
+    await ok.complete("hello")
+    bad = LLMClient.with_provider(Failing())
+    bad.on_outcome = lambda signal, detail: outcomes.append(signal)
+    with pytest.raises(_HTTPError):
+        await bad.complete("hello")
+    assert outcomes == ["ok", "auth"]
+
+
+async def test_llm_outcomes_track_the_reserved_llm_key(env):
+    env.service.note_llm_outcome("ok", {})  # healthy and unknown: nothing to say
+    await env.service.wait_for_probes()
+    assert env.service.row("llm") is None
+    env.service.note_llm_outcome("auth", {"status": 401})
+    await env.service.wait_for_probes()
+    assert env.service.effective_state("llm") == UNAUTHENTICATED
+    env.service.note_llm_outcome("ok", {})  # now it is recovery evidence
+    await env.service.wait_for_probes()
+    assert env.service.row("llm").reason_code == "recovering"
