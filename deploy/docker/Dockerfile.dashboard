@@ -1,0 +1,40 @@
+# Dashboard — built SPA served by Caddy, with /api reverse-proxied to the daemon.
+#
+# The daemon stays API-only (it must not serve static files), so the bundle is
+# served here instead. This also gives the deployment a single entry point:
+# one port to tunnel, and one place to terminate TLS.
+#
+# AQ_DASHBOARD_EMBEDDED is deliberately NOT set. dashboard/vite.config.ts uses
+#     base: embedded ? "/dashboard/" : "/"
+# and Caddy serves the app at the root, so the unset (default) value is right.
+
+# --- build ------------------------------------------------------------------
+# Node 24 matches the toolchain src/install/node_toolchain.py pins (v24.21.0).
+FROM node:24-slim AS build
+
+WORKDIR /build
+
+# npm workspaces: the root manifest plus both workspace manifests are needed
+# before `npm ci` can resolve the tree.
+COPY package.json package-lock.json ./
+COPY packages/aq-ts-client/package.json ./packages/aq-ts-client/
+COPY dashboard/package.json ./dashboard/
+
+RUN npm ci
+
+# The dashboard's `prebuild` regenerates the typed TS client, which reads the
+# committed openapi.json at the repo root — hence copying it explicitly.
+COPY openapi.json ./
+COPY packages/aq-ts-client/ ./packages/aq-ts-client/
+COPY dashboard/ ./dashboard/
+
+# Root `build` = aq-ts-client build, then dashboard build (tsc -b && vite build).
+RUN npm run build
+
+# --- serve ------------------------------------------------------------------
+FROM caddy:2-alpine
+
+COPY --from=build /build/dashboard/dist /srv
+COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile
+
+EXPOSE 8080

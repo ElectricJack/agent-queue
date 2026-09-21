@@ -1,0 +1,40 @@
+# Single entry point: SPA at /, daemon API proxied underneath it.
+#
+# The proxied prefixes mirror dashboard/vite.config.ts's dev proxy, which is
+# the authoritative list of what the SPA calls:
+#     "/api", "/health", "/ready", "/ws" (websocket)
+# Keep the two in step — a route added there must be added here, or it will
+# work in `npm run dev` and 404 in production.
+
+{
+	# No admin API: this container has no need to be reconfigured at runtime.
+	admin off
+	auto_https off
+}
+
+:8080 {
+	encode gzip zstd
+
+	log {
+		output stdout
+		format console
+	}
+
+	# Caddy v2 upgrades WebSocket connections through reverse_proxy natively,
+	# so /ws needs no special handling beyond matching it.
+	# /docs and /openapi.json are not in the vite dev proxy, but they are daemon
+	# routes and are in the API's _EXEMPT_PATHS, so proxying them costs nothing
+	# and makes the running API explorable.
+	@daemon path /api/* /health /ready /ws /ws/* /docs /redoc /openapi.json
+	handle @daemon {
+		reverse_proxy {$AQ_DAEMON_UPSTREAM:daemon:8081}
+	}
+
+	# Everything else is the SPA. try_files sends unknown paths to index.html
+	# so client-side routes survive a hard refresh.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

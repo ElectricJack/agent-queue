@@ -1,0 +1,113 @@
+# Agent Queue daemon — orchestrator + embedded MCP/REST API.
+#
+# No chat bot: config.template.yaml sets messaging_platform: none.
+#
+# This image deliberately does NOT serve the dashboard: the daemon is an API
+# server, and the SPA is served by the separate Caddy image
+# (deploy/docker/Dockerfile.dashboard).
+#
+# It does NOT run `aq install` either. That installer exists to mutate a
+# developer's host and refuses non-WSL Linux outright
+# (src/install/platform.py); in an image the Dockerfile *is* the install, so
+# the supported-platform matrix never comes into it.
+#
+# Shape C (deploy/README.md): agent sessions run as tmux sessions inside this
+# container, so the harness CLIs live here too. Shape B later moves them into
+# a separate worker image behind a container session provider.
+
+FROM python:3.13-slim
+
+# - git/tmux: hard prerequisites. Every agent harness runs inside a tmux
+#   session, and workspaces are git worktrees.
+# - procps: src/sessions/proctable.py scans /proc for AQ_* env markers; the
+#   adoption path is its ground truth.
+# - curl/ca-certificates: the provider installers below fetch over TLS.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        tmux \
+        procps \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Agents execute repo code they have written. Do not run that as root.
+ARG AQ_UID=1000
+ARG AQ_GID=1000
+RUN groupadd -g "${AQ_GID}" aq \
+    && useradd -m -u "${AQ_UID}" -g "${AQ_GID}" -s /bin/bash aq
+
+ENV HOME=/home/aq \
+    PATH=/home/aq/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# pyproject first: README.md is referenced by the project metadata, and the
+# `cli` extra resolves `agent-queue-api-client @ file:packages/aq-client`, so
+# that directory must exist before pip runs.
+#
+# Note this is an editable install, so src/ has to be present at install time
+# and a source edit does invalidate this layer. That is the right trade for a
+# deployment image (one build per release); optimise it only if iteration speed
+# on rebuilds starts to hurt.
+COPY --chown=aq:aq pyproject.toml README.md ./
+COPY --chown=aq:aq packages/ ./packages/
+
+# `cli` pulls in the typed API client from packages/aq-client (a file: URL, so
+# that directory must already be present). `postgresql` brings asyncpg —
+# PostgreSQL is the only supported database now. `mcp` is the embedded server.
+ARG AQ_EXTRAS="cli,postgresql,mcp,anthropic"
+COPY --chown=aq:aq src/ ./src/
+COPY --chown=aq:aq migrations/ ./migrations/
+COPY --chown=aq:aq alembic.ini ./
+RUN pip install --no-cache-dir -e ".[${AQ_EXTRAS}]"
+
+# Create the mount points owned by `aq` *before* they become volumes. Docker
+# seeds a fresh named volume from the image's directory at that path, including
+# its ownership — without this the volume is created root-owned and the daemon
+# cannot write its log directory. There is deliberately no VOLUME instruction:
+# docker-compose.prod.yml declares the volumes, and a VOLUME here would also
+# spawn anonymous volumes on a plain `docker run`.
+RUN mkdir -p /data/agent-queue /data/workspaces && chown -R aq:aq /data
+
+USER aq
+
+# Harness CLIs. Commands are taken verbatim from src/install/providers.py so
+# this image installs exactly what `aq install` would.
+#   claude: curl -fsSL https://claude.ai/install.sh | bash   -> ~/.local/bin
+#   codex:  curl -fsSL https://chatgpt.com/codex/install.sh | sh
+#   gemini: npm install -g @google/gemini-cli                 (needs Node)
+# Default to Claude only; add others by overriding AQ_HARNESSES at build time.
+ARG AQ_HARNESSES="claude"
+RUN set -eu; \
+    for harness in $(echo "${AQ_HARNESSES}" | tr ',' ' '); do \
+        case "$harness" in \
+            claude) curl -fsSL https://claude.ai/install.sh | bash ;; \
+            codex)  curl -fsSL https://chatgpt.com/codex/install.sh | sh ;; \
+            *) echo "unknown harness: $harness (gemini needs Node; see deploy/README.md)" >&2; exit 1 ;; \
+        esac; \
+    done
+
+# `claude auth login` writes ~/.claude/.credentials.json, and the daemon reads
+# agent transcripts back from ~/.claude/projects/<slug>/*.jsonl. Both must
+# survive `docker compose up --build`, so ~/.claude is a volume — created here
+# so the volume is seeded aq-owned rather than root-owned.
+#
+# Only .claude is mounted, never /home/aq: a volume over the whole home would
+# hide the harness CLI installed above at ~/.local/bin.
+RUN mkdir -p /home/aq/.claude
+
+# Baked with ${ENV_VAR} placeholders. src/config.py substitutes them
+# recursively across every string at load time, so one image is configured
+# entirely by environment — and a missing variable fails fast rather than
+# silently defaulting.
+COPY --chown=aq:aq deploy/config.template.yaml /etc/agent-queue/config.yaml
+
+EXPOSE 8081
+
+# `agent-queue` is src.main:main, which runs in the foreground and re-execs
+# itself when a restart is requested — correct as PID 1. The config path is a
+# positional argument (src/main.py:_parse_args).
+ENTRYPOINT ["agent-queue"]
+CMD ["/etc/agent-queue/config.yaml"]

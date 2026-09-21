@@ -1,0 +1,108 @@
+# Agent Queue — full stack, runnable on any Docker host.
+#
+#     cd deploy && cp .env.example .env && $EDITOR .env
+#     docker compose -f docker-compose.prod.yml up -d --build
+#
+# Build context is the repository root, so run it with -f from deploy/ (as
+# above) or from the root with `-f deploy/docker-compose.prod.yml`.
+#
+# Exposure: only the dashboard port is published, and only on loopback. Nothing
+# here should ever be reachable from 0.0.0.0 — this stack runs agent-authored
+# code, and `api_auth` is documented upstream as auth for a *local* API. Reach
+# it over an SSH tunnel, IAP, or Tailscale:
+#
+#     ssh -L 8088:127.0.0.1:8088 <host>     # then open http://127.0.0.1:8088
+
+name: agent-queue
+
+services:
+  daemon:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.daemon
+      args:
+        # Add codex here to bake in a second harness. Gemini needs Node in the
+        # image — see deploy/README.md.
+        AQ_HARNESSES: ${AQ_HARNESSES:-claude}
+    image: agent-queue/daemon:latest
+    restart: unless-stopped
+    # The daemon spawns tmux sessions and their descendants; without an init
+    # PID 1 never reaps them and the container accumulates zombies.
+    init: true
+    # Optional so the stack also works where secrets arrive from the platform
+    # (Secret Manager, systemd, `docker compose --env-file`) rather than a file.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Read by src/config.py's ${...} substitution at config load. This is the
+      # only required variable — no chat bot is configured
+      # (messaging_platform: none).
+      AQ_DATABASE_URL: ${AQ_DATABASE_URL:?set AQ_DATABASE_URL in deploy/.env}
+    # Uncomment to reach a PostgreSQL running on the Docker host (rather than
+    # the --profile local-db container), then use host.docker.internal as the
+    # DSN host, e.g. @host.docker.internal:5533.
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    volumes:
+      # data_dir: vault, agent homes (~/.claude transcripts the daemon reads
+      # back), Milvus Lite if memory is enabled.
+      - aq-data:/data/agent-queue
+      # workspace_dir: base clones and their .aq/worktrees/slot-N. Persisting
+      # this is what keeps a task an incremental fetch instead of a clone.
+      - aq-workspaces:/data/workspaces
+      # Harness login (~/.claude/.credentials.json, written by
+      # `claude auth login`) and the agent transcripts the daemon reads back
+      # from ~/.claude/projects/. Without this, every rebuild logs you out.
+      - aq-home:/home/aq/.claude
+    # No `ports:` — the API is reached through the dashboard container only.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.dashboard
+    image: agent-queue/dashboard:latest
+    restart: unless-stopped
+    depends_on:
+      - daemon
+    environment:
+      AQ_DAEMON_UPSTREAM: daemon:8081
+    ports:
+      # Loopback only. Change the host_ip and you have published an
+      # unauthenticated control plane for a machine that runs agent-written
+      # code — only the port number is meant to be tuned here, via
+      # AQ_DASHBOARD_PORT, since 8080 is commonly already in use.
+      - "127.0.0.1:${AQ_DASHBOARD_PORT:-8088}:8080"
+
+  # Local PostgreSQL for running the stack off-cloud. Production uses managed
+  # SQL (Cloud SQL / RDS / Neon), so this is opt-in:
+  #     docker compose -f docker-compose.prod.yml --profile local-db up -d
+  # With it, set in .env:
+  #     AQ_DATABASE_URL=postgresql+asyncpg://agent_queue:agent_queue_dev@postgres:5432/agent_queue
+  postgres:
+    profiles: ["local-db"]
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: agent_queue
+      POSTGRES_USER: agent_queue
+      POSTGRES_PASSWORD: ${AQ_LOCAL_DB_PASSWORD:-agent_queue_dev}
+    volumes:
+      - aq-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_queue"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  aq-data:
+  aq-home:
+  aq-workspaces:
+  aq-pgdata:

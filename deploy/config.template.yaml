@@ -1,0 +1,106 @@
+# Agent Queue — container configuration.
+#
+# This file is baked into the daemon image as /etc/agent-queue/config.yaml and
+# is NOT templated by an entrypoint script. src/config.py substitutes
+# ${ENV_VAR} recursively across every string at load time, so one image is
+# configured entirely by environment variables.
+#
+# Two consequences worth knowing:
+#   * A referenced variable that is unset raises at startup rather than
+#     defaulting silently. That is the behaviour we want in a container, but it
+#     means every ${...} below must be supplied — see deploy/.env.example.
+#   * Keep the ${...} set small. Anything that does not genuinely vary between
+#     deployments belongs here as a literal.
+#
+# Validate a rendered config without starting the daemon:
+#     agent-queue --validate-config /etc/agent-queue/config.yaml
+#
+# The full schema is docs/reference/configuration-schema.json. Top-level keys
+# are closed (additionalProperties: false), so an unknown key fails validation.
+
+# Both are volume mounts in docker-compose. They hold the vault, agent homes
+# (the transcripts the daemon reads back) and the worktree base clones, all of
+# which must outlive the container.
+data_dir: /data/agent-queue
+workspace_dir: /data/workspaces
+
+database:
+  # One whole DSN, not split into host/user/password parts.
+  # e.g. postgresql+asyncpg://aq:PASSWORD@10.x.x.x:5432/agent_queue
+  url: ${AQ_DATABASE_URL}
+  # Managed PostgreSQL enforces a connection ceiling, and every concurrent
+  # agent can hold connections. Sized for ~4 concurrent agents; raise both
+  # together if you raise the agent count.
+  pool_min_size: 2
+  pool_max_size: 10
+  # One of off / local / wire — not a boolean.
+  #   local: asks asyncpg whether the connection already knows it is dead.
+  #          Zero round trips, catches server bounces and idle reapers.
+  #   wire:  SQLAlchemy's real pool_pre_ping — three round trips per checkout
+  #          on asyncpg (~1.3-1.6ms per pooled transaction), which adds up when
+  #          `task_claim` alone takes eight.
+  # `local` is right for a direct connection. Use `wire` behind pgbouncer in
+  # transaction mode, or the Cloud SQL Auth Proxy, where half-open sockets are
+  # a real concern.
+  pre_ping: local
+
+# The daemon serves the REST API and the embedded MCP server on this port.
+# 0.0.0.0 is required in a container: Caddy reaches it over the compose
+# network, not over loopback. The port is NOT published to the host — see
+# deploy/docker-compose.prod.yml.
+mcp_server:
+  # `enabled` MUST be set explicitly. The dataclass default is True and the
+  # generated schema documents `"default": true`, but the loader reads
+  # `enabled=ms.get("enabled", False)` (src/config.py:3609) — so writing an
+  # `mcp_server:` block at all, without this line, silently disables the API
+  # and the dashboard gets nothing but 502s. Upstream inconsistency; being
+  # explicit is correct regardless of which side gets fixed.
+  enabled: true
+  host: 0.0.0.0
+  port: 8081
+
+api_auth:
+  # MUST stay false for the dashboard to function. The SPA sends no
+  # Authorization header at all (there is no bearer/token handling anywhere in
+  # dashboard/src), so it depends on the middleware's "no header -> LOCAL_SCOPE"
+  # path. Turning this on returns 401 for every non-exempt route and leaves the
+  # dashboard an empty shell — /health and /ready still answer, which makes it
+  # look healthy while being unusable.
+  #
+  # The security boundary here is the network, not this flag, which is what
+  # upstream assumes when it calls this "the local HTTP API": the dashboard port
+  # is published on 127.0.0.1 only and reached over an SSH tunnel or IAP. Do not
+  # publish that port on 0.0.0.0 — with this false, anyone who reaches it has
+  # LOCAL_SCOPE, which can run every command.
+  #
+  # Note a token would not rescue a proxied setup anyway: global-admin tokens
+  # are rejected with "token restricted to loopback" unless the peer address is
+  # 127.0.0.1, and behind Caddy the peer is the proxy's container IP.
+  require_session_token: false
+  token_ttl_hours: 72
+  # Origin check for the dashboard's terminal WebSocket
+  # (src/api/terminal_stream.py). Update if AQ_DASHBOARD_PORT changes.
+  trusted_dashboard_origins:
+    - http://127.0.0.1:8088
+    - http://localhost:8088
+
+sessions:
+  enabled: true
+  # Shape C: agents run as tmux sessions inside the daemon container.
+  # Shape B will change this to the container provider.
+  provider: tmux
+
+# Worktree slots keep repository cost flat: agents reuse slots at
+# <base_repo>/.aq/worktrees/slot-<n>, so a task is an incremental fetch plus a
+# reset rather than a clone, and gitignored caches survive between tasks.
+worktrees:
+  enabled: true
+
+# No chat bot. "none" selects src/messaging/null_adapter.py, which satisfies the
+# messaging contract as a no-op — the orchestrator and main.py only ever talk to
+# the adapter interface, so nothing else changes. Switch to "discord" and add a
+# `discord:` block with a bot_token to enable it later.
+messaging_platform: none
+
+logging:
+  level: INFO

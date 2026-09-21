@@ -38,6 +38,12 @@ docs/.obsidian
 # Outrider
 .outrider/
 
+# Deployment secrets: deploy/.env holds the database DSN and harness
+# credentials. Only the .example is committed.
+deploy/.env
+deploy/*.env
+!deploy/.env.example
+
 # Per-workspace agent state: hook settings, worktree slots, sentinels.
 # Generated per checkout by the session runtime — never shared.
 /.aq/
