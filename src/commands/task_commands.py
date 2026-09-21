@@ -3034,6 +3034,32 @@ class TaskCommandsMixin:
         if normalized_requirements and not hierarchy_created:
             await self.db.add_task_workspace_requirements(task_id, normalized_requirements)
 
+        # A review is a durable gate over downstream work, not a task
+        # dependency. Attach the task only after it has a row of its own so
+        # the task_gates relation and its blocked-state projection can be
+        # updated atomically.
+        after_review = args.get("after_review")
+        if after_review is not None:
+            review = await self.db.get_review(str(after_review))
+            if review is None:
+                return {
+                    "success": False,
+                    "error_code": "not_found",
+                    "error": f"review '{after_review}' not found",
+                }
+            if review["state"] == "withdrawn":
+                return {
+                    "success": False,
+                    "error_code": "review_closed",
+                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
+                }
+            if review["state"] != "approved":
+                async with self.db.immediate() as conn:
+                    flipped = await self.db.attach_gate_waiters(
+                        review["gate_id"], [task_id], conn=conn
+                    )
+                await self.db.log_blocked_flips(flipped)
+
         # D9: who meant the provider, and when.  Only a meaningful intent is
         # audited -- a routed ``class_only`` row is the default and costs no write.
         if provider_intent != CLASS_ONLY or requested_intent is not None or pin_requested:
@@ -3874,6 +3900,23 @@ class TaskCommandsMixin:
         if not task:
             return {"error": f"Task '{args['task_id']}' not found"}
 
+        after_review = args.get("after_review")
+        review = None
+        if after_review is not None:
+            review = await self.db.get_review(str(after_review))
+            if review is None:
+                return {
+                    "success": False,
+                    "error_code": "not_found",
+                    "error": f"review '{after_review}' not found",
+                }
+            if review["state"] == "withdrawn":
+                return {
+                    "success": False,
+                    "error_code": "review_closed",
+                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
+                }
+
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
             return {"error": "Task is manually paused; use resume_task."}
 
@@ -4075,6 +4118,13 @@ class TaskCommandsMixin:
         if status_changed:
             await self.db.transition_task(args["task_id"], new_status, context="edit_task")
 
+        if review is not None and review["state"] != "approved":
+            async with self.db.immediate() as conn:
+                flipped = await self.db.attach_gate_waiters(
+                    review["gate_id"], [task.id], conn=conn
+                )
+            await self.db.log_blocked_flips(flipped)
+
         needs_attention_cleared = (
             args.get("needs_attention") is not None and args["needs_attention"].strip() == ""
         )
@@ -4098,6 +4148,8 @@ class TaskCommandsMixin:
         all_fields = list(updates.keys())
         if status_changed:
             all_fields.append("status")
+        if after_review is not None:
+            all_fields.append("after_review")
         if args.get("clear_needs_attention"):
             all_fields.append("clear_needs_attention")
         elif args.get("needs_attention") is not None:
@@ -4109,7 +4161,7 @@ class TaskCommandsMixin:
                     "No fields to update. Provide project_id, title, description, priority, "
                     "task_type, status, max_retries, verification_type, profile_id, "
                     "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
-                    "affinity_reason, workspace_mode, provider_intent, pin, needs_attention, or "
+                    "affinity_reason, workspace_mode, provider_intent, pin, after_review, needs_attention, or "
                     "clear_needs_attention."
                 )
             }
