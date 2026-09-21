@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import sys
+import time
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -14,10 +15,18 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api import dependencies as deps
 from src.api.app import create_app
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.event_bus import EventBus
-from src.models import Project, Task
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    Project,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 from src.orchestrator import Orchestrator
 from src.prime.renderer import PrimeRenderer
 from tests.db_fixtures import lease_dsn
@@ -140,8 +149,126 @@ async def test_upload_rejects_disallowed_content_type_without_writing(attachment
             files={"file": ("notes.txt", b"not an image", "text/plain")},
         )
     assert response.status_code == 415
+    # A worker that tried to attach a transcript is told where text goes.
+    detail = response.json()["detail"]
+    assert "PNG, JPEG, GIF, and WebP" in detail
+    assert "aq task comment" in detail
     assert (await db.get_task("task/unsafe")).attachments == []
     assert not (Path(config.data_dir) / "attachments").exists()
+
+
+# --- session tokens -------------------------------------------------------
+#
+# A task-lifecycle token is minted naming its task.  A pool token is minted
+# with no task at all -- its task changes with every claim -- so the task it
+# may attach to is the one its session holds right now, read from persisted
+# state (session -> task -> agent), exactly as the worker git carve-out does.
+
+
+async def _hold(db, tmp_path, *, lifecycle: str, task_id: str = "task/unsafe") -> None:
+    await db.upsert_profile(AgentProfile(
+        id="coder", name="coder", harness="claude", needs_workspace=False,
+        default_class="standard-low",
+    ))
+    await db.create_agent(Agent(id="a1", name="a1", profile_id="coder"))
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test")
+    await db.update_task(task_id, assigned_agent_id="a1", profile_id="coder")
+    await db.update_agent("a1", state=AgentState.BUSY, current_task_id=task_id)
+    task = await db.get_task(task_id)
+    await db.create_session(SessionRecord(
+        id="s1", task_id=task_id, project_id="proj", agent_id="a1", profile_id="coder",
+        harness="claude", provider="fake", name="s1", lifecycle=lifecycle,
+        state="running", work_dir=str(tmp_path), epoch="test",
+        instance_token="instance-a1", started_at=time.time(),
+        last_claim_epoch=task.claim_epoch,
+    ))
+
+
+async def _token(*, task_id: str | None) -> dict[str, str]:
+    token = await deps._token_store.mint(
+        session_id="s1", session_instance_token="instance-a1",
+        task_id=task_id, project_id="proj",
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_pool_session_attaches_to_the_task_it_holds(attachment_app, tmp_path):
+    app, db, _config = attachment_app
+    await _hold(db, tmp_path, lifecycle="pool")
+    headers = await _token(task_id=None)
+    async with _client(app) as client:
+        client.headers.update(headers)
+        uploaded = await _upload(client)
+        assert uploaded.status_code == 201, uploaded.text
+        attachment = uploaded.json()["attachment"]
+        assert (await db.get_task("task/unsafe")).attachments == [attachment["path"]]
+
+        listed = await client.get("/api/tasks/task%2Funsafe/attachments")
+        assert listed.status_code == 200
+        assert listed.json()["attachments"] == [attachment]
+
+        preview = await client.get(attachment["url"])
+        assert preview.status_code == 200
+        assert preview.content == PNG_BYTES
+
+        removed = await client.delete(attachment["url"])
+        assert removed.status_code == 200
+    assert (await db.get_task("task/unsafe")).attachments == []
+
+
+async def test_pool_session_cannot_attach_to_a_task_it_does_not_hold(attachment_app, tmp_path):
+    app, db, config = attachment_app
+    await db.create_task(Task(id="other", project_id="proj", title="Not mine", description=""))
+    await _hold(db, tmp_path, lifecycle="pool")
+    headers = await _token(task_id=None)
+    async with _client(app) as client:
+        client.headers.update(headers)
+        response = await client.post(
+            "/api/tasks/other/attachments",
+            files={"file": ("shot.png", PNG_BYTES, "image/png")},
+        )
+        assert response.status_code == 404
+        assert (await client.get("/api/tasks/other/attachments")).status_code == 404
+    assert (await db.get_task("other")).attachments == []
+    assert not (Path(config.data_dir) / "attachments").exists()
+
+
+@pytest.mark.parametrize("moved_on", ["completed", "reclaimed", "session_stopped"])
+async def test_pool_session_loses_its_task_once_the_claim_moves_on(
+    attachment_app, tmp_path, moved_on,
+):
+    app, db, _config = attachment_app
+    await _hold(db, tmp_path, lifecycle="pool")
+    headers = await _token(task_id=None)
+    if moved_on == "completed":
+        await db.transition_task("task/unsafe", TaskStatus.COMPLETED, context="test")
+    elif moved_on == "reclaimed":
+        task = await db.get_task("task/unsafe")
+        await db.update_task("task/unsafe", claim_epoch=task.claim_epoch + 1)
+    else:
+        await db.update_session("s1", state="stopped")
+    async with _client(app) as client:
+        client.headers.update(headers)
+        response = await _upload(client)
+    assert response.status_code == 404
+    assert (await db.get_task("task/unsafe")).attachments == []
+
+
+async def test_task_session_token_still_reaches_only_its_own_task(attachment_app, tmp_path):
+    app, db, _config = attachment_app
+    await db.create_task(Task(id="other", project_id="proj", title="Not mine", description=""))
+    await _hold(db, tmp_path, lifecycle="task")
+    headers = await _token(task_id="task/unsafe")
+    async with _client(app) as client:
+        client.headers.update(headers)
+        assert (await _upload(client)).status_code == 201
+        response = await client.post(
+            "/api/tasks/other/attachments",
+            files={"file": ("shot.png", PNG_BYTES, "image/png")},
+        )
+    assert response.status_code == 404
+    assert len((await db.get_task("task/unsafe")).attachments) == 1
+    assert (await db.get_task("other")).attachments == []
 
 
 async def test_upload_rejects_file_over_size_cap_without_writing(attachment_app):
