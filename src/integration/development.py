@@ -176,6 +176,64 @@ class DevelopmentIntegration:
                 ).mappings()
             ]
 
+    async def rebind_foreign_repositories(self, project_id, repo):
+        """Deliver this project's tasks that still name another project's repository.
+
+        The sweep collects a project's tasks on its own repository, and every
+        other project's publisher collects only that project's tasks, so a
+        task whose ``repo_id`` names a repository of *another* project is
+        collected by nobody -- and readiness, scoped the same way, counts it
+        as delivered.  A project move used to leave exactly that behind
+        (``fleet-meadow``, ``smart-orbit.10``); the move now rebinds, and this
+        heals the rows it left.  Another repository of this same project is a
+        deliberate binding and is left alone.  Each rebind is reported on the
+        task, since it changes what the publisher will collect.
+        """
+        from src.database.tables import repos
+
+        own = select(repos.c.id).where(repos.c.project_id == project_id)
+        async with self.db._engine.begin() as conn:
+            foreign = (
+                await conn.execute(
+                    select(tasks.c.id, tasks.c.repo_id)
+                    .where(
+                        tasks.c.project_id == project_id,
+                        tasks.c.repo_id.is_not(None),
+                        tasks.c.repo_id.not_in(own),
+                    )
+                    .order_by(tasks.c.id)
+                    .with_for_update()
+                )
+            ).all()
+            if not foreign:
+                return []
+            ids = [row.id for row in foreign]
+            await conn.execute(update(tasks).where(tasks.c.id.in_(ids)).values(repo_id=repo.id))
+            flipped = await self.db.recompute_blocked(set(ids), conn=conn)
+        await self.db.log_blocked_flips(flipped)
+        for row in foreign:
+            logger.warning(
+                "development publisher rebound %s from %s to %s: the repository "
+                "belongs to another project, so no publisher collected the task",
+                row.id, row.repo_id, repo.id,
+                extra={"project": project_id, "task": row.id},
+            )
+            try:
+                await self.db.add_task_comment(
+                    row.id,
+                    (
+                        f"Repository rebound from `{row.repo_id}` to `{repo.id}`: the task "
+                        f"named another project's repository, so no publisher collected its "
+                        f"branch. Development delivery for `{project_id}` now collects it "
+                        f"from `{repo.url}`."
+                    ),
+                    author_kind="supervisor",
+                    author_id="development-integration",
+                )
+            except Exception:  # the rebind is the fix; the note is a courtesy
+                logger.debug("development publisher: rebind comment failed", exc_info=True)
+        return ids
+
     async def refresh_dependencies(self, project_id):
         """Repair projections from before delivery-aware readiness was installed."""
         async with self.db._engine.begin() as conn:
@@ -463,6 +521,7 @@ class DevelopmentIntegration:
             raise ValueError("project is not in development mode")
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
+        await self.rebind_foreign_repositories(project_id, repo)
         await self.refresh_dependencies(project_id)
         async with self.exclusion(repo.id):
             store = await self.store(repo)
