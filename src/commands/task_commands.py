@@ -336,6 +336,12 @@ _PARENT_SCOPE_ERROR = (
     "parent must be the held task, one of its descendants, or the held task's own parent"
 )
 
+#: ``task_metadata`` key naming the worker profile that filed a task without
+#: an explicit ``profile_id``.  Such a task is routed by the assignment
+#: playbook rather than pinned to its filer, and ``task_route`` reads this
+#: marker to keep it on an ordinary worker rung.
+FILED_BY_PROFILE_META_KEY = "filed_by_profile_id"
+
 
 class _FilingScope(Exception):
     """Internal signal: the filing left the held task's authorised scope.
@@ -1397,6 +1403,7 @@ class TaskCommandsMixin:
         current_parent_head: str | None = None,
         repair_filing_binding: dict | None = None,
         repair_commit_proof: dict | None = None,
+        filed_by_profile_id: str | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -1686,6 +1693,12 @@ class TaskCommandsMixin:
                     )
                     or set()
                 )
+            if filed_by_profile_id is not None:
+                # Same transaction as the row: the router may see the task
+                # the moment it commits, and ``task_route`` reads this bound.
+                await self.db._upsert_meta(
+                    task.id, FILED_BY_PROFILE_META_KEY, filed_by_profile_id, conn=conn
+                )
         await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback, parent_id
 
@@ -1723,6 +1736,39 @@ class TaskCommandsMixin:
         from src.profiles.task_execution import task_execution_profile_error
 
         return task_execution_profile_error(profile)
+
+    async def _worker_filed_route_error(self, task, profile) -> str | None:
+        """Keep a worker's unpinned filing on an ordinary worker rung.
+
+        A worker that names no profile is routed by the assignment playbook
+        instead of inheriting its own route, so the filer no longer bounds the
+        child by pinning it.  The chooser only sees ordinary worker rows, but
+        its answer is model output shaped by the task text a worker wrote;
+        this is the bound that holds regardless.  A strict ``child ⊆ filer``
+        check cannot be it: worker rungs of different harnesses carry
+        disjoint command lists, so it would make whole providers unreachable
+        from each other and leave a reviewer's filings with no route at all.
+
+        Only automatic and worker callers are bound.  The operator, daemon
+        services and an elevated supervisor may still route anywhere a task
+        may run.
+        """
+        from src.commands.principal import current_principal
+        from src.commands.routing_commands import _worker_profile
+
+        if _worker_profile(profile):
+            return None
+        principal = current_principal()
+        if principal is None or not principal.enforced or principal.elevated:
+            return None
+        filed_by = await self.db.get_task_meta(task.id, FILED_BY_PROFILE_META_KEY)
+        if filed_by is None:
+            return None
+        return (
+            f"task '{task.id}' was filed by a worker ({filed_by or 'unknown profile'}) "
+            f"without a profile and may only be routed to an ordinary worker profile; "
+            f"'{profile.id}' is not one"
+        )
 
     async def _supervisor_default_worker_profile(self, project):
         """Resolve the worker route for a supervisor's omitted profile."""
@@ -2216,6 +2262,16 @@ class TaskCommandsMixin:
         # playbook delegating work doesn't accidentally hand the child
         # task broader permissions than itself.
         #
+        # Worker-filed work (``filing_session``) is the exception: the
+        # filer's profile is its *execution route*, not just a bound, and
+        # inheriting it pinned every finding to whatever rung discovered it —
+        # a Fable design worker's bug fixes all ran on Fable.  Such a filing
+        # carries no profile, skips the project-default shortcut, and is
+        # routed by the assignment playbook like any unrouted task.  The
+        # filer's profile is recorded as ``filed_by_profile_id`` and
+        # ``task_route`` keeps the child on an ordinary worker rung
+        # (:func:`_worker_filed_route_error`).
+        #
         # When ``profile_id`` IS set explicitly, we require it to be a
         # subset of the caller's capabilities (no upward escalation):
         # ``child.allowed_tools ⊆ parent.allowed_tools`` AND
@@ -2289,8 +2345,12 @@ class TaskCommandsMixin:
                     caller_profile_id,
                 )
 
-        profile = caller_profile
+        # A worker names its child's route only with an explicit profile; the
+        # caller's profile still bounds that choice (checked below), but it
+        # never becomes the route or the provider a class is validated for.
+        profile = caller_profile if filing_session is None else None
         project_default_profile = None
+        filed_by_profile_id: str | None = None
         if profile_id:
             profile = await self.db.get_profile(profile_id)
             if not profile:
@@ -2321,10 +2381,10 @@ class TaskCommandsMixin:
                             f"a subset of caller profile '{caller_profile.id}'. {escalation}"
                         )
                     }
-            else:
+            elif filing_session is None:
                 # Default-inherit so the child cannot exceed the caller.
                 profile_id = caller_profile.id
-        elif project.default_profile_id:
+        elif project.default_profile_id and filing_session is None:
             # A persisted default normally remains implicit on the task row,
             # but it is still an execution route. Validate stale/misconfigured
             # defaults before creating a READY row that no worker may run.
@@ -2346,6 +2406,9 @@ class TaskCommandsMixin:
                     )
                 }
             project_default_profile = default_profile
+        if filing_session is not None and not profile_id:
+            # Routed, not inherited: see the block comment above.
+            filed_by_profile_id = caller_profile_id or filing_session.profile_id or ""
         # An explicit class paired with an implicit project-default profile
         # is still a concrete route. Validate the provider mapping against
         # that default before accepting it without a routing gate.
@@ -2673,6 +2736,7 @@ class TaskCommandsMixin:
                     current_parent_head=repair_filing_head,
                     repair_filing_binding=repair_filing_binding,
                     repair_commit_proof=repair_commit_proof,
+                    filed_by_profile_id=filed_by_profile_id,
                 )
                 hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:
@@ -5232,6 +5296,8 @@ class TaskCommandsMixin:
         if profile is None:
             return {"success": False, "error": f"profile '{profile_id}' not found"}
         if error := self._task_execution_profile_error(profile):
+            return {"success": False, "error": error}
+        if error := await self._worker_filed_route_error(task, profile):
             return {"success": False, "error": error}
 
         cls_id = args.get("intelligence_class") or task.intelligence_class or None

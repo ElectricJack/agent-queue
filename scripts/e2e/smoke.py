@@ -666,9 +666,10 @@ def s3_worker_filed_work(state: dict) -> str:
     check(row["is_blocked"], "worker-filed work lost its routing blocker")
     check(row.get("parent_task_id") is None, f"root filing got a parent: {row.get('parent_task_id')}")
     check(row["project_id"] == PROJECT, "worker-filed work escaped the session's project")
+    # The filer's profile bounds an explicit --profile; it is never the route.
     check(
-        row["profile_id"] == POOL_PROFILE,
-        f"worker-filed work did not inherit the caller profile: {row['profile_id']}",
+        not row["profile_id"],
+        f"worker-filed work inherited the filer's route: {row['profile_id']}",
     )
     check(
         row["intelligence_class"] is None,
