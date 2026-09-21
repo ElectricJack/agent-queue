@@ -197,7 +197,7 @@ AQ installation is complete.
 First-task readiness
   OK Database: AQ connected to its PostgreSQL database in this install run.
   OK Daemon: the daemon answered its health endpoint.
-  OK Dashboard: the dashboard is reachable at http://127.0.0.1:8081/dashboard.
+  OK Dashboard: the dashboard is reachable at http://127.0.0.1:8082/.
   OK Agent authentication: at least one harness has non-secret authentication evidence.
   OK Profile routing: an authenticated worker profile is active.
   OK Worker pools: Created standard-high-claude: each scales from 0 to 4 workers as tasks arrive.
@@ -276,10 +276,10 @@ Where AQ stores your data
   Database       postgresql+asyncpg://agent_queue@localhost:5432/agent_queue
 
 Dashboard
-  http://127.0.0.1:8081/dashboard
+  http://127.0.0.1:8082/
 
 Next
-  1. Open the dashboard at http://127.0.0.1:8081/dashboard.
+  1. Open the dashboard at http://127.0.0.1:8082/.
   2. Create your first project and task: `aq project onboard --root-id <root>
      --help`, or follow docs/tutorials/first-task.md.
   3. `aq doctor` checks this installation whenever something looks wrong.
@@ -287,8 +287,9 @@ Next
 
 The installer opens that URL in your browser the first time it reaches it. It
 builds the dashboard itself when AQ was installed from a source checkout — which
-is what the one-command bootstrap installs — and restarts the daemon to serve
-it, so there is no separate dashboard server to run.
+is what the one-command bootstrap installs — and starts the dashboard server,
+the small process that serves it beside the API-only daemon. `aq start` and
+`aq stop` manage both, so there is nothing extra to run.
 
 The install outcome and first-task readiness answer different questions. You
 can deliberately finish an installation with every provider skipped, but AQ

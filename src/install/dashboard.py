@@ -1,44 +1,61 @@
-"""Build the dashboard, have the daemon serve it, and open it once.
+"""Build the dashboard, serve it from the dashboard server, and open it once.
 
-A release wheel carries a verified dashboard bundle and the daemon serves it at
-``/dashboard``.  A source checkout -- which is what the one-command bootstrap
-installs -- carries only the TypeScript, and the installer used to finish by
-telling a newcomer to run a Vite dev server by hand.  That is an extra step the
-one-command install exists to remove, so these two steps close it:
+The daemon is API-only (docs/specs/dashboard-server.md): the dashboard is a
+verified bundle served by its own process, the dashboard server, which also
+proxies the daemon's API so the browser stays same-origin.  A release wheel
+carries that bundle.  A source checkout -- which is what the one-command
+bootstrap installs -- carries only the TypeScript, and the installer used to
+finish by telling a newcomer to run a Vite dev server by hand.  That is an extra
+step the one-command install exists to remove, so these three steps close it:
 
 * ``dashboard.build`` produces the same verified bundle a release ships, using
-  the release's own staging script (``scripts/build_release_artifact.py``), and
-  restarts a running daemon that is not yet serving it.  The bundle is tied to
-  the checkout it was built from, so a rerun after the bootstrap pulled an
-  update rebuilds it, and a rerun with nothing new does no work at all.
-* ``dashboard.open`` opens the served dashboard in the user's browser -- once,
-  on the first interactive install that reaches it, and never from an
+  the release's own staging script (``scripts/build_release_artifact.py``).  The
+  bundle is tied to the checkout it was built from, so a rerun after the
+  bootstrap pulled an update rebuilds it, and a rerun with nothing new does no
+  work at all.  It touches no process.
+* ``dashboard.serve`` runs ``aq dashboard start`` and proves the result: the
+  dashboard server answers ``/__aq/health`` as ours with a verified bundle --
+  the one this install has, not an older build -- and ``GET /`` is ``200``.
+  A server still serving an older build is restarted; that is also what moves
+  an install that relied on the daemon's old ``/dashboard`` mount across.
+* ``dashboard.open`` opens the dashboard server's URL in the user's browser --
+  once, on the first interactive install that reaches it, and never from an
   unattended run, which the installation contract forbids from opening one.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .command import CommandOutput, CommandRunner, run_command
 from .node_toolchain import Fetcher, ToolchainError, download, ensure_toolchain
 from .onboarding import (
-    DASHBOARD_PATH,
+    CAPABILITY_DAEMON,
+    DASHBOARD_DISABLED,
+    DASHBOARD_MISCONFIGURED,
+    DASHBOARD_PORT_CONFLICT,
+    DASHBOARD_SERVER,
+    DASHBOARD_UNBUILT,
     STEP_CHECK,
     STEP_DAEMON,
     STEP_DASHBOARD,
+    DashboardInfo,
     HttpProbe,
-    _read_config,
-    api_base_url,
+    IdentityProbe,
+    _nobody,
     aq_aware_which,
     config_path_for,
+    dashboard_server_identity,
     http_status,
+    inspect_dashboard,
 )
 from .redaction import redact
 from .results import StepResult
@@ -46,6 +63,7 @@ from .state import default_state_dir
 from .steps import StepContext, StepSpec
 
 STEP_DASHBOARD_BUILD = "dashboard.build"
+STEP_DASHBOARD_SERVE = "dashboard.serve"
 STEP_DASHBOARD_OPEN = "dashboard.open"
 
 #: Where each build's full output goes, under AQ's data directory.
@@ -57,8 +75,23 @@ FAILURE_TAIL_LINES = 12
 NPM_INSTALL_TIMEOUT = 1200.0
 #: Type-checking and bundling the dashboard.
 BUILD_TIMEOUT = 900.0
-#: `aq restart` waits for the daemon's own health check.
-RESTART_TIMEOUT = 180.0
+#: `aq dashboard start` waits up to 10 s for the server's identity, and a
+#: restart first waits up to 10 s for the old one to exit.
+SERVE_TIMEOUT = 60.0
+
+#: Equal to ``src.dashboard_server.process``'s names, read here without
+#: importing it (this module is imported by `aq update` before the code moves).
+MANIFEST_NAME = "aq-dashboard-manifest.json"
+SERVER_LOG_NAME = "dashboard-server.log"
+#: `aq dashboard start`'s exit status for "no bundle is installed here".
+EXIT_NO_BUNDLE = 2
+
+#: What a checkout with no bundle is told, as `aq dashboard status` tells it.
+NO_BUNDLE_HINT = (
+    "no dashboard bundle is installed, so there is nothing to serve: run "
+    "`npm -w dashboard run dev` for the Vite dev server, or build one with "
+    "`aq install --restart-from dashboard.build`"
+)
 
 #: Records which checkout state the staged bundle was built from.  It lives
 #: beside ``dist/``, not inside it, so it is never served or covered by the
@@ -264,20 +297,19 @@ def dashboard_build_step(
     home: Path | None = None,
     runner: CommandRunner | None = None,
     which: Callable[[str], str | None] | None = None,
-    probe: HttpProbe | None = None,
     root: Path | None = None,
     python: str | None = None,
     fetch: Fetcher = download,
     depends_on: tuple[str, ...] = (STEP_CHECK, STEP_DAEMON),
 ) -> StepSpec:
-    """Build and serve the dashboard from a source checkout."""
-    # The dashboard step restarts the daemon with `aq restart`, so it needs the
-    # same fallback the daemon step has: the console script beside the running
-    # interpreter, for an installer invoked by path with no `aq` on PATH.
-    lookup = aq_aware_which(which or shutil.which)
+    """Build the dashboard bundle from a source checkout.
+
+    It starts, stops and restarts nothing: the daemon no longer serves the
+    dashboard, and ``dashboard.serve`` owns the dashboard server -- including
+    restarting one that still serves the build this step just replaced.
+    """
+    lookup = which or shutil.which
     execute = runner or run_command
-    check = probe or http_status
-    path = config_path_for(environ, home)
     state_dir = home or default_state_dir(environ)
     interpreter = python or sys.executable
 
@@ -286,52 +318,6 @@ def dashboard_build_step(
 
     def _fingerprint(checkout: Path) -> str | None:
         return source_fingerprint(checkout, git=lookup("git"), execute=execute)
-
-    def _base() -> str:
-        return api_base_url(_read_config(path), environ)
-
-    def _daemon_up() -> bool:
-        return check(f"{_base()}/health") in (200, 503)
-
-    def _served() -> bool:
-        # The trailing slash is the mount itself; the bare path depends on a
-        # redirect that a daemon started from older code does not have.
-        status = check(f"{_base()}{DASHBOARD_PATH}/")
-        return status is not None and status < 400
-
-    def _needs_restart() -> bool:
-        # The daemon mounts the bundle when it starts, so one that came up
-        # before the bundle existed answers 404 until it is restarted.
-        return _daemon_up() and not _served()
-
-    def _restart() -> CommandOutput | None:
-        aq = lookup("aq")
-        if not aq:
-            return None
-        # `--no-dashboard` keeps `aq restart` from asking about a Vite server:
-        # with no terminal behind it that question aborts the command.
-        return execute([aq, "restart", "--no-dashboard"], timeout=RESTART_TIMEOUT)
-
-    def _serve(summary: str, detail: dict[str, object]) -> StepResult:
-        if not _needs_restart():
-            return StepResult.succeeded(STEP_DASHBOARD_BUILD, summary, detail=detail)
-        output = _restart()
-        if output is None or not output.ok or not _served():
-            reason = "`aq` is not on PATH" if output is None else output.message()
-            return StepResult.failed(
-                STEP_DASHBOARD_BUILD,
-                redact(f"the dashboard is built but the daemon did not start serving it: {reason}"),
-                (
-                    "Run `aq restart`, then open the dashboard URL; `aq logs` shows why the "
-                    "daemon did not come back if it does not."
-                ),
-                detail=detail,
-            )
-        return StepResult.succeeded(
-            STEP_DASHBOARD_BUILD,
-            f"{summary}; restarted the daemon to serve it",
-            detail={**detail, "restarted": True},
-        )
 
     def run(context: StepContext) -> StepResult:
         checkout = _root()
@@ -344,7 +330,10 @@ def dashboard_build_step(
         fingerprint = _fingerprint(checkout)
         detail: dict[str, object] = {"built": False, "source_checkout": True}
         if bundle_is_current(checkout, fingerprint):
-            return _serve("the dashboard is already built for this checkout", detail)
+            return StepResult.succeeded(
+                STEP_DASHBOARD_BUILD, "the dashboard is already built for this checkout",
+                detail=detail,
+            )
 
         outcome = build_bundle(
             checkout,
@@ -365,21 +354,24 @@ def dashboard_build_step(
                 outcome.remediation,
                 detail={**detail, **({"log": outcome.log} if outcome.log else {})},
             )
-        return _serve("built the dashboard", {**detail, "built": True})
+        return StepResult.succeeded(
+            STEP_DASHBOARD_BUILD, "built the dashboard", detail={**detail, "built": True}
+        )
 
     def verify(context: StepContext) -> bool:
         checkout = _root()
         if checkout is None:
             return True
-        return bundle_is_current(checkout, _fingerprint(checkout)) and not _needs_restart()
+        # A bundle built for the daemon's old /dashboard mount has no `base`
+        # in its manifest and no longer verifies, so it is rebuilt here.
+        return bundle_is_current(checkout, _fingerprint(checkout))
 
     return StepSpec(
         id=STEP_DASHBOARD_BUILD,
         title="Build the dashboard",
         description=(
             "From a source checkout, builds the same verified dashboard bundle a release "
-            "ships and restarts a running daemon so it serves it at /dashboard. Rebuilds only "
-            "when the checkout changed."
+            "ships, for the dashboard server to serve. Rebuilds only when the checkout changed."
         ),
         run=run,
         depends_on=depends_on,
@@ -388,6 +380,239 @@ def dashboard_build_step(
         verify=verify,
         owner="onboarding",
     )
+
+
+# ---------------------------------------------------------------------------
+# dashboard.serve -- the dashboard server, started and proven
+# ---------------------------------------------------------------------------
+
+
+def installation_root(root: Path | None = None) -> Path:
+    """The directory holding this installation's ``src`` package.
+
+    A source checkout's root, or a release's ``site-packages``: the wheel
+    installs ``src`` as a top-level package, so either way the bundle is at
+    ``src/dashboard_assets/dist`` under it -- the directory the dashboard
+    server serves.
+    """
+    return root if root is not None else Path(__file__).resolve().parents[2]
+
+
+def bundle_present(root: Path | None = None) -> bool:
+    """A dashboard bundle is installed: a release's, or one ``dashboard.build`` staged."""
+    return (bundle_directory(installation_root(root)) / MANIFEST_NAME).is_file()
+
+
+def serves_installed_build(identity: Mapping[str, Any] | None, root: Path | None = None) -> bool:
+    """The dashboard server's ``/__aq/health`` names a verified bundle, and it is this install's.
+
+    A server started before a rebuild keeps serving the manifest it verified
+    at startup, and the rebuilt assets have new content-hashed names, so it
+    would serve a page whose scripts 404.  When either digest is unknown the
+    server's own verification is trusted.
+    """
+    from src.dashboard_server.process import installed_manifest_sha256
+
+    bundle = identity.get("bundle") if identity else None
+    if not isinstance(bundle, Mapping) or bundle.get("verified") is not True:
+        return False
+    served = bundle.get("manifest_sha256")
+    installed = installed_manifest_sha256(bundle_directory(installation_root(root)))
+    return not served or installed is None or served == installed
+
+
+@dataclass(frozen=True, slots=True)
+class _Observed:
+    """One look at the dashboard server: the report, and the identity behind it."""
+
+    info: DashboardInfo
+    identity: dict[str, Any] | None
+    serving: bool
+
+
+def _observe(
+    config: Path, *, probe: HttpProbe, identify: IdentityProbe, root: Path | None
+) -> _Observed:
+    seen: dict[str, Any] = {}
+
+    def recording(url: str) -> tuple[str, dict[str, Any] | None]:
+        kind, identity = identify(url)
+        seen["identity"] = identity
+        return kind, identity
+
+    info = inspect_dashboard(
+        config, probe=probe, identify=recording, bundle_present=lambda: bundle_present(root)
+    )
+    identity = seen.get("identity")
+    serving = (
+        info.source == DASHBOARD_SERVER
+        and info.reachable
+        and serves_installed_build(identity, root)
+    )
+    return _Observed(info, identity, serving)
+
+
+def _start_failure(output: CommandOutput) -> str:
+    """Why `aq --json dashboard start` failed, with the server's own last words."""
+    try:
+        envelope = json.loads(output.stdout)
+    except ValueError:
+        envelope = None
+    error = envelope.get("error") if isinstance(envelope, dict) else None
+    if not isinstance(error, dict):
+        return output.message()
+    reason = str(error.get("message") or output.message())
+    details = error.get("details")
+    excerpt = details.get("log_excerpt") if isinstance(details, dict) else None
+    if isinstance(excerpt, list) and excerpt:
+        tail = "\n".join(str(line) for line in excerpt[-FAILURE_TAIL_LINES:])
+        return f"{reason}\n{tail}"
+    return reason
+
+
+def dashboard_serve_step(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    runner: CommandRunner | None = None,
+    which: Callable[[str], str | None] | None = None,
+    probe: HttpProbe | None = None,
+    identify: IdentityProbe | None = None,
+    root: Path | None = None,
+    depends_on: tuple[str, ...] = (STEP_DASHBOARD_BUILD,),
+) -> StepSpec:
+    """Start the dashboard server on this install's bundle, and prove it serves."""
+    # The console script beside the running interpreter, for an installer
+    # invoked by path with no `aq` on PATH -- the same fallback daemon.start has.
+    lookup = aq_aware_which(which or shutil.which)
+    execute = runner or run_command
+    check = probe or http_status
+    # A test that injects its own HTTP probe is talking to a fake host; asking
+    # the real network who answers behind that fake's back would reach this
+    # machine's own dashboard server.
+    who = identify or (dashboard_server_identity if probe is None else _nobody)
+    path = config_path_for(environ, home)
+    log = (home or default_state_dir(environ)) / SERVER_LOG_NAME
+
+    def _look() -> _Observed:
+        return _observe(path, probe=check, identify=who, root=root)
+
+    def run(context: StepContext) -> StepResult:
+        observed = _look()
+        info = observed.info
+        detail: dict[str, object] = {"url": info.url, "served": False, "source": info.source}
+        if info.source == DASHBOARD_MISCONFIGURED:
+            return StepResult.failed(
+                STEP_DASHBOARD_SERVE,
+                info.hint.split(". Fix it")[0],
+                f"Fix dashboard.server in {path}, then rerun the install command.",
+                detail=detail,
+            )
+        if info.source == DASHBOARD_DISABLED:
+            return StepResult.succeeded(
+                STEP_DASHBOARD_SERVE,
+                "dashboard.server.enabled is false, so AQ does not run the dashboard server; "
+                "`aq dashboard serve` serves it in the foreground",
+                detail=detail,
+            )
+        if observed.serving:
+            return StepResult.succeeded(
+                STEP_DASHBOARD_SERVE,
+                f"the dashboard server is already serving {info.url}",
+                detail={**detail, "served": True},
+            )
+        if info.source == DASHBOARD_UNBUILT:
+            return StepResult.succeeded(STEP_DASHBOARD_SERVE, NO_BUNDLE_HINT, detail=detail)
+        if info.source == DASHBOARD_PORT_CONFLICT:
+            return StepResult.failed(
+                STEP_DASHBOARD_SERVE,
+                f"another program answers at {info.url}, not the dashboard server",
+                (
+                    f"Stop that program, or set dashboard.server.port in {path} to a free "
+                    "port; then rerun the install command."
+                ),
+                detail=detail,
+            )
+        aq = lookup("aq")
+        if not aq:
+            return StepResult.failed(
+                STEP_DASHBOARD_SERVE,
+                "the `aq` command is not on PATH",
+                (
+                    "Install the AQ runtime (or activate the virtual environment that has it) "
+                    "so `aq` resolves, then rerun the install command."
+                ),
+                detail=detail,
+            )
+        # Ours but not serving this install's build -- an older build, or a
+        # server that answers its identity but not the page -- is restarted;
+        # anything else is started.  Both are idempotent.
+        action = "restart" if info.source == DASHBOARD_SERVER else "start"
+        output = execute([aq, "--json", "dashboard", action], timeout=SERVE_TIMEOUT)
+        if output.returncode == EXIT_NO_BUNDLE:
+            return StepResult.succeeded(STEP_DASHBOARD_SERVE, NO_BUNDLE_HINT, detail=detail)
+        remediation = (
+            f"`aq dashboard status` shows the dashboard server's state and {log} its "
+            "output. Fix what they name, then rerun the install command (or run "
+            "`aq dashboard start`)."
+        )
+        if not output.ok:
+            return StepResult.failed(
+                STEP_DASHBOARD_SERVE,
+                redact(f"the dashboard server did not start: {_start_failure(output)}"),
+                remediation,
+                detail={**detail, "log": str(log)},
+            )
+        after = _look()
+        if not after.serving:
+            reason = after.info.hint or "it serves an older build than the one installed"
+            return StepResult.failed(
+                STEP_DASHBOARD_SERVE,
+                redact(
+                    f"`aq dashboard {action}` finished, but the dashboard is not served at "
+                    f"{after.info.url or info.url}: {reason}"
+                ),
+                remediation,
+                detail={**detail, "source": after.info.source, "log": str(log)},
+            )
+        verb = "restarted" if action == "restart" else "started"
+        return StepResult.succeeded(
+            STEP_DASHBOARD_SERVE,
+            f"{verb} the dashboard server at {after.info.url}",
+            detail={**detail, "url": after.info.url, "source": after.info.source,
+                    "served": True, "started": True},
+        )
+
+    def verify(context: StepContext) -> bool:
+        observed = _look()
+        if observed.serving:
+            return True
+        # Nothing to serve, by the operator's choice or because nothing is
+        # built; `dashboard.build` fails its own verify in the second case.
+        return observed.info.source in (DASHBOARD_DISABLED, DASHBOARD_UNBUILT)
+
+    return StepSpec(
+        id=STEP_DASHBOARD_SERVE,
+        title="Serve the dashboard",
+        description=(
+            "Runs `aq dashboard start` and waits until the dashboard server answers with this "
+            "install's verified bundle. The dashboard server serves the page and proxies the "
+            "daemon's API; the daemon serves no page."
+        ),
+        run=run,
+        depends_on=depends_on,
+        # Starting the dashboard server is part of starting AQ in the background.
+        capability=CAPABILITY_DAEMON,
+        mutating=True,
+        consent_prompt="Start the dashboard server now?",
+        verify=verify,
+        owner="onboarding",
+    )
+
+
+# ---------------------------------------------------------------------------
+# dashboard.open -- once, interactive only
+# ---------------------------------------------------------------------------
 
 
 def browser_command(
@@ -416,28 +641,32 @@ def dashboard_open_step(
     runner: CommandRunner | None = None,
     which: Callable[[str], str | None] | None = None,
     probe: HttpProbe | None = None,
-    depends_on: tuple[str, ...] = (STEP_DASHBOARD_BUILD, STEP_DASHBOARD),
+    identify: IdentityProbe | None = None,
+    depends_on: tuple[str, ...] = (STEP_DASHBOARD_SERVE, STEP_DASHBOARD),
 ) -> StepSpec:
-    """Open the served dashboard in a browser, once."""
+    """Open the dashboard server's URL in a browser, once."""
     lookup = which or shutil.which
     execute = runner or run_command
     check = probe or http_status
+    who = identify or (dashboard_server_identity if probe is None else _nobody)
     path = config_path_for(environ, home)
 
     def run(context: StepContext) -> StepResult:
-        url = f"{api_base_url(_read_config(path), environ)}{DASHBOARD_PATH}/"
-        detail: dict[str, object] = {"url": url, "opened": False}
         if not context.interactive:
             return StepResult.skipped(
                 STEP_DASHBOARD_OPEN,
                 "an unattended install never opens a browser",
-                detail=detail,
+                detail={"url": "", "opened": False},
             )
-        status = check(url)
-        if status is None or status >= 400:
+        # Reachability alone decides; whether a bundle exists only matters
+        # for explaining an unreachable dashboard, which is not this step's job.
+        info = inspect_dashboard(path, probe=check, identify=who, bundle_present=lambda: True)
+        url = info.url
+        detail: dict[str, object] = {"url": url, "opened": False}
+        if not info.reachable:
             return StepResult.skipped(
                 STEP_DASHBOARD_OPEN,
-                "the daemon is not serving the dashboard, so there is nothing to open",
+                "the dashboard server is not serving the dashboard, so there is nothing to open",
                 detail=detail,
             )
         command = browser_command(context, lookup)
@@ -459,12 +688,14 @@ def dashboard_open_step(
         id=STEP_DASHBOARD_OPEN,
         title="Open the dashboard",
         description=(
-            "Opens the dashboard in the browser the first time an interactive install reaches "
-            "it. Reruns and unattended runs never open a window."
+            "Opens the dashboard server's URL in the browser the first time an interactive "
+            "install reaches it. Reruns and unattended runs never open a window."
         ),
         run=run,
         depends_on=depends_on,
-        # Completed once is enough: a rerun must not pop another window.
+        # Completed once is enough: a rerun must not pop another window --
+        # not even when an earlier install opened the daemon's old /dashboard
+        # URL, which the daemon now answers with a pointer to this one.
         verify=lambda context: True,
         owner="onboarding",
     )
@@ -473,17 +704,23 @@ def dashboard_open_step(
 __all__ = [
     "BUILD_INPUTS",
     "BUILD_LOG_NAME",
-    "BuildOutcome",
+    "NO_BUNDLE_HINT",
     "STAMP_NAME",
     "STEP_DASHBOARD_BUILD",
     "STEP_DASHBOARD_OPEN",
+    "STEP_DASHBOARD_SERVE",
+    "BuildOutcome",
     "browser_command",
     "build_bundle",
     "bundle_directory",
     "bundle_is_current",
+    "bundle_present",
     "dashboard_build_step",
     "dashboard_open_step",
+    "dashboard_serve_step",
     "failure_excerpt",
+    "installation_root",
+    "serves_installed_build",
     "source_checkout_root",
     "source_fingerprint",
     "stamp_path",

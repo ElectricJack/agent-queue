@@ -394,7 +394,8 @@ def render_summary(summary: OnboardingSummary, target: Console) -> None:
 
     if summary.dashboard:
         target.print("\n[bold]Dashboard[/bold]")
-        target.print(f"  {summary.dashboard.url}")
+        if summary.dashboard.url:
+            target.print(f"  {summary.dashboard.url}")
         if summary.dashboard.hint:
             target.print(f"  [dim]{summary.dashboard.hint}[/dim]")
 

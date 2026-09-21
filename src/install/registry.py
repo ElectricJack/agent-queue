@@ -39,7 +39,7 @@ from .macos import (
     macos_steps,
 )
 from .macos import STEP_PACKAGES as STEP_BREW_PACKAGES
-from .onboarding import HttpProbe
+from .onboarding import HttpProbe, IdentityProbe
 from .onboarding import onboarding_steps as default_onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
@@ -102,6 +102,7 @@ def build_registry(
     provider_runner: ProviderRunner | None = None,
     daemon_runner: ProcessRunner | None = None,
     http_probe: HttpProbe | None = None,
+    dashboard_identify: IdentityProbe | None = None,
     dashboard_root: Path | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
@@ -116,10 +117,11 @@ def build_registry(
     finds this installer's own); a directory that is not a checkout composes a
     release-shaped install with nothing to build.
 
-    ``provider_runner``, ``daemon_runner`` and ``http_probe`` replace something
-    smaller: the three seams through which the *default* provider, login and
-    onboarding steps reach the host — a subprocess, ``aq start`` and an HTTP
-    probe.  Handing those in keeps the composition itself real (the same steps,
+    ``provider_runner``, ``daemon_runner``, ``http_probe`` and
+    ``dashboard_identify`` replace something smaller: the seams through which
+    the *default* provider, login and onboarding steps reach the host — a
+    subprocess, ``aq start``, an HTTP probe and the dashboard server's
+    ``/__aq/health`` identity.  Handing those in keeps the composition itself real (the same steps,
     the same ids, the same cross-adapter dependencies this function computes)
     while a whole-installer test drives it on a machine that has no provider
     CLI, no daemon and no network.  Replacing the step groups instead would
@@ -226,6 +228,7 @@ def build_registry(
             runner=daemon_runner,
             which=lookup or shutil.which,
             probe=http_probe,
+            identify=dashboard_identify,
             depends_on=onboarding_after,
             dashboard_root=dashboard_root,
         )

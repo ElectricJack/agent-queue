@@ -305,10 +305,13 @@ def dashboard_step_result(*, reachable: bool = True) -> StepResult:
         "open it",
         detail={
             "dashboard": {
-                "url": "http://127.0.0.1:8081/dashboard" if reachable else "http://localhost:5173",
+                "url": "http://127.0.0.1:8082/",
                 "reachable": reachable,
-                "source": "bundled" if reachable else "dev-server",
-                "hint": "" if reachable else "Run `npm -w dashboard run dev`.",
+                "source": "dashboard-server" if reachable else "unbuilt",
+                "hint": "" if reachable else (
+                    "The dashboard has not been built yet. Rerun the install command: it "
+                    "builds the dashboard and starts the dashboard server at the URL above."
+                ),
             }
         },
     )
@@ -341,17 +344,17 @@ def test_a_ready_run_reports_where_data_lives_and_which_url_to_open():
     assert summary.ready is True
     assert [location.label for location in summary.locations] == ["Configuration", "Vault"]
     assert summary.dashboard is not None
-    assert summary.dashboard.url.endswith("/dashboard")
+    assert summary.dashboard.url == "http://127.0.0.1:8082/"
     assert any("Open the dashboard" in step for step in summary.next_steps)
     assert any("first-task" in step for step in summary.next_steps)
 
 
-def test_a_source_checkout_gets_the_dev_server_instruction_as_a_next_step():
+def test_an_unserved_dashboard_gets_its_hint_as_a_next_step():
     summary = summarize(
         result(steps=(check_step_result(), dashboard_step_result(reachable=False)))
     )
 
-    assert any("npm -w dashboard run dev" in step for step in summary.next_steps)
+    assert any("Rerun the install command" in step for step in summary.next_steps)
 
 
 def test_readiness_requires_a_measured_database_daemon_dashboard_and_routable_agent():
@@ -598,7 +601,7 @@ def test_the_summary_is_json_serialisable_for_the_machine_readable_mode():
     payload = json.loads(json.dumps(summary.to_dict()))
 
     assert payload["ready"] is True
-    assert payload["dashboard"]["source"] == "bundled"
+    assert payload["dashboard"]["source"] == "dashboard-server"
     assert payload["locations"][0]["label"] == "Configuration"
 
 

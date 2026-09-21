@@ -57,8 +57,20 @@ STEP_DISCORD = "config.discord"
 STEP_DAEMON = "daemon.start"
 STEP_DASHBOARD = "daemon.dashboard"
 
-#: Where the daemon serves the packaged dashboard, relative to its API base.
-DASHBOARD_PATH = "/dashboard"
+#: What ``daemon.dashboard`` found (``onboarding.dashboard.source`` in the
+#: result).  The daemon is API-only, so the dashboard comes from the dashboard
+#: server or from nowhere yet (docs/specs/dashboard-server.md §5, §6.1).
+DASHBOARD_SERVER = "dashboard-server"
+#: No bundle to serve: a source checkout `dashboard.build` has not built yet.
+DASHBOARD_UNBUILT = "unbuilt"
+#: A bundle is installed but no dashboard server answers for it.
+DASHBOARD_STOPPED = "stopped"
+#: Something that is not the dashboard server answers on its port.
+DASHBOARD_PORT_CONFLICT = "port-conflict"
+#: ``dashboard.server.enabled: false``: the operator serves it themselves.
+DASHBOARD_DISABLED = "disabled"
+#: ``dashboard.server`` does not load; the hint names why.
+DASHBOARD_MISCONFIGURED = "misconfigured"
 
 #: The Vite port a source checkout serves the dashboard from.
 SOURCE_DASHBOARD_URL = "http://localhost:5173"
@@ -204,6 +216,11 @@ def api_base_url(config: Mapping[str, Any] | None, environ: Mapping[str, str] | 
 
 HttpProbe = Callable[[str], int | None]
 
+#: ``identify(url)`` -> who answers ``/__aq/health`` at a dashboard server URL,
+#: as :func:`src.dashboard_server.process.probe_identity` reports it:
+#: ``("ours", identity)``, ``("foreign", None)`` or ``("none", None)``.
+IdentityProbe = Callable[[str], "tuple[str, dict[str, Any] | None]"]
+
 #: ``uptime(url)`` -> seconds the daemon answering ``url`` (its /health) has
 #: been running, or ``None`` when that cannot be read.
 UptimeReader = Callable[[str], float | None]
@@ -246,6 +263,17 @@ def http_status(url: str, timeout: float = 2.0) -> int | None:
         return code
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def dashboard_server_identity(url: str) -> tuple[str, dict[str, Any] | None]:
+    """Who answers ``/__aq/health`` at the dashboard server URL *url*.
+
+    The same probe ``aq status`` and ``aq dashboard start`` use, so the
+    installer never calls a process "the dashboard server" that they would not.
+    """
+    from src.dashboard_server.process import probe_identity
+
+    return probe_identity(url)
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -1044,7 +1072,8 @@ class DashboardInfo:
 
     url: str
     reachable: bool
-    source: str  # "bundled" | "dev-server" | "unknown"
+    #: One of the ``DASHBOARD_*`` values above.
+    source: str
     hint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -1056,43 +1085,105 @@ class DashboardInfo:
         }
 
 
-def inspect_dashboard(base: str, probe: HttpProbe) -> DashboardInfo:
-    """Classify what the daemon at *base* serves at ``/dashboard``.
+def inspect_dashboard(
+    config: Path,
+    *,
+    probe: HttpProbe,
+    identify: IdentityProbe,
+    bundle_present: Callable[[], bool],
+) -> DashboardInfo:
+    """Classify what serves the dashboard this install's configuration points at.
 
-    A release install serves a verified bundle there.  A source checkout
-    deliberately ships no built assets, so the same probe answers 404 and the
-    honest report is the Vite command, not a URL that would 404 in a browser.
+    The daemon is API-only: it answers ``/dashboard`` with a JSON pointer and
+    serves no page (docs/specs/dashboard-server.md §5).  The dashboard is
+    the dashboard server's, at ``dashboard.server``'s URL, read the way the
+    server itself reads it -- so this names the URL a browser will actually
+    load, and when nothing serves it, the one command that fixes that.
     """
-    # The trailing slash is the mount itself: a bare /dashboard needs a redirect
-    # that a daemon started from older code does not have, and without it the
-    # daemon's catch-all MCP mount answers 404 even when the bundle is served.
-    url = f"{base}{DASHBOARD_PATH}/"
-    status = probe(url)
-    if status is None:
+    from src.dashboard_server.process import FOREIGN, OURS, configured
+
+    server = configured(config)
+    if server.settings is None:
         return DashboardInfo(
-            url=url,
+            url="",
             reachable=False,
-            source="unknown",
+            source=DASHBOARD_MISCONFIGURED,
             hint=(
-                "The daemon is not answering yet. Run `aq start`, then open the URL above; "
-                "`aq status` reports what the daemon thinks of itself."
+                f"dashboard.server in {config} does not load: {server.error}. Fix it, then run "
+                "`aq dashboard start`."
             ),
         )
-    if status == 404:
-        # A source checkout's dashboard is built by `dashboard.build`, which
-        # then restarts the daemon to serve it here.  Reaching this branch means
-        # that step has not completed, and rerunning the install is the fix --
-        # not a Vite server the newcomer would have to keep running by hand.
+    url = server.settings.url
+    kind, identity = identify(url)
+    if kind == OURS and identity is not None:
+        status = probe(url)
+        if status == 200:
+            daemon_down = identity.get("upstream_ok") is False
+            return DashboardInfo(
+                url=url,
+                reachable=True,
+                source=DASHBOARD_SERVER,
+                hint=(
+                    "The dashboard server is up, but the daemon behind it is not answering: "
+                    "run `aq start`."
+                    if daemon_down
+                    else ""
+                ),
+            )
         return DashboardInfo(
             url=url,
             reachable=False,
-            source="unbuilt",
+            source=DASHBOARD_SERVER,
+            hint=(
+                f"The dashboard server answered {status or 'nothing'} for the URL above. Run "
+                "`aq dashboard restart`; `aq dashboard status` names its log."
+            ),
+        )
+    if not server.enabled:
+        return DashboardInfo(
+            url=url,
+            reachable=False,
+            source=DASHBOARD_DISABLED,
+            hint=(
+                "dashboard.server.enabled is false, so AQ does not run the dashboard server. "
+                "Set it to true and run `aq dashboard start`, or serve it yourself with "
+                "`aq dashboard serve`."
+            ),
+        )
+    if not bundle_present():
+        # A source checkout's bundle is built by `dashboard.build`, and
+        # `dashboard.serve` then starts the dashboard server on it.  Reaching
+        # this branch means those steps have not completed, and rerunning the
+        # install is the fix -- not a Vite server the newcomer would have to
+        # keep running by hand.
+        return DashboardInfo(
+            url=url,
+            reachable=False,
+            source=DASHBOARD_UNBUILT,
             hint=(
                 "The dashboard has not been built yet. Rerun the install command: it builds "
-                "the dashboard and restarts the daemon to serve it at the URL above."
+                "the dashboard and starts the dashboard server at the URL above."
             ),
         )
-    return DashboardInfo(url=url, reachable=status < 400, source="bundled")
+    if kind == FOREIGN:
+        return DashboardInfo(
+            url=url,
+            reachable=False,
+            source=DASHBOARD_PORT_CONFLICT,
+            hint=(
+                f"Another program answers on port {server.settings.port}. Free it, or set "
+                f"dashboard.server.port in {config}; then run `aq dashboard start`."
+            ),
+        )
+    return DashboardInfo(
+        url=url,
+        reachable=False,
+        source=DASHBOARD_STOPPED,
+        hint=(
+            "The dashboard server is not running. Run `aq dashboard start` (`aq start` starts "
+            "it with the daemon); `aq dashboard status` says why if it does not stay up."
+        ),
+    )
 
 
 def dashboard_step(
@@ -1100,20 +1191,34 @@ def dashboard_step(
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
     probe: HttpProbe | None = None,
+    identify: IdentityProbe | None = None,
+    root: Path | None = None,
     depends_on: tuple[str, ...] = (STEP_CHECK,),
 ) -> StepSpec:
     """Report the dashboard URL.  Informational: it never blocks an install."""
+    # Imported here, not at module level: the dashboard module builds on this
+    # one's helpers, so a top-level import would be circular.
+    from .dashboard import bundle_present
+
     path = config_path_for(environ, home)
     check = probe or http_status
+    # A test that injects its own HTTP probe is talking to a fake host; asking
+    # the real network who answers behind that fake's back would reach this
+    # machine's own dashboard server.
+    who = identify or (dashboard_server_identity if probe is None else _nobody)
 
     def run(context: StepContext) -> StepResult:
         base = api_base_url(_read_config(path), environ)
-        info = inspect_dashboard(base, check)
-        summary = (
-            f"open {info.url}"
-            if info.reachable
-            else f"dashboard at {info.url} — {info.hint.splitlines()[0]}"
+        info = inspect_dashboard(
+            path, probe=check, identify=who, bundle_present=lambda: bundle_present(root)
         )
+        first = info.hint.splitlines()[0] if info.hint else ""
+        if info.reachable:
+            summary = f"open {info.url}"
+        elif info.url:
+            summary = f"dashboard at {info.url} — {first}"
+        else:
+            summary = first
         return StepResult.succeeded(
             STEP_DASHBOARD,
             summary,
@@ -1124,8 +1229,8 @@ def dashboard_step(
         id=STEP_DASHBOARD,
         title="Report the dashboard URL",
         description=(
-            "Names the URL to open in a browser: the daemon serves the packaged dashboard at "
-            "/dashboard, and a source checkout uses the Vite dev server instead."
+            "Names the URL to open in a browser: the dashboard server's (dashboard.server, "
+            "http://127.0.0.1:8082/ by default). The daemon serves only its API."
         ),
         run=run,
         depends_on=depends_on,
@@ -1138,6 +1243,12 @@ def dashboard_step(
     )
 
 
+def _nobody(url: str) -> tuple[str, dict[str, Any] | None]:
+    """An identity probe that finds nothing: the default beside an injected HTTP probe."""
+    del url
+    return "none", None
+
+
 def onboarding_steps(
     *,
     environ: Mapping[str, str] | None = None,
@@ -1145,19 +1256,27 @@ def onboarding_steps(
     runner: CommandRunner | None = None,
     which: Callable[[str], str | None] | None = None,
     probe: HttpProbe | None = None,
+    identify: IdentityProbe | None = None,
     depends_on: tuple[str, ...] = (STEP_DATA_DIR,),
     dashboard_root: Path | None = None,
 ) -> tuple[StepSpec, ...]:
     """The onboarding steps, in the order they run.
 
-    ``dashboard_root`` is the checkout ``dashboard.build`` builds from; ``None``
-    finds the one this installer runs from.  A directory that is not a checkout
-    means a release install, whose dashboard ships already built -- which is
-    how a test composes the installer without building a real dashboard.
+    ``dashboard_root`` is the installation the dashboard is built and served
+    from; ``None`` finds the one this installer runs from.  A directory that
+    is not a checkout means a release install, whose dashboard ships already
+    built under ``src/dashboard_assets/dist`` -- which is how a test composes
+    the installer without building a real dashboard.  ``identify`` is how the
+    dashboard steps ask who answers at the dashboard server's URL.
     """
     # Imported here, not at module level: the dashboard steps build on this
     # module's helpers, so a top-level import would be circular.
-    from .dashboard import STEP_DASHBOARD_BUILD, dashboard_build_step, dashboard_open_step
+    from .dashboard import (
+        STEP_DASHBOARD_SERVE,
+        dashboard_build_step,
+        dashboard_open_step,
+        dashboard_serve_step,
+    )
 
     return (
         config_step(environ=environ, home=home, which=which, depends_on=depends_on),
@@ -1172,24 +1291,47 @@ def onboarding_steps(
             home=home,
             runner=runner,
             which=which,
-            probe=probe,
             root=dashboard_root,
         ),
-        # Reported after the build, so the URL it names is the one being served.
+        dashboard_serve_step(
+            environ=environ,
+            home=home,
+            runner=runner,
+            which=which,
+            probe=probe,
+            identify=identify,
+            root=dashboard_root,
+        ),
+        # Reported after the dashboard server started, so the URL it names is
+        # the one being served.
         dashboard_step(
             environ=environ,
             home=home,
             probe=probe,
-            depends_on=(STEP_CHECK, STEP_DASHBOARD_BUILD),
+            identify=identify,
+            root=dashboard_root,
+            depends_on=(STEP_CHECK, STEP_DASHBOARD_SERVE),
         ),
-        dashboard_open_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
+        dashboard_open_step(
+            environ=environ,
+            home=home,
+            runner=runner,
+            which=which,
+            probe=probe,
+            identify=identify,
+        ),
     )
 
 
 __all__ = [
     "CAPABILITY_DAEMON",
     "CAPABILITY_DISCORD",
-    "DASHBOARD_PATH",
+    "DASHBOARD_DISABLED",
+    "DASHBOARD_MISCONFIGURED",
+    "DASHBOARD_PORT_CONFLICT",
+    "DASHBOARD_SERVER",
+    "DASHBOARD_STOPPED",
+    "DASHBOARD_UNBUILT",
     "DEFAULT_API_HOST",
     "DEFAULT_API_PORT",
     "DEFAULT_WORKSPACE_DIR",
@@ -1201,23 +1343,25 @@ __all__ = [
     "STEP_DASHBOARD",
     "STEP_DISCORD",
     "STEP_PROJECT_ROOT",
-    "UptimeReader",
     "DashboardInfo",
     "HttpProbe",
+    "IdentityProbe",
     "Location",
-    "aq_aware_which",
+    "UptimeReader",
     "api_base_url",
+    "aq_aware_which",
     "check_step",
     "config_path_for",
     "config_step",
     "daemon_step",
+    "daemon_uptime",
+    "dashboard_server_identity",
     "dashboard_step",
     "data_locations",
     "describe_project_root",
-    "daemon_uptime",
     "discord_step",
-    "project_root_step",
     "http_status",
     "inspect_dashboard",
     "onboarding_steps",
+    "project_root_step",
 ]
