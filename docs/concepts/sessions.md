@@ -289,7 +289,7 @@ four values, checked in this order:
 | Verdict | Trigger | What happens |
 |---|---|---|
 | `drained` | the task is already closed | normal teardown |
-| `rate_limit` | rate-limit wording in the final screen | task paused with a cooldown; the session is not restarted straight back into the limit |
+| `rate_limit` | rate-limit wording in the final screen | provider evidence: the work is checkpointed and pushed, and the task is paused briefly or re-routed by provider failover (D13) — a 15-minute cooldown only outside enforce mode; the session is not restarted straight back into the limit |
 | `rapid_crash` | died inside `sessions.restart_window_seconds` of starting (600 s default) | restart with backoff — a launch or config problem, not work |
 | `productive_death` | ran a while, then exited with the task open | never silently re-queued; flagged for attention |
 

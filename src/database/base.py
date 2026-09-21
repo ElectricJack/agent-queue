@@ -248,6 +248,17 @@ class DatabaseBackend(Protocol):
         context: str = "",
         **kwargs,
     ) -> set[str]: ...
+    async def transition_task_with_meta(
+        self,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        meta: dict,
+        context: str = "",
+        from_statuses: tuple[TaskStatus, ...] | None = None,
+        extra_where=None,
+        **kwargs,
+    ) -> bool: ...
     async def delete_task(
         self,
         task_id: str,
@@ -769,6 +780,8 @@ class DatabaseBackend(Protocol):
         *,
         reason: str,
         task_status: TaskStatus = TaskStatus.READY,
+        resume_after: float | None = None,
+        task_meta: dict | None = None,
         conn=None,
     ) -> "TransitionResult": ...
     async def bump_claim_epoch(self, task_id: str, *, conn=None) -> int: ...

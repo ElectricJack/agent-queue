@@ -12,6 +12,15 @@ from src.git.manager import GitError, GitManager
 CHECKPOINT_META = "manual_pause_checkpoint"
 
 
+async def _lock_sentinel_ignored(git, workspace: str) -> bool:
+    """Is the workspace's ``.agent-queue-lock`` sentinel ignored by Git?"""
+    try:
+        await git._arun(["check-ignore", "-q", "--", ".agent-queue-lock"], cwd=workspace)
+    except GitError:
+        return False  # exit 1: not ignored (or not answerable -- exclude it explicitly)
+    return True
+
+
 async def capture_checkpoint(db, git, task_id: str, workspace: str) -> None:
     """Keep HEAD, staged and unstaged/untracked work reachable before slot reuse."""
     if not Path(workspace).is_dir():
@@ -34,10 +43,13 @@ async def capture_checkpoint(db, git, task_id: str, workspace: str) -> None:
         staged_commit = await git._arun(
             [*identity, "commit-tree", staged, "-p", head, "-m", "Paused task index"], cwd=workspace
         )
-        await isolated._arun(
-            ["add", "--all", "--", ".", ":(exclude).agent-queue-lock"],
-            cwd=workspace,
-        )
+        # Naming an *ignored* file in a pathspec -- even an exclude one -- makes
+        # ``git add`` exit 1 ("paths are ignored"), and the managed exclude
+        # ignores the lock sentinel; ``add --all`` already skips it then.
+        pathspec = ["--", "."]
+        if not await _lock_sentinel_ignored(git, workspace):
+            pathspec.append(":(exclude).agent-queue-lock")
+        await isolated._arun(["add", "--all", *pathspec], cwd=workspace)
         tree = await isolated._arun(["write-tree"], cwd=workspace)
     checkpoint = await git._arun(
         [*identity, "commit-tree", tree, "-p", staged_commit, "-m", "Paused task worktree"], cwd=workspace

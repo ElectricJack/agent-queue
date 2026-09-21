@@ -360,6 +360,26 @@ async def build_task_context_section(db: Any, config: Any, task: Any) -> PrimeSe
         else:
             blocks.append(f"**{label}:**\n{content}")
 
+    # A previous session that died on its provider left a note saying where
+    # it stopped (provider-failover D13).  Shown on its own, not only as one
+    # of the recent comments a re-route comment could push out of view.
+    get_meta = getattr(db, "get_task_meta", None)
+    if callable(get_meta):
+        from src.providers.inflight import HANDOFF_META, handoff_comment
+
+        try:
+            handoff = await get_meta(task.id, HANDOFF_META)
+        except Exception:
+            logger.debug("prime: hand-off unreadable for %s", task.id, exc_info=True)
+            handoff = None
+        if isinstance(handoff, dict):
+            blocks.append(
+                "**Provider failover hand-off (from an earlier attempt):**\n"
+                "The previous session stopped on its provider, not on the work. Check "
+                "the branch tip and `git status` in your work_dir before redoing anything.\n\n"
+                + handoff_comment(handoff, task.id)
+            )
+
     # Bound history independently of the task's canonical description/legacy notes.
     list_comments = getattr(db, "list_task_comments", None)
     if callable(list_comments):

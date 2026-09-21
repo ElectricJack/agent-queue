@@ -542,6 +542,66 @@ policy == "same_class":
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
 
+**As built (`bold-rapids.4`).** The decision is one pure function,
+`decide(availability, failure)` in `src/providers/inflight.py`, read *after*
+the failure's evidence is recorded: `tripped` when the provider is now in the
+unavailable half (so a death that trips it is attributed to it), `suspect`
+when the failure carries the provider's own signal (a typed startup dialog, a
+`RATE_LIMIT` exit, a pre-launch refusal) but the trip awaits corroboration,
+`unattributed` otherwise and always outside `mode: enforce`. The launch path
+passes a `ProviderFailure` (kind, provider, harness, profile, dialog, signal,
+detail) into `_fail_session_launch`; the exit path is
+`SessionReconciler._apply_provider_failover`, and the orchestrator half
+(`provider_failover_checkpoint` / `provider_failover_hold`) is
+`src/orchestrator/provider_failover.py`. Details the table leaves open:
+
+* **Which exits count.** A `RATE_LIMIT` exit always; a `rapid_crash` or
+  `productive_death` only while the provider is unavailable. A task session's
+  `provider_suspect` pause and its `provider_pause` record are written by
+  `transition_task_with_meta` in one transaction; a pool session's go through
+  `terminate_pool_session(resume_after=…, task_meta=…)`, same transaction as
+  the claim release. `_apply_transition` deletes `provider_pause` whenever a
+  task leaves `PAUSED`, by any route, so a stale record can never label a
+  later, unrelated pause as the provider's.
+* **The pool key quarantine** is no longer armed by an attributed exit either
+  (it was already not armed by an attributed startup death): the provider's
+  own state sizes its pools to zero once it trips. `observe` mode keeps the
+  old 900 s key quarantine and the 15-minute pause.
+* **The checkpoint** is `acommit_all(…, no_verify=True)` then
+  `stranded_work.preserve_unpushed_work` (never forced; `aq/<task>-wip` when a
+  diverged remote branch holds the name), recording `unmerged_branch` /
+  `unmerged_commit` like a failing close does. It touches only the workspace
+  locked by the task, never a pool claim still `preparing` (`not_started`),
+  and plan files -- left out of every task commit -- do not count as work at
+  risk. It runs in the orchestrator cycle, so each is bounded by
+  `CHECKPOINT_BUDGET_SECONDS` (90 s); an overrun is `unknown`, which holds. A
+  hierarchy/train branch is left to its integration owner (`checkpoint:
+  integration_managed`), and a tripped task there takes a short provider pause
+  instead of READY, as the launch path does when the integration release is
+  unconfirmed.
+* **Order on the exit path:** checkpoint while the session row is still live
+  (a daemon that dies mid-push re-runs the failover next tick, where a row
+  already marked non-live would have let the orphan sweep BLOCK the task),
+  then the session row, then the claim's resources are released *before* the
+  task becomes claimable, then a status-guarded transition (`from_statuses`:
+  a task an operator closed or paused meanwhile is left alone), then the
+  hand-off note -- only for an outcome that was actually written.
+* **"Holds in place with the workspace kept"** is an operator pause through
+  the existing manual-pause machinery (`needs_attention:
+  provider_failover_push_failed`): the dead session is confirmed stopped, a
+  local Git checkpoint (`task_checkpoint.capture_checkpoint`) is taken before
+  the slot is released, and whichever slot the task lands in after
+  `aq task resume` restores it. The sweep never touches an operator hold. The
+  checkpoint also covers `no_remote`, `dirty` (work the WIP commit could not
+  take) and `unknown`, because none of them proves the work is safe.
+* **The hand-off note** is `task_metadata['provider_failover_handoff']` plus a
+  system comment (`system:provider-failover`), and `aq prime` renders it in
+  the task-context section on its own, so a later re-route comment cannot push
+  it out of the five recent comments.
+* **A move to another provider drops `session_resume_key`**
+  (`ProviderRerouteService._move`): the carried conversation id belongs to the
+  old CLI, and a harness without a transcript reader would take it unchecked.
+
 ### D13a — the direct path: tracked, fail-fast, optional fallback
 
 The direct path has one credential (`llm.provider`, `llm.api_key`,
