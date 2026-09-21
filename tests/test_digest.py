@@ -24,7 +24,7 @@ from src.digest.eligibility import (
     NO_ACTIVITY,
     highlight_key,
 )
-from src.digest.facts import KIND_COMPLETED, KIND_PROGRESS, KIND_STARTED
+from src.digest.facts import KIND_COMPLETED, KIND_PROGRESS, KIND_PROVIDER, KIND_STARTED
 
 NOW = 1_000_000.0
 HOUR = 3600.0
@@ -290,3 +290,29 @@ def test_completed_work_with_nothing_running_still_sends_with_a_zero_active_coun
     assert result.send is True
     assert result.active_count == 0
     assert "0 active" in result.text
+
+
+# --- fleet facts: daemon health that belongs to no project or task -----------
+
+
+def provider(key="provider:codex:2", detail="unavailable (unauthenticated)", at=NOW - 30):
+    return fact(
+        key=key, kind=KIND_PROVIDER, category="system", project_id="", task_id="",
+        title="provider codex", detail=detail, at=at,
+    )
+
+
+def test_a_fleet_fact_leads_the_highlights_and_names_no_project_or_task():
+    busy = tuple(fact(key=f"c{i}", task_id=f"t{i}", detail=f"done {i}") for i in range(4))
+    result = build_digest(inputs(facts=(*busy, provider())), project_ids=frozenset({"p"}))
+    lines = result.text.split("\n")
+    assert lines[1].startswith("1 provider change · 4 completed")
+    assert lines[2] == "• provider codex: unavailable (unauthenticated)"
+    assert "()" not in result.text
+
+
+def test_a_fleet_facts_wording_is_scoped_to_its_own_key():
+    first, second = provider(), provider(key="provider:codex:6")
+    assert highlight_key(first) != highlight_key(second)
+    result = build_digest(inputs(facts=(first, second)))
+    assert len(result.eligibility.facts) == 2
