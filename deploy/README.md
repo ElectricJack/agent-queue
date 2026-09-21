@@ -500,6 +500,65 @@ container can read its environment — and per [Security posture](#security-post
 the web layer currently offers no resistance to that. The network boundary is
 doing all the work; the token's scope is the second line.
 
+### Restricting what agents may do
+
+AQ has a real capability system: `src/profiles/capabilities.py` defines three
+namespaces, **denies by default**, and rejects wildcards at construction — so
+`"*"` and `"mcp__github__*"` both fail rather than silently granting everything.
+
+| Namespace | Enforced where |
+|---|---|
+| `harness_tools` | the CLI's own allowlist flag — best-effort, and a harness with no `tools_flag` cannot be restricted at all |
+| `aq_commands` | **server-side at dispatch** — the real boundary |
+| `plugin_tools` | same dispatch path |
+
+**Enforcement is off by default.** `security.capability_enforcement` ships as
+`"audit"`: violations are logged, not blocked, and `aq doctor` reports it. Set
+it to `enforce` in `config.template.yaml` or none of the below has any effect.
+
+#### "Branch and open PRs, but never merge"
+
+A common operator policy, and it needs **three layers**, because the first two
+do not hold on their own.
+
+**1. Take `pr_merge` off the worker rungs.** The shipped `worker-claude` and
+`worker-codex` templates include it deliberately: the factory policy permits a
+worker to publish when "their task explicitly delegates publication". If you
+would rather merging be a decision you make per task, remove it from the two
+templates' `## Capabilities` block in the vault:
+
+    /data/agent-queue/vault/agent-types/worker-claude/profile.md
+    /data/agent-queue/vault/agent-types/worker-codex/profile.md
+
+Edit the vault copy, not `src/profiles/defaults/` — this is an operator policy,
+not a change to what AQ ships. Because every rung inherits from the template,
+one edit covers all of them with nothing to regenerate, and the vault watcher
+picks it up live without a restart.
+
+**2. Keep `pr-merger` as the only route to a merge.** It is a shipped profile
+whose entire capability set is `get_task`, `task_close`, `task_heartbeat`,
+`task_comment`, `pr_merge`. Merging then happens only when you create a task
+that routes to it — which is exactly "I decide".
+
+**3. Turn on GitHub branch protection. This is the layer that actually holds.**
+Agents have `Bash` and a `GH_TOKEN`, so they run `git` and `gh` *directly* in
+their worktree — which is why `worker-claude` carries no `git_commit` or
+`git_create_pr` in `aq_commands` at all. Removing `pr_merge` closes the AQ
+command path and leaves `gh pr merge` completely untouched. A required
+approving review on the default branch is what survives an agent with a shell
+and a token.
+
+Layers 1 and 2 are defence in depth around layer 3, not substitutes for it.
+
+#### Can an agent see its own capabilities?
+
+Partly. The harness allowlist flag tells the CLI which *tools* it has, so those
+are visible to it. For `aq_commands` there is
+`aq agent show-effective-profile --project-id <p> --agent-type <t>`, and agents
+carry `AQ_PROFILE` in their environment, so they *can* ask — but nothing puts
+the capability list into the prompt. By default an agent discovers the boundary
+by hitting it, and in `audit` mode it never hits it at all.
+
 ### Diagnosing a session that dies at startup
 
 `start-stderr.log` is written from a *pane capture*, so when the process dies
