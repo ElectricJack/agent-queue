@@ -14,10 +14,16 @@ history tables referenced ``tasks.id`` with ``RESTRICT``/``NO ACTION``, and both
 ``archive_task`` and ``delete_task`` remove the ``tasks`` row -- so the operator
 got ``ForeignKeyViolationError`` with no subject, no cause and no remedy.
 
-The rule now is that **integration history names a task by id, never by foreign
-key** (migration ``a00000000011``).  Liveness is enforced instead by
-:meth:`~src.database.queries.hierarchy_queries.HierarchyQueryMixin.guard_integration_mutation`,
-which can name the operation, its state and the command that releases it.
+Those foreign keys are kept for now: dropping them is the schema change
+docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md
+holds pending its review findings B1–B3, and until then
+``src.database.queries.task_references`` refuses the removal up front with
+``integration_owned`` rather than letting it reach the ``DELETE``.  What this
+module adds is the *live* half:
+:meth:`~src.database.queries.hierarchy_queries.HierarchyQueryMixin.guard_integration_mutation`
+refuses a removal while a running operation owns the task, naming the
+operation, its state and the command that releases it, and the release itself
+settles the ticket and writes an ``integration_delegate_releases`` audit row.
 
 See ``docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md``.
 """
@@ -186,9 +192,9 @@ async def stranded_delegates(
     """Report the delegates :func:`release_delegates` would settle.
 
     Read-only, and deliberately narrow: a task is *not* listed merely because
-    integration history still names it.  Since ``a00000000011`` that no longer
-    blocks anything, and listing every historical verifier forever would bury
-    the ones that are actually stuck.
+    integration history still names it.  That history is a separate question
+    (``assert_no_integration_task_references``), and listing every historical
+    verifier forever would bury the ones that are actually stuck.
     """
     if conn is None:
         async with db._engine.connect() as owned:
@@ -334,7 +340,7 @@ async def release_delegates_on(
             "cleanup": {"state": "blocked" if cleanup else "clear", "blockers": cleanup},
         }
         # The audit row outlives the task: it is what answers "why did this end,
-        # and who ended it" after the delete or archive the release unblocks.
+        # and who ended it" after a later delete or archive of the task.
         await conn.execute(insert(integration_delegate_releases).values(**release))
         await db.log_event(
             "task.updated",
@@ -375,10 +381,10 @@ async def release_delegates(
 async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | None:
     """The first still-running operation that owns any task in *task_ids*.
 
-    This is what replaced the four foreign keys.  It covers strictly more than
-    they did: ``integration_repair_stages.repair_task_id`` never had a
-    constraint at all, so the repair delegate of an *active* operation could be
-    deleted out from under its running writer.
+    It covers a reference the foreign keys never did:
+    ``integration_repair_stages.repair_task_id`` has no constraint at all, so
+    the repair delegate of an *active* operation could be deleted out from
+    under its running writer.
     """
     if not task_ids:
         return None

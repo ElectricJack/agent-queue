@@ -24,11 +24,9 @@ from src.database.tables import (
     integration_candidate_revisions,
     integration_delegate_releases,
     integration_parent_episodes,
-    integration_parent_verifications,
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
-    metadata,
     sessions,
     tasks,
 )
@@ -151,65 +149,49 @@ async def _cancelled_operation_with_delegate(
         await _stage(conn, repair_task_id="delegate")
 
 
-# -- §3 history never vetoes removal -----------------------------------------
+# -- §3 history still refuses removal, by name --------------------------------
 
 
-def test_no_integration_table_references_tasks_by_foreign_key():
-    """The rule, asserted against the schema rather than its consequences.
+def test_the_audit_table_names_tasks_by_id_only():
+    """The release's audit row must outlive the task it released.
 
-    Four constraints -- on episodes, parent verifications, the operation's
-    verifier and the candidate resolution's repair task -- turned "this task has
-    integration history" into "this task can never leave the queue".  A new one
-    would reintroduce exactly that, silently, and would only be discovered by an
-    operator whose delete fails with a raw ForeignKeyViolationError.
+    ``integration_delegate_releases`` exists to answer "why did this task end,
+    and who ended it" after the task itself is gone, so a foreign key onto
+    ``tasks`` or onto the operation would defeat it.
     """
-    offenders = sorted(
-        f"{table.name}.{fk.parent.name}"
-        for table in metadata.tables.values()
-        if table.name.startswith("integration_")
-        for fk in table.foreign_keys
-        if fk.column.table.name == "tasks" and fk.column.name == "id"
-    )
-    assert offenders == []
+    assert [fk.target_fullname for fk in integration_delegate_releases.foreign_keys] == []
 
 
 @pytest.mark.parametrize("removal", ["delete", "archive"])
 @pytest.mark.parametrize("state", ["cancelled", "completed"])
-async def test_finished_operation_history_no_longer_blocks_removal(db, removal, state):
-    """The five completed roots, the stuck verifier, and the stuck stage writer."""
+async def test_finished_operation_history_still_refuses_removal_by_name(db, removal, state):
+    """The four history foreign keys are kept (the archive-history spec holds them).
+
+    A finished operation's episode and verifier reference still keep the task
+    in the queue, but the refusal is ``integration_owned`` naming the table --
+    never a raw ``ForeignKeyViolationError`` -- and nothing is removed.
+    """
     await _task(db, "parent")
     await _task(db, "verifier")
     async with db.immediate() as conn:
         await _episode(conn, parent_task_id="parent")
         await _operation(conn, state=state, verifier_task_id="verifier")
         await _stage(conn, repair_task_id="stage-writer")
-        await conn.execute(
-            insert(integration_parent_verifications).values(
-                id="verification",
-                operation_id="operation",
-                parent_task_id="parent",
-                episode_id="episode",
-                generation=3,
-                head_sha=SHA,
-                required_check_version="checks-v1",
-                created_at=1.0,
-            )
-        )
     await db.transition_task("verifier", TaskStatus.FAILED, force=True)
 
-    for task_id in ("parent", "verifier"):
-        if removal == "delete":
-            await db.delete_task(task_id)
-        else:
-            assert await db.archive_task(task_id) is True
-        assert await db.get_task(task_id) is None
-
-    # History survives the removal and still names the task it happened to.
-    async with db._engine.connect() as conn:
-        episode = (await conn.execute(select(integration_parent_episodes))).mappings().one()
-        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
-    assert episode["parent_task_id"] == "parent"
-    assert operation["verifier_task_id"] == "verifier"
+    for task_id, table in (
+        ("parent", "integration_parent_episodes"),
+        ("verifier", "integration_repair_operations"),
+    ):
+        with pytest.raises(HierarchyError) as refusal:
+            if removal == "delete":
+                await db.delete_task(task_id)
+            else:
+                await db.archive_task(task_id)
+        assert refusal.value.code == "integration_owned"
+        assert table in refusal.value.detail
+        assert "integration_operation" not in refusal.value.context
+        assert await db.get_task(task_id) is not None
 
 
 async def test_a_live_operation_still_refuses_and_says_what_would_let_go(db):
@@ -687,7 +669,9 @@ async def test_an_unfinished_reservation_of_an_ended_operation_does_not_re_wedge
 
     A reservation left ``reserved`` when its operation was cancelled is moot,
     not a live claim.  Treating it as live is how the original wedge would come
-    straight back.
+    straight back: the release must settle the ticket, and a later removal must
+    be refused as *history* (the resolution still names the task), not as a
+    running operation that an abort could never stop.
     """
     from src.integration.delegate_release import release_delegates, stranded_delegates
 
@@ -695,9 +679,13 @@ async def test_an_unfinished_reservation_of_an_ended_operation_does_not_re_wedge
     assert [row["task_id"] for row in await stranded_delegates(db)] == ["delegate"]
     released = await release_delegates(db, now=500.0, released_by="doctor")
     assert released[0]["role"] == "repair_stage"
-    await db.delete_task("delegate")
-    assert await db.get_task("delegate") is None
-    # The resolution keeps naming the task it reserved; nothing cascaded.
+    assert (await db.get_task("delegate")).status == TaskStatus.FAILED
+
+    with pytest.raises(HierarchyError) as refusal:
+        await db.delete_task("delegate")
+    assert refusal.value.code == "integration_owned"
+    assert "integration_operation" not in refusal.value.context
+    assert "integration_candidate_resolutions" in refusal.value.detail
     async with db._engine.connect() as conn:
         resolution = (
             await conn.execute(select(integration_candidate_resolutions))

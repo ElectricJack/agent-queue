@@ -1,6 +1,17 @@
 # Releasing the delegates of an ended integration operation
 
-Status: implemented (keen-crest.3)
+Status: implemented (keen-crest.3) **except §2's rule and §3's constraint drop,
+which were withheld at integration** (development repair
+`development-repair-71c73b9f6d83b803115f`). Main had meanwhile put the same
+schema change on hold — `2026-09-20-archive-tasks-with-integration-history-design.md`
+§12, findings B1–B3 — and declared the four references `refused` in
+`src/database/queries/task_references.py`. What shipped: the live-owner guard
+(§4), the release and its `integration_delegate_releases` audit table (§5,
+migration `a00000000011`, create only), `integration.stranded_delegates`, and
+`aq integration release-delegates`. The four foreign keys remain, so a settled
+delegate or finished root that history still names stays unremovable, refused
+with `integration_owned` naming the table. §2–§3 below are kept as the proposal
+they now are.
 Date: 2026-09-20
 
 ## 1. The defect

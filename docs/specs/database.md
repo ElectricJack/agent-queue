@@ -1929,9 +1929,8 @@ Audit trail for delegates released because their integration operation ended
 
 Deliberately carries **no** foreign key to `tasks` or to
 `integration_repair_operations`: its whole job is to outlive both, so the
-answer to "why did this task end, and who ended it" survives the delete or
-archive the release exists to unblock. The same rule applies to every
-integration history table — see
+answer to "why did this task end, and who ended it" survives a later delete or
+archive of the task. See
 `docs/superpowers/specs/2026-09-20-integration-delegate-release-design.md`.
 
 | Column | Type | Constraints | Notes |

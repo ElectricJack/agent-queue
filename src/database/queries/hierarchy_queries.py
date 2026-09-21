@@ -804,10 +804,12 @@ class HierarchyQueryMixin:
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
         if mutation in {"delete", "archive"}:
-            # Until a00000000011 this was four foreign keys, so a *finished*
-            # episode or a long-cancelled operation refused the removal with a
-            # bare ForeignKeyViolationError.  History no longer votes; a
-            # running operation still does, and now it can say so.
+            # A running operation refuses first, naming itself and the
+            # command that lets go.  This also covers
+            # ``integration_repair_stages.repair_task_id``, which has no
+            # foreign key and is not a ``refused`` reference.  Finished
+            # history is refused just below by
+            # ``assert_no_integration_task_references``.
             from src.integration.delegate_release import RELEASE_COMMAND, live_integration_owner
 
             owner = await live_integration_owner(conn, list(ids))

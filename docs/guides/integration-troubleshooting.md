@@ -258,6 +258,16 @@ preserved exactly as found and reported as a named cleanup blocker: releasing
 either needs proof doctor cannot take, and belongs to the guarded integration
 recovery path.
 
+Settling a ticket does not by itself make the task deletable or archivable.
+While integration history still names it — an episode or parent verification
+(for a root), the operation's `verifier_task_id`, or a candidate resolution —
+removal is refused with `integration_owned` naming that table, even after the
+operation is over. That is deliberate for now: those four references keep their
+foreign keys until
+`docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md`
+is revised and approved. A repair-stage writer with no such reference is
+removable once settled.
+
 If the refusal instead names an operation that is `active`, `escalated` or
 `human_required`, the delegate is not stranded — it is owned by work still in
 flight. Stop that work first:

@@ -147,7 +147,8 @@ These are working guards, not bugs.
 |---|---|---|
 | `hierarchy.open_children` | The task has non-terminal children and you did not pass `--cascade`. | Close the children, `aq task reparent` one you filed, or cascade. |
 | `live_descendants` | A session in the subtree is still running. | Let it drain, or stop it, then retry. |
-| `integration_owned` | An integration operation that is still running (`active`, `escalated`, `human_required`) owns a task in the subtree, or an unfinished candidate reservation of such an operation names it. The refusal names the operation, its state and the seat the task occupies. | Let the operation finish, or `aq integration abort <id> --reason "..."`, then `aq doctor --check integration.stranded_delegates --fix`. |
+| `integration_owned` naming an operation | An integration operation that is still running (`active`, `escalated`, `human_required`) owns a task in the subtree, or an unfinished candidate reservation of such an operation names it. The refusal names the operation, its state and the seat the task occupies. | Let the operation finish, or `aq integration abort <id> --reason "..."`, then `aq doctor --check integration.stranded_delegates --fix`. |
+| `integration_owned` naming an `integration_*` table | Integration bookkeeping still names the task through one of the four `refused` references in `src/database/queries/task_references.py` — `integration_parent_episodes.parent_task_id`, `integration_parent_verifications.parent_task_id`, `integration_repair_operations.verifier_task_id`, `integration_candidate_resolutions.repair_task_id` — each backed by a `RESTRICT`/`NO ACTION` foreign key. Refused up front, before anything is written. | Expected, even when the operation is over. Settling a stranded delegate with `aq doctor --check integration.stranded_delegates --fix` makes its ticket terminal but does not make it removable; lifting this is the schema change `docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md` holds. |
 | `hierarchy.branch_discard_required` | A materialised branch origin in the subtree. | Re-run with `--branches keep` or `--branches delete`. |
 | A paused task | A worker cannot close or resume a `PAUSED` task. | The operator resumes it; a worker should push its work and report. |
 
@@ -164,19 +165,18 @@ Practically:
   clause or an entry in `_delete_one` will make deletes fail once rows exist in
   it. `tests/test_missing_fk_migration.py` and the delete tests are where this
   is caught.
-* Integration tables are deliberately *not* in that list, because since
-  `a00000000011` they no longer reference `tasks.id` by foreign key at all.
-  **Integration history names a task by id, never by a constraint**: a finished
-  episode, verification, resolution or operation records what happened to a
-  task and must not be able to veto that task leaving the queue. Four `RESTRICT`
-  / `NO ACTION` constraints used to, which is how five completed roots became
-  permanently unarchivable and the operator saw a bare
-  `ForeignKeyViolationError` with no subject and no remedy. Liveness is now a
-  guard (`integration_owned`, above) that can explain itself, and it covers more
-  than the constraints did — `integration_repair_stages.repair_task_id` never
-  had one, so the repair delegate of a *running* operation was deletable out
-  from under its writer. See
-  [the design spec](../../superpowers/specs/2026-09-20-integration-delegate-release-design.md).
+* The RESTRICT-protected integration tables are deliberately *not* cleaned up
+  here, and `src/database/queries/task_references.py` refuses the removal
+  before it reaches the `DELETE`. Whether finished integration history should
+  keep that veto is an open question, held in
+  [the archive-history spec](../../superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md);
+  until it is answered those constraints stay. A *running* operation is refused
+  earlier still, by a guard that names the operation and the command that
+  releases it — and that guard also covers
+  `integration_repair_stages.repair_task_id`, which never had a constraint, so
+  the repair delegate of a running operation is no longer deletable out from
+  under its writer. See
+  [the delegate-release spec](../../superpowers/specs/2026-09-20-integration-delegate-release-design.md).
 * If you hit an FK violation naming a table not in the tables above, that is a
   genuine bug worth filing, naming the table from the error.
 
