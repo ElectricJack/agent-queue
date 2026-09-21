@@ -1280,6 +1280,101 @@ class TestArchiveWithIntegrationBookkeeping:
         assert blocked.roots == []
 
 
+async def _seed_settled_batch_repair(db: Database, verifier_task_id: str) -> str:
+    """A *completed* batch repair operation whose verifier was *verifier_task_id*.
+
+    Settled on purpose: ``archive_task``'s active-repair guard only looks at
+    ``active``/``escalated``/``human_required`` operations, so a refusal can
+    only come from the foreign-key guard.
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_repair_operations
+
+    operation_id = f"op-{verifier_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id="b-1",
+                parent_task_id=None,
+                episode_id="ep-batch",
+                active_stage=0,
+                state="completed",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                verifier_task_id=verifier_task_id,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    return operation_id
+
+
+class TestArchiveIntegrationReferenceScope:
+    """How far the integration-reference refusal reaches.
+
+    The class above and ``tests/test_hierarchy_archive_delete.py`` cover a task
+    the bookkeeping names directly.  These pin the rest: a named *descendant*
+    holds its root in either integration mode, the explicit bulk path skips the
+    held task like the hourly sweep does, and a batch repair's verifier is
+    named as well as a parent repair's.
+    """
+
+    @pytest.mark.parametrize("hierarchical", [False, True], ids=["legacy", "hierarchy"])
+    async def test_a_held_descendant_pins_its_root(self, db, hierarchical):
+        """The subtree moves together, so a child the bookkeeping names holds the root."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "kid", pid="p-hier", status=TaskStatus.COMPLETED, parent_task_id="root"
+        )
+        await _seed_parent_episode(db, "kid")
+        if hierarchical:
+            await _enable_hierarchy_mode(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("root")
+        assert exc.value.code == "integration_owned"
+        assert exc.value.context["references"] == [
+            {"task_id": "kid", "table": "integration_parent_episodes", "column": "parent_task_id"}
+        ]
+        assert await db.get_task("root") is not None
+        assert await db.get_task("kid") is not None
+
+    async def test_archive_completed_tasks_skips_the_held_task(self, db):
+        """The explicit bulk command archives the rest instead of stopping."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "held", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "other", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "held")
+
+        archived = await db.archive_completed_tasks(project_id="p-hier")
+
+        assert archived == ["other"]
+        assert await db.get_archived_task("other") is not None
+        assert await db.get_task("held") is not None
+        assert await db.get_archived_task("held") is None
+
+    async def test_a_settled_batch_repairs_verifier_is_refused(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_settled_batch_repair(db, "t-1")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-1")
+        assert exc.value.code == "integration_owned"
+        assert "integration_repair_operations(t-1)" in exc.value.detail
+        assert await db.get_task("t-1") is not None
+        assert await db.get_archived_task("t-1") is None
+
+
 class TestArchiveRefusalRecord:
     """The sweep records why each root it skipped was refused (F3)."""
 
