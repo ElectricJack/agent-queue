@@ -60,6 +60,7 @@ from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
+from src.database.queries.review_queries import ReviewQueriesMixin
 from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.subagent_queries import SubagentQueriesMixin
 from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
@@ -99,6 +100,7 @@ class PostgreSQLDatabaseAdapter(
     DependencyQueryMixin,
     BlockedStateMixin,
     GateQueriesMixin,
+    ReviewQueriesMixin,
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
     WorkspaceQueryMixin,

@@ -325,6 +325,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_desired_mode` | TEXT | NOT NULL DEFAULT 'disabled' | Mode the operator asked for with `integration_enable`; same value set as `hierarchical_integration_mode`. Differs from the effective mode while a drain is in progress. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
+| `review_delegate_to` | TEXT | nullable, `ck_projects_review_delegate_to` | Who decides the project's new document reviews: `user` or `supervisor`; NULL means `user`. Sets a new review's `doc_reviews.decider` (`supervisor` → `user_or_supervisor`). Added by Alembic `a00000000014` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -808,7 +809,7 @@ blocks progress until it is resolved (principle #5 — human judgment stays huma
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | UUID string |
 | `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
-| `gate_type` | TEXT | NOT NULL | Kind of decision being requested |
+| `gate_type` | TEXT | NOT NULL (`ck_gates_type`) | Kind of decision being requested: one of `human`, `timer`, `pr-merged`, `ci-run`, `event`, `task`, `routing`, `review` (`GATE_TYPES`). A `review` gate belongs to a document review (`await_id` = the review id) |
 | `title` | TEXT | NOT NULL | Short display name |
 | `question` | TEXT | NOT NULL DEFAULT '' | Prompt shown to the human |
 | `await_id` | TEXT | nullable | Correlates the gate with the waiter that opened it |
@@ -826,6 +827,72 @@ Join table binding tasks to the gates that block them.
 |---|---|---|---|
 | `task_id` | TEXT | PRIMARY KEY REFERENCES tasks(id) | Composite PK part 1 |
 | `gate_id` | TEXT | PRIMARY KEY REFERENCES gates(id) | Composite PK part 2 |
+
+### Table: `doc_reviews`
+
+A markdown document (spec, plan or other) an agent submitted for a human
+decision — document-review spec §3.2
+(`vault/projects/agent-queue/specs/2026-09-21-document-review-design.md`).
+The database is the source of truth; the vault file at `vault_path` is a copy
+the daemon writes after each commit. Task ids are soft references with **no
+foreign key to `tasks`**, so a review never blocks a task's archive or delete.
+Queries: `src/database/queries/review_queries.py`. Added by Alembic
+`a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `rev-<adjective>-<noun>`, task-id style (`generate_review_id`) |
+| `project_id` | TEXT | NOT NULL | Owning project |
+| `author_task_id` | TEXT | nullable, no FK | The task that submitted the review |
+| `kind` | TEXT | NOT NULL (`ck_doc_reviews_kind`) | One of: spec, plan, other |
+| `title` | TEXT | NOT NULL | Document title |
+| `vault_path` | TEXT | NOT NULL, UNIQUE (`uq_doc_reviews_vault_path`) | Relative to the vault root: `projects/<pid>/specs/…` (spec, other) or `projects/<pid>/plans/…` (plan) |
+| `current_revision` | INTEGER | NOT NULL DEFAULT 1, `>= 1` (`ck_doc_reviews_revision`) | Latest revision number; state changes compare-and-set on it (`transition_review`) |
+| `state` | TEXT | NOT NULL (`ck_doc_reviews_state`) | One of: in_review, changes_requested, approved, withdrawn |
+| `gate_id` | TEXT | nullable | The review's `review` gate; only an approval resolves it |
+| `decider` | TEXT | NOT NULL DEFAULT 'user' (`ck_doc_reviews_decider`) | One of: user, user_or_supervisor |
+| `decided_by` | TEXT | nullable | Principal label of the latest decision |
+| `decided_at` | REAL | nullable | Unix timestamp of the latest decision |
+| `decision_note` | TEXT | nullable | Note on the latest decision |
+| `notified_revision` | INTEGER | NOT NULL DEFAULT 0 | Last revision announced on Discord; the outbox is every row with `notified_revision < current_revision` |
+| `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
+| `updated_at` | REAL | NOT NULL | Unix timestamp, bumped on every transition |
+
+Indexes: `idx_doc_reviews_project_state` (`project_id`, `state`), `idx_doc_reviews_author_task` (`author_task_id`).
+
+### Table: `doc_review_revisions`
+
+The text of every submitted revision of a review — a second copy of the vault
+document. Added by Alembic `a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `review_id` | TEXT | PRIMARY KEY REFERENCES doc_reviews(id) ON DELETE CASCADE | Composite PK part 1 |
+| `revision` | INTEGER | PRIMARY KEY | Composite PK part 2; 1, 2, … |
+| `content` | TEXT | NOT NULL | The submitted markdown with any leading frontmatter stripped (at most 256 KB) |
+| `content_sha256` | TEXT | NOT NULL | sha256 of `content` in UTF-8 |
+| `submitted_by` | TEXT | NOT NULL | Principal label |
+| `submitted_task_id` | TEXT | nullable, no FK | The submitting task |
+| `changes_note` | TEXT | nullable | What changed since the previous revision |
+| `submitted_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `doc_review_comments`
+
+Anchored comments on a review revision. Added by Alembic `a00000000014`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Comment id |
+| `review_id` | TEXT | NOT NULL REFERENCES doc_reviews(id) ON DELETE CASCADE | The review |
+| `revision` | INTEGER | NOT NULL | The revision the comment was made on |
+| `quote` | TEXT | nullable | The exact text selected; NULL for a whole-section comment |
+| `heading_path` | JSON | NOT NULL | Heading texts from the top of the document down to the section |
+| `body` | TEXT | NOT NULL, 1–16000 characters (`ck_doc_review_comments_body`) | The comment |
+| `author` | TEXT | NOT NULL | Principal label, e.g. `human:local-operator` |
+| `resolved_in_revision` | INTEGER | nullable | Set when a later revision addresses the comment or it is marked resolved |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Index: `idx_doc_review_comments_review` (`review_id`, `revision`).
 
 ### Table: `workspace_kinds`
 
