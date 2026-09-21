@@ -1,8 +1,8 @@
-"""Release artifact staging and the daemon's interim dashboard mount.
+"""Release artifact staging: the wheel still ships a verified dashboard bundle.
 
-The bundle verifier and the static app that serves it are covered in
-``tests/test_dashboard_server_bundle.py``.  The ``mount_dashboard`` cases here
-go when the mount itself does (smart-meadow.4).
+The daemon no longer serves the dashboard (it is API-only — see
+``tests/test_api_dashboard_pointer.py``).  The bundle verifier and the static
+SPA that *does* serve it live in ``tests/test_dashboard_server_bundle.py``.
 """
 
 from __future__ import annotations
@@ -11,12 +11,6 @@ import importlib.util
 import json
 from importlib import metadata
 from pathlib import Path
-
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-from src.dashboard_assets.runtime import mount_dashboard
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -71,68 +65,6 @@ def test_aq_version_uses_the_installed_distribution_metadata():
     from src.cli.app import _installed_version
 
     assert _installed_version() == metadata.version("agent-queue")
-
-
-def test_the_interim_mount_refuses_a_modified_asset(tmp_path):
-    destination = _stage(tmp_path)
-    (destination / "assets" / "app.js").write_text("altered", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="digest mismatch: assets/app.js"):
-        mount_dashboard(FastAPI(), directory=destination)
-
-
-def test_the_interim_mount_still_serves_a_bundle_that_predates_base(tmp_path):
-    """An install's old bundle must not crash the daemon before it is rebuilt."""
-    destination = _stage(tmp_path)
-    manifest_path = destination / "aq-dashboard-manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    del manifest["base"]
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    bundle = mount_dashboard(FastAPI(), directory=destination)
-
-    assert bundle is not None and bundle.base is None
-
-
-def test_installed_dashboard_serves_assets_and_browser_routes(tmp_path):
-    destination = _stage(tmp_path)
-    app = FastAPI()
-    bundle = mount_dashboard(app, directory=destination)
-
-    assert bundle is not None
-    with TestClient(app) as client:
-        assert client.get("/dashboard/").status_code == 200
-        assert client.get("/dashboard/assets/app.js").text == "console.log('AQ')"
-        route = client.get("/dashboard/projects/example/graph")
-    assert route.status_code == 200
-    assert "assets/app.js" in route.text
-
-
-def test_the_bare_dashboard_path_survives_the_daemons_catch_all_mount(tmp_path):
-    """The daemon mounts its MCP app at "/" after the dashboard.
-
-    A mount at /dashboard only matches /dashboard/..., so a bare /dashboard fell
-    through to that catch-all and answered 404: the first macOS install built
-    the dashboard, restarted the daemon, and still reported it unreachable.
-    """
-    from starlette.applications import Starlette
-    from starlette.routing import Mount
-
-    destination = _stage(tmp_path)
-    app = FastAPI()
-    mount_dashboard(app, directory=destination)
-    app.router.routes.append(Mount("/", app=Starlette()))  # as src/embedded_mcp.py does
-
-    with TestClient(app) as client:
-        bare = client.get("/dashboard", follow_redirects=False)
-        assert bare.status_code == 307
-        assert bare.headers["location"] == "/dashboard/"
-        assert (
-            client.get("/dashboard?tab=metrics", follow_redirects=False).headers["location"]
-            == "/dashboard/?tab=metrics"
-        )
-        assert "assets/app.js" in client.get("/dashboard").text
-    assert "/dashboard" not in app.openapi()["paths"]
 
 
 def test_the_core_install_can_serve_websockets():

@@ -15,6 +15,7 @@ import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import JSONResponse
 
 from src.api import dependencies as deps
 from src.api.execute import router as execute_router
@@ -185,11 +186,36 @@ def create_app(
         orchestrator, config, token_store=deps._token_store,
     ))
 
-    # Release wheels contain a pre-built, integrity-checked SPA. Source
-    # checkouts have no generated output and continue to use Vite for dev.
-    from src.dashboard_assets.runtime import mount_dashboard
+    # The daemon is API-only: it no longer serves the dashboard SPA (the
+    # bundle now lives in the separate dashboard server process).  A browser
+    # that reaches /dashboard gets a machine-readable 404 hint naming the
+    # configured dashboard server URL, not a static mount
+    # (docs/specs/dashboard-server.md §5).  dashboard_url is derived from
+    # dashboard.server alone — never the request's Host — with a wildcard
+    # bind rendered as 127.0.0.1.
+    def _dashboard_hint_url() -> str | None:
+        server = config.dashboard_server
+        if not server.enabled:
+            return None
+        host = server.host
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        if ":" in host:
+            host = f"[{host}]"
+        return f"http://{host}:{server.port}/"
 
-    mount_dashboard(app)
+    @app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
+    @app.api_route("/dashboard/{rest:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    async def dashboard_not_served_here(rest: str = ""):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "dashboard_not_served_here",
+                "dashboard_url": _dashboard_hint_url(),
+                "hint": "The daemon is API-only. Run `aq dashboard status`.",
+            },
+            status_code=404,
+        )
 
     _add_binary_upload_format(app)
 
