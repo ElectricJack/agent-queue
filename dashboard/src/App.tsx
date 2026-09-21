@@ -13,6 +13,7 @@ const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
 const Metrics = lazy(() => import("./pages/metrics/Metrics"));
 const ReviewsInbox = lazy(() => import("./pages/reviews/ReviewsInbox"));
+const ReviewPage = lazy(() => import("./pages/reviews/ReviewPage"));
 
 const SettingsLayout = lazy(() => import("./pages/settings/SettingsLayout"));
 const SystemPlaybooks = lazy(() => import("./pages/system/Playbooks"));
@@ -136,11 +137,6 @@ function RouteFallback() {
   );
 }
 
-/** Task 7 replaces this with the complete document reader and decision pane. */
-function ReviewDetailPlaceholder() {
-  return <div className="flex h-full items-center justify-center text-sm text-gray-500">Loading review…</div>;
-}
-
 export default function App() {
   return (
     <ShellPaneProvider>
@@ -152,7 +148,7 @@ export default function App() {
             <Route path="agents" element={<AgentWorkspace />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="reviews" element={<ReviewsInbox />} />
-            <Route path="reviews/:reviewId" element={<ReviewDetailPlaceholder />} />
+            <Route path="reviews/:reviewId" element={<ReviewPage />} />
             <Route path="chat/:projectId" element={<Navigate to="/agents" replace />} />
 
             <Route path="command-center/agents" element={<Navigate to="/agents" replace />} />

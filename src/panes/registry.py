@@ -27,6 +27,7 @@ SERVER_PANE_REGISTRY: dict[str, PaneEntry] = {
     "file-browser": PaneEntry(id="file-browser", agent_pushable=True),
     "playbook-run-inspector": PaneEntry(id="playbook-run-inspector", agent_pushable=True),
     "proposal-preview": PaneEntry(id="proposal-preview", agent_pushable=True),
+    "review": PaneEntry(id="review", agent_pushable=True),
     "session-peek": PaneEntry(id="session-peek", agent_pushable=True),
     "spec-doc-reader": PaneEntry(id="spec-doc-reader", agent_pushable=True),
     "task-detail": PaneEntry(id="task-detail", agent_pushable=True),
