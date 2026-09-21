@@ -2147,6 +2147,20 @@ class PlaybookEngine:
             return await finish(
                 self._resume_wait(attempt, step, artifact, artifact_ref, repository)
             )
+        # The same rule for an ``AgentTaskStep`` that already owns a child:
+        # its executor *is* ``create_task``, so re-entering it on a deadline
+        # (or on any cause that is not the child's own) would delegate the
+        # work a second time.  ``ChildTaskCompleted`` never reaches here —
+        # ``resume`` reconciles it directly.
+        if (
+            isinstance(step, AgentTaskStep)
+            and snapshot.wait is not None
+            and snapshot.wait.kind == "agent_task"
+            and snapshot.wait.step_id == step_id
+        ):
+            return await finish(
+                self._resume_child_wait(attempt, artifact, artifact_ref, repository)
+            )
 
         scope = self._scope(snapshot, artifact)
 
@@ -3076,6 +3090,47 @@ class PlaybookEngine:
             except StateLimitExceeded:
                 attempt.outcome = "state_limit_exceeded"
                 attempt.error = "the wait result exceeds the state limit"
+        return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
+
+    async def _resume_child_wait(
+        self,
+        attempt: _Attempt,
+        artifact: PlaybookDefinition,
+        artifact_ref: ArtifactRef,
+        repository: Any,
+    ) -> tuple[RunSnapshot, StepReceipt | None, str]:
+        """An open child wait resumed by anything but the child itself.
+
+        Only an expiry decides anything: it takes ``timed_out`` and clears the
+        wait in the boundary that takes the edge.  Every other cause leaves
+        the run paused with no boundary and no receipt, exactly as
+        :meth:`_resume_wait` does for a resume with nothing to resume on.  The
+        child is left running either way — ``cancel_child`` governs a
+        *cancelled* run, not a deadline.
+        """
+        snapshot = attempt.snapshot
+        wait = snapshot.wait
+        claim = next(
+            (
+                c
+                for c in snapshot.pending_wait_claims
+                if wait is not None and c.wait_id == wait.wait_id and c.expired
+            ),
+            None,
+        )
+        # Claims are transient here: one that did not expire this wait says
+        # nothing about the child, and keeping it would replay on every resume.
+        attempt.snapshot = replace(snapshot, pending_wait_claims=())
+        if wait is None or claim is None:
+            return replace(attempt.snapshot, lifecycle=RunLifecycle.PAUSED), None, "paused"
+
+        attempt.outcome = "timed_out"
+        attempt.timed_out = True
+        attempt.error = "wait deadline fired"
+        attempt.clear_waits = True
+        attempt.wait_id = wait.wait_id
+        attempt.wait_changes = WaitChangeSet(clear_run_waits=True)
+        attempt.receipt_result = {"child_task_id": wait.match.get("task_id")}
         return await self._advance_on_outcome(attempt, artifact, artifact_ref, repository)
 
     def _deadline_that_fired(
