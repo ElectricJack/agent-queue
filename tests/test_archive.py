@@ -10,7 +10,7 @@ import os
 import time
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 from unittest.mock import MagicMock
 
 from src.commands.handler import CommandHandler
@@ -21,8 +21,10 @@ from src.models import (
     AgentOutput,
     AgentResult,
     Project,
+    RepoConfig,
     RepoSourceType,
     Task,
+    TaskCompletion,
     TaskStatus,
     TaskType,
     Workspace,
@@ -1875,3 +1877,268 @@ class TestDevelopmentIntegrationArchiveGuard:
         await db.set_task_meta("t-noise", "development_repair_sources", "not-a-manifest")
 
         assert await db.archive_task("t-src") is True
+
+
+# ---------------------------------------------------------------------------
+# Archive sweeps keep undelivered development work in the queue
+# ---------------------------------------------------------------------------
+
+
+async def _seed_development_project(db: Database, pid: str = "p-dev") -> None:
+    """A development-mode project delivering to ``dev-repo``, plus a second project.
+
+    ``p-web`` owns ``web-repo``: the repository ``fleet-meadow`` named even
+    though it belonged to the development project.
+    """
+    from sqlalchemy import update
+
+    from src.database.tables import projects
+
+    await db.create_project(Project(id=pid, name="Development"))
+    await db.create_project(Project(id="p-web", name="Web"))
+    await db.create_repo(
+        RepoConfig(
+            id="dev-repo", project_id=pid, source_type=RepoSourceType.CLONE,
+            url="https://example.test/dev.git",
+        )
+    )
+    await db.create_repo(
+        RepoConfig(
+            id="web-repo", project_id="p-web", source_type=RepoSourceType.CLONE,
+            url="https://example.test/web.git",
+        )
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == pid)
+            .values(
+                integration_repository_id="dev-repo",
+                hierarchical_integration_mode="development",
+            )
+        )
+
+
+async def _completed_with_close(
+    db: Database, tid: str, *, repo_id: str, commit: str, pid: str = "p-dev", **kwargs
+) -> None:
+    await _seed_task(
+        db, tid, pid=pid, status=TaskStatus.COMPLETED, repo_id=repo_id,
+        branch_name=f"aq/{tid}", **kwargs,
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id=f"close-{tid}", task_id=tid, outcome="pass", commits=[commit],
+            completed_at=time.time(),
+        )
+    )
+
+
+async def _journal(
+    db: Database, row_id: str, *, state: str, target_ref: str, members: list[tuple[str, str]],
+    pid: str = "p-dev", parent_task_id: str | None = None,
+) -> None:
+    from sqlalchemy import insert
+
+    from src.database.tables import development_deliveries
+
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(development_deliveries).values(
+                id=row_id, project_id=pid, repository_id="dev-repo", target_ref=target_ref,
+                expected_sha=None, prepared_sha=None, state=state,
+                manifest=[
+                    {"task_id": tid, "source_sha": sha, "parent_task_id": parent_task_id}
+                    for tid, sha in members
+                ],
+                evidence={}, reason="development batch", created_at=now, updated_at=now,
+            )
+        )
+
+
+class TestUndeliveredDevelopmentWorkIsNotSwept:
+    """quick-ridge: an archive sweep never takes COMPLETED work that has not landed."""
+
+    FLEET = "c9fe0f80500894c94ecefd2b7dd92d5928e034db"
+    NEXUS = "514463eec6acd98b3d2b731ed4e02ebd7756fda7"
+    REPAIR = "991851bcb888753ff70d01655f07c6525ec579b1"
+
+    async def _seed_fleet_meadow(self, db):
+        """fleet-meadow, 2026-09-12: another project's repo id, never in any batch."""
+        await _seed_development_project(db)
+        # The live row named agent-queue-web's generated repository.
+        await _seed_task(
+            db, "fleet-meadow", pid="p-dev", status=TaskStatus.COMPLETED,
+            repo_id="web-repo", branch_name="aq/fleet-meadow",
+        )
+        # A failed close, then a passing close of the same revision.
+        for n, outcome in enumerate(("fail", "pass")):
+            await db.save_task_completion(
+                TaskCompletion(
+                    id=f"fleet-close-{n}", task_id="fleet-meadow", outcome=outcome,
+                    commits=[self.FLEET], completed_at=time.time() + n,
+                )
+            )
+        await _backdate(db, "fleet-meadow")
+
+    async def test_fleet_meadow_shape_is_held_by_the_auto_archive_sweep(self, db):
+        from src.database.queries.blocked_state import _development_delivery_pending
+        from src.database.tables import tasks as tasks_table
+
+        await self._seed_fleet_meadow(db)
+        # Readiness is unchanged: the publisher does not collect a foreign
+        # repository id, which is exactly why nothing ever delivered it.
+        async with db._engine.connect() as conn:
+            pending = await conn.scalar(
+                select(_development_delivery_pending(tasks_table)).where(
+                    tasks_table.c.id == "fleet-meadow"
+                )
+            )
+        assert pending is False
+
+        archived = await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600)
+
+        assert archived == []
+        assert await db.get_task("fleet-meadow") is not None
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("fleet-meadow", "delivery_pending")
+        ]
+
+    async def test_fleet_meadow_is_swept_once_its_revision_is_on_main(self, db):
+        await self._seed_fleet_meadow(db)
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        # An operator adoption (``aq integration adopt``) names the revision.
+        await _journal(
+            db, "adopt-fleet", state="adopted", target_ref="refs/heads/main",
+            members=[("fleet-meadow", self.FLEET)],
+        )
+
+        assert await db.archive_old_terminal_tasks(
+            ["COMPLETED"], older_than_seconds=3600
+        ) == ["fleet-meadow"]
+
+    async def _seed_nimble_nexus(self, db):
+        """nimble-nexus, 2026-09-20: validation parked it, its repair parked too."""
+        await _seed_development_project(db)
+        await _completed_with_close(db, "nimble-nexus", repo_id="dev-repo", commit=self.NEXUS)
+        repair = "development-repair-2bfd84c0ad9f434c18e3"
+        await _completed_with_close(
+            db, repair, repo_id="dev-repo", commit=self.REPAIR, parent_task_id="nimble-nexus",
+        )
+        await _journal(
+            db, "nexus-candidate", state="delivered",
+            target_ref=f"refs/heads/aq/development/aeacda21cbc3/{self.NEXUS}",
+            members=[("nimble-nexus", self.NEXUS)],
+        )
+        await _journal(
+            db, "nexus-main", state="parked", target_ref="refs/heads/main",
+            members=[("nimble-nexus", self.NEXUS)],
+        )
+        await _journal(
+            db, "repair-parent", state="delivered",
+            target_ref="refs/heads/aq/development/parent/97b1afbb18674463/5630e634770e",
+            members=[(repair, self.REPAIR)], parent_task_id="nimble-nexus",
+        )
+        await _journal(
+            db, "repair-main", state="parked", target_ref="refs/heads/main",
+            members=[(repair, self.REPAIR)], parent_task_id="nimble-nexus",
+        )
+        await _backdate(db, "nimble-nexus", repair)
+        return repair
+
+    async def test_nimble_nexus_shape_is_held_while_its_batches_are_parked(self, db):
+        repair = await self._seed_nimble_nexus(db)
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        assert await db.get_task("nimble-nexus") is not None
+        assert await db.get_task(repair) is not None
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [b["task_id"] for b in blocked.roots] == ["nimble-nexus"]
+
+    async def test_a_settled_but_undelivered_batch_still_does_not_release_it(self, db):
+        """A batch that ends without landing its work is not a delivery."""
+        await self._seed_nimble_nexus(db)
+        await _set_delivery_state(db, "nexus-main", "cancelled")
+        await _set_delivery_state(db, "repair-main", "cancelled")
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("nimble-nexus", "delivery_pending")
+        ]
+
+    async def test_nimble_nexus_is_swept_once_both_revisions_are_on_main(self, db):
+        repair = await self._seed_nimble_nexus(db)
+        await _set_delivery_state(db, "nexus-main", "adopted")
+        await _set_delivery_state(db, "repair-main", "delivered")
+
+        assert await db.archive_old_terminal_tasks(
+            ["COMPLETED"], older_than_seconds=3600
+        ) == ["nimble-nexus"]
+        assert await db.get_archived_task(repair) is not None
+
+    async def test_explicit_single_archive_stays_the_operators_call(self, db):
+        await self._seed_fleet_meadow(db)
+
+        assert await db.archive_task("fleet-meadow") is True
+
+    async def test_bulk_archive_paths_hold_it_too(self, db):
+        await self._seed_fleet_meadow(db)
+
+        assert await db.archive_completed_tasks("p-dev") == []
+        assert await db.get_task("fleet-meadow") is not None
+
+    async def test_other_work_is_still_swept(self, db):
+        await _seed_development_project(db)
+        # A failed task and a branchless task have nothing to deliver; a task
+        # on another repository of its own project is outside the publisher.
+        await _seed_task(
+            db, "failed", pid="p-dev", status=TaskStatus.FAILED, repo_id="dev-repo",
+            branch_name="aq/failed",
+        )
+        await _seed_task(db, "branchless", pid="p-dev", status=TaskStatus.COMPLETED)
+        await db.create_repo(
+            RepoConfig(
+                id="dev-docs", project_id="p-dev", source_type=RepoSourceType.CLONE,
+                url="https://example.test/docs.git",
+            )
+        )
+        await _completed_with_close(db, "docs", repo_id="dev-docs", commit="d" * 40)
+        await _backdate(db, "failed", "branchless", "docs")
+
+        archived = await db.archive_old_terminal_tasks(
+            ["COMPLETED", "FAILED"], older_than_seconds=3600
+        )
+
+        assert sorted(archived) == ["branchless", "docs", "failed"]
+
+
+class TestBulkArchiveCommandReportsDeliveryPending:
+    @pytest.fixture
+    async def handler(self, db, tmp_path):
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        return CommandHandler(orchestrator, config)
+
+    async def test_bulk_command_skips_and_names_the_undelivered_task(self, handler, db):
+        await _seed_development_project(db)
+        await _completed_with_close(db, "t-undelivered", repo_id="dev-repo", commit="e" * 40)
+        await _seed_task(db, "t-free", pid="p-dev", status=TaskStatus.COMPLETED, title="Free")
+
+        result = await handler.execute("archive_task", {"project_id": "p-dev"})
+
+        assert result["archived_ids"] == ["t-free"]
+        assert [(s["task_id"], s["code"]) for s in result["skipped"]] == [
+            ("t-undelivered", "hierarchy.delivery_pending")
+        ]
