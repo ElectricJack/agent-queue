@@ -76,7 +76,10 @@ It is deliberately conservative about the two things that are not really
 "fields". Routing (`profile_id`, `intelligence_class`) is refused while a worker
 holds the task, because retargeting a running agent silently is worse than
 refusing. Pausing is refused outright — `pause_task` exists so the running
-session is stopped as part of the transition.
+session is stopped as part of the transition. A cross-project move is likewise
+refused while the task has a parent, children, or an active hierarchy/train
+branch origin: moving only its row would strand project-scoped hierarchy and
+delivery state. Detach or settle that state before moving the standalone task.
 
 ## When a playbook uses it
 
@@ -161,7 +164,7 @@ the result carries a `warning` saying the task will fail at execution time.
 
 | Outcome | Cause |
 |---|---|
-| `rejected` | Unknown task, project, profile or affinity agent; `status: PAUSED`; a status change on a manually paused task; a routing change while the task is running or claimed (either from the pre-check or from `update_task_routing` returning rowcount 0); an invalid `status`, `task_type`, `verification_type`, `integration_mode`, `affinity_reason` or `workspace_mode`; a class with no mapping for the profile's harness provider; or no updatable field at all. |
+| `rejected` | Unknown task, project, profile or affinity agent; a cross-project move of a task with a parent, children, or active hierarchy/train branch origin; `status: PAUSED`; a status change on a manually paused task; a routing change while the task is running or claimed (either from the pre-check or from `update_task_routing` returning rowcount 0); an invalid `status`, `task_type`, `verification_type`, `integration_mode`, `affinity_reason` or `workspace_mode`; a class with no mapping for the profile's harness provider; or no updatable field at all. |
 | `unauthorized` | The capability gate refused `edit_task` for the step principal. |
 | `contract_violation` | The dict did not satisfy `EditTaskValue` (`updated` and `fields` are required), or the outcome has no transition and there is no `runtime_error` edge. |
 | `input_resolution_failed` | A resolved input failed `EditTaskArgs` — e.g. `priority` bound to a string. |
