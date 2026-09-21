@@ -39,6 +39,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.preflight import daemon_functional_preflight
 from src.integration.scheduler import IntegrationScheduler
 
@@ -54,7 +55,7 @@ _ACTIVE_BATCH_STATES = (
     "promoting",
     "cleanup_pending",
 )
-_ACTIVE_OPERATION_STATES = ("active", "escalated", "human_required")
+_ACTIVE_OPERATION_STATES = ACTIVE_OPERATION_STATES
 _DEFERRED_CERTIFICATION = ("protection", "scratch_probe", "transport_isolation")
 _LEGACY_POLICY_OFF = {
     "merge_sweep_suppressed": False,

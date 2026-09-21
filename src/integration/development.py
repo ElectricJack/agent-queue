@@ -1089,10 +1089,13 @@ class DevelopmentIntegration:
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from src.database.tables import (
+            integration_batches,
             integration_branch_owners,
             integration_legacy_suppression,
             integration_promotion_intents,
+            project_integration_leases,
         )
+        from src.integration.live_operations import describe_live_operation, live_operations_on
 
         policy = DevelopmentPolicy.model_validate(policy).checked()
         if not reason.strip():
@@ -1147,6 +1150,67 @@ class DevelopmentIntegration:
             raise ValueError("project repository needs a remote URL")
         async with self.exclusion(repo.id), self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
+            current_mode = await conn.scalar(
+                select(projects.c.hierarchical_integration_mode).where(projects.c.id == project_id)
+            )
+            # Development does not run hierarchy repair operations.  Leaving
+            # one behind makes it permanently unschedulable, so a transition
+            # must make the operator explicitly settle it first.
+            if current_mode in {"hierarchy", "train"}:
+                live_operations = await live_operations_on(conn, project_id)
+                active_batches = (
+                    await conn.execute(
+                        select(
+                            integration_batches.c.id,
+                            integration_batches.c.lifecycle,
+                            integration_batches.c.cleanup_state,
+                        )
+                        .where(integration_batches.c.project_id == project_id)
+                        .where(
+                            integration_batches.c.lifecycle.in_(
+                                (
+                                    "sealing",
+                                    "sealed",
+                                    "building",
+                                    "testing",
+                                    "repairing",
+                                    "human_blocked",
+                                    "promoting",
+                                    "cleanup_pending",
+                                )
+                            )
+                            | (
+                                (integration_batches.c.lifecycle == "promoted")
+                                & (integration_batches.c.cleanup_state != "complete")
+                            )
+                        )
+                        .order_by(integration_batches.c.created_at, integration_batches.c.id)
+                    )
+                ).mappings().all()
+                lease = (
+                    await conn.execute(
+                        select(project_integration_leases).where(
+                            project_integration_leases.c.project_id == project_id
+                        )
+                    )
+                ).mappings().one_or_none()
+                if live_operations or active_batches or lease is not None:
+                    details = [
+                        describe_live_operation(operation) for operation in live_operations
+                    ]
+                    details.extend(
+                        f"batch {batch['id']} ({batch['lifecycle']}, cleanup "
+                        f"{batch['cleanup_state']})"
+                        for batch in active_batches
+                    )
+                    if lease is not None:
+                        details.append(
+                            f"lease for batch {lease['batch_id']} held by {lease['owner_id']}"
+                        )
+                    raise DevelopmentBusy(
+                        "cannot switch hierarchy integration to development while legacy "
+                        "integration work remains: " + "; ".join(details)
+                    )
             # Old in-flight default-branch writes must settle before switching publishers.
             pending = await conn.scalar(
                 select(integration_promotion_intents.c.id)
