@@ -289,12 +289,16 @@ async def test_a_refreshed_bundle_imports_as_the_current_artifact(tmp_path):
     try:
         ensure_reviewed_playbook_bundles(str(tmp_path))
         bundle = tmp_path / "vault" / "reviewed-playbooks" / "ci-main-sentinel"
-        superseded = (bundle / "artifact.json").read_bytes().replace(b"ci-main-sentinel", b"stale-x")
+        superseded = (
+            (bundle / "artifact.json").read_bytes().replace(b"ci-main-sentinel", b"stale-x")
+        )
         (bundle / "artifact.json").write_bytes(superseded)
 
         ensure_reviewed_playbook_bundles(str(tmp_path))
         handler = _Handler(tmp_path, db)
-        imported = await handler._cmd_playbook_v2_import({"path": "reviewed-playbooks/ci-main-sentinel"})
+        imported = await handler._cmd_playbook_v2_import(
+            {"path": "reviewed-playbooks/ci-main-sentinel"}
+        )
 
         shipped_sha = (
             (reviewed_bundle_source() / "ci-main-sentinel" / "artifact.sha256")
