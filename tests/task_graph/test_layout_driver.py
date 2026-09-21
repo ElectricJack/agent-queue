@@ -8,7 +8,7 @@ from src.models import Project, Task, TaskStatus
 from src.task_graph.layout import driver as driver_module
 from src.task_graph.layout.constants import CARD_W, SIBLING_GAP
 from src.task_graph.layout.driver import LayoutDriver
-from src.task_graph.layout.flow import row_target
+from src.task_graph.layout.flow import clamp_row_target, row_target
 from tests.db_fixtures import lease_dsn
 
 
@@ -863,11 +863,26 @@ async def test_incremental_trajectory_is_stable(db):
     assert marks == []
 
     # ── finish ────────────────────────────────────────────────────────
+    # A finishing leaf is ``_aggregates_only``: ``all`` rewrites counters in
+    # place and ``active`` deletes the row, so NO container is re-laid at
+    # all. Assert that, not "every pass that ran changed nothing" — there
+    # are no passes, and that assertion would hold vacuously.
+    positions = {v: await _positions(db, v) for v in ("all", "active")}
     await _finish(db, "e-n1")
     records.clear()
     with _record_ordinals(records):
         await _drain(db, drv)
-    assert all(changed == set() for _, changed in records), records
+    assert records == []
+    for variant, before_xy in positions.items():
+        after_xy = await _positions(db, variant)
+        assert {t: xy for t, xy in after_xy.items() if t in before_xy} == {
+            t: xy for t, xy in before_xy.items() if t in after_xy
+        }, variant
+        assert _total_movement(before_xy, after_xy) == 0.0, variant
+        # ``active`` drops the finished leaf; ``all`` keeps it in place.
+        assert (set(before_xy) - set(after_xy)) == (
+            {"e-n1"} if variant == "active" else set()
+        ), variant
 
     # ── create-next ───────────────────────────────────────────────────
     before = {v: await db.load_subtree_rows("p1", v) for v in ("all", "active")}
@@ -897,9 +912,19 @@ async def test_published_positions_move_only_on_a_band_crossing(db):
     await _drain(db, drv)
 
     def scope_shape(rows):
+        """What actually governs the epic's wrapping: the CLAMPED target
+        (the ideal can move without the published one moving, and vice
+        versa), plus the box the epic is allocated."""
+        kids = {k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"}
+        ordered: dict[int, list[str]] = {}
+        for k, r in sorted(rows.items()):
+            if r.container_id == "e":
+                ordered.setdefault(r.rank, []).append(k)
+        ideal = row_target(kids, is_root=False)
         return (
-            row_target({k: (r.w, r.h) for k, r in rows.items() if r.container_id == "e"},
-                       is_root=False),
+            clamp_row_target(
+                [ordered[r] for r in sorted(ordered)], kids, is_root=False, target=ideal
+            ),
             (rows["e"].w, rows["e"].h),
         )
 
@@ -933,3 +958,76 @@ async def test_published_positions_move_only_on_a_band_crossing(db):
 
     # The fixture must exercise BOTH branches, or one of them is vacuous.
     assert 1 <= crossings < 14
+
+
+# ── activity-aware tidy seed (reorganisation design §3.2) ───────────────
+
+
+async def _seed_activity_fixture(db):
+    """Three root epics created oldest-first: finished, open, running."""
+    done = await seed_epic(db, epic="e-done", n=2, completed=2)
+    await seed_epic(db, epic="e-open", n=2)
+    running = await seed_epic(db, epic="e-run", n=1)
+    for status in (TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+        await db.transition_task(running[0], status)
+    return done, running
+
+
+def _reading_order(rows, ids):
+    present = [i for i in ids if i in rows]
+    return sorted(present, key=lambda i: (rows[i].rel_y, rows[i].rel_x))
+
+
+@pytest.mark.parametrize("variant", ["all", "active"])
+async def test_a_finished_epic_sorts_after_a_running_sibling_after_a_full_layout(db, variant):
+    await _seed_activity_fixture(db)
+    await LayoutDriver(db).full_layout("p1", variant)
+    rows = await db.load_layout_rows("p1", variant, ["e-done", "e-open", "e-run"])
+    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-run", "e-open", "e-done"]
+
+
+async def test_full_layout_seeds_containers_with_fresh_aggregates(db):
+    """The seed classes an epic from the SNAPSHOT, not from the aggregate
+    columns of the previously published row (which the incremental path
+    refreshes only after its pass, so they can be stale)."""
+    from sqlalchemy import update
+
+    from src.database.tables import task_layouts
+
+    await _seed_activity_fixture(db)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    # Lie in the stored rows: the finished epic claims a running descendant
+    # and the running epic claims none.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(task_layouts)
+            .where(task_layouts.c.project_id == "p1", task_layouts.c.task_id == "e-done")
+            .values(agg_running=9, agg_active=9)
+        )
+        await conn.execute(
+            update(task_layouts)
+            .where(task_layouts.c.project_id == "p1", task_layouts.c.task_id == "e-run")
+            .values(agg_running=0, agg_active=0)
+        )
+    await drv.full_layout("p1", "all")
+    rows = await db.load_layout_rows("p1", "all", ["e-done", "e-open", "e-run"])
+    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-run", "e-open", "e-done"]
+
+
+async def test_incremental_work_still_appends_between_tidies(db):
+    """The first slice reorders at the tidy seed only: a sibling created after
+    a tidy still appends at the end of its rank and moves nothing."""
+    await _seed_activity_fixture(db)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    before = await db.load_layout_rows("p1", "all", ["e-done", "e-open", "e-run"])
+    await db.create_task(Task(id="z-new", project_id="p1", title="z", description=""))
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", ["z-new"], "task.created", conn=conn)
+    await drv.process_dirty("p1", min_age_seconds=0)
+    after = await db.load_layout_rows("p1", "all", ["e-done", "e-open", "e-run", "z-new"])
+    for tid, row in before.items():
+        assert after[tid].ordinal == row.ordinal
+    assert after["z-new"].rank == 0
+    assert after["z-new"].order_key > max(r.order_key for r in before.values())

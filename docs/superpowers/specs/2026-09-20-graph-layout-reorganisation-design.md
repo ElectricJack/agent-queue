@@ -310,7 +310,8 @@ box the canvas draws):
 | 500 cards | 4.65 × 152.83 → 6 × 192 (1152 u²) | 47.8 | 47.20 × 16.19 → 48 × 24 (**1152 u²**) |
 
 **The allocated area never grows; at 20 and 40 children it halves.** S5 is answered rather
-than argued away.
+than argued away — but only *for these homogeneous scopes*. See the clamp below, which is
+what makes the statement true in general.
 
 And the operator's first screenshot, re-flowed: the 12-unit epic plus 8 cards becomes a
 single line, `epic (0, 0)`, `c0..c7` at `x = 12.15 … 20.20, y = 0` — content 21.40 × 6.55
@@ -332,6 +333,38 @@ content no longer lands under a growth band, so the 60-card epic's drawn box goe
 ladder doubles, so aspect snaps coarsely — a 60-card scope is 5.8:1 landscape rather than
 ~2:1. A finer growth ladder is the remedy and is an open question (§7.3), not bundled here.
 
+**The never-grows clamp (t24 finding F1).** The table above is unit cards. For a
+*heterogeneous* scope — one tall child plus small ones, which is exactly what a container
+holding a container looks like, i.e. this change's whole blast radius — the ideal can buy
+width that the growth ladder then charges a whole band for, and the drawn box **doubles**:
+`{pkg (3.0, 6.0), 4 unit cards}` goes from `6 × 12` (72 u²) at the floor to `12 × 12`
+(144 u²) at the ideal 11.8, as does `{(3,3), (1,1), (1,3), (1,6)}`. A 4,000-scope random
+sweep found growth in ~8% of non-root scopes, worst ×2, and a fatter child widens its
+parent's target, so it cascades upward.
+
+So the property is **enforced, not hoped for**. `clamp_row_target(ordered, sizes, …,
+target)` steps the ideal down the row ladder until the flow's allocated area is no bigger
+than the **floor** target's for the same children in the same ordering; the floor always
+qualifies, because it is the baseline. It runs **once per container pass**, on the
+ordering that is actually published — so "the drawn box never grows" is true by
+construction rather than by sampling — and costs at most
+`1 + len(row_target_rungs(floor, up_to=target))` flow passes, i.e. O(log scope width), and
+nothing at all when the target is already the floor. The unit-card table above is
+unaffected: the clamp never fires there.
+
+**The root is exempt, on purpose.** It is never banded — `allocated is content`
+(`flow.py:97-98`) — so there is no band to snap up and F1's failure mode does not exist
+for it, and it has no parent to push. Area is also the wrong measure for the root: trading
+width for height is precisely symptom 1's fix, and the operator's own screenshot gains
+area by doing it (12.20 × 8.99 in three ragged lines → 21.40 × 6.55 in one). Clamping the
+root by area would step that straight back to 12.20 × 7.77 in two lines, i.e. throw the
+headline fix away. So the clamp is applied to containers, which are what "the drawn box"
+means, and F1's own evidence — both counterexamples and the ~8% sweep — is non-root.
+
+The tidy sweep keeps evaluating against the *unclamped* ideal, which depends on `sizes`
+alone. That is deliberate: the sweep's cost landscape stays continuous and independent of
+the candidate ordering, and only the single publishing flow pays for the clamp.
+
 **Alternative rejected: a viewport-derived target.** The persisted layout is shared and
 must not depend on who is looking (§3.5).
 
@@ -339,7 +372,8 @@ must not depend on who is looking (§3.5).
 per `layout_container` call** and threaded through `_evaluate`, never recomputed inside it
 — `_tidy_sweep` calls `_evaluate` thousands of times (`engine.py:309-331`). It depends
 only on `sizes`, never on the candidate ordering, so the cost landscape stays continuous
-and G5 is untouched. Net asymptotic change: none.
+and G5 is untouched. `clamp_row_target` adds O(log scope width) flow passes, also once per
+`layout_container` call and also outside `_evaluate`. Net asymptotic change: none.
 
 **Guarantees.** G1, G2, G5, G6, G7 unchanged. **G3 is relaxed, bounded**: crossing a
 row-target band re-wraps one scope. Because the ladder is the growth ladder, a row-target
@@ -354,7 +388,7 @@ those subtrees and rewrites their `task_layout_cells` rows (`publish_layout`,
 `src/database/queries/layout_queries.py:484`). That is exactly the cost
 `test_root_band_crossing_publish_under_1s` already pins, and §5 Task 1 adds a sibling test
 for the row-target case at the same seed scale. A wider scope also covers more 8×8 cells
-(`flow.py:178-184`) — but the totals above show the allocated box never grows, so the cell
+(`flow.py:178-184`) — but the clamp guarantees the allocated box never grows, so the cell
 count cannot grow either.
 
 ### 3.2 Ordering that surfaces active work — at the tidy seed only
@@ -436,7 +470,32 @@ So the ledger *is* the convergence record:
   ('queued','running'))` **regardless of kind** and returns the existing row. So the
   caller must check `job["kind"] == kind`; if an unrelated tidy is in flight the pair is
   left stale and retried on a later sweep. Self-limiting and idempotent.
-- A `failed` rules job is not treated as convergence, so it is retried on a later sweep.
+- A `failed` rules job is not treated as convergence, so it is retried on a later sweep —
+  but the walk is **two passes**: never-attempted pairs first, then failed ones, capped at
+  `MAX_RULES_ATTEMPTS = 3` failures per `(project, variant, version)`, after which the pair
+  is skipped with one WARNING naming it and its last error. Without the split, one pair
+  that fails deterministically would be re-picked every sweep and nothing else would ever
+  converge; bumping the version starts a new ledger and a fresh budget.
+- Nothing else resets a `running` job (`next_layout_job` claims only `queued`) and shutdown
+  waits 30 s while a tidy may run 60, so a restart mid-rebuild could leave a row `running`
+  forever — which would wedge the fleet-wide stand-down *and* count as convergence for its
+  pair. The sweep therefore begins with a reaper: any job `running` for more than
+  `4 x tidy_job_budget_seconds` is marked `failed` ("orphaned: daemon stopped mid-job") and
+  logged once at WARNING. The job runner also records a cancelled job as failed in a
+  `finally`, for the case the process survives the cancellation. Both cover operator tidies
+  and backfills too; neither needs a schema change (`layout_jobs.started_at` already exists).
+- Convergence walks **ACTIVE** projects only — a paused or archived project must not spend a
+  CPU-bound full layout. (The reconcile loop above it is unchanged and still walks all.)
+- Cost: **five statements per sweep, flat**, whatever the project count — the reaper, the
+  ledger (`layout_job_ledger`, one row-set for the whole fleet), the published-pair set
+  (`published_layout_variants`), the active-project list, and at most one enqueue.
+
+**What an operator sees.** `enqueue_layout_job` de-duplicates per `(project, variant)`
+whatever the kind, so an `aq graph tidy` (or the dashboard's Tidy button) issued while a
+`rules:<n>` job is already queued for that pair is served by that job and the response
+shows `kind: rules:<n>` — the rebuild is the same full layout either way. And because the
+job queue is FIFO, an operator Tidy may wait behind at most **one** rules rebuild, since
+convergence never queues a second while one is in flight.
 
 **Blast radius, stated plainly (review S4).** `row_target` depends on the children's
 allocated sizes, so **any container holding a container child changes** — i.e. essentially

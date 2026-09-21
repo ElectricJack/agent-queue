@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from src.database import Database
@@ -232,6 +234,30 @@ async def test_edges_touching_and_matching(db):
     assert await db.load_matching_ids("p1", "all", q="", status="DEFINED") == {"a", "b", "c"}
 
 
+async def test_edges_touching_drops_rows_that_share_an_owner(db):
+    """With an owner map the database returns only edges that get drawn.
+
+    ``a``/``b`` sit inside collapsed container ``box``; ``far`` is outside it.
+    The a->b edge is drawn nowhere (both endpoints dock at ``box``), so it
+    must not cross the wire at all, while the edge leaving the container and
+    the edge to an endpoint with no owner row both survive.
+    """
+    for t in ("box", "a", "b", "far", "outside"):
+        await db.create_task(Task(id=t, project_id="p1", title=t, description=""))
+    await db.add_dependency("b", "a")  # inside the collapsed container
+    await db.add_dependency("far", "b")  # leaves it
+    await db.add_dependency("outside", "a")  # leaves it, to an unowned endpoint
+    ids = ["box", "a", "b", "far"]
+    owners = {"box": "box", "a": "box", "b": "box", "far": "far"}
+    assert await db.load_edges_touching(ids, owners=owners) == [
+        ("far", "b", "blocks", None),
+        ("outside", "a", "blocks", None),
+    ]
+    # Without the map the caller still gets every touching row, the b->a one
+    # included -- that is the arm `remap_edges` then has to discard.
+    assert len(await db.load_edges_touching(ids)) == 3
+
+
 async def test_matching_ids_treats_like_metacharacters_literally(db):
     await db.create_task(Task(id="pct", project_id="p1", title="Done 50% of it", description=""))
     await db.create_task(Task(id="und", project_id="p1", title="Done 50x of it", description=""))
@@ -288,3 +314,139 @@ async def test_matching_rows_ordered_caps_in_sql(db):
         "p1", "all", q="", status="DEFINED", limit=10
     )
     assert [r.task_id for r in rows] == ["b", "c", "a"] and truncated is False
+
+
+async def test_snapshot_carries_phase_order(db):
+    await db.create_task(Task(id="p1a", project_id="p1", title="Phase 1", description=""))
+    await db.create_task(Task(id="loose", project_id="p1", title="Loose", description=""))
+    await db.set_task_meta("p1a", "phase", {"order": 2, "label": "Build"})
+    tasks, _ = await db.load_project_snapshot("p1")
+    assert tasks["p1a"].phase_order == 2
+    assert tasks["loose"].phase_order is None
+
+
+async def test_snapshot_reads_metadata_in_one_statement(db):
+    """The snapshot load is on the 5-second dirty path, not just the full
+    layout: container flags and phase orders share ONE ``task_metadata``
+    read, and the whole load stays at three statements."""
+    from sqlalchemy import event
+
+    await db.create_task(Task(id="ph", project_id="p1", title="Phase", description=""))
+    await db.create_task(Task(id="c", project_id="p1", title="Child", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("c", "ph", conn=conn)
+    await db.set_task_meta("ph", "phase", {"order": 1, "label": "Build"})
+
+    statements: list[str] = []
+
+    def _hook(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", _hook)
+    try:
+        tasks, _ = await db.load_project_snapshot("p1")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", _hook)
+
+    assert tasks["ph"].is_container and tasks["ph"].phase_order == 1
+    meta_reads = [s for s in statements if "task_metadata" in s]
+    assert len(meta_reads) == 1, meta_reads
+    selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert len(selects) == 3, selects
+
+
+async def test_the_ledger_ignores_failed_and_other_kinds(db):
+    """The ledger answers "converged", not "a job once existed".
+
+    A ``failed`` job is not convergence (the rebuild never happened) but it
+    does spend retry budget, and a job of a different kind — an operator
+    tidy, a backfill, an older rules version — says nothing about the
+    current engine rules.
+    """
+    kind = "rules:1"
+    assert await db.layout_job_ledger(kind) == {}
+
+    tidy = await db.enqueue_layout_job("p1", "all", "tidy")
+    await db.finish_layout_job(tidy["id"], error=None)
+    older = await db.enqueue_layout_job("p1", "all", "rules:0")
+    await db.finish_layout_job(older["id"], error=None)
+    assert await db.layout_job_ledger(kind) == {}
+
+    failed = await db.enqueue_layout_job("p1", "all", kind)
+    await db.finish_layout_job(failed["id"], error="boom")
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry == {"settled": False, "in_flight": False, "failed": 1, "last_error": "boom"}
+
+    queued = await db.enqueue_layout_job("p1", "all", kind)
+    ledger = await db.layout_job_ledger(kind)
+    assert ledger[("p1", "all")]["settled"] and ledger[("p1", "all")]["in_flight"]
+    assert set(ledger) == {("p1", "all")}  # per (project, variant), nothing else
+
+    await db.finish_layout_job(queued["id"], error=None)
+    entry = (await db.layout_job_ledger(kind))[("p1", "all")]
+    assert entry["settled"] and not entry["in_flight"] and entry["failed"] == 1
+
+
+async def test_published_layout_variants_lists_every_published_pair(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    assert await db.published_layout_variants() == set()
+    await LayoutDriver(db).full_layout("p1", "all")
+    assert await db.published_layout_variants() == {("p1", "all")}
+
+
+async def test_reap_stale_layout_jobs_only_takes_the_long_running_ones(db):
+    """Nothing else resets a ``running`` row, so a daemon killed mid-rebuild
+    would leave one forever."""
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_jobs
+
+    orphan = await db.enqueue_layout_job("p1", "all", "rules:1")
+    live = await db.enqueue_layout_job("p1", "active", "tidy")
+    queued = await db.enqueue_layout_job("p2", "all", "rules:1")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == orphan["id"])
+            .values(status="running", started_at=now - 500)
+        )
+        await conn.execute(
+            sa_update(layout_jobs)
+            .where(layout_jobs.c.id == live["id"])
+            .values(status="running", started_at=now - 5)
+        )
+
+    reaped = await db.reap_stale_layout_jobs(started_before=now - 240, error="orphaned: boom")
+
+    assert [r["id"] for r in reaped] == [orphan["id"]]
+    assert reaped[0]["kind"] == "rules:1" and reaped[0]["variant"] == "all"
+    row = await db.get_layout_job(orphan["id"])
+    assert row["status"] == "failed" and row["error"] == "orphaned: boom"
+    assert (await db.get_layout_job(live["id"]))["status"] == "running"
+    assert (await db.get_layout_job(queued["id"]))["status"] == "queued"
+
+
+async def test_a_rules_job_runs_a_full_layout(db):
+    """``kind`` is a ledger label only: the job path never looks at it."""
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    await db.create_task(Task(id="b", project_id="p1", title="b", description=""))
+    drv = LayoutDriver(db)
+    first = await drv.full_layout("p1", "all")
+    assert (await db.get_layout_meta("p1", "all"))["layout_version"] == first
+
+    job = await db.enqueue_layout_job("p1", "all", "rules:1")
+    claimed = await db.next_layout_job()
+    assert claimed["id"] == job["id"] and claimed["kind"] == "rules:1"
+    await drv.full_layout(claimed["project_id"], claimed["variant"])
+    await db.finish_layout_job(claimed["id"], error=None)
+
+    meta = await db.get_layout_meta("p1", "all")
+    assert meta["layout_version"] == first + 1
+    rows = await db.load_layout_rows("p1", "all", ["a", "b"])
+    assert set(rows) == {"a", "b"}
+    assert (await db.layout_job_ledger("rules:1"))[("p1", "all")]["settled"] is True

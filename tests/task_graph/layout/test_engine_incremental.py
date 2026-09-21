@@ -182,44 +182,129 @@ def test_wallclock_stub_does_not_change_result(monkeypatch):
 def test_target_is_computed_once_per_container_pass(monkeypatch):
     """``_tidy_sweep`` calls ``_evaluate`` thousands of times. The row target
     depends only on the children's sizes, so recomputing it inside the hot
-    loop would be a pure regression (reorganisation design §3.1)."""
+    loop would be a pure regression (reorganisation design §3.1). The
+    never-grows clamp is likewise once per pass, and its own cost is bounded
+    by the ladder: ``1 + len(row_target_rungs(floor, up_to=target))`` flow
+    passes (t24 finding F1)."""
     from src.task_graph.layout import flow as flow_module
 
-    calls = {"n": 0, "evals": 0}
+    calls = {"row_target": 0, "clamp": 0, "flows": 0}
     real_row_target = flow_module.row_target
+    real_clamp = flow_module.clamp_row_target
     real_flow_container = flow_module.flow_container
 
     def counting_row_target(*a, **kw):
-        calls["n"] += 1
+        calls["row_target"] += 1
         return real_row_target(*a, **kw)
 
+    def counting_clamp(*a, **kw):
+        calls["clamp"] += 1
+        return real_clamp(*a, **kw)
+
     def counting_flow_container(*a, **kw):
-        calls["evals"] += 1
+        calls["flows"] += 1
         return real_flow_container(*a, **kw)
 
     monkeypatch.setattr(flow_module, "row_target", counting_row_target)
     monkeypatch.setattr(engine_module, "row_target", counting_row_target)
+    monkeypatch.setattr(engine_module, "clamp_row_target", counting_clamp)
     monkeypatch.setattr(engine_module, "flow_container", counting_flow_container)
 
     ids = [f"t{i}" for i in range(20)]
     kids = [task(i, created=k) for k, i in enumerate(ids)]
     edges = [(ids[i], ids[i - 4]) for i in range(4, 20)]
-    layout_container(scope(kids, edges=edges), mode="tidy")
+    # A real container, not the root: the root is deliberately not clamped.
+    inner = ContainerScope(
+        container_id="e",
+        container_path="/e/",
+        depth=1,
+        children={t.id: t for t in kids},
+        existing={},
+        sibling_edges=list(edges),
+        child_sizes={t.id: (CARD_W, CARD_H) for t in kids},
+        origin=(0.0, 0.0),
+    )
+    layout_container(inner, mode="tidy")
 
-    assert calls["evals"] > 1  # the sweep really did run
-    assert calls["n"] == 1
+    assert calls["flows"] > 1  # the sweep really did run
+    assert calls["row_target"] == 1
+    assert calls["clamp"] == 1
 
 
-def test_deterministic_under_shuffled_size_dicts():
-    """Dict insertion order is not a layout input: the row target sums an
-    unordered area and the flow reads sizes by id."""
+def test_deterministic_under_shuffled_inputs():
+    """Dict insertion order is not a layout input: ``_sizes`` rebuilds the
+    size map by walking ``scope.children``, so it is the CHILDREN's order
+    that reaches the row target's float summation."""
     ids = [f"t{i}" for i in range(12)]
-    kids = [task(i, created=k, container=True) for k, i in enumerate(ids)]
     sizes = {i: (1.0 + (k % 5), 1.0 + (k % 3)) for k, i in enumerate(ids)}
+    kids = [task(i, created=k, container=True) for k, i in enumerate(ids)]
     forward = layout_container(scope(kids, sizes=dict(sizes)), mode="tidy")
     reverse = layout_container(
-        scope(kids, sizes={k: sizes[k] for k in reversed(ids)}), mode="tidy"
+        scope(
+            list(reversed(kids)),
+            sizes={k: sizes[k] for k in reversed(ids)},
+        ),
+        mode="tidy",
     )
     assert {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in forward.rows.items()} == \
            {k: (r.ordinal, r.rel_x, r.rel_y) for k, r in reverse.rows.items()}
     assert forward.allocated == reverse.allocated
+
+
+def test_a_container_never_publishes_a_bigger_box_than_the_floor_would(monkeypatch):
+    """The clamp reaches the published geometry, not just ``flow.py``.
+
+    ``{pkg (3.0, 6.0), 4 unit cards}`` is one of F1's counterexamples: its
+    ideal target is 11.8, which draws a 12 x 12 box where the floor draws
+    6 x 12. The engine must publish the floor's box.
+    """
+    kids = [task("pkg", container=True)] + [task(f"c{i}", created=i) for i in range(4)]
+    s = ContainerScope(
+        container_id="e",
+        container_path="/e/",
+        depth=1,
+        children={t.id: t for t in kids},
+        existing={},
+        sibling_edges=[],
+        child_sizes={"pkg": (3.0, 6.0)},
+        origin=(0.0, 0.0),
+    )
+    res = layout_container(s, mode="tidy")
+    assert res.allocated == (6.0, 12.0)
+    assert res.allocated[0] * res.allocated[1] == 72.0
+
+
+def test_the_root_is_not_clamped_so_a_wide_epic_keeps_its_line_mates():
+    """Symptom 1's fix is a ROOT effect. The root is never banded, so the
+    clamp — which compares drawn boxes — must not be applied to it, or the
+    operator's screenshot goes straight back to three ragged lines."""
+    kids = [task("epic", container=True)] + [task(f"c{i}", created=i + 1) for i in range(8)]
+    s = scope(kids, sizes={"epic": (12.0, 6.0)})
+    res = layout_container(s, mode="tidy")
+    assert len({r.rel_y for r in res.rows.values()}) == 1  # one line
+
+
+def test_incremental_ordering_ignores_activity_and_aggregates():
+    """The activity-aware seed is a TIDY-only change (reorganisation design
+    §3.2): incremental placement is still pure creation order, whatever the
+    children's statuses are and whatever aggregates the scope carries."""
+    plain = [task(f"n{i}", created=i) for i in range(6)]
+    mixed = [
+        SnapTask(
+            id=f"n{i}",
+            parent_id=None,
+            is_container=i % 2 == 0,
+            status=("COMPLETED", "IN_PROGRESS", "READY")[i % 3],
+            created_at=i,
+            phase_order=(None, 1, 2)[i % 3],
+        )
+        for i in range(6)
+    ]
+    aggs = {f"n{i}": {"descendants": 3, "running": i % 2, "active": 3} for i in range(6)}
+    baseline = layout_container(scope(plain), mode="incremental")
+    s = scope(mixed)
+    s.child_aggregates = aggs
+    with_activity = layout_container(s, mode="incremental")
+    assert {c: r.ordinal for c, r in with_activity.rows.items()} == {
+        c: r.ordinal for c, r in baseline.rows.items()
+    }

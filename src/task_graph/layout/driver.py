@@ -268,6 +268,10 @@ def build_full_write_set(
             sibling_edges=rank_edges.get(container_id, []),
             child_sizes={k: sizes[k] for k in kids if k in sizes},
             stub_ids=frozenset(s for s in stubs if s in kids),
+            # ``aggs`` was computed above, before this first ``lay()``, so the
+            # tidy seed classes a container from THIS snapshot rather than
+            # from whatever the last published row happened to carry (§3.2).
+            child_aggregates={k: aggs[k] for k in kids if k in aggs},
         )
         res = layout_container(scope, mode=container_mode, seed=seed)
         rel_rows.update(res.rows)

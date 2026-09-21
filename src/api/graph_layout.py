@@ -478,7 +478,18 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         )
         hidden_owner = owner_map(hidden_paths, collapsed_resolved)
         touching = set(visible) | set(hidden_owner)
-        raw_edges = await db.load_edges_touching(touching)
+        # The owner map goes down with the ids so the database can drop the
+        # edges that are invisible by construction -- both endpoints inside
+        # the same collapsed container -- instead of shipping them here for
+        # `remap_edges` to discard.  A collapsed container owns every edge in
+        # its subtree, so on a fully collapsed view those are essentially all
+        # of them: 9,970 rows read to draw 50 on the §9 reference project.
+        # Visible wins over hidden, exactly as `remap_edges.target` orders the
+        # two lookups: a collapsed container appears in `hidden_owner` under
+        # its own path and must still stand for itself.
+        owners = dict(hidden_owner)
+        owners.update({t: t for t in visible})
+        raw_edges = await db.load_edges_touching(touching, owners=owners)
         wire, _orphans = remap_edges(raw_edges, visible, hidden_owner)
         # Stub candidates are every wire endpoint that is not visible: plain
         # orphans, plus containers an edge was remapped onto that the rect or

@@ -13,6 +13,9 @@ class SnapTask:
     status: str
     created_at: float
     title: str = ""
+    #: ``task_metadata["phase"]["order"]`` when this task is a declared
+    #: phase, else ``None``. A tidy-seed input only (§3.2).
+    phase_order: int | None = None
 
 
 @dataclass
@@ -55,6 +58,11 @@ class ContainerScope:
     child_sizes: dict[str, tuple[float, float]]  # allocated (w, h) for container children
     stub_ids: frozenset[str] = frozenset()  # container children rendered as stubs
     origin: tuple[float, float] = (0.0, 0.0)  # abs coords of container content origin
+    # Subtree rollups for the children, by task_id. Populated on the TIDY
+    # path only, where they are computed before the first ``lay()`` and are
+    # therefore fresh (§1.6); the incremental path refreshes aggregates
+    # after its pass, so it leaves this empty and never sorts on them.
+    child_aggregates: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass

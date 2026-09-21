@@ -22,6 +22,12 @@ from src.task_graph.layout.constants import (
 )
 
 
+#: Absolute tolerance when comparing two banded areas, which are sums of
+#: exactly-representable band products — this only absorbs the float noise
+#: of the comparison itself.
+_AREA_EPSILON = 1e-9
+
+
 @dataclass
 class FlowResult:
     positions: dict[str, tuple[float, float]] = field(default_factory=dict)
@@ -30,19 +36,47 @@ class FlowResult:
     lines_per_rank: list[int] = field(default_factory=list)
 
 
+def row_target_rungs(floor: float, *, up_to: float | None = None) -> tuple[float, ...]:
+    """The row-target ladder above ``floor``, ascending.
+
+    The rungs ARE the growth ladder, offset by the padding a container adds
+    to its content, so a scope flowed at a rung lands exactly under the
+    growth band it will be allocated at. ``up_to`` caps the ladder, which is
+    what makes it finite past ``GROWTH_BANDS``' last entry.
+    """
+    rungs: list[float] = []
+    band = GROWTH_BANDS[0]
+    for band in GROWTH_BANDS:
+        rung = band - 2 * PADDING
+        if rung > floor and (up_to is None or rung <= up_to):
+            rungs.append(rung)
+    if up_to is not None:
+        while band - 2 * PADDING < up_to:
+            band *= 2
+            rung = band - 2 * PADDING
+            if rung > floor and rung <= up_to:
+                rungs.append(rung)
+    return tuple(rungs)
+
+
 def row_target(sizes: Mapping[str, tuple[float, float]], *, is_root: bool) -> float:
-    """The width a scope's ranks wrap at (reorganisation design §3.1).
+    """The width a scope's ranks would ideally wrap at (design §3.1).
 
     A constant target makes a scope's width fixed and its height linear in
     the child count, so every big container degrades into a tall strip.
     Instead aim at ``sqrt(area) * ROW_ASPECT`` — a landscape-ish box — never
     narrower than the widest child (so a banded epic stops leaving its
-    line-mates packed into the floor), and snap the result to the growth
-    ladder minus padding so the resulting content lands *just under* the
-    band it will be allocated at and the drawn box never doubles.
+    line-mates packed into the floor), and snap the result up to the row
+    ladder so the resulting content lands *just under* the growth band it
+    will be allocated at.
 
     Below the floor the floor is returned verbatim, which is what keeps
     every small scope byte-identical to today.
+
+    This is the *ideal*, computed from the children's sizes alone so the
+    tidy sweep's cost landscape stays continuous. For a heterogeneous scope
+    the ideal can still cost a whole extra growth band; the publishing flow
+    passes it through :func:`clamp_row_target` first.
     """
     floor = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
     if not sizes:
@@ -51,13 +85,60 @@ def row_target(sizes: Mapping[str, tuple[float, float]], *, is_root: bool) -> fl
     want = max(math.sqrt(area) * ROW_ASPECT, max(w for w, _ in sizes.values()))
     if want <= floor:
         return floor
-    for band in GROWTH_BANDS:
-        if band - 2 * PADDING >= want:
-            return band - 2 * PADDING
     band = GROWTH_BANDS[-1]
     while band - 2 * PADDING < want:
         band *= 2
+    for rung in row_target_rungs(floor, up_to=band - 2 * PADDING):
+        if rung >= want:
+            return rung
     return band - 2 * PADDING
+
+
+def clamp_row_target(
+    ordered: list[list[str]],
+    sizes: dict[str, tuple[float, float]],
+    *,
+    is_root: bool,
+    target: float,
+    serpentine_chains: tuple[tuple[str, ...], ...] = (),
+    chain_target: float | None = None,
+) -> float:
+    """The widest rung at or below ``target`` that does not grow the box.
+
+    ``row_target``'s ideal balances the scope's *content*, but what the
+    canvas draws is the content rounded up to a growth band. For a
+    heterogeneous scope — one tall child plus small ones, i.e. exactly the
+    container-holding-container scopes this change's blast radius is made
+    of — buying width the aspect wants can cost a whole extra band and
+    double the drawn area (t24 finding F1).
+
+    So the property is enforced rather than hoped for: step down the ladder
+    until the flow's allocated area is no bigger than the floor target's for
+    these same children, in this same ordering. The floor always qualifies,
+    since it *is* the baseline. Costs at most ``1 + len(rungs <= target)``
+    flow passes — O(log(scope width)) — and nothing at all when the target
+    is already the floor.
+    """
+    floor = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
+    if target <= floor:
+        return floor
+
+    def area(candidate: float) -> float:
+        result = flow_container(
+            ordered,
+            sizes,
+            is_root=is_root,
+            serpentine_chains=serpentine_chains,
+            target=candidate,
+            chain_target=chain_target,
+        )
+        return result.allocated[0] * result.allocated[1]
+
+    baseline = area(floor)
+    for rung in reversed(row_target_rungs(floor, up_to=target)):
+        if area(rung) <= baseline + _AREA_EPSILON:
+            return rung
+    return floor
 
 
 def flow_container(
