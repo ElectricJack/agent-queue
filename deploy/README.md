@@ -244,10 +244,74 @@ Keeping `/data/workspaces` on a persistent volume is what keeps a task an
 incremental fetch into a reusable worktree slot rather than a fresh clone; see
 [`DESIGN.md` §4](DESIGN.md#4-repository-cost-already-solved-easy-to-regress).
 
+## Verifying the stack
+
+A smoke test that exercises the whole chain — scheduler, workspace acquisition,
+session launch, harness startup — against a throwaway repository.
+
+```bash
+D="docker compose -f docker-compose.prod.yml exec -T daemon"
+
+# 1. A repo for the agent to work in
+$D sh -c 'git config --global user.email aq@localhost;
+          git config --global user.name  "Agent Queue";
+          mkdir -p /data/workspaces/smoke-repo && cd /data/workspaces/smoke-repo &&
+          git init -q -b main &&
+          printf "def add(a, b):\n    return a + b\n" > calc.py &&
+          git add -A && git commit -qm "Initial commit"'
+
+# 2. Project + workspace
+$D aq project create --name smoke --default-branch main
+$D aq project add-workspace --project-id smoke --source link \
+      --path /data/workspaces/smoke-repo --name smoke-main
+
+# 3. A task. --intelligence-class is required here: without it the task parks
+#    on `awaiting_intelligence_route`, because the routing playbook that would
+#    assign one needs `playbooks.enabled`, which is off by default.
+$D aq task create -p smoke -t "Add subtract to calc.py" \
+      -d "In calc.py add subtract(a, b) returning a - b. Then stop." \
+      --intelligence-class fast-low
+
+# 4. Watch it
+$D aq task explain --task-id <id>      # why it is or is not running
+$D tmux -L aq ls                       # the live agent session
+$D aq task show <id>
+```
+
+`aq doctor` inside the container is the other health signal; a good run is
+"43 ok · 10 info · 5 warn · 0 error". The warnings are expected on a fresh
+stack: optional harness binaries absent, no project root configured, and no
+`claude /usage` probe until the harness is authenticated.
+
+### What a missing login looks like
+
+Without `claude auth login`, the chain runs correctly right up to the harness
+and then fails cleanly:
+
+```
+SessionDiedDuringStartup: session 's-<task>' died during startup
+```
+
+`start-stderr.log` is empty, because the CLI writes to the pane rather than
+stderr and the pane is killed with the session. Running the harness by hand
+shows the real cause:
+
+```console
+$ claude -p "reply OK"
+Not logged in · Please run /login
+```
+
+AQ handles this correctly rather than crashing: it kills the session and parks
+the task in `paused_backoff`, which resumes on its own. A task created before
+you log in will therefore start working once you do.
+
 ## Known gaps
 
-- **Unproven: whether an agent runs to completion inside a container.** The stack
-  builds, starts and serves; that last step is the open question.
+- **Partly proven: agents launch in a container, completion is untested.** The
+  scheduler dispatches, the workspace is acquired, and `TmuxProvider` creates a
+  real tmux session inside the container with the right prompt and work dir. The
+  harness then exits because it is not authenticated. Everything up to the
+  harness is verified; whether a run *completes* needs a logged-in harness.
 - The dashboard image regenerates its typed client from the committed
   `openapi.json`. If that file drifts from the API, the dashboard builds against
   a stale spec.
