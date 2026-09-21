@@ -250,7 +250,7 @@ dashboard:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Whether `aq start` and `aq restart` start the dashboard server. With `false` they start only the daemon (`aq stop` still stops a dashboard server that is running), and the daemon's `/dashboard` pointer answers `"dashboard_url": null`. There is deliberately no setting that makes the daemon serve the dashboard again. |
+| `enabled` | `true` | Whether `aq start` and `aq restart` start the dashboard server. With `false` they start only the daemon (`aq stop` still stops a dashboard server that is running), and the daemon's `/dashboard` pointer answers `404` with `"dashboard_url": null` instead of redirecting to the dashboard server. There is deliberately no setting that makes the daemon serve the dashboard again. |
 | `host` | `127.0.0.1` | The bind address. Must be an IP literal or `localhost` — never a DNS name, which could be re-pointed. `0.0.0.0`, `::` or a LAN address exposes the operator console to that network; read [what a LAN bind exposes](../guides/dashboard.md#reaching-it-from-another-machine) first. |
 | `port` | `8082` | The bind port, 1–65535, and never `mcp_server.port` (a validation error). When unset and `mcp_server.port` is 8082, the default steps aside to **8083**, so a daemon moved to 8082 before the dashboard server existed keeps a config that loads. A port you set is never moved, and a busy port is a startup failure, never an auto-increment: the URL stays predictable for bookmarks and the installer. |
 

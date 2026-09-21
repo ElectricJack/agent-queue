@@ -52,9 +52,12 @@ The daemon is **API only**. Its HTTP app ([`src/api/app.py`](../../src/api/app.p
 exposes `/api`, `/health`, `/ready`, the `/ws` sockets and the embedded MCP
 server, on `mcp_server.port` (8081 by default), and serves no dashboard page,
 script or stylesheet; the only HTML it returns is FastAPI's interactive API
-reference at `/docs` and `/redoc` and the plan viewer at `/plans/<task_id>`. Its old `/dashboard` path answers `404` with a JSON pointer naming
-the dashboard server's URL, so an old bookmark explains itself instead of
-failing silently.
+reference at `/docs` and `/redoc` and the plan viewer at `/plans/<task_id>`. Its old `/dashboard` path answers a `307` redirect to the
+same route on the dashboard server, with a JSON pointer naming that URL as the
+body, so an old bookmark still lands on the dashboard; with the dashboard server
+disabled it answers `404` and the pointer's URL is `null`. The redirect also
+lets an `aq update` begun on older code — whose updater still probes the
+daemon's `/dashboard/` — see the new daemon as healthy.
 
 The browser dashboard comes from a second, much smaller process: the
 **dashboard server** ([`src/dashboard_server/`](../../src/dashboard_server/)).

@@ -8,10 +8,13 @@ asked to do.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -650,6 +653,81 @@ def test_the_dashboard_server_is_validated_and_the_daemon_never_probed_for_pages
     assert ("Start the dashboard server", True, DASHBOARD_URL) in report.steps
     assert f"{DASHBOARD_URL}__aq/health" in fake.probed and DASHBOARD_URL in fake.probed
     assert not [url for url in fake.probed if "/dashboard" in url]
+
+
+def _pre_change_http_status(url: str, timeout: float = 2.0) -> int | None:
+    """``http_status`` exactly as a pre-change updater holds it in memory.
+
+    Frozen from ``src/install/onboarding.py`` at 4ccbb90d3 (the last commit
+    before the updater stopped probing the daemon for pages): it is what an
+    install older than that runs after its own pull, whatever the new code says.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            return int(response.status)
+    except urllib.error.HTTPError as error:
+        code = int(error.code)
+        error.close()
+        return code
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def _pre_change_start_daemon_probes(base: str) -> str | None:
+    """The checks the pre-change ``_start_daemon`` makes after ``aq start --no-dashboard``.
+
+    Frozen from ``src/install/update.py`` at 4ccbb90d3 (lines 508-515, with the
+    bundle present): ``None`` when it would pass, else the failure it reports.
+    """
+    if _pre_change_http_status(f"{base}/health") not in (200, 503):
+        return "it did not answer /health"
+    status = _pre_change_http_status(f"{base}/dashboard/")
+    if status is None or status >= 400:
+        return "the daemon is up but not serving the dashboard"
+    return None
+
+
+async def test_a_pre_change_updaters_dashboard_probe_passes_against_the_new_daemon(tmp_path):
+    """Spec §6.2 item 3 (smart-meadow.9): the old probe of ``/dashboard/`` still passes.
+
+    The real daemon app and the real dashboard server run on real sockets; the
+    daemon answers ``307`` and the pre-change probe, which is plain ``urllib``,
+    follows it to the dashboard server's ``200``.  With the ``404`` the daemon
+    first shipped, this is the exit 20 every pre-change install hit once.
+    """
+    from src.config import DashboardServerConfig
+    from src.dashboard_server.app import create_app as create_dashboard_server
+    from src.dashboard_server.settings import DashboardServerSettings
+    from tests.dashboard_server_helpers import serve_asgi, unused_port
+    from tests.test_api_dashboard_pointer import daemon_app
+    from tests.test_dashboard_server_app import INDEX_HTML, stage_bundle
+
+    settings = DashboardServerSettings(
+        bundle_directory=stage_bundle(tmp_path / "bundle"),
+        api_url=f"http://127.0.0.1:{unused_port()}",
+    )
+    async with serve_asgi(create_dashboard_server(settings, version="1.2.3")) as dashboard:
+        port = int(dashboard.rsplit(":", 1)[1])
+        server = DashboardServerConfig(enabled=True, host="127.0.0.1", port=port)
+        async with (
+            daemon_app(tmp_path, dashboard_server=server) as app,
+            serve_asgi(app) as daemon,
+        ):
+            assert await asyncio.to_thread(_pre_change_start_daemon_probes, daemon) is None
+
+            def landed(url: str) -> tuple[str, str]:
+                with urllib.request.urlopen(url, timeout=2.0) as response:
+                    return response.geturl(), response.read().decode("utf-8")
+
+            # Where the probe (and an old bookmark) actually ends up.
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/") == (
+                f"{dashboard}/",
+                INDEX_HTML,
+            )
+            assert await asyncio.to_thread(landed, f"{daemon}/dashboard/tasks/abc?tab=log") == (
+                f"{dashboard}/tasks/abc?tab=log",
+                INDEX_HTML,
+            )
 
 
 def test_a_running_dashboard_server_is_stopped_before_the_code_moves(repo, tmp_path, monkeypatch):

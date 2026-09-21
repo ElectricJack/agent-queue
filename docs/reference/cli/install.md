@@ -247,8 +247,9 @@ every run including a rerun, a `--repair` and an `--upgrade`:
 
 ### Opening the dashboard
 
-The daemon is API-only: it serves no page, and answers `/dashboard` with a JSON
-pointer to the dashboard server. The dashboard is served by the **dashboard
+The daemon is API-only: it serves no page, and answers `/dashboard` with a `307`
+redirect to the dashboard server (a `404` JSON pointer when the dashboard server
+is disabled). The dashboard is served by the **dashboard
 server**, a separate process that serves the verified bundle and proxies the
 daemon's API, at `http://127.0.0.1:8082/` by default (`dashboard.server.host`
 and `port`). `aq start`, `aq stop` and `aq restart` manage it with the daemon;

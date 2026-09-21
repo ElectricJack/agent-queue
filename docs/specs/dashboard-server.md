@@ -7,10 +7,11 @@ tags: [spec, dashboard, daemon, api, installer, security]
 <!-- aq:historical -->
 > **Design record — implemented 2026-09-21.** Written on 2026-09-20 against
 > `main` `0ad341dfa`, before the code. It is not revised to track the code
-> afterwards; where this page and the code disagree, the code is right. One
-> deliberate departure: the daemon answers `/dashboard` with **`404`** and the
-> JSON pointer, not the `307` §5 proposes — the cost §5 names for that choice is
-> recorded in the [release notes](../release-notes.md). What ships is described
+> afterwards; where this page and the code disagree, the code is right. The
+> daemon first shipped `/dashboard` as a `404`, and a pre-change install's first
+> `aq update` paid exactly the cost §5 names for that choice; since
+> `smart-meadow.9` it answers the `307` §5 decides — see the
+> [release notes](../release-notes.md). What ships is described
 > by the [dashboard guide](../guides/dashboard.md) and
 > [architecture](../concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server);
 > start at [the documentation home](../README.md) for the rest.

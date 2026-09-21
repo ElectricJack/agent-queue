@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from urllib.parse import quote
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 
 from src.api import dependencies as deps
@@ -187,11 +188,15 @@ def create_app(
     ))
 
     # The daemon is API-only: it no longer serves the dashboard SPA (the
-    # bundle now lives in the separate dashboard server process).  A browser
-    # that reaches /dashboard gets a machine-readable 404 hint naming the
-    # configured dashboard server URL, not a static mount
-    # (docs/specs/dashboard-server.md §5).  dashboard_url is derived from
-    # dashboard.server alone — never the request's Host — with a wildcard
+    # bundle now lives in the separate dashboard server process).  A request
+    # for /dashboard gets a machine-readable pointer naming the configured
+    # dashboard server URL, not a static mount (docs/specs/dashboard-server.md
+    # §5): a 307 to that URL while the dashboard server is enabled, a 404 with
+    # a null URL when it is not.  The redirect is load-bearing: an `aq update`
+    # started before this change keeps its old updater in memory, which probes
+    # GET <daemon>/dashboard/ after the pull and fails on >= 400; urllib follows
+    # the 307 to the dashboard server's 200 (§6.2).  dashboard_url is derived
+    # from dashboard.server alone — never the request's Host — with a wildcard
     # bind rendered as 127.0.0.1.
     def _dashboard_hint_url() -> str | None:
         server = config.dashboard_server
@@ -206,16 +211,24 @@ def create_app(
 
     @app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/dashboard/{rest:path}", methods=["GET", "HEAD"], include_in_schema=False)
-    async def dashboard_not_served_here(rest: str = ""):
-        return JSONResponse(
-            {
-                "ok": False,
-                "error": "dashboard_not_served_here",
-                "dashboard_url": _dashboard_hint_url(),
-                "hint": "The daemon is API-only. Run `aq dashboard status`.",
-            },
-            status_code=404,
-        )
+    async def dashboard_not_served_here(request: Request, rest: str = ""):
+        dashboard_url = _dashboard_hint_url()
+        body = {
+            "ok": False,
+            "error": "dashboard_not_served_here",
+            "dashboard_url": dashboard_url,
+            "hint": "The daemon is API-only. Run `aq dashboard status`.",
+        }
+        if dashboard_url is None:
+            return JSONResponse(body, status_code=404)
+        # <dashboard_url><rest>?<query>: the bundle is built for "/", so the
+        # old /dashboard/<route> bookmark lands on the same SPA route.  The
+        # path is re-encoded (it arrives decoded) and kept relative, so the
+        # Location can only ever name the configured dashboard server.
+        location = dashboard_url + quote(rest.lstrip("/"), safe="/:@!$&'()*+,;=")
+        if request.url.query:
+            location += f"?{request.url.query}"
+        return JSONResponse(body, status_code=307, headers={"Location": location})
 
     _add_binary_upload_format(app)
 
