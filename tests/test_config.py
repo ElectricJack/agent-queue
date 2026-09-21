@@ -385,6 +385,35 @@ def test_dashboard_server_port_is_checked_against_a_moved_daemon_port(tmp_path):
     moved = _dashboard_server_config(tmp_path, mcp_server={"port": 9000})
     assert moved.dashboard_server.port == 8082
 
+
+@pytest.mark.parametrize(
+    "sections",
+    [
+        {},
+        {"dashboard": {"server": {"enabled": True}}},
+        {"dashboard": {"server": {"port": None}}},
+        {"dashboard": {"graph_layout": {"enabled": True}}},
+        {"dashboard_server": {"host": "::1"}},
+    ],
+)
+def test_dashboard_server_default_steps_aside_for_a_daemon_already_on_it(tmp_path, sections):
+    """A daemon moved to 8082 before the dashboard server existed must still
+    load after the upgrade: an unset ``dashboard.server.port`` takes 8083."""
+    for port in (8082, "8082"):
+        cfg = _dashboard_server_config(tmp_path, mcp_server={"port": port}, **sections)
+        assert cfg.dashboard_server.port == 8083
+
+
+def test_dashboard_server_port_set_on_the_daemons_port_is_still_refused(tmp_path):
+    """Only the default steps aside; a port the operator chose is never moved."""
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError) as caught:
+        _dashboard_server_config(
+            tmp_path, mcp_server={"port": 8082}, dashboard={"server": {"port": 8082}},
+        )
+    assert any("mcp_server.port (8082)" in str(error) for error in caught.value.errors)
+
 def test_graph_layout_config_reads_top_level_block(tmp_path):
     """``update_config``/``config_editor`` address sections by AppConfig
     field name and write them as TOP-LEVEL yaml keys, so the loader has to

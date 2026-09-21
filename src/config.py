@@ -2692,6 +2692,29 @@ class GraphLayoutConfig:
 
 
 DEFAULT_DASHBOARD_SERVER_PORT = 8082
+#: The default when ``mcp_server.port`` already holds :data:`DEFAULT_DASHBOARD_SERVER_PORT`.
+ALTERNATE_DASHBOARD_SERVER_PORT = 8083
+
+
+def default_dashboard_server_port(raw: Mapping[str, object]) -> int:
+    """The port ``dashboard.server`` listens on when it sets none (spec §3.1).
+
+    8082, unless ``mcp_server.port`` is 8082 -- an install that moved the
+    daemon there before the dashboard server existed -- in which case 8083,
+    so upgrading never leaves a config that no longer loads.  The rule reads
+    the config alone, never what is listening, so the URL stays
+    deterministic; a port the operator set is never moved, and setting it
+    to the daemon's is still a validation error.
+    """
+    section = raw.get("mcp_server")
+    port = section.get("port") if isinstance(section, Mapping) else None
+    try:
+        daemon_port = int(port) if port not in (None, "") else None
+    except (TypeError, ValueError):
+        daemon_port = None
+    if daemon_port == DEFAULT_DASHBOARD_SERVER_PORT:
+        return ALTERNATE_DASHBOARD_SERVER_PORT
+    return DEFAULT_DASHBOARD_SERVER_PORT
 
 
 def is_dashboard_server_host(value: object) -> bool:
@@ -2752,9 +2775,9 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     dashboard = raw.get("dashboard")
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
-    if not isinstance(section, Mapping):
-        return DashboardServerConfig()
-    return DashboardServerConfig(**_dataclass_kwargs(DashboardServerConfig, dict(section)))
+    kwargs = _dataclass_kwargs(DashboardServerConfig, section)
+    kwargs.setdefault("port", default_dashboard_server_port(raw))
+    return DashboardServerConfig(**kwargs)
 
 
 @dataclass
