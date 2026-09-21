@@ -9,6 +9,7 @@ are patched — nothing here touches Docker or a real process.
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,7 @@ from click.testing import CliRunner
 
 import src.cli.daemon as daemon_mod
 from src.cli.app import cli
+from src.sessions.env import DAEMON_ENV_STRIP_KEYS
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +30,105 @@ def _no_dashboard_server(monkeypatch):
     """`aq start` also starts the dashboard server, whose PID file is the real
     ~/.agent-queue one; tests/test_cli_dashboard_server.py covers that half."""
     monkeypatch.setattr("src.cli.dashboard.ensure_dashboard_server", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _operator_environment(monkeypatch):
+    """Lifecycle tests model an operator shell, never this worker's parent env."""
+    for key in DAEMON_ENV_STRIP_KEYS:
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [
+        ("start", ["--no-dashboard", "--no-dashboard-server"]),
+        ("stop", ["--no-dashboard-server"]),
+        ("restart", ["--no-dashboard", "--no-dashboard-server"]),
+    ],
+)
+@pytest.mark.parametrize(
+    "worker_environment",
+    [
+        {"AQ_SESSION_KIND": "pool"},
+        {"AQ_SESSION_KIND": "task"},
+        {"AQ_DB_SCOPE": "worker", "AQ_SESSION_ID": "worker-session"},
+    ],
+    ids=["pool", "task", "worker-db-scope"],
+)
+def test_worker_sessions_cannot_manage_the_daemon(
+    runner, monkeypatch, command, arguments, worker_environment,
+):
+    """Every lifecycle command refuses before launching or stopping anything."""
+    for key, value in worker_environment.items():
+        monkeypatch.setenv(key, value)
+    actions = {
+        "start": MagicMock(return_value=True),
+        "stop": MagicMock(return_value=True),
+        "sessions": MagicMock(return_value=0),
+        "after_start": MagicMock(),
+    }
+    monkeypatch.setattr(daemon_mod, "start_daemon", actions["start"])
+    monkeypatch.setattr(daemon_mod, "stop_daemon", actions["stop"])
+    monkeypatch.setattr(daemon_mod, "stop_agent_sessions", actions["sessions"])
+    monkeypatch.setattr(daemon_mod, "_after_daemon_started", actions["after_start"])
+
+    result = runner.invoke(cli, [command, *arguments])
+
+    assert result.exit_code == 10, result.output
+    assert "worker must never manage the operator's daemon" in result.output
+    for action in actions.values():
+        action.assert_not_called()
+
+
+@pytest.mark.parametrize("polluted", [False, True], ids=["clean", "polluted-supervisor"])
+def test_start_scrubs_session_environment_before_launch(
+    runner, tmp_path, monkeypatch, polluted,
+):
+    """A non-worker parent cannot lend daemon children its AQ session state."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "CONFIG_DIR": tmp_path,
+        "LOCK_DIR": tmp_path / "lock",
+        "PID_FILE": tmp_path / "pid",
+        "LOG_PATH": tmp_path / "log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: False)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr("src.cli.client._resolve_api_url", lambda: "http://daemon.test")
+    monkeypatch.setattr(daemon_mod.os, "kill", lambda *args: None)
+
+    child_environment = {}
+
+    def popen(*args, **kwargs):
+        child_environment.update(kwargs["env"])
+        return SimpleNamespace(pid=123)
+
+    class HealthyResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", popen)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: HealthyResponse())
+    if polluted:
+        for key in DAEMON_ENV_STRIP_KEYS:
+            monkeypatch.setenv(key, "daemon" if key == "AQ_DB_SCOPE" else "polluted")
+        monkeypatch.setenv("AQ_SESSION_KIND", "supervisor")
+
+    result = runner.invoke(cli, ["start", "--no-dashboard", "--no-dashboard-server"])
+
+    assert result.exit_code == 0, result.output
+    assert all(key not in child_environment for key in DAEMON_ENV_STRIP_KEYS)
+    assert ("AQ_DB_SCOPE" in result.output) is polluted
 
 
 @pytest.mark.parametrize("status, expected", [(503, True), (500, False)])
