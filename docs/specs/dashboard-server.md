@@ -217,7 +217,13 @@ developer port (3000, 8000, 8080, or 5000 and 7000, which macOS AirPlay holds);
 referenced nowhere else in this repository. A busy port is a startup failure
 naming the key, **never an auto-increment**: the daemon's pointer (§5), the
 installer's open step and bookmarks need a deterministic URL. Validation: port
-1–65535 and different from `mcp_server.port`. Settings are read at process
+1–65535 and different from `mcp_server.port`. When `port` is unset and
+`mcp_server.port` is 8082 — a daemon moved there before the dashboard server
+existed — the default steps aside to **8083**, so an upgrade never leaves a
+config that no longer loads (`src.config.default_dashboard_server_port`, shared
+by the daemon's loader and this process). The rule reads the config alone, so
+the URL stays deterministic; a port the operator sets is never moved, and
+setting it to the daemon's is still an error. Settings are read at process
 start, so `aq dashboard restart` applies a change and the daemon needs no
 restart. The bundle is built with every `VITE_*_URL` escape hatch unset, so the
 page talks only to its own origin.

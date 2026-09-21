@@ -350,6 +350,17 @@ def test_a_missing_config_file_means_defaults(tmp_path):
     assert DashboardServerSettings(host="0.0.0.0").url == "http://127.0.0.1:8082/"
 
 
+def test_the_default_port_steps_aside_for_a_daemon_on_it_as_the_daemon_resolves_it(tmp_path):
+    """The process and ``load_config`` share the rule, so ``aq status`` and
+    ``aq doctor`` name the port the server actually binds."""
+    config = tmp_path / "config.yaml"
+    config.write_text("mcp_server: {port: 8082}\n", encoding="utf-8")
+    settings = load_settings(config, environ={})
+    assert (settings.port, settings.api_url) == (8083, "http://127.0.0.1:8082")
+    with pytest.raises(SettingsError, match=r"mcp_server\.port \(8082\)"):
+        load_settings(config, environ={}, port=8082)
+
+
 @pytest.mark.parametrize(
     ("text", "overrides", "fragment"),
     [

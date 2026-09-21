@@ -31,8 +31,10 @@ class ProviderUnavailableError(RuntimeError):
     """The direct path's credential is unavailable; the call was never made.
 
     Raised by ``LLMClient`` while provider availability holds the reserved
-    ``llm`` key in the unavailable half (provider-failover D13a): calls fail
-    fast instead of burning a step timeout against a dead credential.  The
+    ``llm`` key in the unavailable half (provider-failover D13a) and
+    ``llm.fallback`` is absent or cannot serve the call (no slice for its
+    class on the fallback provider): calls fail fast instead of burning a
+    step timeout against a dead credential.  The
     playbook executor reports it as ``provider_error`` with the diagnostic
     ``provider_unavailable``.  Never itself evidence of anything.
     """
