@@ -27,6 +27,11 @@ from __future__ import annotations
 import time
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.integration.live_operations import (
+    cancel_preserving_command,
+    describe_live_operation,
+    live_operations_on,
+)
 from src.models import TaskStatus
 from src.review_keys import review_task_dedup_key
 
@@ -76,6 +81,7 @@ def _operational_projection(status: dict) -> dict:
             for item in repair
             if item.get("state") == "human_required"
         ],
+        "live_operations": list(status.get("live_operations") or []),
         "cleanup_attention": [
             item
             for item in cleanup
@@ -159,6 +165,7 @@ async def _check_operational(ctx: DoctorContext) -> CheckResult:
         for project in projections
         if project["draining"]
         or project["human_required"]
+        or project["live_operations"]
         or project["cleanup_attention"]
         or (
             (project["effective_mode"] != "disabled" or project["desired_mode"] != "disabled")
@@ -190,6 +197,55 @@ async def _check_operational(ctx: DoctorContext) -> CheckResult:
         severity=Severity.OK,
         detail="enabled integration projects have no operational findings",
         data={"projects": projections},
+    )
+
+
+async def _check_orphaned_operations(ctx: DoctorContext) -> CheckResult:
+    """Report hierarchy operations that no configured runner can advance.
+
+    This is deliberately report-only: deciding whether every source is safely
+    present on the default branch is an operator judgement.  The guard in
+    ``DevelopmentIntegration.configure`` prevents creating new rows; this
+    check makes any historical rows visible until they are explicitly ended.
+    """
+    if ctx.db is None or ctx.db._engine is None:
+        return CheckResult(
+            id="integration.orphaned_operations",
+            severity=Severity.INFO,
+            detail="integration operation scan unavailable without database",
+        )
+
+    findings: list[dict] = []
+    async with ctx.db._engine.connect() as conn:
+        for project in sorted(await ctx.db.list_projects(), key=lambda item: item.id):
+            if project.hierarchical_integration_mode in {"hierarchy", "train"}:
+                continue
+            for operation in await live_operations_on(conn, project.id):
+                findings.append(
+                    {
+                        "project_id": project.id,
+                        **operation,
+                        "cancel_preserving": cancel_preserving_command(operation["id"]),
+                    }
+                )
+
+    if not findings:
+        return CheckResult(
+            id="integration.orphaned_operations",
+            severity=Severity.OK,
+            detail="no live hierarchy repair operations remain outside hierarchy/train",
+            data={"count": 0, "operations": []},
+        )
+
+    detail = "; ".join(describe_live_operation(operation) for operation in findings)
+    return CheckResult(
+        id="integration.orphaned_operations",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} live hierarchy repair operation(s) are stranded outside "
+            f"hierarchy/train: {detail}"
+        ),
+        data={"count": len(findings), "operations": findings},
     )
 
 
@@ -780,6 +836,13 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.operational",
             run=_check_operational,
+            owner=OWNER,
+        ),
+        # Report-only.  Cancelling an operation is safe only after an operator
+        # verifies its subtree has reached the default branch.
+        DoctorCheck(
+            id="integration.orphaned_operations",
+            run=_check_orphaned_operations,
             owner=OWNER,
         ),
         # Report-only: no ``fix``.  Back-filling review tasks by hand would

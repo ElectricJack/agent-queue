@@ -75,6 +75,38 @@ async def feature(setup, task_id, *, filename=None, content="new\n"):
     return head
 
 
+async def _live_parent_operation(db, parent_task_id, *, operation_id="live-parent-operation"):
+    """Seed the minimal hierarchy operation that a development switch must drain."""
+    from src.database.tables import integration_parent_episodes, integration_repair_operations
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id=f"episode-{operation_id}",
+                parent_task_id=parent_task_id,
+                repository_id="r",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id=operation_id,
+                target_kind="parent",
+                parent_task_id=parent_task_id,
+                episode_id=f"episode-{operation_id}",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=1.0,
+                updated_at=2.0,
+            )
+        )
+
+
 async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     _db, service, _source, remote, _repo = setup
     head = await feature(setup, "one")
@@ -478,6 +510,51 @@ async def test_development_status_does_not_report_strict_policy_missing(setup):
     assert status["effective_mode"] == "development"
     assert status["blockers"] == []
     assert status["policy"]["validation"] == "focused"
+
+
+async def test_development_status_lists_live_hierarchy_operations(setup):
+    from src.integration.status import IntegrationStatusService
+
+    db, _service, _source, _remote, _repo = setup
+    await feature(setup, "parent")
+    await _live_parent_operation(db, "parent")
+
+    status = await IntegrationStatusService(db).status("p")
+
+    assert status["live_operations"] == [
+        {
+            "id": "live-parent-operation",
+            "target": {"kind": "parent", "id": "parent"},
+            "state": "active",
+            "active_stage": 0,
+            "created_at": 1.0,
+            "updated_at": 2.0,
+        }
+    ]
+
+
+async def test_configure_refuses_live_hierarchy_operation_with_safe_command(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "parent")
+    await _live_parent_operation(db, "parent")
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="train",
+                hierarchical_integration_desired_mode="train",
+            )
+        )
+
+    with pytest.raises(DevelopmentBusy, match="live-parent-operation") as error:
+        await service.configure(
+            "p", {"validation": "advisory"}, reason="switch publishers", operator_id="local"
+        )
+
+    assert "parent parent" in str(error.value)
+    assert "aq integration cancel-preserving live-parent-operation --reason" in str(error.value)
+    assert (await db.get_project("p")).hierarchical_integration_mode == "train"
 
 
 @pytest.mark.parametrize("pending", [False, True])
