@@ -3,6 +3,11 @@
 A containerised deployment of the full stack — daemon, dashboard, and a managed
 PostgreSQL — that runs on any Docker host: a cloud VM, or your own machine.
 
+This directory is the single home for deployment: the images, the compose stack,
+the configuration, and the reasoning. This page is the task guide — how to run
+it. [`DESIGN.md`](DESIGN.md) is why it is shaped this way, what constrains it,
+and what is planned next.
+
 ## Quick start
 
 ### Entirely local, including the database
@@ -44,6 +49,49 @@ AQ_DATABASE_URL=postgresql+asyncpg://agent_queue:agent_queue_dev@host.docker.int
 The dashboard publishes to `127.0.0.1:8088` by default, not 8080, which is
 commonly taken. Override with `AQ_DASHBOARD_PORT`. The daemon publishes nothing.
 
+## Isolation from a native install
+
+This stack is a **separate AQ instance**. It is designed to sit alongside a
+normal development install without touching it, and every boundary below is
+enforced by configuration in this directory — nothing is shared implicitly.
+
+| | Native install | This stack |
+|---|---|---|
+| Compose project | `agent-queue2` (the repo's dev PostgreSQL) | `agent-queue-deploy` |
+| Database | yours, e.g. `:5533` on the host | its own, on the compose network, **no host port** |
+| Data dir / vault | `~/.agent-queue` | volume `…_aq-data` → `/data/agent-queue` |
+| Workspaces | your own checkouts | volume `…_aq-workspaces` → `/data/workspaces` |
+| Harness login + transcripts | `~/.claude` | volume `…_aq-home` → `/home/aq/.claude` |
+| API port | `8081` on the host | `8081` **inside** the container, not published |
+| Dashboard | yours | `127.0.0.1:8088` |
+| tmux sessions | your host tmux socket | the container's own filesystem |
+
+The compose project is named `agent-queue-deploy` rather than `agent-queue`
+deliberately: `agent-queue` is the repository directory name, which is the
+*default* project name Docker derives for any unnamed compose file run from this
+repo. Sharing that namespace would let an unrelated `docker compose down` stop
+these containers.
+
+**Two rules keep it that way.**
+
+1. **Never point this stack and a native daemon at the same database.** AQ's
+   scheduler is machine-scoped — one daemon per database. Two daemons converging
+   the same fleet-wide pool bounds will double-provision workers, and neither can
+   see the other's tmux sessions. See [`DESIGN.md` §3](DESIGN.md#3-the-hard-constraint-the-scheduler-is-machine-scoped).
+2. **Think before bind-mounting host paths.** Mounting your `~/.claude` shares
+   one OAuth credential and exposes your personal Claude Code transcripts to the
+   daemon, which reads `~/.claude/projects/` as agent output. Mounting a host
+   repository puts container agents in the same working tree you are editing.
+   Both are occasionally what you want; neither is the default here.
+
+To authenticate the container without sharing your host login, log in inside it:
+
+```bash
+docker compose -f docker-compose.prod.yml exec daemon claude auth login
+```
+
+The credential lands in the `…_aq-home` volume and survives rebuilds.
+
 ## What this is, and what it deliberately is not
 
 **It does not run `aq install`.** That installer exists to mutate a developer's
@@ -79,8 +127,9 @@ therefore its own hard CPU/memory limits. See "Roadmap".
                                      │
                   PostgreSQL (local-db container, or managed)
 
-  volumes: aq-data       -> /data/agent-queue  (vault, agent homes, transcripts)
+  volumes: aq-data       -> /data/agent-queue  (vault, logs, database-free state)
            aq-workspaces -> /data/workspaces   (base clones + worktree slots)
+           aq-home       -> /home/aq/.claude   (harness login + transcripts)
 ```
 
 ## Configuration
@@ -123,9 +172,18 @@ hold connections, and managed instances enforce a ceiling.
 AQ never types a credential. Each provider has a documented headless path
 (`src/install/logins.py`):
 
+**The simplest path is to log in inside the container** — no API key, no secret
+in the environment, and the credential persists in the `…_aq-home` volume:
+
+```bash
+docker compose -f docker-compose.prod.yml exec daemon claude auth login
+```
+
+Otherwise, per provider:
+
 | Harness | Credential to use here |
 |---|---|
-| Claude | **`ANTHROPIC_API_KEY`** — see the caveat below |
+| Claude | `claude auth login` (above), or **`ANTHROPIC_API_KEY`** — see the caveat below |
 | Codex | `OPENAI_API_KEY`; or `codex login --device-auth` on another device |
 | Gemini | `GEMINI_API_KEY`; or Vertex AI via `GOOGLE_GENAI_USE_VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION`; or `GOOGLE_APPLICATION_CREDENTIALS` |
 
@@ -170,54 +228,35 @@ a machine running semi-trusted code, not as a hardened service.
 - The daemon container publishes no ports at all.
 - Containers run as a non-root `aq` user.
 
-Publishing the dashboard port on `0.0.0.0` would expose an unauthenticated
-control plane. A genuinely public dashboard is a separate project with its own
-auth review.
-
-## Repository cost
-
-A common worry is workers re-cloning repositories. AQ already avoids this, and
-the volume layout here is what preserves it.
-
-Agents run in **reusable worktree slots** at `<base_repo>/.aq/worktrees/slot-N`.
-Per task, `reset_slot_for_task` does `fetch` → `reset --hard` → `clean -fd` —
-never `-fdx`, so gitignored caches (`node_modules/`, `.venv/`, build output)
-survive between tasks. Worktrees share the base clone's object store, so N slots
-cost roughly one repository on disk, and `worktree_setup` runs only when a slot
-is first created.
-
-All of that depends on `/data/workspaces` being a **persistent volume**. A
-design where each worker clones on startup would discard every one of these
-properties.
+A genuinely public dashboard is a separate project with its own auth review.
 
 ## Sizing
 
 Start at ~4 concurrent agents: 4 vCPU / 16 GB and ~100 GB for `/data`. Test
-suites are the real memory spikes, not the agents themselves. Scale the machine
-rather than adding hosts — the scheduler is machine-scoped (one daemon per
-database; there is no host column in the schema), so a second daemon against the
-same database would double-provision its worker pools.
+suites are the real memory spikes, not the agents themselves.
 
-## Roadmap
+**Scale the machine, not the instance count.** The scheduler is machine-scoped —
+one daemon per database — so a second daemon against the same database
+double-provisions its worker pools. See
+[`DESIGN.md` §3](DESIGN.md#3-the-hard-constraint-the-scheduler-is-machine-scoped).
 
-1. **Per-worker containers** — a `ContainerTmuxProvider` subclassing
-   `TmuxProvider` and overriding `_tmux()` to route through `docker exec`. All
-   51 tmux call sites funnel through that one method, and the worker image keeps
-   tmux inside it, so pane semantics, the dashboard terminal and pane streaming
-   all keep working. Each agent then gets its own container and its own
-   `--cpus`/`--memory`.
-2. **Terraform** — VM, disks, VPC, IAM, Secret Manager, managed SQL with a
-   private IP. Deferred until the images are proven.
-3. **Backups and observability** — automated SQL backups, data-disk snapshots,
-   log shipping, `aq doctor` as a healthcheck.
+Keeping `/data/workspaces` on a persistent volume is what keeps a task an
+incremental fetch into a reusable worktree slot rather than a fresh clone; see
+[`DESIGN.md` §4](DESIGN.md#4-repository-cost-already-solved-easy-to-regress).
 
 ## Known gaps
 
-- Not yet built or run end to end; expect first-build fixes.
-- The dashboard image runs the TS-client generation step, which reads the
-  committed `openapi.json`. If that file drifts from the API, the dashboard is
-  built against a stale spec.
-- Memory (`aq-memory`) is off by default. Milvus needs no server — it defaults to
-  embedded Milvus Lite — but embeddings default to a local Ollama, which would
-  need adding to this stack or repointing at a hosted embedding API.
-- No automated backup of the `aq-data` volume yet; the vault lives there.
+- **Unproven: whether an agent runs to completion inside a container.** The stack
+  builds, starts and serves; that last step is the open question.
+- The dashboard image regenerates its typed client from the committed
+  `openapi.json`. If that file drifts from the API, the dashboard builds against
+  a stale spec.
+- `packages/memsearch` is not installed in the daemon image. Its importers
+  degrade with a warning rather than failing, so enabling `memory.enabled` would
+  silently no-op until it is added. Memory is off by default.
+- Embeddings default to a local Ollama, which is not in this stack — repoint at a
+  hosted embedding API before enabling memory.
+- No automated backup of the data volume yet; the vault lives there.
+
+Design rationale, the scaling constraint and the roadmap are in
+[`DESIGN.md`](DESIGN.md).

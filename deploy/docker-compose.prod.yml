@@ -13,7 +13,7 @@
 #
 #     ssh -L 8088:127.0.0.1:8088 <host>     # then open http://127.0.0.1:8088
 
-name: agent-queue
+name: agent-queue-deploy
 
 services:
   daemon:
