@@ -102,6 +102,11 @@ def _client(result):
             {"batch_id": "batch-1"},
         ),
         (
+            ["release-owner", "--task-id", "task-1", "--dry-run"],
+            "integration_release_owner",
+            {"task_id": "task-1", "dry_run": True},
+        ),
+        (
             ["recover-candidate-member", "frozen-resolution"],
             "integration_recover_candidate_member",
             {"reservation_id": "frozen-resolution"},
@@ -236,6 +241,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "resume",
         "abort",
         "retry-cleanup",
+        "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
     ):

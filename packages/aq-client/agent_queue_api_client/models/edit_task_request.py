@@ -39,6 +39,8 @@ class EditTaskRequest:
         affinity_reason (None | str | Unset): Why this agent is preferred. Set to null to clear (optional)
         workspace_mode (None | str | Unset): Workspace lock mode. Set to null to clear (optional). 'branch-isolated' is
             DEPRECATED and behaves as 'exclusive' — see create_task.
+        after_review (None | str | Unset): Attach this task to the named document review's gate until the review is
+            approved.
         needs_attention (None | str | Unset): Set the operator attention code (optional)
         clear_needs_attention (bool | None | Unset): Clear the operator attention code (optional)
     """
@@ -61,6 +63,7 @@ class EditTaskRequest:
     affinity_agent_id: None | str | Unset = UNSET
     affinity_reason: None | str | Unset = UNSET
     workspace_mode: None | str | Unset = UNSET
+    after_review: None | str | Unset = UNSET
     needs_attention: None | str | Unset = UNSET
     clear_needs_attention: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -170,6 +173,12 @@ class EditTaskRequest:
         else:
             workspace_mode = self.workspace_mode
 
+        after_review: None | str | Unset
+        if isinstance(self.after_review, Unset):
+            after_review = UNSET
+        else:
+            after_review = self.after_review
+
         needs_attention: None | str | Unset
         if isinstance(self.needs_attention, Unset):
             needs_attention = UNSET
@@ -223,6 +232,8 @@ class EditTaskRequest:
             field_dict["affinity_reason"] = affinity_reason
         if workspace_mode is not UNSET:
             field_dict["workspace_mode"] = workspace_mode
+        if after_review is not UNSET:
+            field_dict["after_review"] = after_review
         if needs_attention is not UNSET:
             field_dict["needs_attention"] = needs_attention
         if clear_needs_attention is not UNSET:
@@ -388,6 +399,15 @@ class EditTaskRequest:
 
         workspace_mode = _parse_workspace_mode(d.pop("workspace_mode", UNSET))
 
+        def _parse_after_review(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        after_review = _parse_after_review(d.pop("after_review", UNSET))
+
         def _parse_needs_attention(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -425,6 +445,7 @@ class EditTaskRequest:
             affinity_agent_id=affinity_agent_id,
             affinity_reason=affinity_reason,
             workspace_mode=workspace_mode,
+            after_review=after_review,
             needs_attention=needs_attention,
             clear_needs_attention=clear_needs_attention,
         )

@@ -78,6 +78,8 @@ class CreateTaskRequest:
             when creating work from inside another task; stored on the parent-child or discovered-from edge back to its
             origin.
         dedup_key (None | str | Unset): Idempotency key for find-or-create semantics (see ensure_task).
+        after_review (None | str | Unset): Attach this task to the named document review's gate until the review is
+            approved.
     """
 
     title: str
@@ -106,6 +108,7 @@ class CreateTaskRequest:
     discovered_from: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
     dedup_key: None | str | Unset = UNSET
+    after_review: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -261,6 +264,12 @@ class CreateTaskRequest:
         else:
             dedup_key = self.dedup_key
 
+        after_review: None | str | Unset
+        if isinstance(self.after_review, Unset):
+            after_review = UNSET
+        else:
+            after_review = self.after_review
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -318,6 +327,8 @@ class CreateTaskRequest:
             field_dict["reason"] = reason
         if dedup_key is not UNSET:
             field_dict["dedup_key"] = dedup_key
+        if after_review is not UNSET:
+            field_dict["after_review"] = after_review
 
         return field_dict
 
@@ -562,6 +573,15 @@ class CreateTaskRequest:
 
         dedup_key = _parse_dedup_key(d.pop("dedup_key", UNSET))
 
+        def _parse_after_review(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        after_review = _parse_after_review(d.pop("after_review", UNSET))
+
         create_task_request = cls(
             title=title,
             project_id=project_id,
@@ -589,6 +609,7 @@ class CreateTaskRequest:
             discovered_from=discovered_from,
             reason=reason,
             dedup_key=dedup_key,
+            after_review=after_review,
         )
 
         create_task_request.additional_properties = d
