@@ -45,6 +45,7 @@ from dataclasses import asdict, fields
 from typing import Any
 
 from src.agents.liveness import LIVE_SESSION_STATES
+from src.models import TaskStatus
 from src.providers.availability import (
     AUTH_PROBE,
     AVAILABLE,
@@ -110,6 +111,8 @@ ESCALATION_SOURCE_KIND = "provider_availability"
 #: "failing for 30 minutes" is noticed within a minute of the 30.
 ESCALATION_RECONCILE_SECONDS = 60.0
 _OPEN_ESCALATION_STATES = ("needs_human", "reply_received", "resolving")
+#: What a derived hold can apply to (D18): queued work, not yet running.
+QUEUED_STATUSES = (TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED)
 
 _VENDOR_ALIASES = {"anthropic": "claude", "openai": "codex", "google": "gemini"}
 
@@ -1006,8 +1009,6 @@ class ProviderAvailabilityService:
         re-derives a hold in the client.  Free while every provider is
         launchable: nothing is listed until something is suppressed.
         """
-        from src.models import TaskStatus
-
         if not self.enforcing or not self.suppressed_providers():
             return []
         try:
@@ -1018,7 +1019,7 @@ class ProviderAvailabilityService:
         projects: dict[str, Any] = {}
         held: list[dict[str, Any]] = []
         filters = {"project_id": project_id} if project_id else {}
-        for status in (TaskStatus.READY, TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.PAUSED):
+        for status in QUEUED_STATUSES:
             try:
                 tasks = await self._db.list_tasks(status=status, **filters)
             except Exception:  # a status we cannot list holds nothing we can report
@@ -1062,22 +1063,25 @@ class ProviderAvailabilityService:
         """Why *task* is held by its provider, or ``None`` when it is not.
 
         A hold is derived, never a status: a queued task whose effective
-        profile is on a provider nothing may launch against keeps its status
-        and gains this explanation.  ``kind`` says why it is not moving --
-        with the re-route engine wired, whatever the next sweep would decide
-        (``provider_pinned``, ``awaiting_failover_capacity`` with ``ahead``,
-        ...; :data:`src.providers.reroute.HOLD_KINDS`); without it,
+        profile (:meth:`queued_route`) is on a provider nothing may launch
+        against keeps its status and gains this explanation.  ``kind`` says
+        why it is not moving -- with the re-route engine wired, whatever the
+        next sweep would decide (``provider_pinned``,
+        ``awaiting_failover_capacity`` with ``ahead``, ...;
+        :data:`src.providers.reroute.HOLD_KINDS`); without it,
         ``all_providers_unavailable``, ``no_equivalent_rung`` (a role
         profile, or a class no other provider has a rung for -- the Astra
         case), or ``failover_inactive`` (the re-route engine is not active).
+        *project* and *profiles* are snapshots a caller walking many tasks
+        already has; each is read here when not given.
         """
-        from src.models import TaskStatus
         from src.profiles.catalog import worker_route
 
         if not self.enforcing:
             return None
-        queued = (TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED)
-        if getattr(task, "status", None) not in queued or getattr(task, "assigned_agent_id", None):
+        if getattr(task, "status", None) not in QUEUED_STATUSES or getattr(
+            task, "assigned_agent_id", None
+        ):
             return None
         if project is None:
             try:
@@ -1085,25 +1089,16 @@ class ProviderAvailabilityService:
             except Exception:  # an unreadable project cannot be explained
                 logger.debug("provider hold: project unreadable", exc_info=True)
                 return None
-        profile_id = task.profile_id or getattr(project, "default_profile_id", None)
-        if not profile_id:
-            return None
         if profiles is None:
             try:
                 profiles = {p.id: p for p in await self._db.list_profiles()}
             except Exception:  # without profiles there is no provider to name
                 logger.debug("provider hold: profiles unreadable", exc_info=True)
                 return None
-        if not task.profile_id and self.reroute is not None:
-            # An unrouted task follows the default's equivalent rung while the
-            # default's provider is down (D13); it is held only without one.
-            profile_id = self.reroute.resolve_default_profile_id(
-                profile_id, profiles, project_id=task.project_id
-            )
-        profile = profiles.get(profile_id)
-        if profile is None:
+        resolved = self.queued_route(task, project=project, profiles=profiles)
+        if resolved is None:
             return None
-        provider = self.provider_for_profile(profile, project_id=task.project_id)
+        profile, provider = resolved
         if not self.suppresses(provider):
             return None
         now = self.now()
@@ -1153,6 +1148,37 @@ class ProviderAvailabilityService:
             "remediation": self.remediation(provider, state),
         }
 
+    def queued_route(
+        self, task: Any, *, project: Any, profiles: Mapping[str, Any]
+    ) -> tuple[Any, str] | None:
+        """``(profile, provider)`` a queued, unassigned *task* would launch on, else ``None``.
+
+        The one resolution the derived hold (:meth:`hold_for`) and the held
+        count (:meth:`affected` -- ``aq provider status``, the state-change
+        notice, the escalation) share, so the two cannot disagree: the
+        task's own profile or, for an unrouted task, the project default --
+        followed to its equivalent rung while the default's provider is down
+        (D13), so such a task is held only when there is none.  ``None`` for
+        a task that is running or assigned, or that resolves to no known
+        profile.  Synchronous and I/O-free: *project* and *profiles* are
+        snapshots the caller already has.
+        """
+        if getattr(task, "status", None) not in QUEUED_STATUSES:
+            return None
+        if getattr(task, "assigned_agent_id", None):
+            return None
+        profile_id = task.profile_id or getattr(project, "default_profile_id", None)
+        if not profile_id:
+            return None
+        if not task.profile_id and self.reroute is not None:
+            profile_id = self.reroute.resolve_default_profile_id(
+                profile_id, profiles, project_id=task.project_id
+            )
+        profile = profiles.get(profile_id)
+        if profile is None:
+            return None
+        return profile, self.provider_for_profile(profile, project_id=task.project_id)
+
     def _session_providers(self, profiles: Iterable[Any]) -> set[str]:
         """Every provider some enabled profile launches against.
 
@@ -1193,8 +1219,14 @@ class ProviderAvailabilityService:
     # -- notification (D19, state half) -----------------------------------------
 
     async def affected(self, provider: str) -> dict[str, Any]:
-        """Queued work and role profiles on *provider*: what an outage strands."""
-        from src.models import TaskStatus
+        """Queued work and role profiles on *provider*: what an outage strands.
+
+        ``held`` is every queued, unassigned task whose :meth:`queued_route`
+        is on *provider* -- in ``enforce`` mode, with *provider* unavailable,
+        exactly the tasks :meth:`hold_for` holds on it, whatever their queued
+        status; in ``observe`` mode, the tasks it would hold.  ``roles`` are
+        the role (non-worker) profiles on *provider*, which cannot launch.
+        """
         from src.profiles.catalog import worker_route
 
         roles: list[str] = []
@@ -1218,17 +1250,19 @@ class ProviderAvailabilityService:
         held: list[dict[str, Any]] = []
         try:
             projects = {p.id: p for p in await self._db.list_projects()}
-            for task in await self._db.list_tasks(status=TaskStatus.READY):
-                if task.assigned_agent_id:
-                    continue
-                project = projects.get(task.project_id)
-                profile_id = task.profile_id or getattr(project, "default_profile_id", None)
-                profile = profiles.get(profile_id) if profile_id else None
-                if profile is None:
-                    continue
-                if self.provider_for_profile(profile, project_id=task.project_id) == provider:
+            for status in QUEUED_STATUSES:
+                for task in await self._db.list_tasks(status=status):
+                    resolved = self.queued_route(
+                        task, project=projects.get(task.project_id), profiles=profiles
+                    )
+                    if resolved is None or resolved[1] != provider:
+                        continue
                     held.append(
-                        {"task_id": task.id, "project_id": task.project_id, "profile_id": profile_id}
+                        {
+                            "task_id": task.id,
+                            "project_id": task.project_id,
+                            "profile_id": resolved[0].id,
+                        }
                     )
         except Exception:
             logger.debug("provider availability: could not count held tasks", exc_info=True)
