@@ -378,7 +378,10 @@ Not every session is working on a task, and the three kinds idle differently.
   and that has its own bounded check
   ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)),
   which recycles the session behind a database compare-and-set so a late claim
-  can never lose a race with its own teardown.
+  can never lose a race with its own teardown. The same check catches a worker
+  that never reached its loop because its CLI is parked on the usage-limit
+  screen; before recycling it reads the pane, and a limit screen is recorded as
+  a rate-limit exit against the provider (`end_reason = usage_limit_screen`).
 
 Draining a pool session is cooperative. `aq task close --claim-next` returns
 `drain_requested` or `session_exhausted` when the daemon wants the worker to

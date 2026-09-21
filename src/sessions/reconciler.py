@@ -549,6 +549,15 @@ class SessionReconciler:
         returns them.  The database CAS changes intent before teardown,
         closing the race with a late claim and preserving all session/instance
         fences.
+
+        The usage-limit shape is also provider evidence, and this is the only
+        place it is ever seen: the worker holds no task, so the stall ladder's
+        limit-screen check never runs for it.  Before tearing down, the pane
+        is read (:meth:`_idle_pool_usage_limit_line`); on a match the recycle
+        records the same ``exit_rate_limit`` evidence a death on a usage limit
+        would, so two such workers trip the provider rather than pool sizing
+        relaunching into the same limit indefinitely.  There is nothing to
+        checkpoint or requeue.
         """
         if not getattr(self.config.swarm, "enabled", True) or self.orchestrator is None:
             return
@@ -581,13 +590,51 @@ class SessionReconciler:
             current = await self.db.get_session(observed.id)
             if current is None or current.instance_token != observed.instance_token:
                 continue
-            logger.warning(
-                "Pool session %s has not claimed for %.0fs (last result %s); recycling",
-                current.id, stall_seconds, current.last_claim_result or "none",
-            )
-            await self.orchestrator._terminate_pool_session(
-                current, reason="claim_loop_stalled"
-            )
+            reason = "claim_loop_stalled"
+            line = await self._idle_pool_usage_limit_line(current)
+            if line is None:
+                logger.warning(
+                    "Pool session %s has not claimed for %.0fs (last result %s); recycling",
+                    current.id,
+                    stall_seconds,
+                    current.last_claim_result or "none",
+                )
+            else:
+                reason = "usage_limit_screen"
+                logger.warning(
+                    "Pool session %s has not claimed for %.0fs and is parked on a "
+                    "usage-limit screen (%r); recording a rate-limit exit and recycling",
+                    current.id,
+                    stall_seconds,
+                    line,
+                )
+                availability = self._provider_availability()
+                if availability is not None:
+                    # Medium evidence, as a RATE_LIMIT exit verdict is: one
+                    # recycle only degrades the provider; two sessions trip it.
+                    await availability.record_rate_limit_exit(
+                        current,
+                        reason=f"usage-limit screen on an idle pool worker: {line[:160]}",
+                    )
+            await self.orchestrator._terminate_pool_session(current, reason=reason)
+
+    async def _idle_pool_usage_limit_line(self, row: SessionRecord) -> str | None:
+        """The limit line if an idle pool worker's pane is its usage-limit screen.
+
+        Read after the recycle fence and before teardown, while the pane still
+        exists.  Only where provider availability is tracked
+        (``provider_failover.mode`` ``observe`` or ``enforce``): with it off
+        there is nothing to record, and the recycle stays as it was.  The
+        matcher is the stall ladder's own, deliberately strict
+        (:func:`~src.sessions.usage_limit_screen.match_usage_limit_screen`).
+        """
+        failover = getattr(self.config, "provider_failover", None)
+        if failover is None or not failover.tracking:
+            return None
+        provider = self._provider_for(row)
+        if provider is None:
+            return None
+        return match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
 
     # -- step 3: exits -----------------------------------------------------
 

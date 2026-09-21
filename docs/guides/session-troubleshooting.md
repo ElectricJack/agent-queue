@@ -345,12 +345,21 @@ anything.
 
 **What AQ does.** A healthy worker may sit in one server-side long poll for
 `swarm.claim_wait_max` seconds and then need a scheduler tick before the next
-one, so silence alone is not evidence. The check requires *both* a stale
-`prepare_failed` result and no later claim for a bounded grace — two full poll
+one, so silence alone is not evidence. The check requires an idle worker (no
+task, no claim in progress) with no claim for a bounded grace — two full poll
 windows, and never less than `swarm.prepare_timeout`
 ([`_step_abandoned_pool_claim_loop`](../../src/sessions/reconciler.py)). The
 session is then recycled behind a database compare-and-set, so a late claim
 cannot lose a race with its own teardown.
+
+Two shapes reach it: a worker that stopped looping after a `prepare_failed`, and
+one that never reached its loop because its CLI answered the bootstrap prompt
+with a provider screen. When that screen is the usage limit
+(`You've hit your … limit` / `You’ve hit your usage limit`) and
+`provider_failover.mode` is `observe` or `enforce`, the session ends with
+`end_reason = usage_limit_screen` rather than `claim_loop_stalled` and a
+rate-limit exit is recorded against the provider — `aq provider status` shows
+it degraded after one such worker and unavailable after two.
 
 **Check the pool rather than the session:**
 
