@@ -488,6 +488,28 @@ class TaskRecoveryNotifyValue(CommandValue):
     redelivered: bool | None = None
 
 
+class ProviderAvailabilityNotifyArgs(CommandArgs):
+    """``provider_availability_notify`` as a playbook step (provider-failover D19).
+
+    Idempotent per ``(provider, generation)``: the daemon sends it on every
+    change of half, and an event replay or a periodic timer that asks again
+    for the same generation queues nothing.  ``generation`` defaults to the
+    provider's current one.
+    """
+
+    provider: str
+    generation: int | None = None
+
+
+class ProviderAvailabilityNotifyValue(CommandValue):
+    outcome: str
+    provider: str
+    generation: int | None = None
+    message_ids: list[str] = Field(default_factory=list)
+    held: int | None = None
+    roles: list[str] = Field(default_factory=list)
+
+
 _handler_provider: Callable[[], Any] | None = None
 
 
@@ -570,6 +592,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "task_recovery_notify":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _RECOVERY_NOTIFY_OUTCOMES else "rejected"
+    if name == "provider_availability_notify":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _PROVIDER_NOTIFY_OUTCOMES else "rejected"
     return {
         "create_task": "created",
         "edit_task": "updated",
@@ -655,6 +680,20 @@ _PROBE_OUTCOMES = frozenset(
 #: yet, or a delegate its ended integration operation retired, is a fact
 #: about the failure, not a broken step; the scan records it later if needed.
 _RECOVERY_NOTIFY_OUTCOMES = frozenset({"queued", "existing", "not_actionable", "retired"})
+#: Every ``provider_availability_notify`` success.  A notice already sent for
+#: this generation, a flap-damped one and a same-half change are facts about
+#: the provider's history, not broken steps.
+_PROVIDER_NOTIFY_OUTCOMES = frozenset(
+    {
+        "notified",
+        "flapping",
+        "already_notified",
+        "flap_damped",
+        "not_a_half_change",
+        "disabled",
+        "messages_disabled",
+    }
+)
 
 
 def _outcomes(*successes: str) -> tuple[OutcomeSpec, ...]:
@@ -1025,6 +1064,34 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={"message": "the supervisor's incident notice"},
     ),
+    "provider_availability_notify": CommandPresentation(
+        title="Announce a provider's availability change",
+        summary=(
+            "Message the global supervisor and the human once when a provider moves "
+            "between launchable and unavailable; a repeat for the same change sends "
+            "nothing."
+        ),
+        arg_labels={"provider": "Provider", "generation": "State generation"},
+        outcome_labels={
+            "notified": "Notified",
+            "flapping": "Flapping notice sent",
+            "already_notified": "Already notified",
+            "flap_damped": "Damped while flapping",
+            "not_a_half_change": "Not a change of availability",
+            "disabled": "Notifications disabled",
+            "messages_disabled": "Messaging disabled",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "outcome": "Outcome",
+            "provider": "Provider",
+            "generation": "State generation",
+            "message_ids": "Messages",
+            "held": "Held tasks",
+            "roles": "Affected role profiles",
+        },
+        subject_labels={"message": "the provider state-change notice"},
+    ),
     "task_route_options": CommandPresentation(
         title="Read a task's routing options",
         summary=(
@@ -1320,6 +1387,24 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             TaskRecoveryNotifyArgs,
             TaskRecoveryNotifyValue,
             _outcomes("queued", "existing", "not_actionable", "retired"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_availability_notify",
+            ProviderAvailabilityNotifyArgs,
+            ProviderAvailabilityNotifyValue,
+            _outcomes(
+                "notified",
+                "flapping",
+                "already_notified",
+                "flap_damped",
+                "not_a_half_change",
+                "disabled",
+                "messages_disabled",
+            ),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.MESSAGE),),
             IdempotencySpec(mode="natural"),

@@ -284,6 +284,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # review policy — dv2 phase 2
     "pr_merge": "git",
     "ci_baseline_status": "git",
+    # provider availability — state, overrides, recheck (provider-failover D20)
+    "provider_status": "provider",
+    "provider_history": "provider",
+    "provider_recheck": "provider",
+    "provider_set_state": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -5384,6 +5389,119 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
+        },
+    },
+    # provider availability — docs/specs/provider-failover.md D6, D20
+    {
+        "name": "provider_status",
+        "description": (
+            "Show each provider's availability: the effective state (available, "
+            "degraded, exhausted, unauthenticated, failing, disabled), its reason, "
+            "since when, the expected recovery, any operator override and its "
+            "expiry, how many queued tasks it is holding, the last successful "
+            "launch and the newest account-wide usage reading.  A provider is the "
+            "harness login (claude, codex); a vendor name (openai, anthropic) is "
+            "accepted as an alias.  --verbose adds the evidence ring and the last "
+            "ten transitions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Only this provider (key or vendor alias). Default: every tracked provider.",
+                },
+                "verbose": {
+                    "type": "boolean",
+                    "description": "Include the evidence ring and the last ten transitions.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_history",
+        "description": (
+            "List a provider's effective-state transitions, newest first: from/to "
+            "state, reason, expected recovery, generation and who caused it "
+            "(system or an operator)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Most transitions to return. Default 50.",
+                },
+            },
+            "required": ["provider"],
+        },
+    },
+    {
+        "name": "provider_recheck",
+        "description": (
+            "Run the provider's login probe now (e.g. `codex login status`) and "
+            "fold the answer into its state.  An authenticated answer moves an "
+            "unauthenticated provider to probation; the next successful launch "
+            "completes recovery.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+            },
+            "required": ["provider"],
+        },
+    },
+    {
+        "name": "provider_set_state",
+        "description": (
+            "Override a provider's availability.  'disabled' stops every launch "
+            "against it; 'available' forces it launchable against the evidence and "
+            "always expires; 'auto' clears the override, resets the failure "
+            "counters and re-derives the state from evidence.  An override lasts "
+            "--for a duration (90s, 30m, 4h, 2d) or --until a timestamp, else "
+            "provider_failover.override.default_ttl_seconds, and never longer than "
+            "override.max_ttl_seconds; --no-expiry is accepted for 'disabled' "
+            "only.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Provider key (claude, codex) or vendor alias.",
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["disabled", "available", "auto"],
+                    "description": "disabled | available | auto (clear the override).",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why; required for disabled and available.",
+                },
+                "for": {
+                    "type": "string",
+                    "description": "How long the override lasts: 90s, 30m, 4h, 2d, or seconds.",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "When the override expires: epoch seconds or ISO-8601.",
+                },
+                "no_expiry": {
+                    "type": "boolean",
+                    "description": "Never expire (disabled only).",
+                },
+            },
+            "required": ["provider", "state"],
         },
     },
     {

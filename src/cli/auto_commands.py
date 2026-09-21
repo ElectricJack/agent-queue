@@ -139,6 +139,10 @@ EXCLUDED = {
     # Daemon-internal failure-event hook for the recovery incident (called by
     # the blocked-task-escalation playbook); decide with ``aq task recover``.
     "task_recovery_notify",
+    # Daemon-internal provider state-change notice (provider-failover D19),
+    # contracted for the provider-failover playbook; idempotent per
+    # (provider, generation).  Operators read ``aq provider status``.
+    "provider_availability_notify",
 }
 
 # Map tool_registry category names → CLI group names.
@@ -160,6 +164,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "dashboard": "dashboard",
     "discord": "discord",
     "pool": "pool",
+    "provider": "provider",
     "formula": "formula",
 }
 
@@ -177,6 +182,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "dashboard": "Durable shared and roaming dashboard state.",
     "discord": "Explicit Discord historical-message housekeeping.",
     "pool": "Worker pool sizing — status and scale.",
+    "provider": "Provider availability — status, history, recheck and overrides.",
     "formula": "Reusable task-graph templates — list, resolve, and cook.",
 }
 

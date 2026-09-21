@@ -1,6 +1,15 @@
-"""``GET /api/providers/usage`` --- each provider's own quota, as it reports it.
+"""``/api/providers/*`` --- each provider's own quota, and whether it is usable.
 
-This is the read side of the provider-usage feature: the writers (the Codex
+``GET /api/providers/usage`` is described below.  The availability routes
+(``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``
+and ``POST /api/providers/{provider}/recheck``, provider-failover D20) hold no
+logic of their own: each runs the ``provider_status`` / ``provider_set_state``
+/ ``provider_recheck`` command through the CommandHandler under the request's
+scope, exactly as a generated command route does, so the CLI, the typed API
+and these paths can never disagree.  The dashboard joins the two families on
+the provider key.
+
+``/usage`` is the read side of the provider-usage feature: the writers (the Codex
 transcript watcher and the Claude ``/usage`` probe) append snapshots, and this
 route hands the newest one per ``(provider, window, scope)`` series to the
 dashboard cards and the doctor check.
@@ -20,9 +29,19 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
-from src.api.models.provider import ProviderUsageResponse, ProviderUsageSnapshot
+from src.api.auth import LOCAL_SCOPE, RequestScope
+from src.api.models.provider import (
+    ProviderRecheckResponse,
+    ProviderSetStateResponse,
+    ProviderStateRequest,
+    ProviderStatusResponse,
+    ProviderUsageResponse,
+    ProviderUsageSnapshot,
+)
+from src.api.scope import check_request_scope
 
 __all__ = ["build_providers_router", "is_stale", "router", "series_key"]
 
@@ -129,8 +148,102 @@ async def _usage(
     return ProviderUsageResponse(now=now, snapshots=snapshots, series=series)
 
 
-def build_providers_router(*, db, config=None) -> APIRouter:
-    """Router bound to an explicit ``db`` --- the seam tests use."""
+async def _run_command(
+    command_handler, db, command: str, args: dict, request: Request | None
+):
+    """Run *command* under the request's scope; a refusal is a 403, an error a 400.
+
+    Mirrors the generated command routes: ``check_request_scope`` first (a
+    task-scoped worker token is refused -- these are operator commands), then
+    ``CommandHandler.execute`` with the server-derived scope forwarded as
+    ``_scope`` so the command's own guards see a real scope.
+    """
+    if command_handler is None:
+        raise HTTPException(status_code=503, detail="orchestrator not ready")
+    scope: RequestScope = (
+        getattr(request.state, "scope", LOCAL_SCOPE) if request is not None else LOCAL_SCOPE
+    )
+    scope_err = await check_request_scope(command, args, scope, db=db)
+    if scope_err is not None:
+        return JSONResponse({"error": scope_err}, status_code=403)
+    result = await command_handler.execute(
+        command,
+        {
+            **args,
+            "_scope": {
+                "kind": scope.kind,
+                "session_id": scope.session_id,
+                "session_instance_token": scope.session_instance_token,
+                "task_id": scope.task_id,
+                "project_id": scope.project_id,
+                "elevated": scope.elevated,
+            },
+        },
+    )
+    if not result.get("success", "error" not in result):
+        error = str(result.get("error") or f"{command} failed")
+        status = 403 if error.startswith("out of scope") else 400
+        if error.startswith("unknown provider"):
+            status = 404
+        return JSONResponse({"error": error}, status_code=status)
+    return result
+
+
+def _add_availability_routes(router: APIRouter, resolve) -> None:
+    """The three availability routes; *resolve* returns ``(db, command_handler)``."""
+
+    @router.get(
+        "/api/providers/availability",
+        response_model=ProviderStatusResponse,
+        responses={403: {"description": "out of scope"}, 404: {"description": "unknown provider"}},
+    )
+    async def get_provider_availability(
+        request: Request,
+        provider: str | None = Query(None),
+        verbose: bool = Query(False),
+    ):
+        db, handler = resolve()
+        args: dict = {"verbose": verbose}
+        if provider:
+            args["provider"] = provider
+        return await _run_command(handler, db, "provider_status", args, request)
+
+    @router.post(
+        "/api/providers/{provider}/state",
+        response_model=ProviderSetStateResponse,
+        responses={
+            400: {"description": "invalid override"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def post_provider_state(provider: str, body: ProviderStateRequest, request: Request):
+        db, handler = resolve()
+        args = {"provider": provider, "state": body.state}
+        for key, value in (
+            ("reason", body.reason),
+            ("for", body.for_),
+            ("until", body.until),
+            ("no_expiry", body.no_expiry),
+        ):
+            if value is not None:
+                args[key] = value
+        return await _run_command(handler, db, "provider_set_state", args, request)
+
+    @router.post(
+        "/api/providers/{provider}/recheck",
+        response_model=ProviderRecheckResponse,
+        responses={403: {"description": "out of scope"}, 404: {"description": "unknown provider"}},
+    )
+    async def post_provider_recheck(provider: str, request: Request):
+        db, handler = resolve()
+        return await _run_command(
+            handler, db, "provider_recheck", {"provider": provider}, request
+        )
+
+
+def build_providers_router(*, db, config=None, command_handler=None) -> APIRouter:
+    """Router bound to an explicit ``db`` (and handler) --- the seam tests use."""
     router = APIRouter()
 
     @router.get("/api/providers/usage", response_model=ProviderUsageResponse)
@@ -140,6 +253,7 @@ def build_providers_router(*, db, config=None) -> APIRouter:
     ) -> ProviderUsageResponse:
         return await _usage(db, provider, since, config)
 
+    _add_availability_routes(router, lambda: (db, command_handler))
     return router
 
 
@@ -159,6 +273,13 @@ def _build_default_router() -> APIRouter:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         return await _usage(orch.db, provider, since, getattr(orch, "config", None))
 
+    def _resolve():
+        orch = deps._orchestrator
+        if orch is None:
+            raise HTTPException(status_code=503, detail="orchestrator not ready")
+        return orch.db, deps._command_handler
+
+    _add_availability_routes(router, _resolve)
     return router
 
 
