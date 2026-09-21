@@ -187,7 +187,7 @@ def _fmt_epoch(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
 
 
-def _integration_cleanup_reason(blocker: dict):
+def _integration_cleanup_reason(blocker: dict, task_id: str):
     """One resource a retired delegate still holds, named as its own explain reason."""
     from src.explain import Reason
 
@@ -198,8 +198,9 @@ def _integration_cleanup_reason(blocker: dict):
                 f"branch owner row {blocker['owner_row_id']} on {blocker['ref']} is still "
                 f"{blocker['handoff_state']} (session {blocker['session_id'] or 'none'}, "
                 f"workspace {blocker['workspace_id'] or 'none'}); the checkout is preserved and "
-                "is not released automatically. Inspect it for unsent work, then release it "
-                "only through the guarded integration ownership controls (LOCAL operator)"
+                "is not released automatically. It is retried by the owner-recovery sweep every "
+                "5 min when `integration.owner_recovery_sweep` is on. Inspect it for unsent work, "
+                f"then run `aq integration release-owner --task-id {task_id}` now"
             ),
             ref=blocker["ref"],
         )
@@ -5053,7 +5054,7 @@ class TaskCommandsMixin:
             # Cleanup is a separate fact from the ticket's disposition: read
             # what is still held now, not the snapshot taken at retirement.
             for blocker in await self.db.get_integration_delegate_cleanup(str(task_id)):
-                reasons.append(_integration_cleanup_reason(blocker))
+                reasons.append(_integration_cleanup_reason(blocker, str(task_id)))
         recovery = await self.db.get_task_meta(str(task_id), "supervisor_recovery_incident")
         if isinstance(recovery, dict) and recovery.get("id") and not recovery.get("decision"):
             reasons.append(_recovery_incident_reason(recovery))
