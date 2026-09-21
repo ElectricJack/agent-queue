@@ -101,7 +101,8 @@ vault watcher; no restart, no release.
       "keys": [
         "Escape"
       ],
-      "quarantine": true
+      "quarantine": true,
+      "signal": "usage"
     }
   ],
   "tools_flag": "--allowedTools"

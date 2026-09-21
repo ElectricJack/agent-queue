@@ -310,6 +310,13 @@ class ClaimCommandsMixin:
             # one a long poll is still waiting for.
             if not getattr(profile, "enabled", True):
                 return self._simple(ClaimResult.DRAIN_REQUESTED, "pool is disabled", session)
+            # provider-failover D13: an idle worker whose provider is
+            # unavailable takes no new work.  One snapshot lookup on the
+            # *session's* provider -- never a per-candidate join -- so the
+            # claim frontier's ordered scan is untouched (D14).
+            drain = self._provider_drain_reason(session)
+            if drain:
+                return self._simple(ClaimResult.DRAIN_REQUESTED, drain, session)
             # Subscribe before checking admissibility (same discipline as
             # the frontier waiter below) — otherwise a ``project.resumed`` /
             # ``constraint.released`` / ``snapshot.refreshed`` landing
@@ -374,6 +381,17 @@ class ClaimCommandsMixin:
                 return outcome
             finally:
                 waiter.close()
+
+    def _provider_drain_reason(self, session) -> str | None:
+        availability = getattr(self.orchestrator, "provider_availability", None)
+        if availability is None:
+            return None
+        provider = availability.provider_for_harness(
+            getattr(session, "harness", None), session.project_id
+        )
+        if not availability.suppresses(provider):
+            return None
+        return f"provider {provider} is {availability.effective_state(provider)}"
 
     def _pool_context_claim_cap(self, profile):
         # A reused global worker must not carry a previous task's conversation.

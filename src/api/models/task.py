@@ -592,11 +592,33 @@ class AssignmentRouteDetail(BaseModel):
     freshness: str
 
 
+class ProviderHoldDetail(BaseModel):
+    """Why a queued task is held by its provider (provider-failover D18).
+
+    ``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or
+    ``failover_inactive`` today; the re-route engine adds the rest of D18's
+    vocabulary.  ``ahead`` is the queue position for
+    ``awaiting_failover_capacity`` and ``None`` otherwise.
+    """
+
+    provider: str
+    vendor: str = ""
+    state: str
+    since: float | None = None
+    until: float | None = None
+    kind: str
+    ahead: int | None = None
+    profile_id: str | None = None
+    reason: str = ""
+    remediation: str = ""
+
+
 class ExplainTaskResponse(BaseModel):
     success: bool = True
     reasons: list[ExplainReason] = []
     reason_codes: list[str] = []
     assignment_route: AssignmentRouteDetail | None = None
+    provider_hold: ProviderHoldDetail | None = None
 
 
 class ReadyTask(BaseModel):

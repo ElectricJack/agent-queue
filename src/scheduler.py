@@ -147,12 +147,12 @@ class SchedulerState:
     global_budget: int | None = None
     # Total tokens used across all projects in the rolling window.
     global_tokens_used: int = 0
-    # Provider-level cooldowns: maps profile_id (e.g. "claude-opus") to the
-    # Unix timestamp when the cooldown expires.  Agents whose profile is
-    # cooled-down are excluded from scheduling until the timestamp passes.
-    # This supports per-provider session limits without affecting other
-    # provider types.
-    provider_cooldowns: dict[str, float] = field(default_factory=dict)
+    # Workers whose provider is unavailable (docs/specs/provider-failover.md
+    # D11 mechanism 1): nothing is launched against an exhausted, logged-out,
+    # failing or disabled provider, so its workers are not idle supply this
+    # tick.  Computed by the orchestrator from the availability snapshot;
+    # replaces the never-written ``provider_cooldowns`` map.
+    suppressed_agent_ids: frozenset[str] = frozenset()
     # Active project constraints, keyed by project_id.  The scheduler
     # checks these to enforce exclusive access, per-type agent limits,
     # and scheduling pauses.  Constraints are set via set_project_constraint
@@ -178,17 +178,18 @@ class SchedulerState:
     assignment_routes: Mapping[str, EffectiveAssignmentRoute] | None = None
 
 
-def idle_workers(state: SchedulerState, *, include_cooldown: bool = False) -> list[Agent]:
-    """Global worker availability shared by matching and diagnostics."""
-    import time
+def idle_workers(state: SchedulerState, *, include_suppressed: bool = False) -> list[Agent]:
+    """Global worker availability shared by matching and diagnostics.
 
-    now = state.now or time.time()
+    ``include_suppressed`` keeps workers whose provider is unavailable, for
+    diagnostics that must not call a suppressed worker "incompatible".
+    """
     return [
         agent for agent in state.agents
         if agent.state == AgentState.IDLE and agent.current_task_id is None
         and agent.enabled and agent.role == "worker"
         and getattr(agent, "deleted_at", None) is None
-        and (include_cooldown or state.provider_cooldowns.get(agent.profile_id, 0) <= now)
+        and (include_suppressed or agent.id not in state.suppressed_agent_ids)
     ]
 
 def routing_mismatch(task: Task, agent: Agent, state: SchedulerState) -> str | None:

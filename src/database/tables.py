@@ -2089,6 +2089,93 @@ Index(
     provider_usage_snapshots.c.observed_at.desc(),
 )
 
+# ---------------------------------------------------------------------------
+# Provider availability (docs/specs/provider-failover.md D7).
+#
+# One row per provider key (the harness login: ``claude``, ``codex``, ...),
+# written only by the daemon's availability service.  ``state`` is the
+# *derived* state and never holds ``disabled``: an operator's override lives
+# in the ``override_*`` columns and the effective state is computed from both,
+# so "evidence says exhausted until 14:00; overridden until 13:10" is
+# representable.  ``evidence`` is the bounded ring the reducer counts over.
+# ---------------------------------------------------------------------------
+
+PROVIDER_AVAILABILITY_STATES = (
+    "available",
+    "degraded",
+    "exhausted",
+    "unauthenticated",
+    "failing",
+    "disabled",
+)
+
+provider_availability = Table(
+    "provider_availability",
+    metadata,
+    Column("provider", Text, primary_key=True),
+    Column("vendor", Text, nullable=False, server_default=""),
+    Column("state", Text, nullable=False, server_default="available"),
+    Column("reason_code", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False, server_default=""),
+    Column("since", Float, nullable=False),
+    Column("until", Float, nullable=True),
+    Column("level", Integer, nullable=False, server_default="0"),
+    Column("last_trip_at", Float, nullable=True),
+    Column("consecutive_failures", Integer, nullable=False, server_default="0"),
+    Column("last_failure_at", Float, nullable=True),
+    Column("last_success_at", Float, nullable=True),
+    Column("evidence", JSON, nullable=False, server_default="[]"),
+    Column("override_state", Text, nullable=True),
+    Column("override_until", Float, nullable=True),
+    Column("override_by", Text, nullable=True),
+    Column("override_reason", Text, nullable=True),
+    Column("override_set_at", Float, nullable=True),
+    Column("generation", Integer, nullable=False, server_default="0"),
+    # The unavailable state a ``recovering`` provider came from (D4).
+    Column("probation_from", Text, nullable=True),
+    # Evidence at or before this instant no longer counts toward a trip
+    # (``aq provider set-state <p> auto``, D6).
+    Column("counters_reset_at", Float, nullable=True),
+    Column("last_probe_at", Float, nullable=True),
+    # The generation a state-change notification last went out for, so an
+    # event, its replay and the timer never notify twice (D19).
+    Column("notified_generation", Integer, nullable=False, server_default="0"),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "state IN ('available','degraded','exhausted','unauthenticated','failing','disabled')",
+        name="ck_provider_availability_state",
+    ),
+    CheckConstraint(
+        "override_state IS NULL OR override_state IN ('disabled','available')",
+        name="ck_provider_availability_override_state",
+    ),
+)
+
+# Append-only audit trail of *effective* state changes: the dashboard card's
+# history and ``aq provider history``.
+provider_availability_transitions = Table(
+    "provider_availability_transitions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("provider", Text, nullable=False),
+    Column("from_state", Text, nullable=False),
+    Column("to_state", Text, nullable=False),
+    Column("reason_code", Text, nullable=False, server_default=""),
+    Column("reason", Text, nullable=False, server_default=""),
+    Column("until", Float, nullable=True),
+    Column("generation", Integer, nullable=False),
+    # ``system`` or a principal (``human:cli``, ``session:supervisor-global``).
+    Column("actor", Text, nullable=False, server_default="system"),
+    Column("detail", JSON, nullable=False, server_default="{}"),
+    Column("at", Float, nullable=False),
+)
+
+Index(
+    "idx_provider_availability_transitions_provider_at",
+    provider_availability_transitions.c.provider,
+    provider_availability_transitions.c.at.desc(),
+)
+
 message_discord_receipts = Table(
     "message_discord_receipts",
     metadata,

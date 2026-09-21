@@ -669,6 +669,11 @@ class SessionReconciler:
             verdict=str(verdict.verdict),
             reason=verdict.reason,
         )
+        availability = self._provider_availability()
+        if verdict.verdict is Verdict.RATE_LIMIT and availability is not None:
+            # Medium evidence (provider-failover D2): pane text, so one exit
+            # alone only degrades the provider; two sessions trip it.
+            await availability.record_rate_limit_exit(row, reason=verdict.reason)
 
         if row.lifecycle == "pool":
             return await self._apply_pool_verdict(row, verdict, task, now)
@@ -697,6 +702,25 @@ class SessionReconciler:
                     reason="rate_limit",
                     resume_after=now + verdict.cooldown_seconds,
                 )
+            return
+
+        if verdict.verdict is Verdict.RAPID_CRASH and self._provider_explains(row):
+            # The provider is already unavailable: this death is its fault,
+            # not the task's.  Spend no restart budget and quarantine nothing
+            # (D13); launch suppression keeps the task from relaunching until
+            # the provider is launchable again.
+            await self.db.update_session(row.id, state="stopped", desired_state="stopped",
+                                         ended_at=now, end_reason="rapid_crash")
+            if task is not None:
+                await self.db.transition_task(
+                    task.id,
+                    TaskStatus.PAUSED,
+                    context="session_rapid_crash",
+                    resume_after=now + self.sessions_config.restart_backoff_seconds,
+                    assigned_agent_id=None,
+                )
+                await self._carry_resume_key(row, task)
+                await self._release_task(task, row, reason="rapid_crash")
             return
 
         if verdict.verdict is Verdict.RAPID_CRASH:
@@ -887,7 +911,11 @@ class SessionReconciler:
         if task is not None:
             note = {"RAPID_CRASH": "rapid_crash"}.get(verdict.verdict.name, "exited_holding_task")
             await self.db.set_task_meta(task.id, "needs_attention", note)
-        if verdict.verdict is Verdict.RAPID_CRASH:
+        # A rapid crash while the provider is already unavailable is the
+        # provider's fault: pool sizing already targets zero for it, and a
+        # per-(project, profile) quarantine on top would outlive its
+        # recovery (provider-failover D13).
+        if verdict.verdict is Verdict.RAPID_CRASH and not self._provider_explains(row):
             self._quarantine_pool_key(
                 orch,
                 row,
@@ -908,6 +936,17 @@ class SessionReconciler:
                 reason=f"provider rate limit; retrying in {verdict.cooldown_seconds:.0f}s",
             )
         await orch._terminate_pool_session(row, reason=verdict.verdict.name.lower())
+
+    def _provider_availability(self):
+        return getattr(self.orchestrator, "provider_availability", None)
+
+    def _provider_explains(self, row: SessionRecord) -> bool:
+        """True when *row*'s provider is already unavailable (provider-failover D13)."""
+        availability = self._provider_availability()
+        if availability is None:
+            return False
+        provider = availability.provider_for_harness(row.harness, row.project_id)
+        return availability.is_unavailable(provider)
 
     @staticmethod
     def _quarantine_pool_key(orch, row, *, until: float, reason: str) -> None:

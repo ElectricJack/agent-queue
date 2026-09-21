@@ -59,7 +59,8 @@ vault watcher; no restart, no release.
       "pattern": "Please sign in|authentication required|not authenticated",
       "is_regex": true,
       "keys": [],
-      "quarantine": true
+      "quarantine": true,
+      "signal": "auth"
     }
   ]
 }

@@ -778,6 +778,26 @@ class ExecutionMixin:
             )
             return
 
+        # Pre-launch check (provider-failover D11 mechanism 1): nothing starts
+        # against an unavailable provider, and a recovering one admits one
+        # canary at a time (D4).  The scheduler already skips suppressed
+        # workers; this closes the race with a state change since its tick.
+        availability = getattr(self, "provider_availability", None)
+        launch_provider = availability.provider_for_harness(harness_name, task.project_id) if (
+            availability is not None
+        ) else ""
+        if availability is not None:
+            admitted, refusal_reason = availability.admit_launch(launch_provider)
+            if not admitted:
+                await self._fail_session_launch(
+                    action,
+                    task,
+                    refusal_reason or f"provider {launch_provider} unavailable",
+                    backoff=float(availability.config.launch.suspect_backoff_seconds),
+                    notify=False,
+                )
+                return
+
         provider_name = self.config.sessions.provider
         try:
             provider = self.session_providers.create(provider_name, self.config)
@@ -978,6 +998,17 @@ class ExecutionMixin:
                 await provider.start(spec)
         except SessionDiedDuringStartup as exc:
             await record_failed_launch("startup_exit")
+            if availability is not None:
+                # Only a startup death is provider evidence (D2): a typed
+                # login/usage dialog is strong, anything else is weak.
+                await availability.record_startup_death(
+                    exc,
+                    harness=harness_name,
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    session_id=session_id,
+                    profile_id=getattr(profile, "id", None),
+                )
             await self._fail_session_launch(
                 action,
                 task,
@@ -987,6 +1018,8 @@ class ExecutionMixin:
             return
         except Exception as exc:
             await record_failed_launch("launch_failed")
+            if availability is not None:
+                availability.release_canary(launch_provider)
             await self._fail_session_launch(action, task, f"session launch failed: {exc}")
             return
 
@@ -1056,10 +1089,19 @@ class ExecutionMixin:
         stderr_path: str | None = None,
         *,
         integration_resources_released: bool = False,
+        backoff: float = 60,
+        notify: bool = True,
     ) -> None:
-        """Pause the task with a backoff after a failed session launch."""
-        backoff = 60
-        logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        """Pause the task with a backoff after a failed session launch.
+
+        ``notify=False`` is for a launch the daemon refused on purpose (an
+        unavailable provider, provider-failover D11): the task is held, not
+        broken, and a "launch failed" notice would be noise.
+        """
+        if notify:
+            logger.error("Task %s: session launch failed -- %s", task.id, reason)
+        else:
+            logger.info("Task %s: session launch refused -- %s", task.id, reason)
         integration_released = integration_resources_released or (
             await self.arelease_integration_writer_for_retry(
                 task, reason="session_launch_failed"
@@ -1081,10 +1123,12 @@ class ExecutionMixin:
             else:
                 await self.db.release_agent_for_task(action.agent_id, action.task_id)
             await self._release_workspaces_for_task(action.task_id)
+        if not notify:
+            return
         detail = f"\nStartup output: `{stderr_path}`" if stderr_path else ""
         await self._emit_text_notify(
             f"**Session launch failed:** task `{task.id}` -- {reason}. "
-            f"Retrying in {backoff}s.{detail}",
+            f"Retrying in {backoff:g}s.{detail}",
             project_id=action.project_id,
         )
 

@@ -643,6 +643,21 @@ _NOTIFY_SCHEMAS: dict[str, EventSchema] = {
         "required": [*_NOTIFY_BASE_FIELDS],
         "optional": [*_NOTIFY_BASE_OPTIONAL, "message", "embed_data"],
     },
+    # -- Provider availability (provider-failover D19): one per change of
+    # *half* (launchable <-> unavailable); the dashboard toast and banner.
+    "notify.provider_state": {
+        "required": [*_NOTIFY_BASE_FIELDS, "provider", "from_state", "to_state", "generation"],
+        "optional": [
+            *_NOTIFY_BASE_OPTIONAL,
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "remediation",
+            "message",
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -1150,6 +1165,23 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 # ``task_claim`` long-poll wakes on, plus the scheduler-tick heartbeat.
 # ---------------------------------------------------------------------------
 
+_PROVIDER_SCHEMAS: dict[str, EventSchema] = {
+    # provider-failover D7: once per change of *effective* state.  Evidence
+    # that does not change the state emits nothing -- evidence is not news.
+    "provider.state_changed": {
+        "required": ["provider", "from_state", "to_state", "generation"],
+        "optional": [
+            "vendor",
+            "reason_code",
+            "reason",
+            "since",
+            "until",
+            "actor",
+            "override",
+        ],
+    },
+}
+
 _SWARM_SCHEMAS: dict[str, EventSchema] = {
     "snapshot.refreshed": {
         "required": ["tick"],
@@ -1646,6 +1678,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
     **_SWARM_SCHEMAS,
+    **_PROVIDER_SCHEMAS,
     **_COMMAND_SCHEMAS,
     **_FORMULA_SCHEMAS,
     **_METRICS_SCHEMAS,

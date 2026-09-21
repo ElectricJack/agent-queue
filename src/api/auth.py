@@ -14,6 +14,7 @@ import hashlib
 import logging
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -83,6 +84,11 @@ class SessionTokenStore:
         # cannot leak timing info about the plaintext, so no ``compare_digest``
         # is used or needed here.
         self._cache: dict[str, tuple[RequestScope, float]] = {}
+        #: Called with the session id of every validated session token; the
+        #: orchestrator wires it to provider availability, where a session's
+        #: first authenticated call is ``launch_success`` evidence
+        #: (provider-failover D2).  Must be cheap and must not raise.
+        self.on_session_seen: Callable[[str], None] | None = None
 
     async def mint(
         self,
@@ -132,6 +138,7 @@ class SessionTokenStore:
         if cached is not None:
             scope, expires_at = cached
             if expires_at > now:
+                self._seen(scope)
                 return scope
             self._cache.pop(h, None)
         row = await self._db.get_api_token(h)
@@ -151,7 +158,17 @@ class SessionTokenStore:
             elevated=bool(row.get("elevated") or False),
         )
         self._cache[h] = (scope, expires_at)
+        self._seen(scope)
         return scope
+
+    def _seen(self, scope: RequestScope) -> None:
+        hook = self.on_session_seen
+        if hook is None or not scope.session_id:
+            return
+        try:
+            hook(scope.session_id)
+        except Exception:  # evidence must never break authentication
+            logger.debug("on_session_seen hook failed", exc_info=True)
 
     async def revoke_session(self, session_id: str) -> int:
         now = time.time()

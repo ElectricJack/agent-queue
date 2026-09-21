@@ -113,7 +113,7 @@ def make_state(**kw):
         workspace_locks=kw.get("workspace_locks", {}),
         global_budget=kw.get("global_budget"),
         global_tokens_used=kw.get("global_tokens_used", 0),
-        provider_cooldowns=kw.get("provider_cooldowns", {}),
+        suppressed_agent_ids=kw.get("suppressed_agent_ids", frozenset()),
         project_constraints=kw.get("project_constraints", {}),
         now=kw.get("now", time.time()),
         affinity_wait_seconds=kw.get("affinity_wait_seconds", 60),
@@ -467,30 +467,29 @@ class TestBuildCapacityReasons:
         ]
         assert "budget_exhausted" in codes
 
-    def test_rate_limited(self):
+    def test_suppressed_worker_is_not_idle_supply_but_not_incompatible_either(self):
+        """A worker on an unavailable provider (provider-failover D11) is not
+        idle supply, and explain does not call it an incompatible worker --
+        the hold is explained by ``provider_hold`` from the task row instead.
+        The retired ``rate_limited`` code is never produced."""
         from src.models import Agent
 
         proj = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
-        agent = Agent(
-            id="a1",
-            name="a1",
-            profile_id="claude",
-            state=AgentState.IDLE,
-        )
-        agent.project_id = PROJECT_ID  # type: ignore[attr-defined]
-        now = time.time()
+        agent = Agent(id="a1", name="a1", profile_id="claude", state=AgentState.IDLE)
         state = make_state(
-            projects=[proj],
-            agents=[agent],
-            provider_cooldowns={"claude": now + 100},
-            now=now,
+            projects=[proj], agents=[agent], suppressed_agent_ids=frozenset({"a1"}), now=100.0
         )
+        from src.scheduler import idle_workers
+
+        assert idle_workers(state) == []
+        assert [a.id for a in idle_workers(state, include_suppressed=True)] == ["a1"]
         reasons = build_capacity_reasons(task, state, {PROJECT_ID: 1}, {PROJECT_ID: 1})
         codes = [r["code"] for r in reasons]
-        assert "rate_limited" in codes
+        assert "rate_limited" not in codes
+        assert "no_compatible_agent" not in codes
 
-    def test_capacity_reasons_are_stably_ordered_and_rate_limit_is_deduplicated(self):
+    def test_capacity_reasons_are_stably_ordered(self):
         project = Project(id=PROJECT_ID, name="p")
         task = Task(id="t", project_id=PROJECT_ID, title="t", description="")
         agents = [
@@ -503,7 +502,6 @@ class TestBuildCapacityReasons:
             agents=agents,
             global_budget=10,
             global_tokens_used=10,
-            provider_cooldowns={"claude": now + 30},
             now=now,
         )
         reasons = build_capacity_reasons(task, state, {}, {PROJECT_ID: 0})
@@ -511,9 +509,7 @@ class TestBuildCapacityReasons:
             "workspace_locked",
             "no_idle_agent",
             "budget_exhausted",
-            "rate_limited",
         ]
-        assert reasons[-1]["ref"] == "claude"
 
 
 # ── _describe_task_blocker uses reasons[0]["detail"] ─────────────────────
