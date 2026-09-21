@@ -393,7 +393,14 @@ async def test_tiles_a_live_attempt_in_a_collapsed_container_docks_the_container
     ]
 
 
-async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
+async def test_tiles_root_focus_expands_the_root_and_keeps_the_active_variant(db, client_factory):
+    """Entering a live container is the root view one level down.
+
+    Focus used to force ``variant="all"`` unconditionally, so entering a
+    container showed its finished children even with "Show completed" off.
+    The promotion now only happens when the entered container itself is not
+    in the active layout (see the finished-container test below).
+    """
     await seed(db)
     async with client_factory() as ac:
         r = await ac.post(
@@ -407,10 +414,64 @@ async def test_tiles_root_focus_forces_all_and_expands_root(db, client_factory):
         )
     body = r.json()
     ids = {n["id"] for n in body["nodes"]}
-    assert ids == {"e", "c0", "c1", "pkg"}  # c1 is COMPLETED but variant forced to all
+    assert ids == {"e", "c0", "pkg"}  # c1 is COMPLETED: dropped by the active variant
     assert next(n for n in body["nodes"] if n["id"] == "e")["kind"] == "container"
     assert "z" not in ids  # outside the subtree
     assert any(s["id"] == "z" for s in body["stubs"])  # z depends on c0: stub at the edge
+
+
+async def test_tiles_root_focus_of_a_finished_container_promotes_to_all(db, client_factory):
+    """A container the active variant dropped must still be enterable."""
+    await seed(db)
+    for tid, parent in (("fe", None), ("fc", "fe")):
+        await db.create_task(
+            Task(
+                id=tid,
+                project_id="p1",
+                title=f"Title {tid}",
+                description="",
+                status=TaskStatus.DEFINED,
+            )
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+    # Finished only AFTER the parent edge: a closed container refuses children.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table)
+            .where(tasks_table.c.id.in_(["fe", "fc"]))
+            .values(status=TaskStatus.COMPLETED.value)
+        )
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "fe",
+            },
+        )
+    assert r.status_code == 200
+    assert {n["id"] for n in r.json()["nodes"]} == {"fe", "fc"}
+
+
+async def test_tiles_focus_leaves_child_containers_collapsed(db, client_factory):
+    """The client's enter-only navigation rests on this: one scope per view."""
+    await seed(db)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/tiles",
+            json={**ALL, "root": "e", "expanded": []},
+        )
+    kinds = {n["id"]: n["kind"] for n in r.json()["nodes"]}
+    assert kinds["e"] == "container"
+    assert kinds["pkg"] == "collapsed"
+    assert "g0" not in kinds and "g1" not in kinds
 
 
 async def test_tiles_max_depth(db, client_factory):

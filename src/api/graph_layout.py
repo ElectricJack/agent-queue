@@ -210,14 +210,24 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         """
         return (v or "").strip().upper()
 
-    async def _variant_for_expanded(
-        project_id: str, variant: str, expanded: list[str]
+    async def _variant_for_scope(
+        project_id: str, variant: str, root: str | None, expanded: list[str]
     ) -> str:
-        """Use the full layout when an expanded container is an active-view stub."""
+        """Use the full layout when a scope the viewer opened is not in this one.
 
-        if variant == "all" or not expanded:
+        ``root`` (the container the viewer has ENTERED) is treated like an
+        expanded container: entering a live one is the root view one level
+        down and keeps showing unfinished work only, while entering a
+        finished one — an active-view stub, or a row the active variant
+        dropped altogether — has to fall back to the full layout or there
+        would be nothing to draw.
+        """
+        ids = [*([root] if root is not None else []), *expanded]
+        if variant == "all" or not ids:
             return variant
-        rows = await db.load_layout_rows(project_id, variant, expanded)
+        rows = await db.load_layout_rows(project_id, variant, ids)
+        if root is not None and root not in rows:
+            return "all"
         return "all" if any(row.kind == "stub" for row in rows.values()) else variant
 
     @router.get(
@@ -397,10 +407,10 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=f"rect larger than {RECT_CAP} units")
         if len(req.expanded) > EXPANDED_CAP:
             raise HTTPException(status_code=400, detail=f"expanded exceeds {EXPANDED_CAP}")
-        if req.root is not None or status in FINISHED_STATUSES:
+        if status in FINISHED_STATUSES:
             variant = "all"
         else:
-            variant = await _variant_for_expanded(project_id, variant, req.expanded)
+            variant = await _variant_for_scope(project_id, variant, req.root, req.expanded)
 
         # "Land on the active subgraph" (design A3): only the FIRST request
         # of a viewer's session may ask for this -- an explicit `expanded`
@@ -626,7 +636,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             if offset < 0:
                 raise HTTPException(status_code=400, detail="bad cursor")
         if status not in FINISHED_STATUSES:
-            variant = await _variant_for_expanded(project_id, variant, req.expanded)
+            variant = await _variant_for_scope(project_id, variant, None, req.expanded)
         meta = await _meta_or_pending(project_id, variant)
         if meta is None:
             return JSONResponse(status_code=202, content={"status": "layout_pending"})
