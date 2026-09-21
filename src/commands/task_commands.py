@@ -5069,10 +5069,16 @@ class TaskCommandsMixin:
             )
         _lo, hi = measurement.bounds.get(PoolKey(profile_id), (0, None))
         live = pool.running_idle + pool.running_busy + pool.starting
+        # A session parked on a provider screen is not supply; name it so
+        # "N idle" never hides it (``PoolSupply.unresponsive``).
+        project_stuck = f", {sup.unresponsive} unresponsive" if sup.unresponsive else ""
+        fleet_stuck = f", {pool.unresponsive} unresponsive" if pool.unresponsive else ""
         detail = (
             f"awaiting a '{profile_id}' pool session to claim it "
-            f"(project: {sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting; "
+            f"(project: {sup.running_busy} busy, {sup.running_idle} idle, {sup.starting} starting"
+            f"{project_stuck}; "
             f"fleet: {pool.running_busy} busy, {pool.running_idle} idle, {pool.starting} starting"
+            f"{fleet_stuck}"
             + (f", max_active={hi}" if hi is not None else "")
             + ")"
         )

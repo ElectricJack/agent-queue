@@ -666,6 +666,38 @@ async def test_measure_pools_aggregates_projects_under_one_profile_key(orch, db,
     assert set(measurement.projects) == {PROJECT_ID, "second"}
 
 
+async def test_idle_worker_whose_claim_loop_went_silent_is_not_supply(orch, db):
+    """swift-dune: a worker parked on a usage-limit screen must not absorb demand.
+
+    Two such sessions counted as idle supply on 2026-09-21, so the sizer saw
+    its demand met and a READY task waited behind workers that never claim.
+    """
+    from src.pool_claims import pool_claim_loop_stall_seconds
+    from src.scheduler import PoolKey
+
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    stuck = (await db.list_sessions(lifecycle="pool"))[0]
+    sup = (await orch._measure_pools()).supply[PoolKey("worker")]
+    assert (sup.running_idle, sup.unresponsive) == (1, 0)
+
+    # Nothing has entered ``task_claim`` from it for two long-poll windows.
+    silent_since = time.time() - pool_claim_loop_stall_seconds(orch.config.swarm) - 1
+    await db.update_session(stuck.id, last_activity=silent_since, started_at=silent_since)
+    sup = (await orch._measure_pools()).supply[PoolKey("worker")]
+    assert (sup.running_idle, sup.unresponsive, sup.idle_session_ids) == (0, 1, [])
+    assert sup.by_project[PROJECT_ID].unresponsive == 1
+    assert sup.by_project[PROJECT_ID].idle_session_ids == []
+
+    # ...so the ready task gets a working session of its own.
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    live = [s for s in await db.list_sessions(lifecycle="pool") if s.id != stuck.id]
+    assert len(live) == 1 and live[0].state == "running"
+    assert (await db.get_session(stuck.id)).desired_state == "running"
+
+
 async def test_measure_pools_records_placement_inputs_per_project(orch, db, tmp_path):
     from src.scheduler import PoolKey
 
