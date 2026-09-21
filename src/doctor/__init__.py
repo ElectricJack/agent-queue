@@ -10,9 +10,9 @@ contract those owners must follow.
 
 from src.doctor.builtin import builtin_checks
 from src.doctor.capability_checks import capability_checks
-from src.doctor.db_checks import db_checks
 from src.doctor.dashboard_server_checks import dashboard_server_checks
 from src.doctor.dashboard_state_checks import dashboard_state_checks
+from src.doctor.db_checks import db_checks
 from src.doctor.formula_checks import formula_checks
 from src.doctor.hierarchy_checks import hierarchy_checks
 from src.doctor.integration_checks import integration_checks
@@ -30,6 +30,7 @@ from src.doctor.profile_checks import profile_checks
 from src.doctor.project_checks import project_checks
 from src.doctor.provider_checks import provider_checks
 from src.doctor.resource_checks import resource_checks
+from src.doctor.review_checks import review_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
 from src.doctor.session_checks import session_checks
 from src.doctor.skill_checks import skill_checks
@@ -45,9 +46,9 @@ __all__ = [
     "Severity",
     "builtin_checks",
     "capability_checks",
-    "db_checks",
     "dashboard_server_checks",
     "dashboard_state_checks",
+    "db_checks",
     "default_registry",
     "exit_code_for",
     "formula_checks",
@@ -106,5 +107,7 @@ def default_registry() -> DoctorRegistry:
     for check in project_checks():
         registry.register(check)
     for check in provider_checks():
+        registry.register(check)
+    for check in review_checks():
         registry.register(check)
     return registry
