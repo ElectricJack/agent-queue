@@ -69,6 +69,9 @@ export async function fetchTiles(
 export interface ListParams {
   variant: Variant;
   expanded: string[];
+  /** The container entered: the server pages that scope, root open and its
+   *  own child containers collapsed. */
+  root?: string | null;
   q: string;
   status: string;
   cursor: string | null;
@@ -202,15 +205,15 @@ export async function locate(
   variant: Variant,
   q: string,
   status: string,
-  expanded: string[] = [],
+  root: string | null = null,
 ): Promise<LocateResponse> {
-  // `expanded` rides along because a hit's position depends on it: collapsing
-  // a container reflows everything after it, so the persisted coordinate is
-  // not where the canvas draws the match.
+  // `root` rides along because a hit's position depends on the scope on
+  // screen: entering a container re-packs its scope, so the persisted
+  // coordinate is not where the canvas draws the match.
   const r = await postLocateApiProjectsProjectIdGraphLocatePost({
     client,
     path: { project_id: projectId },
-    body: { variant, q, status, expanded },
+    body: { variant, q, status, root },
     throwOnError: true,
   });
   return r.data as LocateResponse;

@@ -15,6 +15,7 @@ import {
   useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
 } from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
+import { publishAppliedVariant } from "./appliedVariant";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
 import { CELL, fromPx, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
@@ -24,7 +25,7 @@ import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
   type SelectableTask, type TaskNodeData,
 } from "../types";
-import { FINISHED_STATUSES, type TaskFilters } from "../taskFilters";
+import type { TaskFilters } from "../taskFilters";
 import type { LocateHit } from "@aq/ts-client";
 
 /** A project band's label: a plain marker, not a card, so it never steals clicks. */
@@ -107,6 +108,8 @@ interface LayerElements {
   pending: boolean;
   loaded: boolean;
   error: Error | null;
+  /** The variant the daemon served this layer's last response from. */
+  variantApplied: string | null;
 }
 
 interface LayerProps {
@@ -189,7 +192,9 @@ function ProjectLayer({
       id: worker.agent_id, name: worker.name, current_task_id: worker.docked_at,
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
-    onElements(projectId, { nodes, edges, workers, pending, loaded, error });
+    onElements(projectId, {
+      nodes, edges, workers, pending, loaded, error, variantApplied: store.variantApplied,
+    });
   }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, simpleEdges]);
 
   return null;
@@ -421,6 +426,10 @@ function Inner(props: LayoutCanvasProps) {
   );
   const pending = projectIds.some((pid) => layers.get(pid)?.pending ?? true);
   const allLoaded = projectIds.every((pid) => layers.get(pid)?.loaded);
+  // A focused response ALWAYS carries the container entered, so "nothing
+  // here" is "nothing but the container itself" -- gating on an empty node
+  // list could never fire inside one.
+  const nothingDrawn = nodes.every((node) => node.id === focusId);
 
   // A failed tiles request must never be reported as an empty graph.
   const layerError = projectIds.map((pid) => layers.get(pid)?.error).find(Boolean) ?? null;
@@ -442,7 +451,17 @@ function Inner(props: LayoutCanvasProps) {
   // there is no box to fit and no title to show until it lands.
   const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
-  const focusFinished = !!focusNode && FINISHED_STATUSES.has(focusNode.node.status);
+  // What the daemon actually served, which is not always what was asked for:
+  // entering a container the active layout stubbed or dropped is answered
+  // from `all`. That condition is the LAYOUT's (a container every one of
+  // whose descendants has finished is stubbed whatever its own status), so it
+  // is read from the response and never inferred.
+  const appliedVariant = layers.get(focusProject ?? "")?.variantApplied ?? null;
+  const showingCompleted = appliedVariant === "all" && !filters.showCompleted;
+  useEffect(() => { publishAppliedVariant((appliedVariant as Variant | null) ?? null); }, [appliedVariant]);
+  // Only on unmount: publishing null between values would make the toolbar
+  // fall back to the filters' variant for a render and re-issue its locate.
+  useEffect(() => () => publishAppliedVariant(null), []);
   useEffect(() => {
     if (!focusId || !focusNode) return;
     const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset, density);
@@ -465,13 +484,21 @@ function Inner(props: LayoutCanvasProps) {
     jumpHandled.current = jumpTarget;
     setKbFocusId(jumpTarget.id);
     const container = jumpTarget.container_id ?? null;
-    if (container !== focusId) {
+    // A search force-opens the ancestors of its matches server-side -- the
+    // one case where a container is drawn open -- so a hit can already be on
+    // screen in another container's tile. Re-scoping then would throw the
+    // operator's place away for nothing: pan to it instead.
+    const drawn = nodes.some((node) => node.id === jumpTarget.id);
+    if (!drawn && container !== focusId) {
       setFocus(container);
       return;
     }
     const position = toPx(jumpTarget.x, jumpTarget.y + jumpOffset, density);
     const box = sizePx(jumpTarget.w, jumpTarget.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
+    // `nodes` is deliberately not a dependency: the hit is spent on first
+    // use, so re-running on every node delivery would do nothing but churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpTarget, jumpOffset, fitBounds, density, focusId, setFocus]);
 
   /** Double-clicking a tile that can be entered goes into it; the enter
@@ -544,12 +571,11 @@ function Inner(props: LayoutCanvasProps) {
         ancestors={focusNode?.ancestors?.map((ancestor) => ({ id: ancestor.id, title: ancestor.title })) ?? []}
         current={focusNode ? { id: focusNode.node.id, title: focusNode.node.title } : { id: focusId, title: focusId }}
         onSelect={setFocus} />}
-      {/* A finished container is not in the active layout at all, so the
-        * daemon answers a focused request for one from the full layout. Say
-        * so, rather than leaving the reader to wonder why finished children
-        * are on screen with "Show completed" off. */}
-      {focusFinished && <p role="status" className="shrink-0 border-b border-gray-800 px-4 py-1 text-xs text-gray-400">
-        This container is finished, so completed work is shown inside it.
+      {/* A container the active layout does not carry is answered from the
+        * full one, so finished children are on screen with "Show completed"
+        * off. Say so, rather than leaving the reader to wonder. */}
+      {focusId && showingCompleted && <p role="status" className="shrink-0 border-b border-gray-800 px-4 py-1 text-xs text-gray-400">
+        No active work here, so completed work is shown inside this container.
       </p>}
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
@@ -609,7 +635,7 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {allLoaded && !pending && !layerError && nodes.length === 0 && (
+        {allLoaded && !pending && !layerError && nothingDrawn && (
           filters.showCompleted ? (
             <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">
               No tasks yet.

@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import CreateTaskModal from "../../components/CreateTaskModal";
 import { useTidyLayout } from "../../api/graphLayout";
+import { useAppliedVariant } from "./layout-v2/appliedVariant";
 import { useJumpToResult } from "./layout-v2/useJumpToResult";
 import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
@@ -12,16 +13,21 @@ import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
-  const { projectId, filters, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
-  // The same variant the canvas draws, so a located hit's coordinates are the
-  // ones on screen. Entering a container does not change it.
-  const variant = filters.showCompleted ? "all" : "active";
+  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
+  // The variant the canvas was actually SERVED, not the one the filters ask
+  // for: the daemon promotes a focused request to the full layout when the
+  // entered container is not in the active one, and searching that container
+  // against `active` would find nothing. Before the canvas has answered (or
+  // on the Tasks tab, where it is not mounted) the filters are the best
+  // guess there is.
+  const served = useAppliedVariant();
+  const variant = served ?? (filters.showCompleted ? "all" : "active");
   // Only the graph pans to a hit, and only a server-side layout knows where
   // one is: on the Tasks tab the control would do nothing, so it is not shown
   // and the `locate` request is never issued.
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
-    onGraph ? projectId : undefined, variant, filters);
+    onGraph ? projectId : undefined, variant, filters, focusId);
   const { clearGraphPositions, density, setDensity } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);

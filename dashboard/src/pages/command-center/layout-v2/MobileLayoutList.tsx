@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { LayoutNode } from "@aq/ts-client";
 import { fetchList, useLayoutNode, type Variant } from "../../../api/graphLayout";
 import { TaskCard } from "../TaskNode";
 import type { SelectableTask } from "../types";
 import type { TaskFilters } from "../taskFilters";
+import { useNavigate } from "react-router-dom";
 import Breadcrumbs from "./Breadcrumbs";
 import { taskNodeData } from "./flowNodes";
 import { registerLayoutRefetch } from "./liveRegistry";
@@ -44,17 +45,13 @@ export default function MobileLayoutList({
   const busy = useRef(false);
   // A page that lands after the filters changed describes the previous query.
   const generation = useRef(0);
-  // The list endpoint has no `root`, so the scope is asked for as the
-  // entered container plus its ancestor chain, and the page is then narrowed
-  // to that container's own children.
+  // The breadcrumbs' path; the SCOPE is the server's job -- `root` pages the
+  // entered container's own children, so a page can never come back short
+  // because rows from another scope used it up.
   const { data: focusData } = useLayoutNode(focusId ? projectId : undefined, focusId ?? null);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
-  const scope = useMemo(
-    () => focusId ? [...(focusNode?.ancestors ?? []).map((a) => a.id), focusId] : [],
-    [focusId, focusNode],
-  );
   const key = JSON.stringify({
-    projectId, variant, expanded: scope, q: filters.query.trim(), status: filters.status,
+    projectId, variant, root: focusId ?? null, q: filters.query.trim(), status: filters.status,
   });
 
   const loadPage = useCallback(async (after: string | null, reset: boolean) => {
@@ -62,9 +59,9 @@ export default function MobileLayoutList({
     busy.current = true;
     const mine = generation.current;
     try {
-      const params = JSON.parse(key) as { q: string; status: string; expanded: string[] };
+      const params = JSON.parse(key) as { q: string; status: string; root: string | null };
       const page = await fetchList(projectId, {
-        variant, expanded: params.expanded, q: params.q, status: params.status,
+        variant, expanded: [], root: params.root, q: params.q, status: params.status,
         cursor: after, limit: PAGE_SIZE,
       });
       if (generation.current !== mine) return;
@@ -128,9 +125,9 @@ export default function MobileLayoutList({
     projectId, offsetY: 0, focusId,
     handlers: { onOpenTask: onTaskClick, onFocus: onFocus ?? (() => {}) },
   };
-  // Depth-first ordering interleaves the scope's chain with its children, so
-  // only the entered container's own children belong on screen.
-  const shown = focusId ? nodes.filter((node) => node.container_id === focusId) : nodes;
+  // The container entered is in its own response (it is the scope's root);
+  // the breadcrumbs already name it, so the list is its children.
+  const shown = focusId ? nodes.filter((node) => node.id !== focusId) : nodes;
 
   return (
     <div role="region" aria-label="Task list" className="h-full space-y-3 overflow-y-auto p-3">
@@ -165,21 +162,25 @@ interface ListsProps extends Omit<Props, "projectId"> {
  * orders within a project, and there is no cross-project ordering to preserve.
  */
 export function MobileLayoutLists({ projectIds, projectNames, ...rest }: ListsProps) {
+  const navigate = useNavigate();
   if (projectIds.length === 1) {
     return <MobileLayoutList {...rest} projectId={projectIds[0]!}
       projectName={projectNames.get(projectIds[0]!) ?? projectIds[0]!} />;
   }
   return (
     <div className="h-full overflow-y-auto">
-      {projectIds.map((pid, index) => (
+      {projectIds.map((pid) => (
         <section key={pid}>
           <h2 className="sticky top-0 z-10 bg-gray-950 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
             {projectNames.get(pid) ?? pid}
           </h2>
-          {/* Entering is scoped to one project, the same one the canvas
-            * treats as the focus project. */}
+          {/* A container belongs to one project, and the `focus` parameter is
+            * not project-qualified: entering here would scope the wrong
+            * section. Go to that project's own graph instead, already
+            * scoped. */}
           <MobileLayoutList {...rest} projectId={pid} projectName={projectNames.get(pid) ?? pid}
-            focusId={index === 0 ? rest.focusId : null} />
+            focusId={null}
+            onFocus={(id) => { if (id) navigate(`/projects/${pid}/graph?focus=${encodeURIComponent(id)}`); }} />
         </section>
       ))}
     </div>

@@ -3,6 +3,12 @@ import { CELL, cellDistance, parseCell, type CellKey } from "./units";
 
 export interface LayoutStore {
   version: number | null;
+  /**
+   * The variant the daemon actually served the last response from, which is
+   * not always the one asked for: entering a container the active layout
+   * stubbed or dropped is served from `all`. Null until a response lands.
+   */
+  variantApplied: string | null;
   nodes: Map<string, LayoutNode>;
   edges: Map<string, LayoutEdge>;
   stubs: Map<string, LayoutStub>;
@@ -28,7 +34,7 @@ export interface LayoutStore {
 }
 
 export const emptyStore = (): LayoutStore => ({
-  version: null, nodes: new Map(), edges: new Map(), stubs: new Map(), edgeCells: new Map(),
+  version: null, variantApplied: null, nodes: new Map(), edges: new Map(), stubs: new Map(), edgeCells: new Map(),
   workers: [], gates: [], stubOverflow: new Map(), cells: new Map(), loaded: new Set(),
   carried: new Set(), whole: false,
 });
@@ -42,6 +48,7 @@ export const emptyStore = (): LayoutStore => ({
 export function retainForReflow(store: LayoutStore): LayoutStore {
   return {
     ...emptyStore(),
+    variantApplied: store.variantApplied,
     nodes: new Map(store.nodes),
     edges: new Map(store.edges),
     stubs: new Map(store.stubs),
@@ -71,6 +78,7 @@ export function mergeTiles(store: LayoutStore, cells: CellKey[], res: TilesRespo
   const base = store.version !== null && store.version !== res.layout_version ? emptyStore() : store;
   const next: LayoutStore = {
     version: res.layout_version,
+    variantApplied: res.variant_applied ?? base.variantApplied,
     nodes: new Map(base.nodes), edges: new Map(base.edges), stubs: new Map(base.stubs),
     edgeCells: new Map([...base.edgeCells].map(([k, v]) => [k, new Set(v)])),
     // Each response only describes the cells it was asked for, so replacing

@@ -192,6 +192,7 @@ beforeEach(() => {
   tiles.store = mergeTiles(emptyStore(), ["0:0"], {
     nodes: [n("e", "collapsed", 0, 0), n("z", "card", 2, 0)],
     edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    variant_applied: "active",
   } as unknown as TilesResponse);
   tiles.params = null;
   tiles.paramsSeen.length = 0;
@@ -615,18 +616,66 @@ describe("LayoutCanvas", () => {
       expect(base.setFocus).toHaveBeenCalledWith("e");
     });
 
-    it("says completed work is shown when the entered container is finished", () => {
-      layoutNode.data = {
-        node: n("e", "container", 0, 0, { w: 3, h: 2, status: "COMPLETED" }), ancestors: [], layout_version: 1,
-      };
+    it("says completed work is shown when the response was served from `all`", () => {
+      // The container's own status is DEFINED: the promotion is the
+      // LAYOUT's decision (every descendant finished), which is why the
+      // response reports it and the client never infers it.
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "all",
+      } as unknown as TilesResponse);
       render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
       expect(screen.getByText(/completed work is shown/i)).toBeInTheDocument();
     });
 
-    it("says nothing of the sort for a live container", () => {
+    it("says nothing when the operator asked for completed work themselves", () => {
       layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "all",
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e"
+        filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+      expect(screen.queryByText(/completed work is shown/i)).toBeNull();
+    });
+
+    it("says nothing for a finished container the active layout still carries", () => {
+      // The old status inference claimed completed work was on screen here.
+      layoutNode.data = {
+        node: n("e", "container", 0, 0, { w: 3, h: 2, status: "COMPLETED" }), ancestors: [], layout_version: 1,
+      };
       render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
       expect(screen.queryByText(/completed work is shown/i)).toBeNull();
+    });
+
+    it("says there is no unfinished work inside a container whose children are all hidden", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      // A focused response ALWAYS carries the entered container itself, so
+      // "nothing here" can never mean "no nodes at all".
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      tiles.loaded = true;
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.getByText(/no unfinished work here/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Show completed" }));
+      expect(base.setShowCompleted).toHaveBeenCalledWith(true);
+    });
+
+    it("shows no empty state inside a container that does have children", () => {
+      layoutNode.data = { node: n("e", "container", 0, 0, { w: 3, h: 2 }), ancestors: [], layout_version: 1 };
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("kid", "card", 0.2, 0.5)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      render(<MemoryRouter><LayoutCanvas {...base} focusId="e" /></MemoryRouter>);
+      expect(screen.queryByText(/no unfinished work here/i)).toBeNull();
     });
 
     it("fits the viewport to a located search result in the current scope", () => {
@@ -634,6 +683,26 @@ describe("LayoutCanvas", () => {
       fitBounds.mockClear();
       const hit = { id: "z", x: 2, y: 1, w: 1, h: 1, container_id: null };
       view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(fitBounds).toHaveBeenCalledWith(
+        { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
+        expect.anything(),
+      );
+    });
+
+    it("pans to a hit a filter already drew in this scope instead of re-scoping", () => {
+      // A search force-opens the ancestors of every match server-side (the
+      // one exception to enter-only), so the match IS on screen: entering
+      // its container would throw the operator's place away.
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("e", "container", 0, 0, { w: 3, h: 2 }), n("g0", "card", 2, 1)],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+        variant_applied: "active",
+      } as unknown as TilesResponse);
+      const view = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+      fitBounds.mockClear();
+      const hit = { id: "g0", x: 2, y: 1, w: 1, h: 1, container_id: "pkg" };
+      view.rerender(<MemoryRouter><LayoutCanvas {...base} jumpTarget={hit} /></MemoryRouter>);
+      expect(base.setFocus).not.toHaveBeenCalled();
       expect(fitBounds).toHaveBeenCalledWith(
         { ...toPx(hit.x, hit.y), ...sizePx(hit.w, hit.h) },
         expect.anything(),

@@ -26,7 +26,12 @@ export function useJumpTarget(): LocateHit | null {
  * daemon answers with coordinates only, so no tile has to be loaded to know
  * where the next match is.
  */
-export function useJumpToResult(projectId: string | undefined, variant: Variant, filters: TaskFilters) {
+export function useJumpToResult(
+  projectId: string | undefined,
+  variant: Variant,
+  filters: TaskFilters,
+  root: string | null = null,
+) {
   const [hits, setHits] = useState<LocateHit[]>([]);
   const [index, setIndex] = useState(-1);
   const query = filters.query.trim();
@@ -38,13 +43,14 @@ export function useJumpToResult(projectId: string | undefined, variant: Variant,
     publishJumpTarget(null);
     if (!projectId || !active) return;
     let stale = false;
-    // Nothing is ever expanded, so a hit's position is the one the fully
-    // collapsed geometry gives it -- the same geometry the canvas draws.
-    void locate(projectId, variant, query, filters.status)
+    // The scope goes with the query: a hit's position is resolved in the
+    // same geometry the canvas draws, which inside a container is that
+    // container's own packing.
+    void locate(projectId, variant, query, filters.status, root)
       .then((r) => { if (!stale) setHits(r.hits ?? []); })
       .catch(() => { if (!stale) setHits([]); });
     return () => { stale = true; };
-  }, [projectId, variant, query, filters.status, active]);
+  }, [projectId, variant, query, filters.status, active, root]);
 
   // The target outlives the toolbar otherwise, and a remount would fit the
   // canvas to a hit from a query nobody is running any more.

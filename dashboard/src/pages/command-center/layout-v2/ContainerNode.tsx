@@ -54,7 +54,8 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
         {onFocus && (
           <button type="button" aria-label={`Enter ${node.title}`} title={`Enter ${node.title}`}
             className="nodrag nopan flex shrink-0 items-center gap-1 rounded px-1 py-0.5 font-medium hover:bg-white/10"
-            onClick={(e) => { e.stopPropagation(); onFocus(node.id); }}>
+            onClick={(e) => { e.stopPropagation(); onFocus(node.id); }}
+            onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}>
             <MagnifyingGlassPlusIcon aria-hidden className="h-3.5 w-3.5" />Enter
           </button>
         )}

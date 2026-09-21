@@ -7,6 +7,7 @@ import { ShortcutsProvider } from "../../../shell/hotkeys/useShortcuts";
 import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
 import { resetGraphStateFallback, useGraphState } from "../useGraphHierarchy";
+import { publishAppliedVariant } from "../layout-v2/appliedVariant";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
@@ -60,6 +61,7 @@ function mount(path = "/projects/alpha/graph") {
 afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
   resetGraphStateFallback();
+  publishAppliedVariant(null);
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -80,7 +82,7 @@ describe("shared Command Center task controls", () => {
 
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
     expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
-    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", ""));
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "open", "", null));
   });
 
   it("re-enables completed work when a finished status is selected", async () => {
@@ -89,7 +91,7 @@ describe("shared Command Center task controls", () => {
 
     expect(screen.getByRole("checkbox", { name: "Show completed" })).toBeChecked();
     expect(screen.getByTestId("query")).toHaveTextContent("completed=1");
-    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "", "COMPLETED"));
+    await waitFor(() => expect(mocks.locate).toHaveBeenLastCalledWith("alpha", "all", "", "COMPLETED", null));
   });
 
   it("uses sidebar route scope and stores search/status in the URL", async () => {
@@ -182,7 +184,7 @@ describe("layout-aware task controls", () => {
   it("offers Tidy and Next result and confirms before tidying", async () => {
     mount("/projects/alpha/graph?q=check");
     await waitFor(() => expect(screen.getByRole("button", { name: "Next result (1)" })).toBeInTheDocument());
-    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "");
+    expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "check", "", null);
 
     vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await userEvent.click(screen.getByRole("button", { name: "Tidy layout" }));
@@ -232,6 +234,19 @@ describe("layout-aware task controls", () => {
     expect(mocks.locate).not.toHaveBeenCalled();
     // Tidy is not tab-specific and stays available.
     expect(screen.getByRole("button", { name: "Tidy layout" })).toBeInTheDocument();
+  });
+
+  it("locates in the variant the canvas was actually served, and in its scope", async () => {
+    // Entering a container the active layout dropped is served from `all`;
+    // searching it against `active` finds nothing.
+    publishAppliedVariant("all");
+    mount("/projects/alpha/graph?focus=done&q=child");
+    await waitFor(() => expect(mocks.locate).toHaveBeenCalledWith("alpha", "all", "child", "", "done"));
+  });
+
+  it("falls back to the filter's own variant before the canvas has answered", async () => {
+    mount("/projects/alpha/graph?q=child");
+    await waitFor(() => expect(mocks.locate).toHaveBeenCalledWith("alpha", "active", "child", "", null));
   });
 
   it("never locates with empty filters (the endpoint rejects that request)", () => {
