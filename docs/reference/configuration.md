@@ -87,7 +87,7 @@ aq system config schema
 | health_check, monitoring, logging, archive, auto_task | Health endpoint, task monitoring, logs, archival, and automatic task policy. | Operational settings; use the schema for bounds. |
 | security, api_auth, surface, state_machine, work_graph, integration | Security/auth, agent ergonomics, task-state enforcement, graph behavior, and delivery integration. | Current settings; not evidence that historical designs are active. |
 | swarm, resources, metrics, graph_layout | Pull pools, per-session limits/test slots, fleet metrics, and graph layout. | Resources defaults gate shared machine capacity. |
-| dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. |
+| dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. See [dashboard server settings](#dashboard-server-settings). |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
 
 ## Provider availability settings
@@ -231,6 +231,48 @@ same credential is unavailable exactly when the primary is, so an identical bloc
 validation error. Only `max_tokens` is shared with the primary. Unknown keys are ignored
 with a warning that names them (never their values). `llm` is restart-required, so a
 change to `llm.fallback` takes effect when the daemon restarts.
+
+## Dashboard server settings
+
+The daemon serves an API only; the browser dashboard comes from the separate
+dashboard server process (see [architecture](../concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server)).
+Its section is `dashboard.server` — a top-level `dashboard_server:` block is read
+the same way, which is what the config editor writes. Defaults and bounds are
+`DashboardServerConfig` in [src/config.py](../../src/config.py):
+
+~~~yaml
+dashboard:
+  server:
+    enabled: true      # `aq start` manages it when a verified bundle is installed
+    host: 127.0.0.1    # an IP literal or `localhost`
+    port: 8082
+~~~
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Whether `aq start` and `aq restart` start the dashboard server. With `false` they start only the daemon (`aq stop` still stops a dashboard server that is running), and the daemon's `/dashboard` pointer answers `"dashboard_url": null`. There is deliberately no setting that makes the daemon serve the dashboard again. |
+| `host` | `127.0.0.1` | The bind address. Must be an IP literal or `localhost` — never a DNS name, which could be re-pointed. `0.0.0.0`, `::` or a LAN address exposes the operator console to that network; read [what a LAN bind exposes](../guides/dashboard.md#reaching-it-from-another-machine) first. |
+| `port` | `8082` | The bind port, 1–65535, and never `mcp_server.port` (a validation error). When unset and `mcp_server.port` is 8082, the default steps aside to **8083**, so a daemon moved to 8082 before the dashboard server existed keeps a config that loads. A port you set is never moved, and a busy port is a startup failure, never an auto-increment: the URL stays predictable for bookmarks and the installer. |
+
+The dashboard server reads these once, when it starts, so `aq dashboard restart`
+applies an edit and the daemon needs no restart. It reads the YAML directly
+(never the daemon's `.env`) through the daemon's own parsers, so a value means
+the same thing in both processes ([src/dashboard_server/settings.py](../../src/dashboard_server/settings.py)).
+The daemon's API base it forwards to is resolved like every `aq` command's:
+`AQ_API_URL`, else `mcp_server.host` and `mcp_server.port`.
+
+**`api_auth.trusted_dashboard_origins`** keeps one meaning in both processes:
+the origins, besides literal loopback, from which a browser may drive this
+install. Through the default loopback bind the list can stay empty — terminals
+included. A LAN address, DNS name or TLS front end the browser uses must be
+listed as its exact origin (`https://aq.example.test`), or the dashboard server
+answers `421 misdirected_host` (unknown `Host`) or `403 origin_not_allowed`
+(unknown `Origin`), and the daemon refuses its terminals `4403`.
+
+`aq doctor` checks the section without importing the dashboard server:
+`dashboard.server.running`, `dashboard.server.bundle`, `dashboard.server.port`
+and `dashboard.server.exposure` (a warning while `host` is not loopback)
+([src/doctor/dashboard_server_checks.py](../../src/doctor/dashboard_server_checks.py)).
 
 ## Reload and restart
 

@@ -247,8 +247,16 @@ are installed with `aq plugin install`. [`src/plugins/`](../../src/plugins/).
 confuse: AQ *exposes* its commands as MCP tools through an embedded server, and
 a worker *connects to* external MCP servers declared in the vault.
 
-**Dashboard** — the React web UI served by the daemon.
-[`dashboard/src/`](../../dashboard/src/).
+**Dashboard** — the React web UI. An installed AQ serves it from the dashboard
+server; a source checkout runs it from the Vite dev server. The daemon serves
+no dashboard. [`dashboard/src/`](../../dashboard/src/),
+[guide](../guides/dashboard.md).
+
+**Dashboard server** — the small, stateless local process that serves the
+verified dashboard bundle (at `http://127.0.0.1:8082/` by default) and relays
+`/api`, `/health`, `/ready` and `/ws` to the daemon, so the browser talks to one
+origin. `aq start` and `aq stop` manage it with the daemon.
+[`src/dashboard_server/`](../../src/dashboard_server/).
 
 ## Communication
 

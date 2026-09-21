@@ -65,7 +65,13 @@ emulator and keeps no scrollback.
 The dashboard's attachable terminal is an xterm.js view over a WebSocket
 ([`InteractiveTerminal.tsx`](../../dashboard/src/components/InteractiveTerminal.tsx),
 [`terminalSocket.ts`](../../dashboard/src/ws/terminalSocket.ts)) served by
-[`src/api/terminal_stream.py`](../../src/api/terminal_stream.py). The route
+[`src/api/terminal_stream.py`](../../src/api/terminal_stream.py). The browser
+opens it on its own origin; the dashboard server (or Vite, in development)
+opens the daemon's socket first, offering the browser's subprotocols and
+passing `Host`, `Origin`, cookies and the query string through unchanged, and
+only then accepts the browser with the subprotocol the daemon chose — so a
+daemon refusal reaches the browser as a refused handshake, exactly as it would
+without the relay ([`src/dashboard_server/proxy.py`](../../src/dashboard_server/proxy.py)). The route
 never launches an agent; it owns only a disposable `tmux attach` client, and
 closing the tab never stops the agent's pane
 ([`src/sessions/terminal_pty.py`](../../src/sessions/terminal_pty.py)).
@@ -75,7 +81,7 @@ It is gated hard, because it is the one surface that types into a live agent:
 | Gate | Rule |
 |---|---|
 | Provider | `tmux` only — the row's `provider` must be `tmux` and the session must be live |
-| Network | loopback clients only (`127.0.0.1`, `::1`) |
+| Network | loopback clients only (`127.0.0.1`, `::1`). Behind the dashboard server the daemon sees every connection from loopback, so the dashboard server refuses `/ws/terminal/*` from a non-loopback browser itself (`403 loopback_only`, [`src/dashboard_server/edge.py`](../../src/dashboard_server/edge.py)) |
 | Origin | same-origin loopback, or an origin listed in `api_auth.trusted_dashboard_origins`. A custom domain must be configured explicitly even behind a local proxy, because a matching attacker-controlled `Host`/`Origin` can be DNS-rebound onto loopback |
 | Credentials | `Authorization: Bearer` **or** an `aq-bearer.<token>` subprotocol, never both, and never in the URL — URL credentials leak into access logs |
 | Authorization | local scope, or a global-admin session token (elevated, no project, no task) |

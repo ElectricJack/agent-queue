@@ -42,8 +42,10 @@ script before running it; that is the point of keeping them small.
 It stops rather than guessing whenever a human is required — a Homebrew
 administrator password, a `xcode-select --install` dialog, an agent CLI's
 browser login. Do the named thing and run the same command again: it revalidates
-what it already did instead of starting over. `aq status` then reports what the
-daemon thinks of itself.
+what it already did instead of starting over. It ends with the dashboard open
+at `http://127.0.0.1:8082/`, served by a small dashboard server beside the
+daemon — the daemon itself (port 8081) serves its API, not the dashboard. `aq status`
+then reports what the daemon thinks of itself.
 
 The [Windows + WSL2](docs/tutorials/install.md#windows--wsl2-quickstart) and
 [macOS](docs/tutorials/install.md#macos-quickstart) quickstarts cover the same
@@ -52,7 +54,8 @@ The versioned release's platform matrix, artifact checks, and intentionally
 visible acceptance limits are in the [installation release record](docs/validation/installation-release-0.1.0.md).
 
 To update later, run `aq update`: it stops AQ, pulls the latest code, rebuilds what changed and
-starts it again, rolling back if anything goes wrong (`aq update --check` just reports).
+starts it again, rolling back if anything goes wrong (`aq update --check` just reports). The
+[release notes](docs/release-notes.md) say what an update changes for an existing install.
 
 Contributing rather than installing? Clone and run `./setup.sh`, which adds the
 dev and dashboard toolchains on top of the same `aq install`.
@@ -182,7 +185,8 @@ npm -w dashboard run typecheck
 [Local checks](docs/contributing/checks.md) maps what you changed to what you should run;
 [testing](docs/contributing/testing.md) explains why bare `pytest tests/` is the wrong
 habit here. `npm run dev` serves the dashboard on `http://127.0.0.1:5173`, proxying the
-daemon API at `http://127.0.0.1:8081`.
+daemon API at `http://127.0.0.1:8081`; an installed AQ serves the built bundle from the
+dashboard server on `http://127.0.0.1:8082/` instead, and the two can run side by side.
 
 ## License
 

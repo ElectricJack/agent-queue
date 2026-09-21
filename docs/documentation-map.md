@@ -44,6 +44,7 @@ README.md                             GitHub landing page
 docs/
   README.md                           documentation home and reading order
   documentation-map.md                this page
+  release-notes.md                    what changed for an existing install, newest first
   tutorials/                          Start here → First task
     install.md
     first-task.md
@@ -105,7 +106,7 @@ machine-readable form of this table is
 
 | Ticket | Owns these pages | Module coverage shard |
 |---|---|---|
-| `foundation` | `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, the overhaul's planning files | — |
+| `foundation` | `docs/documentation-map.md`, `docs/reference/glossary.md`, `docs/contributing/documentation-style.md`, `docs/release-notes.md`, the overhaul's planning files | — |
 | `quickstart` | `docs/tutorials/install.md`, `docs/tutorials/first-task.md`, `docs/tutorials/README.md` | — |
 | `readme` | `README.md` (repository root) | — |
 | `architecture` | `docs/concepts/architecture.md` | `docs/reference/modules/architecture.md` |
@@ -236,11 +237,12 @@ result in a ledger. Two things follow for everyone else:
 * Do not link a historical page as though it were instructions. Link it as
   background, with the date it describes.
 
-A design record can also run *ahead* of the code. The one open at present is
-[the dashboard server and API-only daemon](specs/dashboard-server.md)
-(2026-09-20): approved, not yet implemented. It moves the dashboard out of the
-daemon into its own process; until that lands, the
-[dashboard guide](guides/dashboard.md) describes what ships.
+A design record can also run *ahead* of the code. None is open at present: the
+most recent, [the dashboard server and API-only daemon](specs/dashboard-server.md)
+(2026-09-20), has been implemented, and the
+[dashboard guide](guides/dashboard.md) and
+[architecture](concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server)
+describe what ships.
 
 Known contradictions between existing pages and current behaviour are already
 recorded in

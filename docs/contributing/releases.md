@@ -6,9 +6,11 @@ today.
 ## Why this page exists
 
 AQ release artifacts are Python wheels. They contain the runtime, `aq` and
-`agent-queue` console scripts, required package resources, and a pre-built
-dashboard at `/dashboard`; an installed user neither builds the frontend nor
-keeps a development checkout. A source checkout remains the contributor path.
+`agent-queue` console scripts, required package resources, and a pre-built,
+integrity-checked dashboard bundle that the dashboard server serves at `/` (the
+daemon itself is API only — see [architecture](../concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server));
+an installed user neither builds the frontend nor keeps a development checkout.
+A source checkout remains the contributor path.
 
 ## Vocabulary
 
@@ -26,7 +28,7 @@ keeps a development checkout. A source checkout remains the contributor path.
 |---|---|---|---|
 | The Python package | `setuptools>=83`, declared in [`pyproject.toml`](../../pyproject.toml) | A wheel providing `agent-queue` and `aq` | Yes, release artifact |
 | The generated Python API client | `openapi-python-client`, pinned | `packages/aq-client/`, installed editable | No |
-| The dashboard | `scripts/build_release_artifact.py` then `python -m build` | Verified package data served at `/dashboard` | Yes, inside the wheel |
+| The dashboard | `scripts/build_release_artifact.py` then `python -m build` | Verified package data, served at `/` by the dashboard server | Yes, inside the wheel |
 | The TypeScript client | `@hey-api/openapi-ts` | `packages/aq-ts-client/src/`, gitignored, consumed as source | No |
 
 ```bash
@@ -42,8 +44,11 @@ command below; development continues to use `npm run dev` and Vite.
 `project.version` in [`pyproject.toml`](../../pyproject.toml) is the release
 selector. Publish immutable wheels, install an explicit version such as
 `agent-queue==0.1.0`, and confirm it with `aq --version`. The dashboard
-manifest embedded in that wheel records the same version and a SHA-256 digest
-for every served asset; the daemon refuses to mount a missing or altered bundle.
+manifest embedded in that wheel records the same version, the Vite `base` it
+was built for (`/`) and a SHA-256 digest for every served asset; the dashboard
+server refuses to start on a missing or altered bundle, or on one built for the
+daemon's retired `/dashboard/` mount, and serves only the files the manifest
+lists ([src/dashboard_server/bundle.py](../../src/dashboard_server/bundle.py)).
 
 Publish a SHA-256 requirements lock beside each release and install it with
 pip's `--require-hashes` option. The package-data manifest protects the bundle
@@ -110,8 +115,9 @@ python scripts/build_release_artifact.py
 python -m build --wheel
 ```
 
-The first command runs the frontend with its production `/dashboard/` base and
-stages it in `src/dashboard_assets/dist/`; this is release-only generated
+The first command builds the frontend with the `/` base and every `VITE_*_URL`
+unset — so the page only ever talks to its own origin — and stages it with its
+manifest in `src/dashboard_assets/dist/`; this is release-only generated
 output. The second command must run after staging so the wheel includes the
 manifest and assets. Users update by selecting another published immutable
 version and its matching hash lock, for example `pip install --upgrade
@@ -151,7 +157,7 @@ is owned by the operator's daemon, not by any build step.
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| Dashboard missing from an installed wheel | Release staging was skipped or assets were altered. | Rebuild after `python scripts/build_release_artifact.py`; verify its SHA-256 lock. |
+| Dashboard missing from an installed wheel, or `aq dashboard status` says `no bundle` | Release staging was skipped or assets were altered. | Rebuild after `python scripts/build_release_artifact.py`; verify its SHA-256 lock. The dashboard server's log (`~/.agent-queue/dashboard-server.log`) names the file that failed verification. |
 | `npm run build` cannot resolve `@aq/ts-client` | The generated client is missing. | `./scripts/regenerate-ts-client.sh --from-file` |
 | A CVE scanner flags a transitive package | The pin may be out of date. | Update the pin *and* its comment in `pyproject.toml`. |
 | `schema behind code; ask the operator to upgrade` | The install moved ahead of the database. | The operator runs `aq db upgrade` outside a worktree slot. |

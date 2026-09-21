@@ -53,6 +53,7 @@ local policy, not as a universal default.
 | Need | Guide |
 | --- | --- |
 | Use the web UI | [Dashboard](guides/dashboard.md) |
+| See what changed for an existing install | [Release notes](release-notes.md) |
 | Create and manage a project | [Project onboarding](guides/project-onboarding.md) |
 | Operate pull-based workers | [Worker pools](guides/worker-pools.md) |
 | Handle a provider that ran out of usage or logged out | [Provider outage](guides/provider-outage.md) |

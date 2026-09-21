@@ -5,10 +5,15 @@ tags: [spec, dashboard, daemon, api, installer, security]
 # Dashboard server process and API-only daemon
 
 <!-- aq:historical -->
-> **Design record — approved direction, not yet implemented.** Written on
-> 2026-09-20 against `main` `0ad341dfa`, before the code. It is not revised to
-> track the code afterwards; where this page and the code disagree, the code is
-> right. Start at [the documentation home](../README.md) for what AQ does today.
+> **Design record — implemented 2026-09-21.** Written on 2026-09-20 against
+> `main` `0ad341dfa`, before the code. It is not revised to track the code
+> afterwards; where this page and the code disagree, the code is right. One
+> deliberate departure: the daemon answers `/dashboard` with **`404`** and the
+> JSON pointer, not the `307` §5 proposes — the cost §5 names for that choice is
+> recorded in the [release notes](../release-notes.md). What ships is described
+> by the [dashboard guide](../guides/dashboard.md) and
+> [architecture](../concepts/architecture.md#two-processes-the-daemon-and-the-dashboard-server);
+> start at [the documentation home](../README.md) for the rest.
 
 **Decision owner:** Jack, 2026-09-20 — the daemon goes back to exposing an API and
 nothing else, and the one-command install keeps ending at an open dashboard.

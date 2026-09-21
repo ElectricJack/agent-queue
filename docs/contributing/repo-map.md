@@ -29,7 +29,7 @@ repository is assigned to exactly one shard of it.
 | Path | What it is | Tracked files | Documented by |
 |---|---|---|---|
 | [`src/`](../../src/) | The daemon: orchestrator, command layer, API, CLI, sessions, playbooks, database. | 592 | spread across every subject shard |
-| [`dashboard/`](../../dashboard/) | The React + Vite web UI. | 407 | `docs/guides/dashboard.md` — **planned** |
+| [`dashboard/`](../../dashboard/) | The React + Vite web UI. An installed AQ serves its built bundle from the dashboard server (`src/dashboard_server/`); a checkout runs it from Vite. | 407 | [dashboard guide](../guides/dashboard.md) |
 | [`tests/`](../../tests/) | The pytest suite, its fixtures and its helpers. | 771 | [testing](testing.md) |
 | [`packages/`](../../packages/) | The two generated API clients — never hand-edited. | 1,441 | [code generation](codegen.md) |
 | [`migrations/`](../../migrations/) | Alembic revisions and environment. | 18 | [migrations](../guides/migrations.md) |
@@ -61,7 +61,8 @@ module catalog and prose live.
 | [`src/orchestrator/`](../../src/orchestrator/) | The scheduling cycle, workspace acquisition, pool measurement and reconciliation. | `scheduler`, `workspaces` |
 | [`src/commands/`](../../src/commands/) | The single command handler every surface (CLI, API, MCP) dispatches through, split into mixins. | `cli` |
 | [`src/cli/`](../../src/cli/) | The `aq` command line, including [`test_runner.py`](../../src/cli/test_runner.py). | `cli` |
-| [`src/api/`](../../src/api/) | FastAPI routers, request/response models and the offline OpenAPI spec builder. | `api` |
+| [`src/api/`](../../src/api/) | FastAPI routers, request/response models and the offline OpenAPI spec builder. The daemon's HTTP surface is API only. | `api` |
+| [`src/dashboard_server/`](../../src/dashboard_server/) | The dashboard server process: bundle verification, SPA serving, the same-origin relay to the daemon, Host/Origin/peer gates and the managed PID/log lifecycle. Imports nothing from the daemon but `src.config`. | `dashboard` |
 | [`src/database/`](../../src/database/) | SQLAlchemy Core tables, the query modules, the engine and the migration guard. | `database` |
 | [`src/sessions/`](../../src/sessions/) | Harness sessions: tmux specs, reconciler, default harnesses. | `sessions` |
 | [`src/playbooks/`](../../src/playbooks/) | Playbooks V2: authoring, definition, validation, engine, runtime, executors. | `playbooks` |

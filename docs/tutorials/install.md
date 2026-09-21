@@ -289,7 +289,10 @@ The installer opens that URL in your browser the first time it reaches it. It
 builds the dashboard itself when AQ was installed from a source checkout — which
 is what the one-command bootstrap installs — and starts the dashboard server,
 the small process that serves it beside the API-only daemon. `aq start` and
-`aq stop` manage both, so there is nothing extra to run.
+`aq stop` manage both, so there is nothing extra to run. The dashboard listens
+on this machine only; to open it from another computer, forward the port rather
+than binding it to your network — see
+[reaching it from another machine](../guides/dashboard.md#reaching-it-from-another-machine).
 
 The install outcome and first-task readiness answer different questions. You
 can deliberately finish an installation with every provider skipped, but AQ
@@ -397,7 +400,7 @@ software unless an explicit uninstall scope says otherwise.
 | --- | --- | --- |
 | Interrupted install or a completed login | `aq install` | Revalidates completed steps and resumes at the first unsatisfied one. |
 | A host changed in a way the normal checks cannot verify | `aq install --repair` | Reconciles the recorded installation; does not delete resources. |
-| Get the latest AQ | `aq update` | Stops the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon again. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back if anything fails — including an error the updater did not expect. `aq update --check` only reports. |
+| Get the latest AQ | `aq update` | Stops the dashboard server and then the daemon (running agents keep running), fast-forwards the checkout, then runs the rest from the new code in a fresh process: reinstalls dependencies and rebuilds the dashboard when they changed, and starts the daemon and the dashboard server again, checking the daemon's `/health` and that the dashboard server answers with this install's bundle. Backs up the database first when the update has migrations, refuses local edits or commits, and rolls back if anything fails — including an error the updater did not expect. `aq update --check` only reports. |
 | Update AQ and make the version transition resumable | `aq install --upgrade` | Performs repair plus records an upgrade transaction before changing steps. |
 | Inspect removal without changing anything | `aq uninstall --dry-run` | Shows what AQ owns, keeps, or leaves for manual removal. |
 | Remove AQ runtime but keep data | `aq uninstall` | Stops AQ and removes its runtime records; configuration, data, and database stay. |
@@ -439,6 +442,7 @@ that becomes active later (a newly signed-in CLI) gets its pool on the next run.
 | Secrets the configuration refers to | Operator | `~/.agent-queue/.env`, mode `0600` |
 | What the installer completed and owns | `aq install` | `~/.agent-queue/install-state.json` |
 | Tasks, projects, sessions, results | AQ daemon | PostgreSQL |
+| The built dashboard | `aq install` (`dashboard.build`), served by the dashboard server | `src/dashboard_assets/dist/` in the checkout, verified against its manifest; the server's PID and log are `~/.agent-queue/dashboard-server.pid` and `.log` |
 | Provider credentials | The provider's own CLI | its own store (Keychain, `~/.claude/.credentials.json`, …) — AQ never reads or moves one |
 | Repository source and commits | Your Git repository | Your configured project root |
 | Worker edits | AQ worker | AQ-managed worktree and task branch |
@@ -458,8 +462,8 @@ operator database; database upgrades are an operator action described in
 | The daemon did not come up | `~/.agent-queue/daemon.log`, then `aq doctor` | Fix what the log names (an unreachable database is the usual answer) and rerun `aq install`. |
 | The configuration does not parse | The `config.check` step names the keys | `aq system config edit`, then rerun. Leave `messaging_platform: none` unless you selected Discord. |
 | No worker can start | `aq agent list-profiles`, then `aq agent check-profile <id>` | Sign in to that profile's harness and rerun `aq install` to refresh eligibility. |
-| The dashboard does not open | Check the summary's Dashboard line | Rerun the install command: `dashboard.build` builds it if it has not (with a Node.js it downloads for itself; `~/.agent-queue/dashboard-build.log` has the full output) and restarts the daemon to serve it. |
-| You need to stop AQ | `aq stop` | This stops the daemon and its agent sessions. Use `aq restart` for a restart that re-adopts live sessions. |
+| The dashboard does not open | Check the summary's Dashboard line, then `aq dashboard status` | Rerun the install command: `dashboard.build` builds it if it has not (with a Node.js it downloads for itself; `~/.agent-queue/dashboard-build.log` has the full output) and `dashboard.serve` starts the dashboard server on it. A server that will not start leaves its reason in `~/.agent-queue/dashboard-server.log`; a `port conflict` means another program holds `dashboard.server.port`. The daemon on 8081 serves no dashboard, so `http://127.0.0.1:8081/dashboard/` only answers a JSON pointer to the right URL. |
+| You need to stop AQ | `aq stop` | This stops the dashboard server, the daemon and its agent sessions. Use `aq restart` for a restart that re-adopts live sessions and restarts the dashboard server too. |
 
 ## Related pages
 
