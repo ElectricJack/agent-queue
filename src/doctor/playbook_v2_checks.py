@@ -19,11 +19,20 @@ activation exactly like a changed command contract does.  A hash mismatch is
 also surfaced here so this health read agrees with ``artifact_integrity``; a
 corrupt file is a rebuild while moved fingerprints need recompile-and-reactivate.
 
-There is deliberately **no fix**.  A missing or mutated artifact is a rebuild
-decision (Package 6 recompiles from source and Package 5 activates the
-result); a doctor that "repaired" it could only do so by deleting the
+There is deliberately **no fix** for those.  A missing or mutated artifact is
+a rebuild decision (Package 6 recompiles from source and Package 5 activates
+the result); a doctor that "repaired" it could only do so by deleting the
 activation or by trusting whatever bytes it found, and both are worse than
 telling an operator exactly which playbook and which hash went bad.
+
+``playbooks.reviewed_bundles``: every reviewed bundle the daemon ships must be
+byte-identical in ``vault/reviewed-playbooks/<id>/``, the only place
+``playbook_v2_import`` reads from.  A drifted vault copy is what stranded
+upgraded installs at ``stale_contract``: it was seeded once and never
+refreshed.  This one *has* a fix, because the shipped recording is the
+reviewed source of truth and the old copy is moved aside rather than
+overwritten; inside the daemon the fix also re-runs the required-playbook
+reconcile so a broken system activation is re-pointed without a restart.
 
 Mirrors ``src/doctor/formula_checks.py``'s shape: a private ``_check_*``
 function plus a factory returning the :class:`DoctorCheck` list.
@@ -32,6 +41,7 @@ function plus a factory returning the :class:`DoctorCheck` list.
 from __future__ import annotations
 
 import hashlib
+import inspect
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
@@ -40,6 +50,7 @@ OWNER = "playbook-v2"
 CHECK_ID = "playbooks.artifact_integrity"
 STALE_CHECK_ID = "playbooks.activation_stale"
 REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
+REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
 
 
 def _digest(path: Path) -> str:
@@ -277,6 +288,67 @@ async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
+    """Shipped reviewed bundles against their vault copies.  Read-only."""
+    playbooks = getattr(ctx.config, "playbooks", None)
+    if playbooks is None or not getattr(playbooks, "enabled", False):
+        return CheckResult(
+            id=REVIEWED_BUNDLES_CHECK_ID,
+            severity=Severity.INFO,
+            detail="playbooks.enabled is false; reviewed bundles are not seeded",
+        )
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    if not data_dir:
+        return CheckResult(
+            id=REVIEWED_BUNDLES_CHECK_ID, severity=Severity.INFO, detail="no data_dir configured"
+        )
+
+    from src.playbooks.required import reviewed_bundle_drift, shipped_reviewed_playbook_ids
+
+    shipped = shipped_reviewed_playbook_ids()
+    drift = reviewed_bundle_drift(data_dir)
+    if not drift:
+        return CheckResult(
+            id=REVIEWED_BUNDLES_CHECK_ID,
+            severity=Severity.OK,
+            detail=f"{len(shipped)} shipped reviewed bundle(s) match their vault copies",
+            data={"checked": len(shipped)},
+        )
+    return CheckResult(
+        id=REVIEWED_BUNDLES_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(drift)} shipped reviewed bundle(s) differ from their vault copies "
+            f"({', '.join(row['playbook_id'] for row in drift)}); an import reads the vault "
+            "copy, so a stale one can leave its activation at stale_contract. Run with --fix "
+            "or restart the daemon to refresh them"
+        ),
+        data={"checked": len(shipped), "count": len(drift), "drift": drift},
+    )
+
+
+async def _fix_reviewed_bundles(ctx: DoctorContext) -> CheckResult:
+    """Refresh the vault copies, then reconcile inside a running daemon."""
+    from src.playbooks.required import ensure_reviewed_playbook_bundles
+
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    written = ensure_reviewed_playbook_bundles(data_dir) if data_dir else []
+    data: dict[str, object] = {"written": written}
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    reconcile = getattr(orchestrator, "reconcile_required_playbooks", None)
+    if written and inspect.iscoroutinefunction(reconcile):
+        status = await reconcile()
+        data["required_playbooks"] = status
+    return CheckResult(
+        id=REVIEWED_BUNDLES_CHECK_ID,
+        severity=Severity.OK,
+        detail=f"refreshed {len(written)} reviewed bundle(s) in the vault",
+        fixable=True,
+        fix_applied=True,
+        data=data,
+    )
+
+
 def playbook_v2_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
@@ -285,6 +357,14 @@ def playbook_v2_checks() -> list[DoctorCheck]:
             id=REPLAY_POLICY_CHECK_ID,
             run=_check_pending_event_replay_policy,
             fix=None,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id=REVIEWED_BUNDLES_CHECK_ID,
+            run=_check_reviewed_bundles,
+            fix=_fix_reviewed_bundles,
+            # The in-daemon fix re-imports every required bundle.
+            timeout_s=30.0,
             owner=OWNER,
         ),
     ]

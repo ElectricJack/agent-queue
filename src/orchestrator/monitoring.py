@@ -668,6 +668,29 @@ class MonitoringMixin:
                 except Exception:
                     pass
 
+    async def _reconcile_playbook_child_tasks(self) -> None:
+        """Resume playbook runs suspended on a child task that has settled.
+
+        The producer of ``ChildTaskCompleted``.  Delegates to
+        :meth:`CommandHandler.reconcile_playbook_child_tasks`, which asks the
+        database for the active ``agent_task`` waits whose task is terminal
+        (or gone) and hands each to the engine.  One indexed read per tick
+        that returns nothing unless a child actually settled.
+
+        No-op while the playbook subsystem is paused, for the reason
+        :meth:`_check_paused_playbook_timeouts` gives: a paused run neither
+        resumes nor times out.
+        """
+        if not self.config.playbooks.enabled:
+            return
+        if not hasattr(self, "command_handler") or self.command_handler is None:
+            return
+        try:
+            for r in await self.command_handler.reconcile_playbook_child_tasks():
+                logger.info("Playbook run %s resumed on its child task", r["run_id"])
+        except Exception as e:  # noqa: BLE001 - a sweep failure never aborts a cycle
+            logger.warning("Playbook child-task reconciliation failed: %s", e)
+
     async def _check_paused_playbook_timeouts(self) -> None:
         """Sweep paused playbook runs for expired timeouts (roadmap 5.4.4).
 
@@ -692,13 +715,11 @@ class MonitoringMixin:
         try:
             results = await self.command_handler.check_paused_playbook_timeouts()
             for r in results:
-                logger.info(
-                    "Playbook run %s timed out: status=%s, timeout=%ds, on_timeout=%s",
-                    r["run_id"],
-                    r["status"],
-                    r["timeout_seconds"],
-                    r.get("on_timeout"),
-                )
+                # The V2 sweep reports the run and what happened to it, nothing
+                # else: the V1 ``timeout_seconds`` / ``on_timeout`` keys went
+                # with the V1 runner, and indexing them raised ``KeyError``
+                # into the handler below for every run that did expire.
+                logger.info("Playbook run %s wait expired: status=%s", r["run_id"], r["status"])
         except Exception as e:
             logger.warning("Paused playbook timeout sweep failed: %s", e)
 

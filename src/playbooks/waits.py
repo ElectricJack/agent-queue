@@ -118,6 +118,33 @@ class WaitClaim:
     event_fields: Mapping[str, Any] = field(default_factory=dict)
 
 
+#: ``tasks.status`` values after which a child will not run again, and the
+#: lowercase status a ``ChildTaskCompleted`` carries for each.  ``BLOCKED`` is
+#: terminal here as it is everywhere else: nothing leaves it without an
+#: operator, and a run that kept waiting would wait for that operator too.
+CHILD_TERMINAL_STATUSES: Mapping[str, str] = {
+    "COMPLETED": "completed",
+    "FAILED": "failed",
+    "BLOCKED": "blocked",
+}
+
+#: What a child that no longer exists reconciles to.  A deleted task did not
+#: complete and did not fail; ``cancelled`` is the declared edge for "the work
+#: was withdrawn".
+CHILD_MISSING_STATUS = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class SettledChildWait:
+    """An active ``agent_task`` wait whose awaited task has settled."""
+
+    wait_id: str
+    run_id: str
+    step_id: str
+    task_id: str
+    status: str
+
+
 @dataclass(frozen=True, slots=True)
 class WaitRegistration:
     """The persisted wait and any inbox event that claimed it immediately.
@@ -208,6 +235,8 @@ class WaitRepository(Protocol):
     ) -> list[WaitClaim]: ...
 
     async def expire_due(self, now: float, *, limit: int = 100) -> list[WaitClaim]: ...
+
+    async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]: ...
 
     async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int: ...
 

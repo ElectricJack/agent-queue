@@ -165,7 +165,22 @@ class V2PlaybookRuntime:
                 )
             )
         self._triggers = tuple(sorted(triggers))
-        self._required_inactive_ids = {
+        self._required_inactive_ids = self._required_inactive_from(rows)
+        self._integration_destinations = tuple(integration_destinations)
+        self._integration_activation_addresses = tuple(activation_addresses)
+        self._ensure_integration_reconciler()
+        self._integration_wakeup.set()
+
+    def _required_inactive_from(self, rows: list[dict[str, Any]]) -> set[str]:
+        """Required ids that may not be treated as serving, rebuilt from scratch.
+
+        The rows carry the *persisted* health, which only the retention sweep
+        ever downgrades; the reconciler's status carries health computed
+        against the live registries.  Either one saying inactive is enough.
+        The set is rebuilt rather than added to, so a recovered playbook leaves
+        it as soon as a fresh status says so.
+        """
+        inactive = {
             playbook_id
             for playbook_id in REQUIRED_SYSTEM_PLAYBOOK_IDS
             if not any(
@@ -178,15 +193,25 @@ class V2PlaybookRuntime:
                 for row in rows
             )
         }
-        self._required_inactive_ids.update(
+        inactive.update(
             playbook_id
             for playbook_id, state in self._required_playbook_status.get("required", {}).items()
             if not state.get("ok")
         )
-        self._integration_destinations = tuple(integration_destinations)
-        self._integration_activation_addresses = tuple(activation_addresses)
-        self._ensure_integration_reconciler()
-        self._integration_wakeup.set()
+        return inactive
+
+    async def apply_required_playbook_status(self, status: dict[str, Any]) -> None:
+        """Adopt a freshly computed required-playbook status.
+
+        Without this the runtime kept the startup verdict for its lifetime:
+        a required policy repaired by hand stayed marked inactive, and every
+        ``task.route_needed`` kept being retained as if routing were down.
+        Touches only the required-inactive set -- the routing snapshot has its
+        own serialized publisher (``refresh_routing_activation_snapshot``).
+        """
+        self._required_playbook_status = status or {}
+        rows = await self._db.list_playbook_activations(enabled_only=False)
+        self._required_inactive_ids = self._required_inactive_from(rows)
 
     def get_all_triggers(self) -> list[str]:
         return list(self._triggers)
