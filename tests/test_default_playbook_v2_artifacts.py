@@ -427,8 +427,9 @@ def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None
     """A shipped bundle is seeded verbatim, so it may not drift from the recording.
 
     Every directory under `src/prompts/reviewed_playbooks/` is covered, not
-    only the required ids: seeding refreshes a drifted vault copy on every
-    start, so each of these bundles reaches every existing install.
+    just the two required ids: seeding now refreshes a stale vault copy, so a
+    drifted bundle is no longer inert on an existing install — it is what the
+    next import reads.
 
     `ensure_reviewed_playbook_bundles` copies these bytes into a new vault and
     the reconciler activates them; nothing recompiles them from the shipped

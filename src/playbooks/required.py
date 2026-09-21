@@ -5,6 +5,10 @@ module bridges that boundary: it installs the reviewed bundle on a new data
 directory, records the first activation, and makes an inactive required policy
 an explicit readiness failure instead of an empty event subscription.
 
+Seeding is also the only supply line a corrected bundle has.  ``playbook_v2_import``
+refuses every path outside the vault root, so a bundle rebuilt against a changed
+command contract reaches an install only by being written into the vault here.
+
 ``vault/reviewed-playbooks/<id>/`` is daemon-owned for every id AQ ships.  A
 reviewed artifact freezes the capability fingerprint of each profile it names,
 so a bundle seeded by an older release stops validating as soon as a shipped
@@ -41,7 +45,7 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
 # them, and never re-enabled after an operator disables one.  Before this set
 # existed a fresh install activated only the two required policies above, and
 # Settings -> Playbooks showed nothing else even though these ship with AQ.
-DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation", "default-pipeline")
 _ACTOR = "service:required-playbook-reconciler"
 
 
@@ -51,7 +55,13 @@ def reviewed_bundle_source() -> Path:
 
 
 def shipped_reviewed_playbook_ids() -> tuple[str, ...]:
-    """Every reviewed bundle this daemon carries.  The directory is the list."""
+    """Every reviewed bundle this daemon carries, activated or not.
+
+    The directory is the list.  ``ci-main-sentinel`` is project-scoped and is
+    never activated by the reconciler, but ``playbook_v2_import`` refuses any
+    path outside the vault root, so a bundle an operator cannot find in the
+    vault is a bundle they cannot import at all.
+    """
     source_root = reviewed_bundle_source()
     if not source_root.is_dir():
         return ()
@@ -68,7 +78,7 @@ def _drifted_files(source: Path, destination: Path) -> list[str]:
     """Shipped bundle files the installed copy lacks or holds other bytes for.
 
     Files only the installed copy has are not drift: they cannot change what
-    an import reads.  They travel with the old directory when it is moved aside.
+    an import reads.  A refresh carries them into the new copy.
     """
     drifted: list[str] = []
     for shipped in sorted(source.iterdir()):
@@ -133,6 +143,23 @@ def _superseded_path(destination: Path) -> Path:
     return candidate
 
 
+def _carry_operator_files(installed: Path, staging: Path) -> None:
+    """Copy what the operator kept beside the recording into the refreshed copy.
+
+    Only the shipped recording is daemon-owned.  A note or review an operator
+    put in the bundle directory is theirs, so it stays where they put it; the
+    superseded directory keeps its own copy too.
+    """
+    for entry in installed.iterdir():
+        target = staging / entry.name
+        if target.exists() or target.is_symlink():
+            continue  # a shipped file: the recording wins
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.copytree(entry, target, symlinks=True)
+        else:
+            shutil.copy2(entry, target, follow_symlinks=False)
+
+
 def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
     """Seed the shipped reviewed bundles into the vault and refresh stale copies.
 
@@ -144,10 +171,15 @@ def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
 
     A vault copy that differs from the shipped recording is now replaced.  The
     old directory is moved aside to ``<id>.bak-<epoch>`` rather than
-    overwritten, so anything an operator put there survives.  The new copy is
-    staged beside the destination and renamed into place, so a failed copy
-    never leaves a half-written bundle under the importable name.  An id AQ
-    does not ship is never touched.
+    overwritten, so the superseded bytes survive.  The new copy is staged
+    beside the destination and renamed into place, so a failed copy never
+    leaves a half-written bundle under the importable name.  Files an operator
+    kept beside the recording are carried into the new copy, so they stay
+    where they put it.  An id AQ does not ship is never touched.
+
+    A reviewed bundle is content-addressed and the artifact an activation
+    points at lives in the compiled store, so replacing these bytes retires
+    nothing by itself: it changes what the *next* import reads.
 
     Returns the ids whose vault copy this call wrote, new or refreshed.
     """
@@ -165,6 +197,8 @@ def ensure_reviewed_playbook_bundles(data_dir: str) -> list[str]:
             if staging.exists():
                 shutil.rmtree(staging)
             shutil.copytree(source, staging)
+            if present and destination.is_dir():
+                _carry_operator_files(destination, staging)
             superseded = None
             if present:
                 superseded = _superseded_path(destination)
