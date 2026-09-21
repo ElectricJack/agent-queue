@@ -87,8 +87,9 @@ def retired_delegate_message(operation_id: str, state: str, *, action: str) -> s
     """
     return (
         f"Integration operation {operation_id} is {state}; its delegate is no longer "
-        f"required and cannot be {action}. Release it with `{RELEASE_COMMAND}`, then "
-        "delete or archive the task."
+        f"required and cannot be {action}. Release it with `{RELEASE_COMMAND}`; it "
+        "settles as FAILED. It can be deleted or archived only once no integration "
+        "history names it."
     )
 
 

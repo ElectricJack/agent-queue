@@ -188,8 +188,9 @@ One message builder, `retired_delegate_message(operation_id, state, action)`:
 
 > `Integration operation <id> is <state>; its delegate is no longer required and
 > cannot be <action>. Release it with
-> \`aq doctor --check integration.stranded_delegates --fix\`, then delete or
-> archive the task.`
+> \`aq doctor --check integration.stranded_delegates --fix\`; it settles as
+> FAILED. It can be deleted or archived only once no integration history names
+> it.`
 
 Used by:
 
