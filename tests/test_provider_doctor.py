@@ -59,6 +59,30 @@ def _config(*, enabled: bool = True, stale_after: int | None = None):
     return cfg
 
 
+def _assert_named_aq_commands_exist(detail: str) -> None:
+    """Every backticked ``aq …`` in *detail* must resolve in the real CLI tree.
+
+    The detail is the operator's next step.  It once said ``aq run
+    provider_usage_probe`` — there is no ``aq run`` — and nothing noticed,
+    because a test that only pins the sentence pins the mistake with it.
+    """
+    import re
+
+    import click
+
+    from src.cli.app import cli
+
+    named = re.findall(r"`(aq [^`]+)`", detail)
+    assert named, f"expected the detail to name a command to run: {detail!r}"
+    for line in named:
+        node: click.Command = cli
+        for word in line.split()[1:]:
+            assert isinstance(node, click.Group), f"{line!r}: {node.name!r} has no subcommands"
+            child = node.get_command(click.Context(node), word)
+            assert child is not None, f"{line!r} names no such command ({word!r})"
+            node = child
+
+
 async def _record_health(db, **overrides):
     """Write a probe verdict shaped exactly like ``_finish_probe`` writes one."""
     health = {
@@ -200,6 +224,7 @@ async def test_a_probe_that_has_stored_no_reading_warns(db):
     assert finding.severity is Severity.WARN
     assert "stored no reading" in finding.detail
     assert finding.data["age_seconds"] is None
+    _assert_named_aq_commands_exist(finding.detail)
 
 
 async def test_transcript_rows_do_not_count_as_probe_freshness(db):
@@ -257,6 +282,7 @@ async def test_no_probe_has_ever_run_warns(db):
     assert finding.severity is Severity.WARN
     assert finding.data["probe_ran"] is False
     assert "provider-usage-probe" in finding.detail
+    _assert_named_aq_commands_exist(finding.detail)
 
 
 # ---------------------------------------------------------------------------

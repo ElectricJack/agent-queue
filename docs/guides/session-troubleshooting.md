@@ -114,8 +114,9 @@ Attaching a dashboard terminal and resizing the pane is the reliable way to
 
 ## A session that quarantines at startup
 
-**Symptom.** A session goes `starting` → `quarantined` within seconds, over and
-over, and no work happens.
+**Symptom.** A session dies within seconds of `starting`, over and over, each
+attempt reporting `quarantine dialog '<rule>' matched during startup`, and no
+work happens.
 
 **Diagnose.**
 
@@ -130,9 +131,30 @@ deliberately **quarantine** instead, because keystrokes cannot fix them:
 
 | Rule | Harness | Meaning | Fix |
 |---|---|---|---|
-| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | wait out the cooldown; the exit classifier already paused the task |
+| `rate-limit` | [claude](../../src/sessions/default_harnesses/claude.md) | the provider is refusing work | nothing on the host — the launch is retried every 60 s until the provider's window resets (see below) |
 | `login-required` | [codex](../../src/sessions/default_harnesses/codex.md) | the CLI is not authenticated | run `codex login` on the host |
 | `login-required` | [gemini](../../src/sessions/default_harnesses/gemini.md) | the CLI is not authenticated | run `gemini` interactively once, or set `GEMINI_API_KEY` in the daemon environment |
+
+A quarantine rule kills the session *before* it is ever `running`
+(`die()` in [`src/sessions/tmux.py`](../../src/sessions/tmux.py)), so it is
+handled as a failed launch, not as an exit. The session row ends `stopped`
+with `end_reason: startup_exit` — never `quarantined` — and the pane's last
+screen is saved to `<data_dir>/sessions/<session-name>/start-stderr.log`. The
+task is `PAUSED` with context `session_launch_failed` for a flat 60 s
+(`_fail_session_launch` in
+[`src/orchestrator/execution.py`](../../src/orchestrator/execution.py)), a
+**Session launch failed … Retrying in 60s** notice names the rule and that log,
+and the launch is tried again. A pool worker holds no task at that point and
+its session row is not written until the start succeeds, so there is nothing
+to pause: the `(project, profile)` pool key is quarantined for the same 60 s
+and `aq pool status` reports it as `quarantined_until` / `quarantined_reason`,
+with the tail of that log in the reason.
+
+The exit classifier's 900 s `rate_limit` cooldown does **not** apply here. It
+only judges a session that reached `running` and then exited, so a provider
+that is already refusing work at startup is retried once a minute, not once
+every fifteen. To stop the churn while the window resets, `aq task pause` the
+task or `aq task route` it to a profile on another provider.
 
 If the pane is empty and the session died immediately, the executable is
 probably not on the daemon's `PATH`. That failure is diagnosed before any file
