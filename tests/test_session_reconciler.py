@@ -2188,3 +2188,161 @@ class TestProviderAvailability:
         provider.script_death(row.name)
         await pool_reconciler.tick(now=NOW)
         assert pool_reconciler.test_orch._pool_quarantine
+
+
+# ---------------------------------------------------------------------------
+# Usage-limit screen on a stalled session (bold-rapids.8, provider-failover D13)
+# ---------------------------------------------------------------------------
+
+#: The bottom of a real Claude Code 2.1.278 pane parked on its limit (see
+#: tests/test_usage_limit_screen.py for the capture).
+LIMIT_PANE = (
+    "  ⎿  You've hit your session limit · resets 1:40am (America/Los_Angeles)\n"
+    "     /usage-credits to finish what you’re working on.\n"
+    "\n"
+    "❯ "
+)
+
+
+class TestUsageLimitScreen:
+    """A CLI parked on its limit screen is a RATE_LIMIT exit, not a stall.
+
+    It cannot answer a nudge, so the ladder's nudges and restart only burn
+    ~23 minutes and a restart before the task gets anywhere.  In
+    ``provider_failover.mode: enforce`` the ladder recognises the screen,
+    stops the process and hands the task to the exit path's RATE_LIMIT
+    verdict — provider evidence, no restart spent.
+    """
+
+    async def _parked(self, db, provider, *, text=LIMIT_PANE, idle=1000.0):
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 5000, last_activity=NOW - idle)
+        provider.sessions[row.name].activity = NOW - idle
+        provider.feed_output(row.name, text, activity=False)
+        return row
+
+    @staticmethod
+    def _reconciler(db, config, registry, bus):
+        orch = _ReleasingOrch(db)
+        orch.provider_availability = _Availability()
+        rec = SessionReconciler(db, config, registry, bus=bus, orchestrator=orch, epoch="e")
+        return rec, orch
+
+    async def test_a_limit_screen_is_a_rate_limit_exit_not_a_nudge(
+        self, db, provider, config, registry, bus
+    ):
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(db, provider)
+
+        await rec.tick(now=NOW)
+
+        assert provider.sent_nudges == []
+        assert row.name not in provider.sessions  # the parked CLI is stopped
+        session = await db.get_session("s1")
+        assert (session.state, session.sleep_reason) == ("sleeping", "rate_limit")
+        assert session.restarts == 0
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        exited = bus.payload("session.exited")
+        assert exited["verdict"] == "rate_limit"
+        assert exited["reason"].startswith("usage-limit screen on a stalled session")
+        assert "resets 1:40am" in exited["reason"]
+        assert orch.provider_availability.rate_limit_exits == ["s1"]
+        assert "task.stalled" not in bus.types() and "task.nudged" not in bus.types()
+        assert orch.calls == ["t1"]  # agent and workspace released
+
+    async def test_a_limit_screen_reached_after_the_nudges_spends_no_restart(
+        self, db, provider, config, registry, bus
+    ):
+        rec, _orch = self._reconciler(db, config, registry, bus)
+        await self._parked(db, provider)
+        await db.set_task_meta("t1", META_STALL_NUDGES, str(config.sessions.stall_max_nudges))
+        await db.set_task_meta("t1", META_STALL_LAST_ACTION, "0")
+
+        await rec.tick(now=NOW)
+
+        session = await db.get_session("s1")
+        assert (session.state, session.restarts) == ("sleeping", 0)
+        assert "task.restarted" not in bus.types()
+        # The next session on this task starts a fresh ladder.
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) == "0"
+
+    @pytest.mark.parametrize("mode", ["observe", "off"])
+    async def test_outside_enforce_the_ladder_is_unchanged(
+        self, db, provider, config, registry, bus, mode
+    ):
+        config.provider_failover.mode = mode
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(db, provider)
+
+        await rec.tick(now=NOW)
+
+        assert provider.sent_nudges
+        assert row.name in provider.sessions
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert orch.provider_availability.rate_limit_exits == []
+
+    async def test_broad_rate_limit_text_is_still_just_a_stall(
+        self, db, provider, config, registry, bus
+    ):
+        """``429`` / ``rate limit`` are exit-classifier evidence, not a limit screen."""
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(
+            db, provider, text="  ⎿  HTTP 429 Too Many Requests: rate limit, retrying\n❯ "
+        )
+
+        await rec.tick(now=NOW)
+
+        assert provider.sent_nudges
+        assert row.name in provider.sessions
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert orch.provider_availability.rate_limit_exits == []
+
+    async def test_a_limit_screen_inside_the_lease_is_left_alone(
+        self, db, provider, config, registry, bus
+    ):
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(db, provider, idle=10.0)
+
+        await rec.tick(now=NOW)
+
+        assert row.name in provider.sessions
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert orch.provider_availability.rate_limit_exits == []
+
+    async def test_a_failed_stop_falls_back_to_the_ladder(
+        self, db, provider, config, registry, bus, monkeypatch
+    ):
+        """Nothing is released while the process may still be alive."""
+
+        async def _stop_fails(h, *, grace=2.0):
+            raise RuntimeError("tmux server unreachable")
+
+        monkeypatch.setattr(provider, "stop", _stop_fails)
+        rec, orch = self._reconciler(db, config, registry, bus)
+        row = await self._parked(db, provider)
+
+        await rec.tick(now=NOW)
+
+        assert provider.sent_nudges
+        assert (await db.get_session(row.id)).state == "running"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert orch.provider_availability.rate_limit_exits == []
+        assert orch.calls == []
+
+    async def test_a_parked_pool_worker_releases_its_claim_as_a_rate_limit(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        pool_reconciler.test_orch.provider_availability = _Availability()
+        row = await _claimed_pool_session(db, provider, tmp_path, last_activity=NOW - 1000)
+        provider.sessions[row.name].activity = NOW - 1000
+        provider.feed_output(row.name, LIMIT_PANE, activity=False)
+
+        await pool_reconciler._step_stall_ladder([row], NOW)
+
+        assert provider.sent_nudges == []
+        assert pool_reconciler.test_orch.terminations == [(row.id, "rate_limit")]
+        current = await db.get_session(row.id)
+        assert current.state == "stopped" and current.restarts == 0
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert pool_reconciler.test_orch.provider_availability.rate_limit_exits == [row.id]

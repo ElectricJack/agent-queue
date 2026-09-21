@@ -12,7 +12,8 @@ one does not skip the rest:
 4. **Orphans** — the two ways row and task can disagree: a live session
    whose task is no longer open (kill it), and an open task whose session
    row is not live (release it).
-5. **Stall ladder** — alive but silent: nudge → restart → quarantine.
+5. **Stall ladder** — alive but silent: nudge → restart → quarantine.  A
+   CLI parked on its usage-limit screen leaves as a ``RATE_LIMIT`` exit.
 6. **Named desired-state** — converge persistent sessions (start/sleep).
 7. **Backstop** — ``stuck_timeout_seconds`` as the final net, not the
    primary defense.
@@ -38,7 +39,12 @@ from src.pool_claims import (
     is_live_pool_claim_task_status,
     pool_claim_loop_stall_seconds,
 )
-from src.sessions.exit_classifier import ExitVerdict, Verdict, classify_exit
+from src.sessions.exit_classifier import (
+    DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+    ExitVerdict,
+    Verdict,
+    classify_exit,
+)
 from src.sessions.provider import (
     Cap,
     CapabilityUnsupported,
@@ -47,6 +53,7 @@ from src.sessions.provider import (
     PartialListError,
     SessionHandle,
 )
+from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_limit_screen
 
 logger = logging.getLogger(__name__)
 
@@ -982,11 +989,79 @@ class SessionReconciler:
 
     # -- step 4: stall ladder ---------------------------------------------
 
+    async def _exit_usage_limit_screen(
+        self, provider, row: SessionRecord, task, now: float
+    ) -> bool:
+        """Take a stalled session parked on its usage-limit screen out as a ``RATE_LIMIT`` exit.
+
+        A CLI that hits its provider's usage limit mid-task usually does not
+        exit — it prints the limit line and sits at its prompt — so the exit
+        classifier never sees it and the provider-failover in-flight path
+        (D13) never runs.  Left to the ladder it is nudged
+        ``stall_max_nudges`` times into a CLI that cannot answer, then
+        restarted ~23 minutes in with a restart spent and no provider
+        evidence recorded.
+
+        Instead, when the pane's tail is one of the CLIs' own blocking limit
+        messages (:func:`~src.sessions.usage_limit_screen.match_usage_limit_screen`,
+        deliberately far stricter than the exit classifier's patterns), the
+        process is stopped and the session goes through :meth:`_apply_verdict`
+        exactly as a death on a usage limit would: ``exit_rate_limit``
+        evidence, then the failover exit path — checkpoint, hand-off, requeue
+        — where it is wired, or the RATE_LIMIT pause / pool-key cooldown
+        where it is not.  No restart is spent.
+
+        ``provider_failover.mode: enforce`` only — ``observe`` and ``off`` keep
+        the ladder as it was.  A stop that fails leaves everything to the
+        ladder: nothing is released while the process may still be alive.
+        Returns True when the session was handed off.
+        """
+        failover = getattr(self.config, "provider_failover", None)
+        if failover is None or not failover.enforcing:
+            return False
+        line = match_usage_limit_screen(await self._peek(provider, row, USAGE_LIMIT_PEEK_LINES))
+        if line is None:
+            return False
+        logger.warning(
+            "Session %s (%s) on task %s is parked on a usage-limit screen (%r) after "
+            "%.0fs without progress — stopping it and taking it out as a rate-limit exit",
+            row.id,
+            row.name,
+            row.task_id,
+            line,
+            now - (row.last_activity or row.started_at),
+        )
+        try:
+            await provider.stop(self._handle(row), grace=2.0)
+        except Exception:
+            logger.warning(
+                "Stopping usage-limited session %s failed — leaving it to the stall ladder",
+                row.id,
+                exc_info=True,
+            )
+            return False
+        # Whatever comes next, this session's ladder is over; the next
+        # session on the task starts a fresh one (as a stall restart does).
+        await self.db.set_task_meta(row.task_id, META_STALL_NUDGES, "0")
+        await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(now))
+        verdict = ExitVerdict(
+            Verdict.RATE_LIMIT,
+            f"usage-limit screen on a stalled session: {line[:160]}",
+            cooldown_seconds=DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
+        )
+        await self._apply_verdict(provider, row, task, verdict, now)
+        return True
+
     async def _step_stall_ladder(self, live: list[SessionRecord], now: float) -> None:
         """Nudge → backoff → restart → quarantine.
 
         A stalled agent is not a dead agent.  Killing on timeout throws away
         the work in progress; nudging asks it to report or finish first.
+
+        The one stall that nudging cannot help is a CLI parked on its
+        provider's usage-limit screen: before every rung the ladder checks
+        for that (:meth:`_exit_usage_limit_screen`) and, when it finds it,
+        hands the session to the exit path instead of climbing.
         """
         ttl = float(self.sessions_config.lease_ttl_seconds)
         if ttl <= 0:
@@ -1017,6 +1092,9 @@ class SessionReconciler:
 
             task = await self.db.get_task(row.task_id)
             if task is None or task.status is not TaskStatus.IN_PROGRESS:
+                continue
+
+            if await self._exit_usage_limit_screen(provider, row, task, now):
                 continue
 
             # A provider with no input channel (subprocess) has nothing to

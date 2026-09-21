@@ -317,6 +317,19 @@ Providers with no input channel skip the nudge rungs entirely rather than
 spending three cycles talking to nobody. A session parked on a human question
 is exempt from the ladder for as long as the question is open.
 
+**A CLI parked on its usage-limit screen leaves the ladder at once.** Claude
+Code and Codex do not exit when they hit a usage limit mid-task; they print the
+limit line and sit at their prompt, where no nudge can help. Before each rung
+the ladder peeks the pane, and when its last lines hold one of the CLIs' own
+blocking limit messages (`You've hit your session limit · resets …`,
+`You’ve hit your usage limit. … try again at …`) it stops the process and
+applies the exit classifier's `rate_limit` verdict — provider evidence, then
+provider failover's checkpoint and re-route — without spending a restart
+([`src/sessions/usage_limit_screen.py`](../../src/sessions/usage_limit_screen.py)).
+The match is deliberately strict: the CLI's own `⎿`/`■` gutter at the left
+margin, then the exact wording, so output that merely quotes it does not
+count. `provider_failover.mode: enforce` only.
+
 **Agents can stop the ladder from climbing.** Anything that will be quiet for
 more than a few minutes — a long build, a full test run — should call
 `aq task heartbeat <task-id>` first. The shipped bootstrap prompt says so

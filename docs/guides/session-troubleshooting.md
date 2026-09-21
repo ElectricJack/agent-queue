@@ -68,6 +68,7 @@ a peek-diff fallback. Three shapes are common:
 | An idle prompt with the work apparently done | the agent finished and never ran `aq task close` | the ladder's first nudge asks exactly this; wait one rung, or nudge by hand |
 | A long-running command | not stalled at all; the agent should have heartbeated | nothing — but see the note below |
 | A prompt waiting for an answer | the agent is blocked | answer it, or resolve the question through the normal escalation path |
+| `You've hit your … limit` / `You’ve hit your usage limit` above an idle prompt | the provider's usage limit, mid-task | nothing: in `provider_failover.mode: enforce` the first stall rung stops the session and takes it out as a `rate_limit` exit (`session.exited` with reason `usage-limit screen on a stalled session: …`), so provider failover checkpoints and re-routes the task. Outside enforce the ladder nudges and restarts as usual |
 
 > **Note for agent authors.** Anything that will run quiet for more than a few
 > minutes should call `aq task heartbeat <task-id>` first. On providers without
