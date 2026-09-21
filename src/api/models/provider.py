@@ -198,9 +198,104 @@ class ProviderStateRequest(BaseModel):
     no_expiry: bool | None = None
 
 
+class RerouteDecision(BaseModel):
+    """What one re-route sweep did (or would do) with one task (D12-D15).
+
+    ``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held
+    task is not moving (``provider_pinned``, ``no_equivalent_rung``,
+    ``awaiting_failover_capacity`` with ``ahead``, ...).
+    """
+
+    task_id: str
+    project_id: str
+    from_profile_id: str
+    from_provider: str = ""
+    provider_state: str = ""
+    action: str
+    kind: str | None = None
+    to_profile_id: str | None = None
+    to_provider: str | None = None
+    to_class: str | None = None
+    ahead: int | None = None
+    detail: str = ""
+    resume: bool = False
+    intelligence_class: str | None = None
+    intent: str = "class_only"
+    priority: int = 100
+    title: str = ""
+    status: str = ""
+    provider_generation: int | None = None
+
+
+class ProviderRerouteResponse(BaseModel):
+    """``provider_reroute``: one sweep's plan and what it applied (D11).
+
+    ``outcome`` is ``rerouted``, ``held``, ``idle`` or ``disabled``.  With
+    ``dry_run`` (or while re-routing is off) ``applied`` is false and ``moved``
+    lists what a live sweep would move.
+    """
+
+    success: bool = True
+    outcome: str
+    dry_run: bool = False
+    applied: bool = False
+    disabled_reason: str | None = None
+    unavailable_providers: list[str] = []
+    moved: list[RerouteDecision] = []
+    held: list[RerouteDecision] = []
+    held_by_kind: dict[str, int] = {}
+    resumed: list[str] = []
+    lost: list[str] = []
+    skipped: list[RerouteDecision] = []
+    batch_ids: list[str] = []
+    notices: list[str] = []
+
+
+class ProviderRerouteBody(BaseModel):
+    """``POST /api/providers/reroute`` (D20)."""
+
+    provider: str | None = None
+    task_id: list[str] | None = None
+    to_profile: str | None = None
+    include_paused: bool | None = None
+    dry_run: bool | None = None
+    force: bool | None = None
+
+
+class RerouteUndone(BaseModel):
+    task_id: str
+    from_profile_id: str | None = None
+    to_profile_id: str | None = None
+    reroute_id: int | None = None
+
+
+class RerouteUndoRefusal(BaseModel):
+    task_id: str
+    reason: str
+
+
+class ProviderRerouteUndoResponse(BaseModel):
+    """``provider_reroute_undo`` (D16): which tasks went back, and which were refused."""
+
+    success: bool = True
+    outcome: str
+    undone: list[RerouteUndone] = []
+    refused: list[RerouteUndoRefusal] = []
+
+
+class ProviderRerouteUndoBody(BaseModel):
+    """``POST /api/providers/reroute/undo`` (D16): a batch or tasks."""
+
+    batch_id: str | None = None
+    task_id: list[str] | None = None
+    force: bool | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "provider_status": ProviderStatusResponse,
     "provider_history": ProviderHistoryResponse,
     "provider_recheck": ProviderRecheckResponse,
     "provider_set_state": ProviderSetStateResponse,
+    "provider_reroute": ProviderRerouteResponse,
+    "provider_reroute_undo": ProviderRerouteUndoResponse,
 }

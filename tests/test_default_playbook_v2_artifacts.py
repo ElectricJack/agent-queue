@@ -55,6 +55,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
+    "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)
@@ -514,6 +515,8 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
     assert read.save_result_as == "routing"
     assert read.transitions == {
         "already_routed": "route-task--done",
+        # provider-failover D13a: every option is on an unavailable provider.
+        "held": "route-task--done",
         "explicit": "route-task--apply_explicit",
         "undecided": "route-task--choose",
         "no_options": "route-task--failed",
@@ -550,6 +553,8 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
         "profile_id": "decision", "intelligence_class": "decision", "reason": "decision",
     }
     for step in (explicit, decided):
+        # Routing's own placement is ``class_only`` (provider-failover D9).
+        assert _inputs(step)["provider_intent"] == {"type": "literal", "value": "class_only"}
         assert step.transitions == {
             "routed": "route-task--done",
             "rejected": "route-task--failed",

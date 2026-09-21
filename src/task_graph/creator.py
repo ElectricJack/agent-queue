@@ -386,6 +386,7 @@ async def build_plan(
                 "task_type": node.task_type,
                 "profile_id": node.profile,
                 "intelligence_class": node.intelligence_class,
+                "provider_intent": node.provider_intent,
                 "attachments": "[]",
                 "deliverables": json.dumps(node.deliverables),
                 "skip_verification": 0,

@@ -458,6 +458,20 @@ class ClaimCommandsMixin:
             None,
         )
 
+    async def _claim_effective_default(self, project, default_profile):
+        """*default_profile*, or its equivalent rung while its provider is down (D13)."""
+        if not default_profile:
+            return default_profile
+        resolver = getattr(self.orchestrator, "_availability_aware_default", None)
+        if resolver is None:
+            return default_profile
+        try:
+            resolved = await resolver(default_profile, getattr(project, "id", None))
+        except Exception:  # never let a derived default break a claim
+            logger.debug("claim: availability-aware default failed", exc_info=True)
+            return default_profile
+        return resolved if isinstance(resolved, str) and resolved else default_profile
+
     async def _attempt_claim(
         self, session, want_id, cap, project, *, routing=None, repaired=False
     ) -> dict:
@@ -475,6 +489,10 @@ class ClaimCommandsMixin:
         """
         now = time.time()
         default_profile = getattr(project, "default_profile_id", None)
+        # While the default's provider is unavailable the widening follows
+        # the default's equivalent rung (provider-failover D13): derived per
+        # call, never persisted.  Read before the transaction opens.
+        default_profile = await self._claim_effective_default(project, default_profile)
         # The frontier query asks the project row two constant questions
         # (hierarchy/train mode, and against which repository).  Reduce the
         # row the outer loop already read, rather than making the statement

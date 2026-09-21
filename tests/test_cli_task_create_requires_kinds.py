@@ -390,6 +390,8 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "reason": "reason",
     "deliverables": "deliverables",
     "requires_kinds": "requires_kinds",
+    "provider_intent": "provider_intent",
+    "pin": "pin",
 }
 
 #: Backend arguments deliberately not exposed by the handwritten command.

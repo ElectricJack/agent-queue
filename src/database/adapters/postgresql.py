@@ -56,6 +56,7 @@ from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.provider_availability_queries import ProviderAvailabilityQueryMixin
+from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
@@ -121,6 +122,7 @@ class PostgreSQLDatabaseAdapter(
     MetricsQueryMixin,
     ProviderUsageQueryMixin,
     ProviderAvailabilityQueryMixin,
+    TaskRerouteQueryMixin,
     OnboardingQueryMixin,
     PluginQueryMixin,
     PlaybookArtifactQueryMixin,

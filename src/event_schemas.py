@@ -1180,6 +1180,26 @@ _PROVIDER_SCHEMAS: dict[str, EventSchema] = {
             "override",
         ],
     },
+    # provider-failover D19: one per task moved, forced or undone.
+    "task.rerouted": {
+        "required": ["task_id", "project_id", "reason_code"],
+        "optional": [
+            "title",
+            "from_profile_id",
+            "to_profile_id",
+            "from_provider",
+            "to_provider",
+            "batch_id",
+            "actor",
+        ],
+    },
+    # provider-failover D19: once per sweep that moved or newly held anything.
+    # ``batch_id`` is derived from ``(provider, generation)``, so every trickle
+    # top-up during one outage appends to the same batch.
+    "provider.reroute_batch": {
+        "required": ["batch_id", "provider", "moved"],
+        "optional": ["generation", "held", "targets", "projects"],
+    },
 }
 
 _SWARM_SCHEMAS: dict[str, EventSchema] = {

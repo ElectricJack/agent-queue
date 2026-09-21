@@ -251,7 +251,12 @@ class Orchestrator(
 
         # Routing policy is the ``default-assignment-routing`` playbook; the
         # orchestrator only reads the class the playbook wrote onto the task.
-        self.assignment_routing = ExplicitRouting()
+        # A pinned task's route also carries its profile's vendor, which arms
+        # the push path's ``required_provider`` check (provider-failover D9).
+        self.assignment_routing = ExplicitRouting(
+            db_getter=lambda: self.db,
+            harness_registry_getter=lambda: getattr(self, "harness_registry", None),
+        )
         self._route_needed_emitted: dict[str, float] = {}
         # Populated before Playbooks V2 subscribes.  The health endpoint uses
         # this durable-policy verdict rather than mistaking an empty trigger
@@ -423,6 +428,28 @@ class Orchestrator(
         # The direct path's own credential is tracked as provider ``llm``
         # (provider-failover D13a).
         self.llm.on_outcome = self.provider_availability.note_llm_outcome
+        # ... and while that key is unavailable, direct-path calls fail fast.
+        self.llm.availability_gate = self.provider_availability.llm_block_reason
+        # The re-route engine (provider-failover D11 policy half, D12-D17):
+        # driven by the ``provider_reroute`` command, which the
+        # ``provider-failover`` playbook calls.  It also answers why a held
+        # task is held (D18) and what an unavailable project default resolves
+        # to (D13), so the availability service holds a reference to it.
+        from src.providers.reroute import ProviderRerouteService
+
+        self.provider_reroute = ProviderRerouteService(
+            db_getter=lambda: self.db,
+            availability=self.provider_availability,
+            config_getter=lambda: self.config,
+            harness_registry=self.harness_registry,
+            # The same registry routing reads (``task_route_options``); in
+            # production it is ``self.intelligence_classes`` by reference.
+            classes_getter=lambda: getattr(
+                self.session_spec_builder, "_intelligence_classes", None
+            ) or self.intelligence_classes,
+            bus=self.bus,
+        )
+        self.provider_availability.reroute = self.provider_reroute
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
         # adoption, never a validity test — an older-epoch session is still
         # adoptable, and the instance token is what fences kills.
@@ -809,7 +836,11 @@ class Orchestrator(
         suffix that sets the agent's "role" for the task.
         """
         project = await self.db.get_project(task.project_id)
-        profile_id = task.profile_id or (project.default_profile_id if project else None)
+        profile_id = task.profile_id or (
+            await self._availability_aware_default(project.default_profile_id, project.id)
+            if project
+            else None
+        )
         if not profile_id and task.assigned_agent_id:
             agent = await self.db.get_agent(task.assigned_agent_id)
             if agent:
@@ -878,9 +909,33 @@ class Orchestrator(
         raw, which skips rung 3 and can disagree with what a real dispatch
         resolves.
         """
-        if project.default_profile_id:
-            return project.default_profile_id
-        return await self._backfill_default_profile_id(project)
+        raw = project.default_profile_id or await self._backfill_default_profile_id(project)
+        return await self._availability_aware_default(raw, getattr(project, "id", None))
+
+    async def _availability_aware_default(
+        self, default_profile_id: str | None, project_id: str | None = None
+    ) -> str | None:
+        """The default's equivalent rung while its provider is unavailable (D13).
+
+        Derived per call and never persisted -- ``projects.default_profile_id``
+        is not rewritten, so recovery needs no undo.  Reads the profiles only
+        while some provider is actually suppressed, so a healthy box pays
+        nothing.
+        """
+        if not default_profile_id:
+            return default_profile_id
+        availability = getattr(self, "provider_availability", None)
+        reroute = getattr(self, "provider_reroute", None)
+        if availability is None or reroute is None or not availability.suppressed_providers():
+            return default_profile_id
+        try:
+            profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        except Exception:
+            logger.debug("availability-aware default: profiles unreadable", exc_info=True)
+            return default_profile_id
+        return reroute.resolve_default_profile_id(
+            default_profile_id, profiles, project_id=project_id
+        )
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.

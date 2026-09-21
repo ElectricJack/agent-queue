@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 REQUIRED_SYSTEM_PLAYBOOK_IDS = (
     "default-assignment-routing",
     "provider-usage-probe",
+    # Moving work off an unavailable provider is policy (provider-failover
+    # D11).  Without it tasks on a dead provider hold and never move.
+    "provider-failover",
 )
 # Shared system playbooks every install gets, but which are not a readiness
 # requirement: activated once, on the first start that finds no activation for

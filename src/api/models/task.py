@@ -57,6 +57,53 @@ class TaskAttachmentDeleteResponse(BaseModel):
     removed: str
 
 
+class ProviderHoldDetail(BaseModel):
+    """Why a queued task is held by its provider (provider-failover D18).
+
+    ``kind`` is one of ``provider_pinned``, ``class_policy_hold``,
+    ``no_equivalent_rung``, ``no_available_target``,
+    ``awaiting_failover_capacity``, ``reroute_limit_reached``,
+    ``all_providers_unavailable``, ``failover_inactive`` or
+    ``priority_policy_hold``.  ``ahead`` is the queue position for
+    ``awaiting_failover_capacity`` and ``None`` otherwise; ``detail`` says it
+    in words.
+    """
+
+    provider: str
+    vendor: str = ""
+    state: str
+    since: float | None = None
+    until: float | None = None
+    kind: str
+    ahead: int | None = None
+    detail: str = ""
+    profile_id: str | None = None
+    reason: str = ""
+    remediation: str = ""
+
+
+class TaskReroute(BaseModel):
+    """The newest ``task_reroutes`` row for a task (provider-failover D17).
+
+    ``undoable`` is true while the task carries an un-undone re-route and no
+    worker holds it -- what ``aq provider reroute-undo --task-id`` would accept.
+    """
+
+    id: int
+    from_profile_id: str | None = None
+    to_profile_id: str | None = None
+    from_provider: str = ""
+    to_provider: str = ""
+    intelligence_class: str | None = None
+    reason_code: str
+    provider_state: str = ""
+    batch_id: str | None = None
+    actor: str = ""
+    at: float
+    undone_at: float | None = None
+    undoable: bool = False
+
+
 class TaskDetail(BaseModel):
     id: str
     project_id: str
@@ -90,6 +137,13 @@ class TaskDetail(BaseModel):
     children: dict | None = None
     completion: TaskCompletionDetail | None = None
     needs_attention: str | None = None
+    # Provider intent and the re-route record (provider-failover D8, D17),
+    # plus the derived hold (D18) -- ``None`` unless the task's provider is
+    # unavailable.
+    provider_intent: str = "class_only"
+    rerouted_from: str | None = None
+    reroute: TaskReroute | None = None
+    provider_hold: ProviderHoldDetail | None = None
 
 
 class TaskDict(BaseModel):
@@ -126,6 +180,8 @@ class CreateTaskResponse(BaseModel):
     # inherited.  Absent when no profile was chosen (routing gate owns it).
     profile_source: str | None = None
     intelligence_class: str | None = None
+    # pinned | preferred | class_only (provider-failover D9).
+    provider_intent: str | None = None
     preferred_workspace_id: str | None = None
     attachments: list[str] | None = None
     skip_verification: bool = False
@@ -590,27 +646,6 @@ class AssignmentRouteDetail(BaseModel):
     playbook_version: int | None = None
     playbook_run_id: str | None = None
     freshness: str
-
-
-class ProviderHoldDetail(BaseModel):
-    """Why a queued task is held by its provider (provider-failover D18).
-
-    ``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or
-    ``failover_inactive`` today; the re-route engine adds the rest of D18's
-    vocabulary.  ``ahead`` is the queue position for
-    ``awaiting_failover_capacity`` and ``None`` otherwise.
-    """
-
-    provider: str
-    vendor: str = ""
-    state: str
-    since: float | None = None
-    until: float | None = None
-    kind: str
-    ahead: int | None = None
-    profile_id: str | None = None
-    reason: str = ""
-    remediation: str = ""
 
 
 class ExplainTaskResponse(BaseModel):

@@ -289,6 +289,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_history": "provider",
     "provider_recheck": "provider",
     "provider_set_state": "provider",
+    "provider_reroute": "provider",
+    "provider_reroute_undo": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -1138,6 +1140,22 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)",
                 },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
+                },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
@@ -1376,6 +1394,22 @@ _ALL_TOOL_DEFINITIONS = [
                         "ensuring pipeline pins the executing profile directly."
                     ),
                 },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
+                },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
@@ -1438,6 +1472,22 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": "Eligible worker profile ID that should execute the task (never supervisor)",
+                },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
                 },
                 "intelligence_class": {
                     "type": "string",
@@ -2021,6 +2071,22 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": ["string", "null"],
                     "description": "Agent profile ID (optional, set to null to clear)",
+                },
+                "provider_intent": {
+                    "type": "string",
+                    "enum": ["pinned", "preferred", "class_only"],
+                    "description": (
+                        "Whether anyone meant the provider profile_id names "
+                        "(provider-failover D8). Default: preferred when you pass "
+                        "profile_id, else class_only. A preferred or class_only task "
+                        "fails over to the same class on another provider when its "
+                        "provider is unavailable; a pinned one holds. pinned/preferred "
+                        "need a profile_id; pinning is refused for worker tokens."
+                    ),
+                },
+                "pin": {
+                    "type": "boolean",
+                    "description": "Shorthand for provider_intent=pinned.",
                 },
                 "intelligence_class": {
                     "type": ["string", "null"],
@@ -5502,6 +5568,86 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["provider", "state"],
+        },
+    },
+    {
+        "name": "provider_reroute",
+        "description": (
+            "Re-route queued work off an unavailable provider (provider failover).  "
+            "Moves eligible queued and provider-paused tasks to the same "
+            "intelligence class on an available provider, a pool-width at a time "
+            "(provider_failover.reroute limits), and records each move on the task "
+            "(undo with provider_reroute_undo).  Pinned tasks, single-provider "
+            "classes (astra-*) and classes set to 'hold' stay where they are.  "
+            "--dry-run plans only.  Naming tasks with --task-id plus --to-profile "
+            "or --force is an explicit operator move; --force may move a pinned "
+            "task, target a degraded provider or change the class.  Operators and "
+            "supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "Limit the sweep to one provider key or vendor alias.",
+                },
+                "task_id": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task id(s) to move explicitly.",
+                },
+                "to_profile": {
+                    "type": "string",
+                    "description": "Target profile for the named tasks.",
+                },
+                "include_paused": {
+                    "type": "boolean",
+                    "description": (
+                        "Also resume and move tasks paused before failover recorded a "
+                        "cause (listed first with --dry-run)."
+                    ),
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Plan only; write nothing.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": (
+                        "Operator override for named tasks: move a pinned task, target "
+                        "a degraded provider, or change the class with --to-profile."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_reroute_undo",
+        "description": (
+            "Undo provider re-routes: return tasks to the profile they were on "
+            "before (rerouted_from), by --batch-id or --task-id.  Refused for a "
+            "running or claimed task, and while the original provider is still "
+            "unavailable unless --force.  Operators and supervisors only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "batch_id": {
+                    "type": "string",
+                    "description": "A re-route batch (prb-<provider>-<generation> or prf-...).",
+                },
+                "task_id": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task id(s) to undo.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "Undo even while the original provider is unavailable.",
+                },
+            },
+            "required": [],
         },
     },
     {

@@ -114,6 +114,7 @@ from src.database.tables import (
     task_layouts,
     task_metadata,
     task_proposals,
+    task_reroutes,
     task_results,
     task_session_attempts,
     task_subtasks,
@@ -228,6 +229,7 @@ _ORDERED_TABLES = [
     # FK → projects, agents, tasks
     token_ledger,
     task_results,
+    task_reroutes,
     # hooks and hook_runs tables removed (playbooks spec §13 Phase 3)
     # FK → plugins
     plugin_data,

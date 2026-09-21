@@ -24,7 +24,18 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["classify_llm_error"]
+__all__ = ["ProviderUnavailableError", "classify_llm_error"]
+
+
+class ProviderUnavailableError(RuntimeError):
+    """The direct path's credential is unavailable; the call was never made.
+
+    Raised by ``LLMClient`` while provider availability holds the reserved
+    ``llm`` key in the unavailable half (provider-failover D13a): calls fail
+    fast instead of burning a step timeout against a dead credential.  The
+    playbook executor reports it as ``provider_error`` with the diagnostic
+    ``provider_unavailable``.  Never itself evidence of anything.
+    """
 
 _QUOTA_WORDS = (
     "insufficient_quota",

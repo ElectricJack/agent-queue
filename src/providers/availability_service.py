@@ -177,6 +177,11 @@ class ProviderAvailabilityService:
         #: them mid-flight and so a test (or shutdown) can wait for them.
         self._background: set[asyncio.Task] = set()
         self._loaded = False
+        #: The re-route engine (:class:`src.providers.reroute.ProviderRerouteService`),
+        #: wired by the orchestrator.  With it, a hold names the kind the
+        #: next sweep would give it (D18); without it the three mechanism
+        #: kinds below are the whole answer.
+        self.reroute: Any = None
         #: Called with each transition that changed half; the orchestrator
         #: wires it to :meth:`notify_state_change`.  Overridable in tests.
         self.on_half_change: Callable[[Transition], Awaitable[Any]] | None = None
@@ -273,6 +278,21 @@ class ProviderAvailabilityService:
 
     def suppressed_providers(self, now: float | None = None) -> frozenset[str]:
         return self.unavailable_providers(now) if self.enforcing else frozenset()
+
+    def llm_block_reason(self) -> str | None:
+        """Why direct-path calls must fail fast right now, or ``None`` (D13a).
+
+        ``LLMClient.availability_gate``.  Only in ``enforce`` mode, and only
+        while the reserved ``llm`` key is in the unavailable half; once its
+        ``until`` passes the reducer moves it to probation and the next call
+        is the canary.
+        """
+        if not self.suppresses("llm"):
+            return None
+        at = self.now()
+        row = self._rows.get("llm")
+        reason = row.effective_reason(at) if row is not None else ""
+        return f"provider llm is {self.effective_state('llm', at)}: {reason}".rstrip(": ")
 
     def admit_launch(self, provider: str, *, now: float | None = None) -> tuple[bool, str | None]:
         """May a session start against *provider* right now?
@@ -885,7 +905,10 @@ class ProviderAvailabilityService:
 
         A hold is derived, never a status: a queued task whose effective
         profile is on a provider nothing may launch against keeps its status
-        and gains this explanation.  ``kind`` says why it is not moving:
+        and gains this explanation.  ``kind`` says why it is not moving --
+        with the re-route engine wired, whatever the next sweep would decide
+        (``provider_pinned``, ``awaiting_failover_capacity`` with ``ahead``,
+        ...; :data:`src.providers.reroute.HOLD_KINDS`); without it,
         ``all_providers_unavailable``, ``no_equivalent_rung`` (a role
         profile, or a class no other provider has a rung for -- the Astra
         case), or ``failover_inactive`` (the re-route engine is not active).
@@ -912,6 +935,12 @@ class ProviderAvailabilityService:
         except Exception:  # without profiles there is no provider to name
             logger.debug("provider hold: profiles unreadable", exc_info=True)
             return None
+        if not task.profile_id and self.reroute is not None:
+            # An unrouted task follows the default's equivalent rung while the
+            # default's provider is down (D13); it is held only without one.
+            profile_id = self.reroute.resolve_default_profile_id(
+                profile_id, profiles, project_id=task.project_id
+            )
         profile = profiles.get(profile_id)
         if profile is None:
             return None
@@ -936,7 +965,22 @@ class ProviderAvailabilityService:
             template=bool(getattr(profile, "template", False)),
             read_only=bool(getattr(profile, "read_only", False)),
         )
-        if session_providers and all(self.is_unavailable(p, now) for p in session_providers):
+        ahead = None
+        detail = ""
+        planned = None
+        if self.reroute is not None and task.profile_id:
+            # The planner over the provider's queue: the kind (and ``ahead``)
+            # the next sweep would give this task.  An unrouted task follows
+            # the derived project default instead (D13), so it has no plan.
+            try:
+                planned = await self.reroute.hold_kind(task)
+            except Exception:  # an explanation must never break explain
+                logger.debug("provider hold: planner failed", exc_info=True)
+        if planned is not None:
+            kind = str(planned.get("kind") or "failover_inactive")
+            ahead = planned.get("ahead")
+            detail = str(planned.get("detail") or "")
+        elif session_providers and all(self.is_unavailable(p, now) for p in session_providers):
             kind = "all_providers_unavailable"
         elif route is None or not self._has_equivalent_rung(route[1], provider, profiles):
             kind = "no_equivalent_rung"
@@ -950,7 +994,8 @@ class ProviderAvailabilityService:
             "since": row.effective_since(now) if row is not None else None,
             "until": row.effective_until(now) if row is not None else None,
             "kind": kind,
-            "ahead": None,
+            "ahead": ahead,
+            "detail": detail,
             "profile_id": profile.id,
             "reason": row.effective_reason(now) if row is not None else "",
             "remediation": self.remediation(provider, state),
@@ -1097,9 +1142,9 @@ class ProviderAvailabilityService:
                         + ", ".join(affected["roles"])
                     )
             lines.append(
-                f"Commands: `aq provider status {provider}`, `aq provider set-state {provider} "
-                "disabled|available|auto --reason ...`, `aq provider recheck "
-                f"{provider}`."
+                f"Commands: `aq provider status {provider}`, `aq provider reroute --dry-run`, "
+                f"`aq provider set-state {provider} disabled|available|auto --reason ...`, "
+                f"`aq provider recheck {provider}`."
             )
             body = "\n".join(lines)
         from_kind, from_id = NOTIFY_FROM

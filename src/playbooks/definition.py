@@ -274,6 +274,11 @@ class AgentTaskStep(StepBase):
     timeout_seconds: int | None = Field(default=None, ge=1)
     retry: RetryPolicy | None = None
     save_result_as: Identifier | None = None
+    #: ``True`` pins the child to ``profile_id``'s provider (provider-failover
+    #: D9): it holds instead of failing over while that provider is
+    #: unavailable.  Absent (``None``, never serialised) the child is
+    #: ``preferred`` -- a named profile is a preference -- and fails over.
+    pin_provider: bool | None = None
     transitions: dict[str, Identifier]
 
 

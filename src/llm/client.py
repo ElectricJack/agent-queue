@@ -125,6 +125,11 @@ class LLMClient:
         #: orchestrator wires it to provider availability's ``llm`` key
         #: (provider-failover D13a).  Must be cheap and must not raise.
         self.on_outcome: Callable[[str, dict], None] | None = None
+        #: Returns why direct-path calls must not be made right now, or
+        #: ``None``.  The orchestrator wires it to provider availability's
+        #: ``llm`` key: while that is unavailable every call fails fast with
+        #: :class:`ProviderUnavailableError` (provider-failover D13a).
+        self.availability_gate: Callable[[], str | None] | None = None
 
     @classmethod
     def with_provider(
@@ -382,6 +387,17 @@ class LLMClient:
         system: str,
         tools: list[dict] | None,
     ) -> ChatResponse:
+        gate = self.availability_gate
+        if gate is not None:
+            try:
+                blocked = gate()
+            except Exception:  # a broken gate must never block the direct path
+                logger.debug("llm: availability gate failed", exc_info=True)
+                blocked = None
+            if blocked:
+                from src.llm.providers.errors import ProviderUnavailableError
+
+                raise ProviderUnavailableError(blocked)
         provider = self._provider_for(resolved)
         start = time.monotonic()
         response: ChatResponse | None = None

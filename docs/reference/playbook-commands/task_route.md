@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:6caf5b91924c2d91a928254c0769e52ee0252db6d2dbad831e0085f30d6910a5` |
+| Contract fingerprint | `sha256:c757302fcca1157e9c49366ac9c5e05e71d81cb19e7fc0edc9e7714549862fe9` |
 
 ## Parameters
 
@@ -25,6 +25,8 @@
 | `intelligence_class` | `string \| null` | no | `null` | Intelligence class |
 | `workspace_id` | `string \| null` | no | `null` | Workspace |
 | `reason` | `string \| null` | no | `null` | Reason |
+| `provider_intent` | `string \| null` | no | `null` | — |
+| `pin` | `boolean \| null` | no | `null` | — |
 
 ## Result
 
@@ -32,6 +34,7 @@
 |---|---|---|
 | `task_id` | `string` | — |
 | `resolved_gate_ids` | `string[]` | Resolved gates |
+| `provider_intent` | `string \| null` | — |
 
 ## Outcomes
 

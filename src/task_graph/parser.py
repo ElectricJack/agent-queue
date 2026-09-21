@@ -212,6 +212,19 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
         errors.append(_err("bad_field_type", f"'profile' must be a string, got {profile!r}", key))
     else:
         node.profile = profile
+        if profile is not None:
+            node.profile_source = "document"
+
+    # ``pin: true`` makes the profile a pinned provider (provider-failover D9).
+    # Whether the node has a profile to pin is checked after ``create_task_graph``
+    # fills one in (``validate_graph``'s ``pin_without_profile``).
+    pin = raw.get("pin", defaults.get("pin", False))
+    if pin is None:
+        pin = False
+    if not isinstance(pin, bool):
+        errors.append(_err("bad_field_type", f"'pin' must be true or false, got {pin!r}", key))
+    else:
+        node.pin = pin
 
     intelligence_class = raw.get("intelligence_class", defaults.get("intelligence_class"))
     if intelligence_class is not None and (

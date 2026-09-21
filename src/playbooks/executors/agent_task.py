@@ -313,6 +313,10 @@ class LiveAgentTaskExecutor:
         payload: dict[str, Any] = dict(ctx.inputs)
         payload.setdefault("title", str(objective))
         payload.setdefault("profile_id", step.profile_id)
+        # A named profile is a preference (``preferred``); ``pin_provider``
+        # makes it a pin (provider-failover D9).
+        if step.pin_provider:
+            payload.setdefault("pin", True)
         try:
             args = execution.args_model(**payload)
         except ValidationError as exc:

@@ -66,6 +66,7 @@ SHIPPED = {
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
+    "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
 }
 SOURCES = SHIPPED
 
@@ -268,6 +269,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _ci_main_sentinel_body(source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
+    if playbook_id == "provider-failover":
+        return _provider_failover_body(source)
     if playbook_id == "provider-usage-probe":
         return _provider_usage_probe_body(source)
     return {}
@@ -560,6 +563,7 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                 "save_result_as": "routing",
                 "transitions": {
                     "already_routed": done,
+                    "held": done,
                     "explicit": apply_explicit,
                     "undecided": choose,
                     "no_options": failed,
@@ -616,6 +620,7 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                     "profile_id": routing("explicit_profile_id"),
                     "intelligence_class": routing("intelligence_class"),
                     "reason": {"type": "literal", "value": "explicit intelligence class"},
+                    "provider_intent": {"type": "literal", "value": "class_only"},
                 },
                 "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
             },
@@ -630,6 +635,7 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                     "profile_id": decision("profile_id"),
                     "intelligence_class": decision("intelligence_class"),
                     "reason": decision("reason"),
+                    "provider_intent": {"type": "literal", "value": "class_only"},
                 },
                 "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
             },
@@ -843,6 +849,102 @@ def _provider_usage_probe_body(source: PlaybookSource) -> dict[str, Any]:
             },
             done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _provider_failover_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewer-authored deterministic graph for ``provider-failover``.
+
+    Two rules, command steps only, no LLM (provider-failover D11).  On
+    ``provider.state_changed``: one ``provider_reroute`` sweep, then the
+    idempotent ``provider_availability_notify`` for the event's provider and
+    generation.  On ``timer.5m``: one sweep, which is what trickles the rest
+    of a dead provider's queue across (D15).  See
+    ``docs/specs/provider-failover.md``.
+    """
+    index = ProseIndex(source, source.vault_path)
+    change = "reroute-on-change"
+    tick = "reroute-sweep"
+    sweep_outcomes = ("rerouted", "held", "idle", "disabled")
+    notify_outcomes = (
+        "notified",
+        "flapping",
+        "already_notified",
+        "flap_damped",
+        "not_a_half_change",
+        "disabled",
+        "messages_disabled",
+    )
+
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    def transitions(outcomes: tuple[str, ...], ok: str, failed: str) -> dict[str, str]:
+        mapped = {name: ok for name in outcomes}
+        mapped["rejected"] = failed
+        mapped["runtime_error"] = failed
+        return mapped
+
+    change_sweep, change_notify = f"{change}--reroute", f"{change}--notify"
+    change_done, change_failed = f"{change}--done", f"{change}--failed"
+    tick_sweep = f"{tick}--reroute"
+    tick_done, tick_failed = f"{tick}--done", f"{tick}--failed"
+    return {
+        "rules": [
+            {
+                "id": change,
+                "name": change,
+                "trigger": {"event_type": "provider.state_changed"},
+                "entry_step": change_sweep,
+                "source": index.rule_ref(change),
+            },
+            {
+                "id": tick,
+                "name": tick,
+                "trigger": {"event_type": "timer.5m"},
+                "entry_step": tick_sweep,
+                "source": index.rule_ref(tick),
+            },
+        ],
+        "steps": {
+            change_sweep: {
+                "type": "command",
+                "rule": change,
+                "title": "reroute",
+                "source": index.step_ref(change, 1),
+                "command": "provider_reroute",
+                "inputs": {},
+                "save_result_as": "sweep",
+                "transitions": transitions(sweep_outcomes, change_notify, change_failed),
+            },
+            change_notify: {
+                "type": "command",
+                "rule": change,
+                "title": "notify",
+                "source": index.step_ref(change, 2),
+                "command": "provider_availability_notify",
+                "inputs": {
+                    "provider": event("provider"),
+                    "generation": event("generation"),
+                },
+                "save_result_as": "notice",
+                "transitions": transitions(notify_outcomes, change_done, change_failed),
+            },
+            change_done: _terminal(change, "completed", index.step_ref(change, None)),
+            change_failed: _terminal(change, "failed", index.step_ref(change, None)),
+            tick_sweep: {
+                "type": "command",
+                "rule": tick,
+                "title": "reroute",
+                "source": index.step_ref(tick, 1),
+                "command": "provider_reroute",
+                "inputs": {},
+                "save_result_as": "sweep",
+                "transitions": transitions(sweep_outcomes, tick_done, tick_failed),
+            },
+            tick_done: _terminal(tick, "completed", index.step_ref(tick, None)),
+            tick_failed: _terminal(tick, "failed", index.step_ref(tick, None)),
         },
     }
 

@@ -854,6 +854,15 @@ from .provider_recheck_response import ProviderRecheckResponse
 from .provider_recheck_response_422 import ProviderRecheckResponse422
 from .provider_recheck_response_probe_detail import ProviderRecheckResponseProbeDetail
 from .provider_recheck_response_transition_type_0 import ProviderRecheckResponseTransitionType0
+from .provider_reroute_body import ProviderRerouteBody
+from .provider_reroute_request import ProviderRerouteRequest
+from .provider_reroute_response import ProviderRerouteResponse
+from .provider_reroute_response_422 import ProviderRerouteResponse422
+from .provider_reroute_response_held_by_kind import ProviderRerouteResponseHeldByKind
+from .provider_reroute_undo_body import ProviderRerouteUndoBody
+from .provider_reroute_undo_request import ProviderRerouteUndoRequest
+from .provider_reroute_undo_response import ProviderRerouteUndoResponse
+from .provider_reroute_undo_response_422 import ProviderRerouteUndoResponse422
 from .provider_set_state_request import ProviderSetStateRequest
 from .provider_set_state_response import ProviderSetStateResponse
 from .provider_set_state_response_422 import ProviderSetStateResponse422
@@ -930,6 +939,9 @@ from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
+from .reroute_decision import RerouteDecision
+from .reroute_undo_refusal import RerouteUndoRefusal
+from .reroute_undone import RerouteUndone
 from .restart_daemon_request import RestartDaemonRequest
 from .restart_daemon_response import RestartDaemonResponse
 from .restart_daemon_response_422 import RestartDaemonResponse422
@@ -1148,6 +1160,7 @@ from .task_recover_request import TaskRecoverRequest
 from .task_recover_response_422 import TaskRecoverResponse422
 from .task_recovery_response import TaskRecoveryResponse
 from .task_ref import TaskRef
+from .task_reroute import TaskReroute
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422
@@ -2079,6 +2092,15 @@ __all__ = (
     "ProviderRecheckResponse422",
     "ProviderRecheckResponseProbeDetail",
     "ProviderRecheckResponseTransitionType0",
+    "ProviderRerouteBody",
+    "ProviderRerouteRequest",
+    "ProviderRerouteResponse",
+    "ProviderRerouteResponse422",
+    "ProviderRerouteResponseHeldByKind",
+    "ProviderRerouteUndoBody",
+    "ProviderRerouteUndoRequest",
+    "ProviderRerouteUndoResponse",
+    "ProviderRerouteUndoResponse422",
     "ProviderSetStateRequest",
     "ProviderSetStateResponse",
     "ProviderSetStateResponse422",
@@ -2155,6 +2177,9 @@ __all__ = (
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",
+    "RerouteDecision",
+    "RerouteUndone",
+    "RerouteUndoRefusal",
     "RestartDaemonRequest",
     "RestartDaemonResponse",
     "RestartDaemonResponse422",
@@ -2371,6 +2396,7 @@ __all__ = (
     "TaskRecoverResponse422",
     "TaskRecoveryResponse",
     "TaskRef",
+    "TaskReroute",
     "TaskRouteRequest",
     "TaskRouteResponse",
     "TaskRouteResponse422",

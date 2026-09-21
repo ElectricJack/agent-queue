@@ -27,6 +27,7 @@ class CreateTaskResponse:
         profile_id (None | str | Unset):
         profile_source (None | str | Unset):
         intelligence_class (None | str | Unset):
+        provider_intent (None | str | Unset):
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
         skip_verification (bool | Unset):  Default: False.
@@ -48,6 +49,7 @@ class CreateTaskResponse:
     profile_id: None | str | Unset = UNSET
     profile_source: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
+    provider_intent: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
     skip_verification: bool | Unset = False
@@ -97,6 +99,12 @@ class CreateTaskResponse:
             intelligence_class = UNSET
         else:
             intelligence_class = self.intelligence_class
+
+        provider_intent: None | str | Unset
+        if isinstance(self.provider_intent, Unset):
+            provider_intent = UNSET
+        else:
+            provider_intent = self.provider_intent
 
         preferred_workspace_id: None | str | Unset
         if isinstance(self.preferred_workspace_id, Unset):
@@ -183,6 +191,8 @@ class CreateTaskResponse:
             field_dict["profile_source"] = profile_source
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
+        if provider_intent is not UNSET:
+            field_dict["provider_intent"] = provider_intent
         if preferred_workspace_id is not UNSET:
             field_dict["preferred_workspace_id"] = preferred_workspace_id
         if attachments is not UNSET:
@@ -263,6 +273,15 @@ class CreateTaskResponse:
             return cast(None | str | Unset, data)
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
+        def _parse_provider_intent(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        provider_intent = _parse_provider_intent(d.pop("provider_intent", UNSET))
 
         def _parse_preferred_workspace_id(data: object) -> None | str | Unset:
             if data is None:
@@ -373,6 +392,7 @@ class CreateTaskResponse:
             profile_id=profile_id,
             profile_source=profile_source,
             intelligence_class=intelligence_class,
+            provider_intent=provider_intent,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,
             skip_verification=skip_verification,

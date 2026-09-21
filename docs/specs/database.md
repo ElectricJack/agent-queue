@@ -389,6 +389,8 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `next_child_ordinal` | INTEGER | NOT NULL DEFAULT 1 | Per-parent counter for dotted child ids (swarm-work-model §4, §6); incremented atomically by `task_names.reserve_child_ordinal`; never read for anything else |
 | `created_by_kind` | TEXT | nullable | Provenance (swarm-work-model §9): who created the row; stamped by `CommandHandler.execute` from the request scope (Plan 2); nullable so rows from legacy paths stay valid |
 | `created_by_id` | TEXT | nullable | Provenance (swarm-work-model §9), paired with `created_by_kind` |
+| `provider_intent` | TEXT | NOT NULL DEFAULT 'class_only' | `pinned`, `preferred` or `class_only` (`ck_tasks_provider_intent`): whether anyone meant the provider `profile_id` names (provider-failover D8). A pinned task holds while its provider is unavailable; the other two fail over. `pinned`/`preferred` with a NULL `profile_id` reads as `class_only` |
+| `rerouted_from` | TEXT | nullable | The profile the task was on before its first automatic re-route that has not been undone (D17); NULL means "where it was put". Partial index `idx_tasks_rerouted` on (`profile_id`) WHERE `rerouted_from IS NOT NULL` is what the re-route trickle counts |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -1099,6 +1101,34 @@ history` and the dashboard card's history.
 
 Index `idx_provider_availability_transitions_provider_at` covers (`provider`,
 `at DESC`). This table has no foreign keys.
+
+### Table: `task_reroutes`
+
+Append-only history of provider re-routes (provider-failover D17): every
+automatic move, operator-forced move and undo. `tasks.rerouted_from` is only
+its cheap current projection. Written by `provider_reroute` /
+`provider_reroute_undo` (`src/providers/reroute.py`).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Auto-increment primary key |
+| `task_id` | TEXT | REFERENCES tasks(id) ON DELETE CASCADE (`fk_task_reroutes_task`) |
+| `project_id` | TEXT | The task's project |
+| `from_profile_id` | TEXT | Nullable profile before the move |
+| `to_profile_id` | TEXT | Nullable profile after the move |
+| `from_provider` | TEXT | Provider key before; defaults to empty |
+| `to_provider` | TEXT | Provider key after; defaults to empty |
+| `intelligence_class` | TEXT | Nullable class (never changed by a re-route) |
+| `reason_code` | TEXT | `provider_unavailable`, `operator_forced` or `operator_undo` (`ck_task_reroutes_reason_code`) |
+| `provider_state` | TEXT | The source provider's effective state at the time; defaults to empty |
+| `provider_generation` | INTEGER | Nullable source provider generation |
+| `batch_id` | TEXT | Nullable; `prb-<provider>-<generation>` for automatic moves, so one outage is one batch |
+| `actor` | TEXT | `system` or a principal; defaults to `system` |
+| `at` | FLOAT | Unix epoch seconds |
+| `undone_at` | FLOAT | Nullable; set on the move an operator undid |
+
+Indexes `idx_task_reroutes_task_at` (`task_id`, `at`) and
+`idx_task_reroutes_batch` (`batch_id`).
 
 ### Table: `metrics_samples`
 

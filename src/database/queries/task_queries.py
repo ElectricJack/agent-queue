@@ -57,6 +57,8 @@ logger = logging.getLogger(__name__)
 _INTEGRATION_COMPLETION_TOKEN = object()
 _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
+#: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
+_UNSET = object()
 
 
 def supports_returning(conn) -> bool:
@@ -241,6 +243,8 @@ class TaskQueryMixin:
                 intelligence_class=task.intelligence_class,
                 created_by_kind=task.created_by_kind,
                 created_by_id=task.created_by_id,
+                provider_intent=task.provider_intent or "class_only",
+                rerouted_from=task.rerouted_from,
                 # A brand-new row has no edges yet, so it starts
                 # unblocked; the edges that follow recompute it
                 # (work-graph implementation spec §4.1).
@@ -2001,6 +2005,8 @@ class TaskQueryMixin:
             created_by_id=row.get("created_by_id"),
             claim_epoch=int(row.get("claim_epoch") or 0),
             filed_count=int(row.get("filed_count") or 0),
+            provider_intent=row.get("provider_intent") or "class_only",
+            rerouted_from=row.get("rerouted_from"),
         )
 
     async def update_task_routing(
@@ -2011,18 +2017,28 @@ class TaskQueryMixin:
         intelligence_class: str | None,
         preferred_workspace_id: str | None,
         clear_intelligence_class: bool = False,
+        provider_intent: str | None = None,
+        rerouted_from: str | None | object = _UNSET,
     ) -> bool:
         """Update routing only while no worker holds the task.
 
         The predicate is in the write itself so a claim that wins after the
         command's read cannot be silently retargeted. Nullable values retain
         existing overrides unless editing explicitly clears the class.
+
+        ``provider_intent`` (provider-failover D8) is written when given and
+        left alone otherwise; ``rerouted_from`` likewise, where ``None``
+        clears the marker.  Every routing write rides the same guard.
         """
         vals: dict = {"profile_id": profile_id}
         if intelligence_class is not None or clear_intelligence_class:
             vals["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not None:
             vals["preferred_workspace_id"] = preferred_workspace_id
+        if provider_intent is not None:
+            vals["provider_intent"] = provider_intent
+        if rerouted_from is not _UNSET:
+            vals["rerouted_from"] = rerouted_from
         active_session = select(sessions.c.id).where(
             sessions.c.task_id == tasks.c.id,
             sessions.c.state.in_(("starting", "running", "draining")),

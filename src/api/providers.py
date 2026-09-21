@@ -1,10 +1,12 @@
 """``/api/providers/*`` --- each provider's own quota, and whether it is usable.
 
 ``GET /api/providers/usage`` is described below.  The availability routes
-(``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``
-and ``POST /api/providers/{provider}/recheck``, provider-failover D20) hold no
-logic of their own: each runs the ``provider_status`` / ``provider_set_state``
-/ ``provider_recheck`` command through the CommandHandler under the request's
+(``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``,
+``POST /api/providers/{provider}/recheck``, ``POST /api/providers/reroute`` and
+``POST /api/providers/reroute/undo``, provider-failover D20) hold no logic of
+their own: each runs the ``provider_status`` / ``provider_set_state`` /
+``provider_recheck`` / ``provider_reroute`` / ``provider_reroute_undo``
+command through the CommandHandler under the request's
 scope, exactly as a generated command route does, so the CLI, the typed API
 and these paths can never disagree.  The dashboard joins the two families on
 the provider key.
@@ -35,6 +37,10 @@ from fastapi.responses import JSONResponse
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.models.provider import (
     ProviderRecheckResponse,
+    ProviderRerouteBody,
+    ProviderRerouteResponse,
+    ProviderRerouteUndoBody,
+    ProviderRerouteUndoResponse,
     ProviderSetStateResponse,
     ProviderStateRequest,
     ProviderStatusResponse,
@@ -190,7 +196,7 @@ async def _run_command(
 
 
 def _add_availability_routes(router: APIRouter, resolve) -> None:
-    """The three availability routes; *resolve* returns ``(db, command_handler)``."""
+    """The availability and re-route routes; *resolve* returns ``(db, command_handler)``."""
 
     @router.get(
         "/api/providers/availability",
@@ -229,6 +235,30 @@ def _add_availability_routes(router: APIRouter, resolve) -> None:
             if value is not None:
                 args[key] = value
         return await _run_command(handler, db, "provider_set_state", args, request)
+
+    @router.post(
+        "/api/providers/reroute",
+        response_model=ProviderRerouteResponse,
+        responses={
+            400: {"description": "invalid request"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def post_provider_reroute(body: ProviderRerouteBody, request: Request):
+        db, handler = resolve()
+        args = {key: value for key, value in body.model_dump().items() if value is not None}
+        return await _run_command(handler, db, "provider_reroute", args, request)
+
+    @router.post(
+        "/api/providers/reroute/undo",
+        response_model=ProviderRerouteUndoResponse,
+        responses={400: {"description": "nothing undone"}, 403: {"description": "out of scope"}},
+    )
+    async def post_provider_reroute_undo(body: ProviderRerouteUndoBody, request: Request):
+        db, handler = resolve()
+        args = {key: value for key, value in body.model_dump().items() if value is not None}
+        return await _run_command(handler, db, "provider_reroute_undo", args, request)
 
     @router.post(
         "/api/providers/{provider}/recheck",

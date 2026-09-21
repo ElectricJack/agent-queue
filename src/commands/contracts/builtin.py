@@ -57,6 +57,11 @@ class CreateTaskArgs(CommandArgs):
     affinity_agent_id: str | None = None
     affinity_reason: str | None = None
     dedup_key: str | None = None
+    # Provider intent (provider-failover D9): ``pinned`` | ``preferred`` |
+    # ``class_only``; ``pin`` is sugar for ``pinned``.  An ``agent_task``
+    # step's ``pin_provider`` arrives here as ``pin``.
+    provider_intent: str | None = None
+    pin: bool | None = None
 
 
 class CreateTaskValue(CommandValue):
@@ -69,6 +74,7 @@ class CreateTaskValue(CommandValue):
     integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
+    provider_intent: str | None = None
     intelligence_class: str | None = None
     preferred_workspace_id: str | None = None
     affinity_agent_id: str | None = None
@@ -368,6 +374,12 @@ class TaskRouteArgs(CommandArgs):
     intelligence_class: str | None = None
     workspace_id: str | None = None
     reason: str | None = None
+    # Provider intent (provider-failover D9).  The routing playbook passes
+    # ``class_only``; a caller that omits it means the profile as a
+    # preference.  ``task_route`` never downgrades an intent on the same
+    # provider.
+    provider_intent: str | None = None
+    pin: bool | None = None
 
 
 class TaskRouteOptionsArgs(CommandArgs):
@@ -386,11 +398,15 @@ class TaskRouteOptionsValue(CommandValue):
     default_profile_id: str | None = None
     explicit_profile_id: str | None = None
     options: list[dict[str, Any]]
+    # Rows on an unavailable provider (provider-failover D11 mechanism 3):
+    # reported, never offered for automatic selection.
+    unavailable_options: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskRouteValue(CommandValue):
     task_id: str
     resolved_gate_ids: list[str]
+    provider_intent: str | None = None
 
 
 class CiBaselineStatusArgs(CommandArgs):
@@ -501,6 +517,33 @@ class ProviderAvailabilityNotifyArgs(CommandArgs):
     generation: int | None = None
 
 
+class ProviderRerouteArgs(CommandArgs):
+    """``provider_reroute`` as a playbook step (provider-failover D11).
+
+    One sweep under D12-D16: move eligible queued and provider-paused tasks
+    off an unavailable provider onto the equivalent rung of an available one,
+    within the trickle.  A playbook never forces: the operator-only arguments
+    (named tasks, ``to_profile``, ``force``) are not part of the step.
+    """
+
+    provider: str | None = None
+    dry_run: bool | None = None
+
+
+class ProviderRerouteValue(CommandValue):
+    outcome: str
+    dry_run: bool | None = None
+    applied: bool | None = None
+    disabled_reason: str | None = None
+    unavailable_providers: list[str] = Field(default_factory=list)
+    moved: list[dict[str, Any]] = Field(default_factory=list)
+    held: list[dict[str, Any]] = Field(default_factory=list)
+    held_by_kind: dict[str, int] = Field(default_factory=dict)
+    resumed: list[str] = Field(default_factory=list)
+    batch_ids: list[str] = Field(default_factory=list)
+    notices: list[str] = Field(default_factory=list)
+
+
 class ProviderAvailabilityNotifyValue(CommandValue):
     outcome: str
     provider: str
@@ -595,6 +638,9 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "provider_availability_notify":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROVIDER_NOTIFY_OUTCOMES else "rejected"
+    if name == "provider_reroute":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _PROVIDER_REROUTE_OUTCOMES else "rejected"
     return {
         "create_task": "created",
         "edit_task": "updated",
@@ -668,7 +714,15 @@ def _adapter(name: str, value_type: type[CommandValue]):
     return invoke
 
 
-_ROUTE_OPTION_OUTCOMES = frozenset({"already_routed", "explicit", "undecided", "no_options"})
+#: ``held`` (provider-failover D13a): the task has options in principle, but
+#: every one is on an unavailable provider.  The routing playbook ends the
+#: rule quietly on it instead of failing a run every two minutes per task.
+_ROUTE_OPTION_OUTCOMES = frozenset(
+    {"already_routed", "explicit", "undecided", "no_options", "held"}
+)
+#: Every ``provider_reroute`` success (D11): moved something, held
+#: something, nothing to do, or re-routing is off.
+_PROVIDER_REROUTE_OUTCOMES = frozenset({"rerouted", "held", "idle", "disabled"})
 #: Every outcome ``provider_usage_probe`` reports as a success.  A box
 #: without the CLI, an API-key account and a disabled probe are all facts
 #: about the install, not broken steps: a failing step every ten minutes
@@ -1064,6 +1118,39 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={"message": "the supervisor's incident notice"},
     ),
+    "provider_reroute": CommandPresentation(
+        title="Re-route work off an unavailable provider",
+        summary=(
+            "Move queued work whose provider is unavailable to the same intelligence "
+            "class on an available provider, a few tasks at a time; pinned tasks and "
+            "single-provider classes hold."
+        ),
+        arg_labels={"provider": "Provider", "dry_run": "Plan only"},
+        outcome_labels={
+            "rerouted": "Tasks re-routed",
+            "held": "Tasks held",
+            "idle": "Nothing to re-route",
+            "disabled": "Re-routing is off",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "outcome": "Outcome",
+            "dry_run": "Plan only",
+            "applied": "Applied",
+            "disabled_reason": "Why re-routing is off",
+            "unavailable_providers": "Unavailable providers",
+            "moved": "Moved tasks",
+            "held": "Held tasks",
+            "held_by_kind": "Held, by reason",
+            "resumed": "Resumed tasks",
+            "batch_ids": "Batches",
+            "notices": "Supervisor notices",
+        },
+        subject_labels={
+            "task_routing": "the re-routed tasks' routes",
+            "message": "the per-project batch notice",
+        },
+    ),
     "provider_availability_notify": CommandPresentation(
         title="Announce a provider's availability change",
         summary=(
@@ -1104,6 +1191,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "explicit": "Explicit class",
             "undecided": "Needs a decision",
             "no_options": "Nothing can run it",
+            "held": "Held: every option's provider is unavailable",
             "rejected": "Rejected",
         },
         result_labels={
@@ -1111,6 +1199,7 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "profile_id": "Agent profile",
             "explicit_profile_id": "Profile serving the class",
             "options": "Routing options",
+            "unavailable_options": "Options on an unavailable provider",
         },
         subject_labels={},
     ),
@@ -1308,7 +1397,7 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
         ),
         (
             "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
-            _outcomes("already_routed", "explicit", "undecided", "no_options"),
+            _outcomes("already_routed", "explicit", "undecided", "no_options", "held"),
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
@@ -1389,6 +1478,19 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             _outcomes("queued", "existing", "not_actionable", "retired"),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_reroute",
+            ProviderRerouteArgs,
+            ProviderRerouteValue,
+            _outcomes("rerouted", "held", "idle", "disabled"),
+            SideEffectClass.COMPOSITE,
+            (
+                UpdateClause(subject=EffectSubject.TASK_ROUTING),
+                CreateClause(subject=EffectSubject.MESSAGE),
+            ),
             IdempotencySpec(mode="natural"),
             True,
         ),

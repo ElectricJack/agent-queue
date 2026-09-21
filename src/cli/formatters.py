@@ -155,6 +155,22 @@ def format_task_detail(
         fields.append(("PR", task.pr_url))
     if task.parent_task_id:
         fields.append(("Parent", task.parent_task_id))
+    # Provider intent, the re-route marker and the derived hold
+    # (provider-failover D8, D17, D18).  ``class_only`` is the unremarkable
+    # default and stays quiet; a generated client model may carry UNSET.
+    intent = getattr(task, "provider_intent", None)
+    if isinstance(intent, str) and intent and intent != "class_only":
+        fields.append(("Provider intent", intent))
+    rerouted = getattr(task, "rerouted_from", None)
+    if isinstance(rerouted, str) and rerouted:
+        fields.append(("Re-routed from", rerouted))
+    hold = getattr(task, "provider_hold", None)
+    hold_get = hold.get if isinstance(hold, dict) else (lambda k: getattr(hold, k, None))
+    hold_kind = hold_get("kind") if hold is not None else None
+    if isinstance(hold_kind, str) and hold_kind:
+        fields.append(
+            ("Held", f"{hold_kind} (provider {hold_get('provider')} is {hold_get('state')})")
+        )
 
     for label, value in fields:
         line = Text()

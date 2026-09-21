@@ -210,18 +210,32 @@ async def test_route_options_excludes_disabled_pools_for_auto_routes_but_keeps_p
     }
     assert [row["profile_id"] for row in automatic["disabled_options"]] == ["deep-low-claude"]
 
+    # A named profile is a preference (provider-failover D8): it keeps its
+    # route even while its pool is disabled.
     await _create(
         orch.db, "pinned", intelligence_class="deep-low", profile_id="deep-low-claude",
+        provider_intent="preferred",
     )
     pinned = await handler._cmd_task_route_options({"task_id": "pinned"})
     assert pinned["outcome"] == "already_routed"
     assert pinned["explicit_profile_id"] == "deep-low-claude"
 
-    await _create(orch.db, "profile-pin", profile_id="deep-low-claude")
+    await _create(
+        orch.db, "profile-pin", profile_id="deep-low-claude", provider_intent="preferred",
+    )
     profile_pin = await handler._cmd_task_route_options({"task_id": "profile-pin"})
     assert profile_pin["outcome"] == "no_options"
     assert profile_pin["options"] == []
     assert [row["profile_id"] for row in profile_pin["disabled_options"]] == ["deep-low-claude"]
+
+    # A class_only placement is routing's own output and constrains nothing:
+    # its disabled pool is simply not offered.
+    await _create(
+        orch.db, "placed", intelligence_class="deep-low", profile_id="deep-low-claude",
+    )
+    placed = await handler._cmd_task_route_options({"task_id": "placed"})
+    assert placed["outcome"] == "explicit"
+    assert placed["explicit_profile_id"] == "deep-low-codex"
 
 
 async def test_route_options_reports_no_automatic_route_when_all_compatible_profiles_are_disabled(

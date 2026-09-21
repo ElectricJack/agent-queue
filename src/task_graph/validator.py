@@ -876,11 +876,31 @@ async def validate_graph(
     findings.extend(_check_cycles(graph))
     findings.extend(_check_foreign_projects(graph, project_id))
     findings.extend(await _check_needs(graph, project_id, db))
+    findings.extend(_check_pins(graph))
     findings.extend(await _check_profiles(graph, project_id, db))
     findings.extend(await _check_subtasks_reportable(graph, db))
     findings.extend(_check_spec_refs(graph, vault_root=vault_root))
 
     return findings
+
+
+def _check_pins(graph: TaskGraph) -> list[GraphError]:
+    """``pin: true`` needs a profile somebody named (provider-failover D9).
+
+    A pin is a statement about the provider a profile names; with no
+    profile, or with one routing resolved from the class, there is nothing a
+    human chose to pin.
+    """
+    return [
+        _error(
+            "pin_without_profile",
+            "'pin: true' pins the node's profile to its provider, so the node needs a "
+            "'profile' (on the node, in defaults, or via profile_id)",
+            node.key,
+        )
+        for node in graph.nodes
+        if node.pin and (not node.profile or node.profile_source == "class_match")
+    ]
 
 
 def split_findings(findings: list[GraphError]) -> tuple[list[GraphError], list[GraphError]]:

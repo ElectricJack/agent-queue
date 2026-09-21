@@ -1377,6 +1377,97 @@
         }
       }
     },
+    "/api/providers/reroute": {
+      "post": {
+        "summary": "Post Provider Reroute",
+        "operationId": "post_provider_reroute_api_providers_reroute_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/providers/reroute/undo": {
+      "post": {
+        "summary": "Post Provider Reroute Undo",
+        "operationId": "post_provider_reroute_undo_api_providers_reroute_undo_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteUndoBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteUndoResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "nothing undone"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/providers/{provider}/recheck": {
       "post": {
         "summary": "Post Provider Recheck",
@@ -9735,6 +9826,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProviderRecheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/reroute": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Re-route queued work off an unavailable provider (provider failover).  Moves eligible queued and provider-paused tasks to the same intelligence class on an available provider, a pool-width at a time (provider_failover.reroute limits), and records each move on the task (undo with provider_reroute_undo).  Pinned tasks, single-provider classes (astra-*) and classes set to 'hold' stay where they are.  --dry-run plans only.  Naming tasks with --task-id plus --to-profile or --force is an explicit operator move; --force may move a pinned task, target a degraded provider or change the class.  Operators and supervisors only.",
+        "description": "Re-route queued work off an unavailable provider (provider failover).  Moves eligible queued and provider-paused tasks to the same intelligence class on an available provider, a pool-width at a time (provider_failover.reroute limits), and records each move on the task (undo with provider_reroute_undo).  Pinned tasks, single-provider classes (astra-*) and classes set to 'hold' stay where they are.  --dry-run plans only.  Naming tasks with --task-id plus --to-profile or --force is an explicit operator move; --force may move a pinned task, target a degraded provider or change the class.  Operators and supervisors only.",
+        "operationId": "provider_reroute",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/reroute-undo": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Undo provider re-routes: return tasks to the profile they were on before (rerouted_from), by --batch-id or --task-id.  Refused for a running or claimed task, and while the original provider is still unavailable unless --force.  Operators and supervisors only.",
+        "description": "Undo provider re-routes: return tasks to the profile they were on before (rerouted_from), by --batch-id or --task-id.  Refused for a running or claimed task, and while the original provider is still unavailable unless --force.  Operators and supervisors only.",
+        "operationId": "provider_reroute_undo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderRerouteUndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderRerouteUndoResponse"
                 }
               }
             }
@@ -18441,6 +18626,30 @@
             "title": "Profile Id",
             "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)"
           },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
+          },
           "intelligence_class": {
             "anyOf": [
               {
@@ -18712,6 +18921,17 @@
               }
             ],
             "title": "Intelligence Class"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent"
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -21100,6 +21320,30 @@
             "title": "Profile Id",
             "description": "Agent profile ID (optional, set to null to clear)"
           },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
+          },
           "intelligence_class": {
             "anyOf": [
               {
@@ -21454,6 +21698,30 @@
             ],
             "title": "Profile Id",
             "description": "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing profile directly."
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
           },
           "intelligence_class": {
             "anyOf": [
@@ -25789,6 +26057,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -37606,6 +37910,11 @@
             ],
             "title": "Ahead"
           },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
           "profile_id": {
             "anyOf": [
               {
@@ -37635,7 +37944,7 @@
           "kind"
         ],
         "title": "ProviderHoldDetail",
-        "description": "Why a queued task is held by its provider (provider-failover D18).\n\n``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or\n``failover_inactive`` today; the re-route engine adds the rest of D18's\nvocabulary.  ``ahead`` is the queue position for\n``awaiting_failover_capacity`` and ``None`` otherwise."
+        "description": "Why a queued task is held by its provider (provider-failover D18).\n\n``kind`` is one of ``provider_pinned``, ``class_policy_hold``,\n``no_equivalent_rung``, ``no_available_target``,\n``awaiting_failover_capacity``, ``reroute_limit_reached``,\n``all_providers_unavailable``, ``failover_inactive`` or\n``priority_policy_hold``.  ``ahead`` is the queue position for\n``awaiting_failover_capacity`` and ``None`` otherwise; ``detail`` says it\nin words."
       },
       "ProviderOverride": {
         "properties": {
@@ -37765,6 +38074,394 @@
         ],
         "title": "ProviderRecheckResponse",
         "description": "``provider_recheck``: the probe's answer and the resulting state.\n\n``probe`` is ``authenticated``, ``not_authenticated``, ``cannot_tell`` or\n``not_probeable`` (the provider has no login probe)."
+      },
+      "ProviderRerouteBody": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "to_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile"
+          },
+          "include_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Paused"
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteBody",
+        "description": "``POST /api/providers/reroute`` (D20)."
+      },
+      "ProviderRerouteRequest": {
+        "properties": {
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Limit the sweep to one provider key or vendor alias."
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id(s) to move explicitly."
+          },
+          "to_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile",
+            "description": "Target profile for the named tasks."
+          },
+          "include_paused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Paused",
+            "description": "Also resume and move tasks paused before failover recorded a cause (listed first with --dry-run)."
+          },
+          "dry_run": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dry Run",
+            "description": "Plan only; write nothing."
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Operator override for named tasks: move a pinned task, target a degraded provider, or change the class with --to-profile."
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteRequest"
+      },
+      "ProviderRerouteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied",
+            "default": false
+          },
+          "disabled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled Reason"
+          },
+          "unavailable_providers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unavailable Providers",
+            "default": []
+          },
+          "moved": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Moved",
+            "default": []
+          },
+          "held": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Held",
+            "default": []
+          },
+          "held_by_kind": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Held By Kind",
+            "default": {}
+          },
+          "resumed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resumed",
+            "default": []
+          },
+          "lost": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Lost",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteDecision"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Batch Ids",
+            "default": []
+          },
+          "notices": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notices",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "ProviderRerouteResponse",
+        "description": "``provider_reroute``: one sweep's plan and what it applied (D11).\n\n``outcome`` is ``rerouted``, ``held``, ``idle`` or ``disabled``.  With\n``dry_run`` (or while re-routing is off) ``applied`` is false and ``moved``\nlists what a live sweep would move."
+      },
+      "ProviderRerouteUndoBody": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force"
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteUndoBody",
+        "description": "``POST /api/providers/reroute/undo`` (D16): a batch or tasks."
+      },
+      "ProviderRerouteUndoRequest": {
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id",
+            "description": "A re-route batch (prb-<provider>-<generation> or prf-...)."
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id(s) to undo."
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": "Undo even while the original provider is unavailable."
+          }
+        },
+        "type": "object",
+        "title": "ProviderRerouteUndoRequest"
+      },
+      "ProviderRerouteUndoResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "undone": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteUndone"
+            },
+            "type": "array",
+            "title": "Undone",
+            "default": []
+          },
+          "refused": {
+            "items": {
+              "$ref": "#/components/schemas/RerouteUndoRefusal"
+            },
+            "type": "array",
+            "title": "Refused",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "ProviderRerouteUndoResponse",
+        "description": "``provider_reroute_undo`` (D16): which tasks went back, and which were refused."
       },
       "ProviderSetStateRequest": {
         "properties": {
@@ -39685,6 +40382,216 @@
           "task_id"
         ],
         "title": "ReparentTaskResponse"
+      },
+      "RerouteDecision": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "from_profile_id": {
+            "type": "string",
+            "title": "From Profile Id"
+          },
+          "from_provider": {
+            "type": "string",
+            "title": "From Provider",
+            "default": ""
+          },
+          "provider_state": {
+            "type": "string",
+            "title": "Provider State",
+            "default": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "to_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Provider"
+          },
+          "to_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Class"
+          },
+          "ahead": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ahead"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          },
+          "resume": {
+            "type": "boolean",
+            "title": "Resume",
+            "default": false
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "intent": {
+            "type": "string",
+            "title": "Intent",
+            "default": "class_only"
+          },
+          "priority": {
+            "type": "integer",
+            "title": "Priority",
+            "default": 100
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "provider_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Generation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "project_id",
+          "from_profile_id",
+          "action"
+        ],
+        "title": "RerouteDecision",
+        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, ...)."
+      },
+      "RerouteUndoRefusal": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "RerouteUndoRefusal"
+      },
+      "RerouteUndone": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "from_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Profile Id"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "reroute_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reroute Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "RerouteUndone"
       },
       "RestartDaemonRequest": {
         "properties": {
@@ -45210,6 +46117,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -45610,6 +46553,110 @@
         "title": "TaskRef",
         "description": "Minimal task reference used in dependency lists, unblocked lists, etc."
       },
+      "TaskReroute": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "from_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Profile Id"
+          },
+          "to_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Profile Id"
+          },
+          "from_provider": {
+            "type": "string",
+            "title": "From Provider",
+            "default": ""
+          },
+          "to_provider": {
+            "type": "string",
+            "title": "To Provider",
+            "default": ""
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "reason_code": {
+            "type": "string",
+            "title": "Reason Code"
+          },
+          "provider_state": {
+            "type": "string",
+            "title": "Provider State",
+            "default": ""
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor",
+            "default": ""
+          },
+          "at": {
+            "type": "number",
+            "title": "At"
+          },
+          "undone_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undone At"
+          },
+          "undoable": {
+            "type": "boolean",
+            "title": "Undoable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "reason_code",
+          "at"
+        ],
+        "title": "TaskReroute",
+        "description": "The newest ``task_reroutes`` row for a task (provider-failover D17).\n\n``undoable`` is true while the task carries an un-undone re-route and no\nworker holds it -- what ``aq provider reroute-undo --task-id`` would accept."
+      },
       "TaskRouteRequest": {
         "properties": {
           "task_id": {
@@ -45621,6 +46668,30 @@
             "type": "string",
             "title": "Profile Id",
             "description": "Eligible worker profile ID that should execute the task (never supervisor)"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent",
+            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+          },
+          "pin": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin",
+            "description": "Shorthand for provider_intent=pinned."
           },
           "intelligence_class": {
             "anyOf": [
@@ -46230,6 +47301,42 @@
             ],
             "title": "Needs Attention"
           },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -46547,6 +47654,42 @@
               }
             ],
             "title": "Needs Attention"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "class_only"
+          },
+          "rerouted_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerouted From"
+          },
+          "reroute": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskReroute"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "context": {
             "items": {

@@ -127,6 +127,18 @@
           ],
           "title": "Objective"
         },
+        "pin_provider": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pin Provider"
+        },
         "profile_id": {
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
           "title": "Profile Id",

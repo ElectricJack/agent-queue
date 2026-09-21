@@ -522,13 +522,22 @@ class LiveLlmExecutor:
         except asyncio.CancelledError:
             return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
         except Exception as exc:  # noqa: BLE001 - provider errors are a typed outcome
+            from src.llm.providers.errors import ProviderUnavailableError
+
+            # A fail-fast refusal (provider-failover D13a) names the reason
+            # a playbook author branches on, not the exception class.
+            diagnostic = (
+                "provider_unavailable"
+                if isinstance(exc, ProviderUnavailableError)
+                else type(exc).__name__
+            )
             return _result(
                 step,
                 ctx,
                 spec=spec,
                 outcome="provider_error",
                 llm_calls=calls,
-                diagnostics=(type(exc).__name__,),
+                diagnostics=(diagnostic,),
             )
 
 

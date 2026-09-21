@@ -10,8 +10,10 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.claimed_by import ClaimedBy
+    from ..models.provider_hold_detail import ProviderHoldDetail
     from ..models.task_completion_detail import TaskCompletionDetail
     from ..models.task_ref import TaskRef
+    from ..models.task_reroute import TaskReroute
     from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
     from ..models.task_set_response_context_item import TaskSetResponseContextItem
     from ..models.task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
@@ -57,6 +59,10 @@ class TaskSetResponse:
         children (None | TaskSetResponseChildrenType0 | Unset):
         completion (None | TaskCompletionDetail | Unset):
         needs_attention (None | str | Unset):
+        provider_intent (str | Unset):  Default: 'class_only'.
+        rerouted_from (None | str | Unset):
+        reroute (None | TaskReroute | Unset):
+        provider_hold (None | ProviderHoldDetail | Unset):
         context (list[TaskSetResponseContextItem] | Unset):
         labels (list[str] | Unset):
         provenance (list[TaskSetResponseProvenanceItem] | Unset):
@@ -95,6 +101,10 @@ class TaskSetResponse:
     children: None | TaskSetResponseChildrenType0 | Unset = UNSET
     completion: None | TaskCompletionDetail | Unset = UNSET
     needs_attention: None | str | Unset = UNSET
+    provider_intent: str | Unset = "class_only"
+    rerouted_from: None | str | Unset = UNSET
+    reroute: None | TaskReroute | Unset = UNSET
+    provider_hold: None | ProviderHoldDetail | Unset = UNSET
     context: list[TaskSetResponseContextItem] | Unset = UNSET
     labels: list[str] | Unset = UNSET
     provenance: list[TaskSetResponseProvenanceItem] | Unset = UNSET
@@ -104,7 +114,9 @@ class TaskSetResponse:
 
     def to_dict(self) -> dict[str, Any]:
         from ..models.claimed_by import ClaimedBy
+        from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
+        from ..models.task_reroute import TaskReroute
         from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
         from ..models.task_set_response_parent_type_0 import TaskSetResponseParentType0
 
@@ -250,6 +262,30 @@ class TaskSetResponse:
         else:
             needs_attention = self.needs_attention
 
+        provider_intent = self.provider_intent
+
+        rerouted_from: None | str | Unset
+        if isinstance(self.rerouted_from, Unset):
+            rerouted_from = UNSET
+        else:
+            rerouted_from = self.rerouted_from
+
+        reroute: dict[str, Any] | None | Unset
+        if isinstance(self.reroute, Unset):
+            reroute = UNSET
+        elif isinstance(self.reroute, TaskReroute):
+            reroute = self.reroute.to_dict()
+        else:
+            reroute = self.reroute
+
+        provider_hold: dict[str, Any] | None | Unset
+        if isinstance(self.provider_hold, Unset):
+            provider_hold = UNSET
+        elif isinstance(self.provider_hold, ProviderHoldDetail):
+            provider_hold = self.provider_hold.to_dict()
+        else:
+            provider_hold = self.provider_hold
+
         context: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.context, Unset):
             context = []
@@ -345,6 +381,14 @@ class TaskSetResponse:
             field_dict["completion"] = completion
         if needs_attention is not UNSET:
             field_dict["needs_attention"] = needs_attention
+        if provider_intent is not UNSET:
+            field_dict["provider_intent"] = provider_intent
+        if rerouted_from is not UNSET:
+            field_dict["rerouted_from"] = rerouted_from
+        if reroute is not UNSET:
+            field_dict["reroute"] = reroute
+        if provider_hold is not UNSET:
+            field_dict["provider_hold"] = provider_hold
         if context is not UNSET:
             field_dict["context"] = context
         if labels is not UNSET:
@@ -361,8 +405,10 @@ class TaskSetResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.claimed_by import ClaimedBy
+        from ..models.provider_hold_detail import ProviderHoldDetail
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_ref import TaskRef
+        from ..models.task_reroute import TaskReroute
         from ..models.task_set_response_children_type_0 import TaskSetResponseChildrenType0
         from ..models.task_set_response_context_item import TaskSetResponseContextItem
         from ..models.task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
@@ -575,6 +621,51 @@ class TaskSetResponse:
 
         needs_attention = _parse_needs_attention(d.pop("needs_attention", UNSET))
 
+        provider_intent = d.pop("provider_intent", UNSET)
+
+        def _parse_rerouted_from(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        rerouted_from = _parse_rerouted_from(d.pop("rerouted_from", UNSET))
+
+        def _parse_reroute(data: object) -> None | TaskReroute | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                reroute_type_0 = TaskReroute.from_dict(data)
+
+                return reroute_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskReroute | Unset, data)
+
+        reroute = _parse_reroute(d.pop("reroute", UNSET))
+
+        def _parse_provider_hold(data: object) -> None | ProviderHoldDetail | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                provider_hold_type_0 = ProviderHoldDetail.from_dict(data)
+
+                return provider_hold_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | ProviderHoldDetail | Unset, data)
+
+        provider_hold = _parse_provider_hold(d.pop("provider_hold", UNSET))
+
         _context = d.pop("context", UNSET)
         context: list[TaskSetResponseContextItem] | Unset = UNSET
         if _context is not UNSET:
@@ -646,6 +737,10 @@ class TaskSetResponse:
             children=children,
             completion=completion,
             needs_attention=needs_attention,
+            provider_intent=provider_intent,
+            rerouted_from=rerouted_from,
+            reroute=reroute,
+            provider_hold=provider_hold,
             context=context,
             labels=labels,
             provenance=provenance,

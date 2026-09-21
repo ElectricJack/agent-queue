@@ -208,10 +208,21 @@ class _Activations:
         return list(self.rows)
 
 
-async def test_failover_playbook_not_shipped_is_info() -> None:
+async def test_failover_playbook_not_shipped_is_info(monkeypatch) -> None:
+    from src.doctor import provider_availability_checks
+
+    monkeypatch.setattr(provider_availability_checks, "_shipped_failover_bundle", lambda: False)
     result = await _run(_Activations([]), FAILOVER_PLAYBOOK_CHECK_ID)
     assert result.severity == Severity.INFO
     assert "not shipped" in result.detail
+
+
+async def test_failover_playbook_shipped_but_never_activated_warns() -> None:
+    # bold-rapids.3 ships the bundle, so an install with no activation for it
+    # holds every task on a dead provider forever.
+    result = await _run(_Activations([]), FAILOVER_PLAYBOOK_CHECK_ID)
+    assert result.severity == Severity.WARN
+    assert "tasks will hold and never move" in result.detail
 
 
 async def test_failover_playbook_present_but_inactive_warns() -> None:

@@ -17,8 +17,10 @@ The rest of the mixin is the operator surface of provider *availability*
 (``docs/specs/provider-failover.md`` D6, D19, D20): ``provider_status``,
 ``provider_history``, ``provider_recheck`` and ``provider_set_state`` read and
 steer ``Orchestrator.provider_availability``; ``provider_availability_notify``
-is the idempotent state-change notice a playbook may also drive.  None of them
-holds state of its own -- the service owns every write.
+is the idempotent state-change notice a playbook may also drive.
+``provider_reroute`` / ``provider_reroute_undo`` drive the re-route engine
+(``Orchestrator.provider_reroute``, D11-D16).  None of them holds state of
+its own -- the services own every write.
 """
 
 from __future__ import annotations
@@ -442,6 +444,116 @@ class ProviderCommandsMixin:
         except (TypeError, ValueError):
             return {"success": False, "error": "generation must be an integer"}
         return await service.notify_state_change(provider, generation)
+
+    # -- re-routing (docs/specs/provider-failover.md D11-D16) -----------------
+
+    def _reroute_service(self):
+        return getattr(getattr(self, "orchestrator", None), "provider_reroute", None)
+
+    @staticmethod
+    def _task_id_list(raw: Any) -> list[str] | None:
+        if raw is None or raw == "" or raw == []:
+            return None
+        if isinstance(raw, str):
+            raw = [part for part in raw.replace(",", " ").split() if part]
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    async def _cmd_provider_reroute(self, args: dict) -> dict:
+        """Plan and apply one re-route sweep (``aq provider reroute``, D11-D16).
+
+        Moves eligible queued and provider-paused tasks off an unavailable
+        provider onto the equivalent rung (same class) of an ``available``
+        one, within the trickle and per-task limits, and records each move
+        on the task.  ``dry_run`` plans only -- the same code path the
+        dashboard preview uses.  Naming tasks with ``task_id`` and giving
+        ``to_profile`` or ``force`` is an operator's explicit move: ``force``
+        may move a pinned task, target a degraded provider or (with
+        ``to_profile``) change the class, and is recorded ``operator_forced``.
+
+        Args:
+            provider: Limit the sweep to one provider key (vendor alias accepted).
+            task_id: One task id, or a list, to move explicitly.
+            to_profile: The target profile for the named tasks.
+            include_paused: Also resume and move tasks paused before failover
+                recorded a cause (the tasks of 2026-09-20).
+            dry_run: Plan only; write nothing.
+            force: Operator override (see above).
+
+        Returns:
+            ``outcome`` is ``rerouted``, ``held``, ``idle`` or ``disabled``,
+            with ``moved`` / ``held`` / ``skipped`` decisions, ``held_by_kind``,
+            ``resumed`` task ids and the ``batch_ids`` written.
+        """
+        refusal = self._provider_operator_refusal("provider_reroute")
+        if refusal:
+            return refusal
+        service = self._reroute_service()
+        availability = self._availability()
+        if service is None or availability is None:
+            return {"success": False, "error": "provider failover is not running"}
+        task_ids = self._task_id_list(args.get("task_id") or args.get("task_ids"))
+        force = bool(args.get("force"))
+        to_profile = str(args.get("to_profile") or "").strip() or None
+        dry_run = bool(args.get("dry_run"))
+        if (force or to_profile) and not task_ids:
+            return {
+                "success": False,
+                "error": "force and to_profile move named tasks only; pass task_id",
+            }
+        if to_profile is not None:
+            profile = await self.db.get_profile(to_profile)
+            if profile is None:
+                return {"success": False, "error": f"profile '{to_profile}' not found"}
+            if error := self._task_execution_profile_error(profile):
+                return {"success": False, "error": error}
+        provider = None
+        if args.get("provider"):
+            provider, error = await self._resolve_provider_arg(availability, args["provider"])
+            if error:
+                return error
+        if task_ids:
+            missing = [tid for tid in task_ids if await self.db.get_task(tid) is None]
+            if missing:
+                return {"success": False, "error": f"task(s) not found: {', '.join(missing)}"}
+        return await service.sweep(
+            provider=provider,
+            task_ids=task_ids,
+            to_profile=to_profile,
+            include_paused=bool(args.get("include_paused")),
+            dry_run=dry_run,
+            force=force,
+            actor=self._provider_actor(),
+        )
+
+    async def _cmd_provider_reroute_undo(self, args: dict) -> dict:
+        """Undo re-routes (``aq provider reroute-undo``, D16).
+
+        Restores ``profile_id`` to ``rerouted_from`` for tasks that are not
+        running or claimed, writes an ``operator_undo`` row and clears the
+        marker.  Refused per task while the original provider is still
+        unavailable, unless ``force``.
+
+        Args:
+            batch_id: Undo every un-undone move of one batch.
+            task_id: One task id, or a list.
+            force: Undo even while the original provider is unavailable.
+        """
+        refusal = self._provider_operator_refusal("provider_reroute_undo")
+        if refusal:
+            return refusal
+        service = self._reroute_service()
+        if service is None:
+            return {"success": False, "error": "provider failover is not running"}
+        batch_id = str(args.get("batch_id") or args.get("batch") or "").strip() or None
+        task_ids = self._task_id_list(args.get("task_id") or args.get("task_ids"))
+        if not batch_id and not task_ids:
+            return {"success": False, "error": "pass batch_id or task_id"}
+        return await service.undo(
+            batch_id=batch_id,
+            task_ids=task_ids,
+            force=bool(args.get("force")),
+            actor=self._provider_actor(),
+        )
 
     async def _finish_probe(self, provider: str, payload: dict) -> dict:
         """Persist the probe's own verdict, then return *payload* unchanged.

@@ -215,6 +215,8 @@ class ExecutionMixin:
             resolve_agent_profile, resolve_task_profile, task_agent_mismatch,
         )
 
+        from dataclasses import replace
+
         if agent is None or not agent.enabled or agent.role != "worker":
             return "worker is unavailable"
         if effective_route is None:
@@ -222,11 +224,21 @@ class ExecutionMixin:
             if task is None:
                 return "awaiting intelligence route"
         else:
-            from dataclasses import replace
-
             task = replace(task, intelligence_class=effective_route.intelligence_class)
         profiles = {profile.id: profile for profile in await self.db.list_profiles()}
         project = await self.db.get_project(task.project_id)
+        resolver = getattr(self, "_availability_aware_default", None)
+        if (
+            resolver is not None
+            and not task.profile_id
+            and project is not None
+            and project.default_profile_id
+        ):
+            # An unrouted task follows the project default's equivalent rung
+            # while the default's provider is unavailable (provider-failover D13).
+            effective = await resolver(project.default_profile_id, project.id)
+            if isinstance(effective, str) and effective != project.default_profile_id:
+                project = replace(project, default_profile_id=effective)
         task_profile = resolve_task_profile(task, project, profiles)
         if task.profile_id and task_profile is None:
             return f"required profile '{task.profile_id}' is not configured"

@@ -295,6 +295,22 @@ def _create_task_graph(
         "Not supported with --graph/--from-spec."
     ),
 )
+@click.option(
+    "--pin",
+    is_flag=True,
+    default=False,
+    help=(
+        "Pin the task to --profile's provider: it holds instead of failing over while "
+        "that provider is unavailable. Without it an explicit --profile is a preference."
+    ),
+)
+@click.option(
+    "--provider-intent",
+    "provider_intent",
+    type=click.Choice(["pinned", "preferred", "class_only"]),
+    default=None,
+    help="Set the provider intent explicitly (pinned/preferred need --profile)",
+)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -316,6 +332,8 @@ def task_create(
     reason: str | None,
     deliverables: tuple[str, ...],
     requires_kinds: tuple[str, ...],
+    pin: bool = False,
+    provider_intent: str | None = None,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
@@ -331,8 +349,14 @@ def task_create(
     not in the vault, or that no enabled worker runs, is refused, and the
     second refusal lists the classes that are available. The result's
     ``profile_source`` reports the rule: explicit, class_match,
-    project_default or inherited. Pass ``--profile`` with it to pin a
+    project_default or inherited. Pass ``--profile`` with it to name a
     provider or a specific worker.
+
+    An explicit ``--profile`` is a *preference* (``provider_intent:
+    preferred``): if its provider runs out of usage or loses its login, the
+    task fails over to the same class on another provider. ``--pin`` makes it
+    a requirement (``pinned``) — the task holds until that provider is back.
+    A profile chosen by class or by the project default is ``class_only``.
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
@@ -361,6 +385,11 @@ def task_create(
             "--requires-kind is not supported with --graph/--from-spec; graph "
             "nodes carry no workspace requirements. Create the task on its own "
             "with --requires-kind, or attach it to the graph afterwards."
+        )
+    if (pin or provider_intent) and (graph_file or from_spec):
+        raise click.UsageError(
+            "--pin/--provider-intent apply to single-task creation; in a graph put "
+            "'pin: true' on the nodes to pin"
         )
     if graph_file or from_spec:
         _create_task_graph(
@@ -445,6 +474,10 @@ def task_create(
 
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
+    if pin:
+        params["pin"] = True
+    if provider_intent:
+        params["provider_intent"] = provider_intent
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id

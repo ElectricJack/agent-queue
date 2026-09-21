@@ -15,10 +15,13 @@ T = TypeVar("T", bound="ProviderHoldDetail")
 class ProviderHoldDetail:
     """Why a queued task is held by its provider (provider-failover D18).
 
-    ``kind`` is ``all_providers_unavailable``, ``no_equivalent_rung`` or
-    ``failover_inactive`` today; the re-route engine adds the rest of D18's
-    vocabulary.  ``ahead`` is the queue position for
-    ``awaiting_failover_capacity`` and ``None`` otherwise.
+    ``kind`` is one of ``provider_pinned``, ``class_policy_hold``,
+    ``no_equivalent_rung``, ``no_available_target``,
+    ``awaiting_failover_capacity``, ``reroute_limit_reached``,
+    ``all_providers_unavailable``, ``failover_inactive`` or
+    ``priority_policy_hold``.  ``ahead`` is the queue position for
+    ``awaiting_failover_capacity`` and ``None`` otherwise; ``detail`` says it
+    in words.
 
         Attributes:
             provider (str):
@@ -28,6 +31,7 @@ class ProviderHoldDetail:
             since (float | None | Unset):
             until (float | None | Unset):
             ahead (int | None | Unset):
+            detail (str | Unset):  Default: ''.
             profile_id (None | str | Unset):
             reason (str | Unset):  Default: ''.
             remediation (str | Unset):  Default: ''.
@@ -40,6 +44,7 @@ class ProviderHoldDetail:
     since: float | None | Unset = UNSET
     until: float | None | Unset = UNSET
     ahead: int | None | Unset = UNSET
+    detail: str | Unset = ""
     profile_id: None | str | Unset = UNSET
     reason: str | Unset = ""
     remediation: str | Unset = ""
@@ -72,6 +77,8 @@ class ProviderHoldDetail:
         else:
             ahead = self.ahead
 
+        detail = self.detail
+
         profile_id: None | str | Unset
         if isinstance(self.profile_id, Unset):
             profile_id = UNSET
@@ -99,6 +106,8 @@ class ProviderHoldDetail:
             field_dict["until"] = until
         if ahead is not UNSET:
             field_dict["ahead"] = ahead
+        if detail is not UNSET:
+            field_dict["detail"] = detail
         if profile_id is not UNSET:
             field_dict["profile_id"] = profile_id
         if reason is not UNSET:
@@ -146,6 +155,8 @@ class ProviderHoldDetail:
 
         ahead = _parse_ahead(d.pop("ahead", UNSET))
 
+        detail = d.pop("detail", UNSET)
+
         def _parse_profile_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -167,6 +178,7 @@ class ProviderHoldDetail:
             since=since,
             until=until,
             ahead=ahead,
+            detail=detail,
             profile_id=profile_id,
             reason=reason,
             remediation=remediation,

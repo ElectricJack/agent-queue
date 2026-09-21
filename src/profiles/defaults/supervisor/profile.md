@@ -98,6 +98,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "prime",
     "provider_history",
     "provider_recheck",
+    "provider_reroute",
+    "provider_reroute_undo",
     "provider_set_state",
     "provider_status",
     "project_ready",

@@ -202,6 +202,17 @@ tasks = Table(
     Column("claim_epoch", Integer, nullable=False, server_default="0"),
     # Worker-filing quota counter (swarm-work-model §12).  Plan 2 reserves it.
     Column("filed_count", Integer, nullable=False, server_default="0"),
+    # Provider intent (provider-failover D8): did anyone mean the provider
+    # ``profile_id`` names?  ``pinned`` holds while its provider is
+    # unavailable; ``preferred`` and ``class_only`` fail over (D12).
+    Column("provider_intent", Text, nullable=False, server_default="class_only"),
+    # The profile the task was on before its first automatic re-route that
+    # has not been undone (D17).  NULL means "where it was put".
+    Column("rerouted_from", Text, nullable=True),
+    CheckConstraint(
+        "provider_intent IN ('pinned','preferred','class_only')",
+        name="ck_tasks_provider_intent",
+    ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
@@ -262,6 +273,14 @@ tasks = Table(
     # ``aq task list --status``) had no index leading with status and
     # seq-scanned ``tasks`` as completed history grew.
     Index("idx_tasks_status_project", "status", "project_id"),
+    # What the re-route trickle counts (provider-failover D15): the moved and
+    # not-yet-started tasks per target rung.  Partial because a re-route is
+    # the exception.
+    Index(
+        "idx_tasks_rerouted",
+        "profile_id",
+        postgresql_where=text("rerouted_from IS NOT NULL"),
+    ),
 )
 
 task_criteria = Table(
@@ -1498,9 +1517,16 @@ archived_tasks = Table(
     Column("intelligence_class", Text, nullable=True),
     Column("created_by_kind", Text, nullable=True),
     Column("created_by_id", Text, nullable=True),
+    # Mirrors tasks.provider_intent / tasks.rerouted_from (provider-failover D8, D17).
+    Column("provider_intent", Text, nullable=False, server_default="class_only"),
+    Column("rerouted_from", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),
+    CheckConstraint(
+        "provider_intent IN ('pinned','preferred','class_only')",
+        name="ck_archived_tasks_provider_intent",
+    ),
 )
 
 project_constraints = Table(
@@ -2174,6 +2200,43 @@ Index(
     "idx_provider_availability_transitions_provider_at",
     provider_availability_transitions.c.provider,
     provider_availability_transitions.c.at.desc(),
+)
+
+# Append-only history of provider re-routes (provider-failover D17).
+# ``tasks.rerouted_from`` is only its cheap current projection.  ``batch_id``
+# is derived from ``(provider, generation)`` so every trickle top-up during
+# one outage lands in the same batch (D19).
+TASK_REROUTE_REASONS = ("provider_unavailable", "operator_forced", "operator_undo")
+
+task_reroutes = Table(
+    "task_reroutes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "task_id",
+        Text,
+        ForeignKey("tasks.id", ondelete="CASCADE", name="fk_task_reroutes_task"),
+        nullable=False,
+    ),
+    Column("project_id", Text, nullable=False),
+    Column("from_profile_id", Text, nullable=True),
+    Column("to_profile_id", Text, nullable=True),
+    Column("from_provider", Text, nullable=False, server_default=""),
+    Column("to_provider", Text, nullable=False, server_default=""),
+    Column("intelligence_class", Text, nullable=True),
+    Column("reason_code", Text, nullable=False),
+    Column("provider_state", Text, nullable=False, server_default=""),
+    Column("provider_generation", Integer, nullable=True),
+    Column("batch_id", Text, nullable=True),
+    Column("actor", Text, nullable=False, server_default="system"),
+    Column("at", Float, nullable=False),
+    Column("undone_at", Float, nullable=True),
+    CheckConstraint(
+        "reason_code IN ('provider_unavailable','operator_forced','operator_undo')",
+        name="ck_task_reroutes_reason_code",
+    ),
+    Index("idx_task_reroutes_task_at", "task_id", "at"),
+    Index("idx_task_reroutes_batch", "batch_id"),
 )
 
 message_discord_receipts = Table(
