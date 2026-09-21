@@ -13,9 +13,8 @@ the squashed baseline builds its tables from the live
 were declared already has them, and an unconditional ``create_table`` would
 fail on every fresh database.
 
-The id skips ``a00000000011`` on purpose: a sibling branch claimed that one
-(``integration_delegate_release``).  It landed first, so this revision is
-re-chained onto it.
+Chained onto ``a00000000011`` (``integration_delegate_release``), which
+landed on main while this branch was in flight.
 """
 
 from __future__ import annotations

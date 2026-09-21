@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import ipaddress
 import logging
 import os
 import re
@@ -2690,6 +2691,72 @@ class GraphLayoutConfig:
         return errors
 
 
+DEFAULT_DASHBOARD_SERVER_PORT = 8082
+
+
+def is_dashboard_server_host(value: object) -> bool:
+    """An IP literal or ``localhost`` -- never a name that DNS could re-point."""
+    if not isinstance(value, str) or not value:
+        return False
+    if value == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass
+class DashboardServerConfig:
+    """The dashboard server process (docs/specs/dashboard-server.md §3.1).
+
+    YAML: ``dashboard.server`` (the spec's spelling) **or** a top-level
+    ``dashboard_server:`` block, read like :class:`GraphLayoutConfig` so the
+    config editor's field-name writes take effect.  The daemon never serves
+    the dashboard; the settings are read by the dashboard server when it
+    starts, so ``aq dashboard restart`` applies a change and the daemon needs
+    no restart.  A busy port is a startup failure, never an auto-increment:
+    bookmarks and the installer's open step need a deterministic URL.
+    """
+
+    enabled: bool = True
+    host: str = "127.0.0.1"
+    port: int = DEFAULT_DASHBOARD_SERVER_PORT
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("dashboard.server", "enabled", "must be true or false"))
+        if not is_dashboard_server_host(self.host):
+            errors.append(ConfigError(
+                "dashboard.server", "host",
+                f"must be an IP literal or 'localhost', got {self.host!r}",
+            ))
+        if isinstance(self.port, bool) or not isinstance(self.port, int) or not (
+            1 <= self.port <= 65535
+        ):
+            errors.append(ConfigError(
+                "dashboard.server", "port", f"must be between 1 and 65535, got {self.port!r}",
+            ))
+        return errors
+
+
+def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServerConfig:
+    """Build :class:`DashboardServerConfig` from a parsed config mapping.
+
+    The one parser for the section, shared by :func:`load_config` and the
+    dashboard server process (which reads the YAML itself rather than load
+    the daemon's ``.env``), so both coerce a value the same way.
+    """
+    dashboard = raw.get("dashboard")
+    nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
+    section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
+    if not isinstance(section, Mapping):
+        return DashboardServerConfig()
+    return DashboardServerConfig(**_dataclass_kwargs(DashboardServerConfig, dict(section)))
+
+
 @dataclass
 class DocsConfig:
     """Published documentation location used by command help links.
@@ -2769,6 +2836,7 @@ class AppConfig:
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
+    dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
     global_token_budget_daily: int | None = None
     max_daily_playbook_tokens: int | None = None
@@ -2986,6 +3054,12 @@ class AppConfig:
         errors.extend(self.providers.validate())
         errors.extend(self.provider_failover.validate())
         errors.extend(self.graph_layout.validate())
+        errors.extend(self.dashboard_server.validate())
+        if self.dashboard_server.port == self.mcp_server.port:
+            errors.append(ConfigError(
+                "dashboard.server", "port",
+                f"must differ from mcp_server.port ({self.mcp_server.port}), the daemon's own",
+            ))
         # Sessions are the only execution path (the runtime subsystem was
         # removed), so a disabled session runtime is a daemon that accepts
         # work and never starts any of it.  Warn, don't reject: the mode is
@@ -3139,6 +3213,9 @@ HOT_RELOADABLE_SECTIONS = {
     "provider_failover",
     "docs",
     "graph_layout",
+    # Read by the dashboard server process when it starts, never by the
+    # daemon's runtime: `aq dashboard restart` applies an edit.
+    "dashboard_server",
     "pricing",
     "surface",
     "project_roots",
@@ -4142,6 +4219,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             gl.get("tidy_job_budget_seconds", gl_defaults.tidy_job_budget_seconds)
         ),
     )
+
+    config.dashboard_server = dashboard_server_config_from_raw(raw)
 
     if "agent_profiles" in raw:
         profiles = []

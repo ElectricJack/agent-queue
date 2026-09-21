@@ -215,6 +215,30 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "dashboard_server": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8082
+      },
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "type": "string"
+        },
+        "port": {
+          "default": 8082,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "data_dir": {
       "default": "/home/jkern/.agent-queue",
       "type": "string",
@@ -1323,35 +1347,6 @@
       "type": "object",
       "x-reload": "hot"
     },
-    "pause_retry": {
-      "additionalProperties": false,
-      "default": {
-        "rate_limit_backoff_seconds": 60,
-        "rate_limit_max_backoff_seconds": 300,
-        "rate_limit_max_retries": 3,
-        "token_exhaustion_retry_seconds": 300
-      },
-      "properties": {
-        "rate_limit_backoff_seconds": {
-          "default": 60,
-          "type": "integer"
-        },
-        "rate_limit_max_backoff_seconds": {
-          "default": 300,
-          "type": "integer"
-        },
-        "rate_limit_max_retries": {
-          "default": 3,
-          "type": "integer"
-        },
-        "token_exhaustion_retry_seconds": {
-          "default": 300,
-          "type": "integer"
-        }
-      },
-      "type": "object",
-      "x-reload": "hot"
-    },
     "playbooks": {
       "additionalProperties": false,
       "default": {
@@ -1495,6 +1490,342 @@
         "type": "object"
       },
       "type": "array",
+      "x-reload": "hot"
+    },
+    "provider_failover": {
+      "additionalProperties": false,
+      "default": {
+        "auth_probe": {
+          "interval_seconds": 600,
+          "timeout_seconds": 10
+        },
+        "classes": {},
+        "default_policy": "same_class",
+        "doctor": {
+          "held_warn_seconds": 14400
+        },
+        "evidence": {
+          "keep": 20
+        },
+        "launch": {
+          "generic_failures_to_trip": 5,
+          "strong_failures_to_trip": 2,
+          "suspect_backoff_seconds": 30,
+          "window_seconds": 600
+        },
+        "mode": "enforce",
+        "notify": {
+          "digest": true,
+          "escalate_all_down_after_seconds": 1800,
+          "escalate_failing_after_seconds": 1800,
+          "escalate_unauthenticated": true,
+          "flap_threshold": 3,
+          "supervisor": true
+        },
+        "order": [],
+        "override": {
+          "default_ttl_seconds": 14400,
+          "max_ttl_seconds": 604800
+        },
+        "rate_limit": {
+          "cooldown_seconds": 900,
+          "exits_to_trip": 2
+        },
+        "recovery": {
+          "auth_probe_interval_seconds": 120,
+          "backoff_max_seconds": 3600,
+          "failing_backoff_seconds": 300,
+          "flap_window_seconds": 3600,
+          "reset_grace_seconds": 60
+        },
+        "reroute": {
+          "allow_degraded_target": false,
+          "enabled": true,
+          "max_auto_per_task": 2,
+          "max_per_sweep": 10,
+          "max_priority_value": null,
+          "target_backlog_factor": 1.0,
+          "task_cooldown_seconds": 1800
+        },
+        "usage": {
+          "degraded_percent": 85.0,
+          "exhausted_percent": 99.0,
+          "hysteresis_percent": 2.0
+        }
+      },
+      "properties": {
+        "auth_probe": {
+          "additionalProperties": false,
+          "default": {
+            "interval_seconds": 600,
+            "timeout_seconds": 10
+          },
+          "properties": {
+            "interval_seconds": {
+              "default": 600,
+              "type": "integer"
+            },
+            "timeout_seconds": {
+              "default": 10,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "classes": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
+        },
+        "default_policy": {
+          "default": "same_class",
+          "type": "string"
+        },
+        "doctor": {
+          "additionalProperties": false,
+          "default": {
+            "held_warn_seconds": 14400
+          },
+          "properties": {
+            "held_warn_seconds": {
+              "default": 14400,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "evidence": {
+          "additionalProperties": false,
+          "default": {
+            "keep": 20
+          },
+          "properties": {
+            "keep": {
+              "default": 20,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "launch": {
+          "additionalProperties": false,
+          "default": {
+            "generic_failures_to_trip": 5,
+            "strong_failures_to_trip": 2,
+            "suspect_backoff_seconds": 30,
+            "window_seconds": 600
+          },
+          "properties": {
+            "generic_failures_to_trip": {
+              "default": 5,
+              "type": "integer"
+            },
+            "strong_failures_to_trip": {
+              "default": 2,
+              "type": "integer"
+            },
+            "suspect_backoff_seconds": {
+              "default": 30,
+              "type": "integer"
+            },
+            "window_seconds": {
+              "default": 600,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "mode": {
+          "default": "enforce",
+          "type": "string"
+        },
+        "notify": {
+          "additionalProperties": false,
+          "default": {
+            "digest": true,
+            "escalate_all_down_after_seconds": 1800,
+            "escalate_failing_after_seconds": 1800,
+            "escalate_unauthenticated": true,
+            "flap_threshold": 3,
+            "supervisor": true
+          },
+          "properties": {
+            "digest": {
+              "default": true,
+              "type": "boolean"
+            },
+            "escalate_all_down_after_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "escalate_failing_after_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "escalate_unauthenticated": {
+              "default": true,
+              "type": "boolean"
+            },
+            "flap_threshold": {
+              "default": 3,
+              "type": "integer"
+            },
+            "supervisor": {
+              "default": true,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
+        "order": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "override": {
+          "additionalProperties": false,
+          "default": {
+            "default_ttl_seconds": 14400,
+            "max_ttl_seconds": 604800
+          },
+          "properties": {
+            "default_ttl_seconds": {
+              "default": 14400,
+              "type": "integer"
+            },
+            "max_ttl_seconds": {
+              "default": 604800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "rate_limit": {
+          "additionalProperties": false,
+          "default": {
+            "cooldown_seconds": 900,
+            "exits_to_trip": 2
+          },
+          "properties": {
+            "cooldown_seconds": {
+              "default": 900,
+              "type": "integer"
+            },
+            "exits_to_trip": {
+              "default": 2,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "recovery": {
+          "additionalProperties": false,
+          "default": {
+            "auth_probe_interval_seconds": 120,
+            "backoff_max_seconds": 3600,
+            "failing_backoff_seconds": 300,
+            "flap_window_seconds": 3600,
+            "reset_grace_seconds": 60
+          },
+          "properties": {
+            "auth_probe_interval_seconds": {
+              "default": 120,
+              "type": "integer"
+            },
+            "backoff_max_seconds": {
+              "default": 3600,
+              "type": "integer"
+            },
+            "failing_backoff_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "flap_window_seconds": {
+              "default": 3600,
+              "type": "integer"
+            },
+            "reset_grace_seconds": {
+              "default": 60,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "reroute": {
+          "additionalProperties": false,
+          "default": {
+            "allow_degraded_target": false,
+            "enabled": true,
+            "max_auto_per_task": 2,
+            "max_per_sweep": 10,
+            "max_priority_value": null,
+            "target_backlog_factor": 1.0,
+            "task_cooldown_seconds": 1800
+          },
+          "properties": {
+            "allow_degraded_target": {
+              "default": false,
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_auto_per_task": {
+              "default": 2,
+              "type": "integer"
+            },
+            "max_per_sweep": {
+              "default": 10,
+              "type": "integer"
+            },
+            "max_priority_value": {
+              "default": null,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "target_backlog_factor": {
+              "default": 1.0,
+              "type": "number"
+            },
+            "task_cooldown_seconds": {
+              "default": 1800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "usage": {
+          "additionalProperties": false,
+          "default": {
+            "degraded_percent": 85.0,
+            "exhausted_percent": 99.0,
+            "hysteresis_percent": 2.0
+          },
+          "properties": {
+            "degraded_percent": {
+              "default": 85.0,
+              "type": "number"
+            },
+            "exhausted_percent": {
+              "default": 99.0,
+              "type": "number"
+            },
+            "hysteresis_percent": {
+              "default": 2.0,
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object",
       "x-reload": "hot"
     },
     "providers": {
@@ -2088,6 +2419,7 @@
       "agents_config",
       "archive",
       "auto_task",
+      "dashboard_server",
       "docs",
       "global_token_budget_daily",
       "graph_layout",
@@ -2097,9 +2429,9 @@
       "max_daily_playbook_tokens",
       "metrics",
       "monitoring",
-      "pause_retry",
       "pricing",
       "project_roots",
+      "provider_failover",
       "providers",
       "rate_limits",
       "resources",

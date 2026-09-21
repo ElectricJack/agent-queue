@@ -129,6 +129,7 @@ def test_registry_has_categories(registry):
         "dashboard",
         "discord",
         "pool",
+        "provider",
         "formula",
         "graph",
     }

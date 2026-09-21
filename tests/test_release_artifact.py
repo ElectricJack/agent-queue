@@ -1,4 +1,9 @@
-"""Release artifact staging and installed-dashboard boundaries."""
+"""Release artifact staging and the daemon's interim dashboard mount.
+
+The bundle verifier and the static app that serves it are covered in
+``tests/test_dashboard_server_bundle.py``.  The ``mount_dashboard`` cases here
+go when the mount itself does (smart-meadow.4).
+"""
 
 from __future__ import annotations
 
@@ -11,8 +16,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.dashboard_assets.runtime import mount_dashboard, verify_dashboard_bundle
-
+from src.dashboard_assets.runtime import mount_dashboard
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,15 +42,29 @@ def _stage(tmp_path: Path) -> Path:
     return destination
 
 
-def test_release_staging_writes_a_versioned_inventory_that_verifies(tmp_path):
+def test_release_staging_writes_a_versioned_inventory_for_the_root_base(tmp_path):
     destination = _stage(tmp_path)
     manifest = json.loads((destination / "aq-dashboard-manifest.json").read_text())
 
+    # schema_version stays 1 so a pre-change verifier still reads it (spec §6.2).
     assert manifest["schema_version"] == 1
+    assert manifest["base"] == "/"
     assert set(manifest["files"]) == {"assets/app.js", "index.html"}
-    bundle = verify_dashboard_bundle(destination)
-    assert bundle.version == "1.2.3"
-    assert set(bundle.files) == set(manifest["files"])
+    assert "aq-dashboard-manifest.json" not in manifest["files"]
+
+
+def test_the_release_build_pins_every_dashboard_url_escape_hatch_empty():
+    """The released page talks only to its own origin (spec §3.1)."""
+    builder = _release_builder()
+    environment = builder.build_environment(
+        {"PATH": "/usr/bin", "VITE_API_URL": "http://elsewhere:8081", "VITE_OTHER_URL": "x"}
+    )
+
+    assert environment["PATH"] == "/usr/bin"
+    assert "VITE_OTHER_URL" not in environment
+    for name in ("VITE_API_URL", "VITE_WS_URL", "VITE_TERMINAL_WS_URL"):
+        assert environment[name] == ""
+    assert "AQ_DASHBOARD_EMBEDDED" not in environment
 
 
 def test_aq_version_uses_the_installed_distribution_metadata():
@@ -55,14 +73,25 @@ def test_aq_version_uses_the_installed_distribution_metadata():
     assert _installed_version() == metadata.version("agent-queue")
 
 
-def test_dashboard_integrity_check_refuses_a_modified_asset(tmp_path):
+def test_the_interim_mount_refuses_a_modified_asset(tmp_path):
     destination = _stage(tmp_path)
     (destination / "assets" / "app.js").write_text("altered", encoding="utf-8")
 
     with pytest.raises(ValueError, match="digest mismatch: assets/app.js"):
-        verify_dashboard_bundle(destination)
-    with pytest.raises(ValueError, match="digest mismatch: assets/app.js"):
         mount_dashboard(FastAPI(), directory=destination)
+
+
+def test_the_interim_mount_still_serves_a_bundle_that_predates_base(tmp_path):
+    """An install's old bundle must not crash the daemon before it is rebuilt."""
+    destination = _stage(tmp_path)
+    manifest_path = destination / "aq-dashboard-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    del manifest["base"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    bundle = mount_dashboard(FastAPI(), directory=destination)
+
+    assert bundle is not None and bundle.base is None
 
 
 def test_installed_dashboard_serves_assets_and_browser_routes(tmp_path):
@@ -131,15 +160,21 @@ def test_the_core_install_can_serve_websockets():
     )
 
 
-def test_release_metadata_declares_runtime_resources_and_embedded_base():
+def test_release_metadata_declares_runtime_resources_and_the_root_base():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     vite_config = (ROOT / "dashboard" / "vite.config.ts").read_text(encoding="utf-8")
+    release_script = (ROOT / "scripts" / "build_release_artifact.py").read_text(encoding="utf-8")
     dashboard_entry = (ROOT / "dashboard" / "src" / "main.tsx").read_text(encoding="utf-8")
 
     assert '"src.dashboard_assets" = ["dist/**"]' in pyproject
     assert 'src = ["**/*.md", "**/*.json", "**/*.sha256"]' in pyproject
-    assert 'AQ_DASHBOARD_EMBEDDED === "1"' in vite_config
-    assert 'base: embedded ? "/dashboard/" : "/"' in vite_config
+    # One URL shape everywhere: the dev server and the dashboard server both
+    # serve the bundle at "/", so there is no embedded build any more (spec §4).
+    assert 'base: "/",' in vite_config
+    assert "/dashboard/" not in vite_config
+    assert "AQ_DASHBOARD_EMBEDDED" not in vite_config
+    assert "AQ_DASHBOARD_EMBEDDED" not in release_script
+    assert _release_builder().DASHBOARD_BASE == "/"
     assert "<BrowserRouter basename={import.meta.env.BASE_URL}>" in dashboard_entry
 
 

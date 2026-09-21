@@ -115,6 +115,7 @@ class TestBriefProjections:
             "agent",
             "project",
             "pool",
+            "provider",
             "integration",
         }
 
