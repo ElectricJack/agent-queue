@@ -7,7 +7,8 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database import Database
-from src.database.tables import gates, projects, task_gates
+from src.database.queries.blocked_state import _development_delivery_pending
+from src.database.tables import gates, projects, task_gates, tasks
 from src.event_bus import EventBus
 from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
@@ -348,6 +349,75 @@ async def test_adopt_rejects_stale_target_and_open_children(setup):
             operator_id="local",
             accept_equivalent=True,
         )
+
+
+async def _delivery_pending(db, task_id):
+    async with db._engine.connect() as conn:
+        return await conn.scalar(
+            select(_development_delivery_pending(tasks)).where(tasks.c.id == task_id)
+        )
+
+
+@pytest.mark.parametrize("journaled_before_proof", [False, True])
+async def test_adopting_an_open_task_delivers_the_completion_it_records(
+    setup, journaled_before_proof
+):
+    """adopt() closes an open task with a completion reporting the adopted head,
+    while its manifest names the branch head. That completion is delivered, so a
+    'blocks' dependent is released; a row journaled before adopt() bound the two
+    is backfilled by the next sweep."""
+    db, service, source, remote, _repo = setup
+    branch_head = await feature(setup, "adopted")
+    await db.transition_task("adopted", TaskStatus.READY, context="test")
+    git(source, "checkout", "main")
+    git(source, "merge", "--no-ff", "--no-edit", "adopted")
+    git(source, "push", "origin", "main")
+    main = git(remote, "rev-parse", "main")
+    assert main != branch_head, "the operator's merge moved main past the branch"
+    await db.create_task(Task(
+        id="successor", project_id="p", title="successor", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("successor", "adopted")
+    assert (await db.get_task("successor")).is_blocked
+
+    result = await service.adopt(
+        project_id="p", task_ids=["adopted"], target_ref="refs/heads/main",
+        head_sha=main, reason="merged by hand", operator_id="local",
+    )
+    completion = await db.get_task_completion("adopted")
+    assert completion.commits == [main]
+    proof = {"task_id": "adopted", "completion_id": completion.id,
+             "reported_sha": main, "source_sha": branch_head}
+    assert result["manifest"] == [
+        {"task_id": "adopted", "source_sha": branch_head, "acceptance": "ancestry"}
+    ]
+    if journaled_before_proof:
+        row = next(r for r in await service.rows("p") if r["id"] == result["id"])
+        assert row["evidence"]["completion_sources"] == [proof]
+        legacy = {k: v for k, v in row["evidence"].items() if k != "completion_sources"}
+        await service.change(result["id"], evidence=legacy)
+        assert await _delivery_pending(db, "adopted")
+        assert (await db.get_task("successor")).is_blocked
+    else:
+        assert not await _delivery_pending(db, "adopted")
+        assert not (await db.get_task("successor")).is_blocked
+
+    # The sweep agrees the adopted task needs no publication, and backfills.
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert not await _delivery_pending(db, "adopted")
+    assert not (await db.get_task("successor")).is_blocked
+    row = next(r for r in await service.rows("p") if r["id"] == result["id"])
+    assert row["evidence"]["completion_sources"] == [proof]
+
+    # The adoption delivered that close, not whatever the task reports next.
+    await db.save_task_completion(TaskCompletion(
+        id="later-close", task_id="adopted", outcome="pass",
+        commits=["a" * 40], completed_at=time.time(),
+    ))
+    await service.sweep("p")
+    assert await _delivery_pending(db, "adopted")
+    assert (await db.get_task("successor")).is_blocked
 
 
 async def test_repository_exclusion_prevents_second_publisher(setup):
