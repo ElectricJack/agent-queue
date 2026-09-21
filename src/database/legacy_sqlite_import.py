@@ -31,6 +31,9 @@ from src.database.tables import (
     dashboard_state_documents,
     development_deliveries,
     digest_windows,
+    doc_review_comments,
+    doc_review_revisions,
+    doc_reviews,
     escalation_actions,
     escalation_deliveries,
     escalation_messages,
@@ -162,6 +165,11 @@ _ORDERED_TABLES = [
     task_subtasks,
     # Soft-referenced audit of retired integration delegates; no FKs.
     integration_delegate_releases,
+    # Document reviews: soft task references, no FK to tasks; revisions and
+    # comments reference doc_reviews.
+    doc_reviews,
+    doc_review_revisions,
+    doc_review_comments,
     dashboard_state_documents,
     agent_questions,
     subagent_events,

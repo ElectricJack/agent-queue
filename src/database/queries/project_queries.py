@@ -66,6 +66,7 @@ class ProjectQueryMixin:
                     hierarchical_integration_generation=(
                         project.hierarchical_integration_generation
                     ),
+                    review_delegate_to=project.review_delegate_to,
                     created_at=time.time(),
                 )
             )
@@ -323,4 +324,5 @@ class ProjectQueryMixin:
             hierarchical_integration_generation=int(
                 row.get("hierarchical_integration_generation", 0)
             ),
+            review_delegate_to=row.get("review_delegate_to"),
         )

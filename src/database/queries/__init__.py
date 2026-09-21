@@ -31,6 +31,7 @@ from src.database.queries.provider_availability_queries import ProviderAvailabil
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
+from src.database.queries.review_queries import ReviewQueriesMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
@@ -59,6 +60,7 @@ __all__ = [
     "ProviderUsageQueryMixin",
     "RepoQueryMixin",
     "ResultQueryMixin",
+    "ReviewQueriesMixin",
     "TaskQueryMixin",
     "TaskRerouteQueryMixin",
     "TokenQueryMixin",

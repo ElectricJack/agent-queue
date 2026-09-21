@@ -80,6 +80,9 @@ projects = Table(
         nullable=False,
         server_default="0",
     ),
+    # Who decides this project's new document reviews: 'user' | 'supervisor'
+    # (NULL = 'user').  Document-review spec §6.
+    Column("review_delegate_to", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
@@ -92,6 +95,10 @@ projects = Table(
     CheckConstraint(
         "hierarchical_integration_generation >= 0",
         name="ck_projects_hierarchical_integration_generation",
+    ),
+    CheckConstraint(
+        "review_delegate_to IS NULL OR review_delegate_to IN ('user', 'supervisor')",
+        name="ck_projects_review_delegate_to",
     ),
 )
 
@@ -528,7 +535,7 @@ task_metadata = Table(
 # Substrate only — no query layer or command surface reads these yet.
 # ---------------------------------------------------------------------------
 
-GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing")
+GATE_TYPES = ("human", "timer", "pr-merged", "ci-run", "event", "task", "routing", "review")
 GATE_STATUSES = ("open", "resolved", "expired")
 
 gates = Table(
@@ -536,7 +543,7 @@ gates = Table(
     metadata,
     Column("id", Text, primary_key=True),  # "gate-" + uuid4[:12]
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
-    Column("gate_type", Text, nullable=False),  # human|timer|pr-merged|ci-run|event|task
+    Column("gate_type", Text, nullable=False),  # one of GATE_TYPES
     Column("title", Text, nullable=False),
     Column("question", Text, nullable=False, server_default=""),
     Column("await_id", Text, nullable=True),
@@ -577,6 +584,84 @@ task_gates = Table(
     Column("gate_id", Text, ForeignKey("gates.id"), primary_key=True),
     # resolve → find waiters.
     Index("idx_task_gates_gate", "gate_id"),
+)
+
+# ---------------------------------------------------------------------------
+# Document reviews (document-review spec §3.2).
+#
+# A review is a spec, plan or other markdown document an agent submits for a
+# human decision; its ``review`` gate (``gate_id``, ``await_id`` = review id)
+# holds the work that depends on it.  Task ids here are soft references with
+# no ForeignKey to ``tasks``, like ``task_session_attempts``: a review must
+# never be the reason a task cannot be archived or deleted.
+# ---------------------------------------------------------------------------
+
+DOC_REVIEW_KINDS = ("spec", "plan", "other")
+DOC_REVIEW_STATES = ("in_review", "changes_requested", "approved", "withdrawn")
+DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
+
+
+def _in(column: str, values: tuple[str, ...]) -> str:
+    return f"{column} IN (" + ", ".join(f"'{v}'" for v in values) + ")"
+
+
+doc_reviews = Table(
+    "doc_reviews",
+    metadata,
+    Column("id", Text, primary_key=True),  # "rev-<adjective>-<noun>"
+    Column("project_id", Text, nullable=False),
+    Column("author_task_id", Text, nullable=True),
+    Column("kind", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("vault_path", Text, nullable=False),  # relative to the vault root
+    Column("current_revision", Integer, nullable=False, server_default="1"),
+    Column("state", Text, nullable=False),
+    Column("gate_id", Text, nullable=True),
+    Column("decider", Text, nullable=False, server_default="user"),
+    Column("decided_by", Text, nullable=True),
+    Column("decided_at", Float, nullable=True),
+    Column("decision_note", Text, nullable=True),
+    # The last revision announced on Discord: the review outbox (spec §9).
+    Column("notified_revision", Integer, nullable=False, server_default="0"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(_in("kind", DOC_REVIEW_KINDS), name="ck_doc_reviews_kind"),
+    CheckConstraint(_in("state", DOC_REVIEW_STATES), name="ck_doc_reviews_state"),
+    CheckConstraint(_in("decider", DOC_REVIEW_DECIDERS), name="ck_doc_reviews_decider"),
+    CheckConstraint("current_revision >= 1", name="ck_doc_reviews_revision"),
+    UniqueConstraint("vault_path", name="uq_doc_reviews_vault_path"),
+    Index("idx_doc_reviews_project_state", "project_id", "state"),
+    Index("idx_doc_reviews_author_task", "author_task_id"),
+)
+
+doc_review_revisions = Table(
+    "doc_review_revisions",
+    metadata,
+    Column("review_id", Text, ForeignKey("doc_reviews.id", ondelete="CASCADE"), primary_key=True),
+    Column("revision", Integer, primary_key=True),
+    # The submitted markdown with any leading frontmatter stripped.
+    Column("content", Text, nullable=False),
+    Column("content_sha256", Text, nullable=False),
+    Column("submitted_by", Text, nullable=False),  # principal label
+    Column("submitted_task_id", Text, nullable=True),
+    Column("changes_note", Text, nullable=True),
+    Column("submitted_at", Float, nullable=False),
+)
+
+doc_review_comments = Table(
+    "doc_review_comments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("review_id", Text, ForeignKey("doc_reviews.id", ondelete="CASCADE"), nullable=False),
+    Column("revision", Integer, nullable=False),  # the revision commented on
+    Column("quote", Text, nullable=True),  # NULL = a whole-section comment
+    Column("heading_path", JSON, nullable=False),  # heading texts, top down
+    Column("body", Text, nullable=False),
+    Column("author", Text, nullable=False),  # principal label
+    Column("resolved_in_revision", Integer, nullable=True),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_doc_review_comments_body"),
+    Index("idx_doc_review_comments_review", "review_id", "revision"),
 )
 
 task_labels = Table(

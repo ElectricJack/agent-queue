@@ -399,6 +399,9 @@ class Project:
     hierarchical_integration_desired_mode: str = "disabled"
     hierarchical_integration_draining: bool = False
     hierarchical_integration_generation: int = 0
+    # Who decides this project's new document reviews: "user" | "supervisor"
+    # (None = "user").  Document-review spec §6.
+    review_delegate_to: str | None = None
 
 
 @dataclass

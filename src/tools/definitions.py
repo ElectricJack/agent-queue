@@ -366,7 +366,10 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
             },
             "gate_type": {
                 "type": "string",
-                "enum": ["human", "timer", "pr-merged", "ci-run", "event", "task", "routing"],
+                "enum": [
+                    "human", "timer", "pr-merged", "ci-run", "event", "task", "routing",
+                    "review",
+                ],
                 "description": "Filter by gate kind",
             },
         },
