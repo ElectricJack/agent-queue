@@ -472,15 +472,18 @@ class _Ring:
             ]
         )
 
-    def probes(self, *, after: float | None = None) -> list[Mapping[str, Any]]:
-        """Auth probe answers that say something, newest first."""
-        floor = float(after or 0.0)
+    def probes(self, *, since_success: bool = False) -> list[Mapping[str, Any]]:
+        """Auth probe answers that say something, newest first.
+
+        ``since_success`` keeps only those recorded after the newest
+        ``launch_success`` -- by ring order, not by clock, so a probe and a
+        success in the same second are still told apart.
+        """
+        source = self.since_success if since_success else self.entries
         return [
             e
-            for e in self.entries
-            if e.get("kind") == AUTH_PROBE
-            and e.get("signal") != PROBE_CANNOT_TELL
-            and float(e.get("at") or 0.0) > floor
+            for e in source
+            if e.get("kind") == AUTH_PROBE and e.get("signal") != PROBE_CANNOT_TELL
         ]
 
     def llm(self, signal: str) -> list[Mapping[str, Any]]:
@@ -531,7 +534,7 @@ def _trip(
     auth_dialogs = ring.dialogs(SIGNAL_AUTH)
     # A session that made a successful call outranks a status command that
     # says otherwise: only probes newer than the last success count.
-    probes = ring.probes(after=row.last_success_at)
+    probes = ring.probes(since_success=True)
     if auth_dialogs:
         oldest = min(float(e.get("at") or 0.0) for e in auth_dialogs)
         confirmed = [
@@ -638,7 +641,7 @@ def _launchable(
             "suspect_auth",
             "one launch died on the login dialog; awaiting corroboration",
         )
-    probes = ring.probes(after=row.last_success_at)
+    probes = ring.probes(since_success=True)
     if probes and probes[0].get("signal") == PROBE_NOT_AUTHENTICATED:
         return _Derived(
             DEGRADED,

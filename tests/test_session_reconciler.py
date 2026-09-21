@@ -2065,3 +2065,86 @@ async def test_adopted_pool_claim_remains_protected_from_restart_recovery(db, pr
     report = await reconciler.adopt_on_start()
     assert "s1" in report.adopted
     assert await reconciler.adopted_task_ids(report) == {"t1"}
+
+
+# ---------------------------------------------------------------------------
+# Provider availability (docs/specs/provider-failover.md D2, D13)
+# ---------------------------------------------------------------------------
+
+
+class _Availability:
+    """The slice of ``ProviderAvailabilityService`` the reconciler reads."""
+
+    def __init__(self, *, unavailable=()):
+        self.unavailable = set(unavailable)
+        self.rate_limit_exits: list[str] = []
+
+    def provider_for_harness(self, harness, project_id=None):
+        return harness
+
+    def is_unavailable(self, provider, now=None):
+        return provider in self.unavailable
+
+    async def record_rate_limit_exit(self, session, *, reason=""):
+        self.rate_limit_exits.append(session.id)
+
+
+class TestProviderAvailability:
+    async def test_a_rate_limit_exit_is_recorded_as_provider_evidence(
+        self, db, provider, config, registry, bus
+    ):
+        orch = _ReleasingOrch(db)
+        orch.provider_availability = _Availability()
+        rec = SessionReconciler(db, config, registry, bus=bus, orchestrator=orch, epoch="e")
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 100)
+        provider.feed_output(row.name, "usage limit reached", activity=False)
+        provider.script_death(row.name)
+        await rec.tick(now=NOW)
+        assert orch.provider_availability.rate_limit_exits == ["s1"]
+
+    async def test_a_rapid_crash_on_an_unavailable_provider_spends_no_restart(
+        self, db, provider, config, registry, bus
+    ):
+        orch = _ReleasingOrch(db)
+        orch.provider_availability = _Availability(unavailable={"claude"})
+        rec = SessionReconciler(db, config, registry, bus=bus, orchestrator=orch, epoch="e")
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 10, restarts=2)
+        provider.script_death(row.name)
+        await rec.tick(now=NOW)
+        session = await db.get_session("s1")
+        # Not quarantined, restart counter untouched: the provider's fault.
+        assert session.state == "stopped" and session.restarts == 2
+        assert (await db.get_task("t1")).status is TaskStatus.PAUSED
+        assert "task.restarted" not in bus.types()
+
+    async def test_a_rapid_crash_on_a_healthy_provider_still_spends_the_ladder(
+        self, db, provider, config, registry, bus
+    ):
+        orch = _ReleasingOrch(db)
+        orch.provider_availability = _Availability()
+        rec = SessionReconciler(db, config, registry, bus=bus, orchestrator=orch, epoch="e")
+        await _task(db)
+        row = await _session(db, provider, started_at=NOW - 10)
+        provider.script_death(row.name)
+        await rec.tick(now=NOW)
+        assert (await db.get_session("s1")).restarts == 1
+
+    async def test_a_pool_rapid_crash_on_an_unavailable_provider_arms_no_key_quarantine(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        pool_reconciler.test_orch.provider_availability = _Availability(unavailable={"claude"})
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 10)
+        provider.script_death(row.name)
+        await pool_reconciler.tick(now=NOW)
+        assert pool_reconciler.test_orch._pool_quarantine == {}
+
+    async def test_a_pool_rapid_crash_on_a_healthy_provider_still_quarantines_the_key(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        pool_reconciler.test_orch.provider_availability = _Availability()
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 10)
+        provider.script_death(row.name)
+        await pool_reconciler.tick(now=NOW)
+        assert pool_reconciler.test_orch._pool_quarantine

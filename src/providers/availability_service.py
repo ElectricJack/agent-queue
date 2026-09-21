@@ -144,7 +144,8 @@ class ProviderAvailabilityService:
     def __init__(
         self,
         *,
-        db: Any,
+        db: Any = None,
+        db_getter: Callable[[], Any] | None = None,
         config_getter: Callable[[], Any],
         bus: Any = None,
         harness_registry: Any = None,
@@ -152,7 +153,9 @@ class ProviderAvailabilityService:
         probe: Callable[[Any, float], Awaitable[Any]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
-        self._db = db
+        # A getter, so an owner that swaps its database handle (the
+        # orchestrator in tests) is followed rather than pinned.
+        self._db_getter = db_getter or (lambda: db)
         self._config_getter = config_getter
         self._bus = bus
         self.harness_registry = harness_registry
@@ -174,6 +177,10 @@ class ProviderAvailabilityService:
         #: Called with each transition that changed half; the orchestrator
         #: wires it to :meth:`notify_state_change`.  Overridable in tests.
         self.on_half_change: Callable[[Transition], Awaitable[Any]] | None = None
+
+    @property
+    def _db(self) -> Any:
+        return self._db_getter()
 
     # -- configuration -------------------------------------------------------
 
@@ -658,6 +665,14 @@ class ProviderAvailabilityService:
             if answer is None:
                 return None, {}
             return str(answer), {}
+        return await self._login_probe(provider, timeout)
+
+    async def _login_probe(self, provider: str, timeout: float) -> tuple[str | None, dict[str, Any]]:
+        """The real probe: ``probe_login`` for *provider*'s login adapter.
+
+        Its own method so a test suite can stub the one place the daemon
+        shells out to a provider CLI (``tests/conftest.py`` does).
+        """
         login = self._login_for(provider)
         if login is None:
             return None, {}
@@ -876,7 +891,14 @@ class ProviderAvailabilityService:
             return None
         now = self.now()
         row = self._rows.get(provider)
-        session_providers = {p for p in self._rows if p != "llm"}
+        # Every provider some enabled profile launches against -- including
+        # ones that never produced evidence and so have no row yet, which
+        # are available by definition.
+        session_providers = {
+            self.provider_for_profile(p)
+            for p in profiles.values()
+            if getattr(p, "enabled", True) and not getattr(p, "template", False)
+        } - {"", "llm"}
         route = worker_route(
             profile.id,
             harness=getattr(profile, "harness", ""),

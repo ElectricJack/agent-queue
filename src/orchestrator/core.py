@@ -389,7 +389,7 @@ class Orchestrator(
         from src.providers.availability_service import ProviderAvailabilityService
 
         self.provider_availability = ProviderAvailabilityService(
-            db=self.db,
+            db_getter=lambda: self.db,
             config_getter=lambda: self.config,
             bus=self.bus,
             harness_registry=self.harness_registry,
