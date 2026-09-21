@@ -1186,6 +1186,14 @@ class TestDaemonCommands:
 class TestDaemonNotRunningPrompt:
     """Test that _handle_errors offers to start the daemon."""
 
+    @pytest.fixture(autouse=True)
+    def _operator_shell(self, monkeypatch):
+        # The offer is the operator-shell branch: with AQ_SESSION_ID set or
+        # AQ_DB_SCOPE=worker the CLI prints the pool-worker retry guidance
+        # instead, so these fail when an agent runs them from inside a session.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+
     def test_offers_to_start_on_connection_error(self, runner):
         """When daemon is down and user says 'n', should exit cleanly."""
         from src.cli.app import cli
