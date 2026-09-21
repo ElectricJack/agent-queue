@@ -43,11 +43,11 @@ can never disagree with the daemon. When a table here and `--help` differ,
 | `aq logs` | `—` | hand | Tail and filter daemon logs. |
 | `aq prime` | `prime` | hand | Print this task's startup prime document (design §5). |
 | `aq reply` | `—` | hand | Reply to a message (alias for `aq message reply`). |
-| `aq restart` | `—` | hand | Restart the agent-queue daemon. |
+| `aq restart` | `—` | hand | Restart the agent-queue daemon and the dashboard server. |
 | `aq schema` | `—` | hand | Print the system's enum catalog (task statuses, types, dependency types, gate types/statuses, ...) so scripts and agents never guess magic strings. |
-| `aq start` | `—` | hand | Start the agent-queue daemon. |
-| `aq status` | `get_status` | hand | Show system status overview. |
-| `aq stop` | `—` | hand | Stop the agent-queue daemon and its agent sessions. |
+| `aq start` | `—` | hand | Start the agent-queue daemon, then the dashboard server. |
+| `aq status` | `get_status` | hand | Show system status overview, and whether the dashboard server is up. |
+| `aq stop` | `—` | hand | Stop the agent-queue daemon, its agent sessions and the dashboard server. |
 | `aq test` | `—` | hand | Run pytest under the box-wide test semaphore. |
 
 ### `aq agent`
@@ -86,6 +86,34 @@ a *live* worker and reports the delivery status.
 | `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. Pass `--grants-only` to instead merge in just the missing `## Capabilities` grants, keeping every other edit. |
 | `aq agent show-effective-profile` | `show_effective_profile` | gen | Run the orchestrator's profile resolution cascade for a (project_id, agent_type) pair and return the merged profile the next task launch would use. |
 | `aq agent start-terminal` | `start_agent_terminal` | gen | Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. |
+
+### `aq dashboard`
+
+The dashboard server process, and the durable dashboard state documents. The
+dashboard server is a separate local process that serves the verified bundle
+and proxies the daemon's API, so the browser stays same-origin and the daemon
+serves no pages ([design](../../specs/dashboard-server.md)). `serve` runs it in
+the foreground; `start` / `stop` / `restart` / `status` manage it in the
+background (`~/.agent-queue/dashboard-server.pid` and `.log`) and work while
+the daemon is down. `aq start`, `aq stop` and `aq restart` call them when a
+bundle is installed: `--no-dashboard` only skips the Vite prompt of a source
+checkout, and `--no-dashboard-server` leaves the server alone. `aq status`
+reports it as `dashboard_server` under `--json`, and `aq doctor` checks
+`dashboard.server.running`, `.bundle`, `.port` and `.exposure`. The `state-*`
+leaves are generated from the dashboard-state commands.
+
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq dashboard restart` | `—` | hand | Restart the dashboard server, picking up changed settings or a rebuilt bundle. |
+| `aq dashboard serve` | `—` | hand | Serve the verified dashboard and proxy the daemon, in the foreground. |
+| `aq dashboard start` | `—` | hand | Start the dashboard server in the background (idempotent). |
+| `aq dashboard state-get` | `dashboard_state_get` | gen | Read one dashboard state document by namespace and optional subject. |
+| `aq dashboard state-list` | `dashboard_state_list` | gen | List every shared and caller-owned dashboard state document. |
+| `aq dashboard state-put` | `dashboard_state_put` | gen | Replace one validated dashboard state document. |
+| `aq dashboard state-reset` | `dashboard_state_reset` | gen | Reset one dashboard state document to its typed default. |
+| `aq dashboard status` | `—` | hand | Show whether the dashboard server is running, and where. |
+| `aq dashboard stop` | `—` | hand | Stop the background dashboard server (SIGTERM, then SIGKILL after 10s). |
 
 ### `aq db`
 

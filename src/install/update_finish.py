@@ -12,7 +12,9 @@ checkout).  Everything here is the new version's own knowledge of itself:
 
 * reinstall Python dependencies when the update changed them,
 * rebuild the dashboard when its build inputs changed,
-* start the daemon and decide whether it is healthy.
+* start the daemon -- `aq start` brings the dashboard server up with it -- and
+  decide whether both are healthy, or start the dashboard server alone when it
+  was the only one running.
 
 It reports on stdout, one JSON object per line (:data:`~.update.EVENT_KEY`),
 and exits non-zero when a step failed.  Rolling back is the caller's job: that
@@ -48,6 +50,7 @@ from .update import (
     _install_dependencies,
     _rebuild_dashboard,
     _start_daemon,
+    _start_dashboard_server,
     _StepFailed,
 )
 
@@ -68,6 +71,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--arch", default="")
     parser.add_argument("--extras", default="cli")
     parser.add_argument("--start-daemon", action="store_true")
+    # The daemon was stopped already; only the dashboard server was running.
+    parser.add_argument("--start-dashboard-server", action="store_true")
     return parser
 
 
@@ -89,6 +94,7 @@ def finish(
     previous: str,
     target: str,
     start_daemon: bool,
+    start_dashboard_server: bool = False,
     starting: Callable[[], None] = lambda: None,
 ) -> None:
     changed = _changed(host, checkout, previous, target)
@@ -111,8 +117,13 @@ def finish(
     if start_daemon:
         base, healthy = _daemon_address(host)
         starting()
-        _start_daemon(host, base, checkout, healthy)
+        served = _start_daemon(host, base, checkout, healthy)
         step("Start the daemon", True, "agent sessions are re-adopted")
+        if served:
+            step("Start the dashboard server", True, served)
+    elif start_dashboard_server:
+        served = _start_dashboard_server(host, checkout)
+        step("Start the dashboard server", True, served or "")
 
 
 def main(
@@ -149,6 +160,7 @@ def main(
             previous=args.previous,
             target=args.target,
             start_daemon=args.start_daemon,
+            start_dashboard_server=args.start_dashboard_server,
             starting=lambda: emit(EVENT_DAEMON_STARTING),
         )
     except _StepFailed as failure:

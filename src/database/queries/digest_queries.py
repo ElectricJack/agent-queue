@@ -10,6 +10,14 @@ questions and nothing else:
 * what is *executing right now* -- tasks with a live, non-stale attempt on a
   running session, excluding anything parked on a human answer.
 
+Beside task work it reads one fleet producer: provider availability changes
+between launchable and unavailable (provider-failover D19), from the
+append-only ``provider_availability_transitions`` log, as ``system`` facts
+keyed ``provider:<key>:<generation>``, and the re-route batches that moved
+work off an unavailable provider, from ``task_reroutes``, keyed
+``reroute:<batch_id>``.  An outage in a quiet hour is exactly what the digest
+is for, so such a fact makes a window eligible on its own.
+
 An ordinary comment is *not* evidence of progress.  Questions, plans, status
 requests and chatter share the comments table with real milestones, so the
 digest reads the durable ``kind`` marker rather than guessing from prose: an
@@ -24,6 +32,10 @@ signal.  A layout rebuild, a heartbeat or a metrics tick all bump
 
 from __future__ import annotations
 
+import time
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from sqlalchemy import select
 
 from src.database.queries.task_session_queries import live_attempt_predicate
@@ -31,15 +43,19 @@ from src.database.tables import (
     agent_questions,
     archived_tasks,
     projects,
+    provider_availability_transitions,
     sessions,
     task_comments,
     task_completion_records,
+    task_reroutes,
     task_session_attempts,
     tasks,
 )
 from src.digest.facts import (
     KIND_COMPLETED,
     KIND_PROGRESS,
+    KIND_PROVIDER,
+    KIND_REROUTE,
     KIND_STARTED,
     ActiveTask,
     DigestInputs,
@@ -79,6 +95,73 @@ def _first_line(text: str, limit: int = 160) -> str:
     return line[:limit]
 
 
+def provider_fact(row: Mapping[str, Any]) -> WorkFact | None:
+    """The digest fact for one provider transition, or ``None`` when it is not news.
+
+    Only a change of *half* is (D19): ``unauthenticated`` becoming
+    ``exhausted`` is still one outage, and ``available`` becoming
+    ``degraded`` never stopped a launch.  The key is the transition's
+    ``(provider, generation)`` -- generations only grow, so a provider's next
+    outage is a new fact however alike its wording.
+    """
+    from src.providers.availability import half
+
+    from_state, to_state = str(row["from_state"]), str(row["to_state"])
+    if half(from_state) == half(to_state):
+        return None
+    provider = str(row["provider"])
+    reason = _first_line(str(row.get("reason") or ""), limit=80)
+    if half(to_state) == "unavailable":
+        detail = f"unavailable ({to_state})"
+        if row.get("until"):
+            stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(float(row["until"])))
+            detail += f" until {stamp}"
+    else:
+        detail = f"launchable again ({to_state})"
+    if reason:
+        detail += f" — {reason}"
+    return WorkFact(
+        key=f"provider:{provider}:{int(row['generation'])}",
+        kind=KIND_PROVIDER,
+        category="system",
+        project_id="",
+        task_id="",
+        title=f"provider {provider}",
+        at=float(row["at"]),
+        detail=detail,
+    )
+
+
+def reroute_facts(rows: Sequence[Mapping[str, Any]]) -> list[WorkFact]:
+    """One digest fact per re-route batch among *rows* (provider-failover D19).
+
+    Keyed ``reroute:<batch_id>`` -- a batch is one outage, so its trickle
+    top-ups in later windows are the same fact and are not reported twice.
+    """
+    batches: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        batches.setdefault(str(row["batch_id"]), []).append(row)
+    facts: list[WorkFact] = []
+    for batch, moved in sorted(batches.items()):
+        provider = str(moved[0].get("from_provider") or "")
+        targets = sorted({str(row.get("to_profile_id") or "") for row in moved} - {""})
+        projects = {str(row.get("project_id") or "") for row in moved}
+        detail = f"{len(moved)} task(s) moved to " + (", ".join(targets) or "another provider")
+        facts.append(
+            WorkFact(
+                key=f"reroute:{batch}",
+                kind=KIND_REROUTE,
+                category="system",
+                project_id=projects.pop() if len(projects) == 1 else "",
+                task_id="",
+                title=f"provider {provider} re-route",
+                at=max(float(row["at"]) for row in moved),
+                detail=detail,
+            )
+        )
+    return facts
+
+
 class DigestQueryMixin:
     async def collect_digest_activity(
         self,
@@ -91,6 +174,7 @@ class DigestQueryMixin:
         open_escalations: int = 0,
         reported_keys: frozenset[str] = frozenset(),
         reported_highlights: frozenset[str] = frozenset(),
+        provider_facts: bool = True,
     ) -> DigestInputs:
         """Build the inputs for one window.
 
@@ -99,6 +183,10 @@ class DigestQueryMixin:
         by the next evaluation and deduplicated by fact key, which is how §8's
         "include late arrivals in the next eligible window" is satisfied
         without rescanning history forever.
+
+        ``provider_facts`` is ``provider_failover.notify.digest``: whether
+        provider half changes are reported at all.  They are fleet facts, so
+        ``project_ids`` does not narrow them.
         """
         since = window.since - max(0.0, lookback_seconds)
         until = window.until
@@ -230,6 +318,31 @@ class DigestQueryMixin:
                     )
                 )
 
+            if provider_facts:
+                transitions = (
+                    await conn.execute(
+                        select(provider_availability_transitions).where(
+                            provider_availability_transitions.c.at >= since,
+                            provider_availability_transitions.c.at < until,
+                        )
+                    )
+                ).mappings().all()
+                for row in transitions:
+                    fact = provider_fact(row)
+                    if fact is not None:
+                        facts.append(fact)
+                moves = (
+                    await conn.execute(
+                        select(task_reroutes).where(
+                            task_reroutes.c.at >= since,
+                            task_reroutes.c.at < until,
+                            task_reroutes.c.reason_code == "provider_unavailable",
+                            task_reroutes.c.batch_id.is_not(None),
+                        )
+                    )
+                ).mappings().all()
+                facts.extend(reroute_facts(moves))
+
             waiting = {
                 row.task_id
                 for row in (
@@ -281,14 +394,14 @@ class DigestQueryMixin:
             )
             if wanted is not None:
                 idle_query = idle_query.where(tasks.c.project_id.in_(tuple(wanted)))
-            touched = {fact.task_id for fact in facts} | seen_active
+            touched = {fact.task_id for fact in facts if fact.task_id} | seen_active
             idle_tasks = sum(
                 1 for row in (await conn.execute(idle_query)).all() if row.id not in touched
             )
 
             # Highlights name their project in prose, so the digest needs
             # display names rather than ids.
-            shown_projects = {fact.project_id for fact in facts} | {
+            shown_projects = {fact.project_id for fact in facts if fact.project_id} | {
                 task.project_id for task in active
             }
             names: dict[str, str] = {}

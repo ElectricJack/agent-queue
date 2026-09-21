@@ -19,7 +19,13 @@ everything around it that touches the world:
 * **announcing** — a change of effective state is persisted with its
   transition, emitted as ``provider.state_changed`` and, when it crosses
   between halves, as ``notify.provider_state`` plus one idempotent message
-  to the global supervisor and the human (D19).
+  to the global supervisor and the human (D19);
+* **escalating** — when a human must act (a logged-out CLI, a provider
+  failing for too long, every provider down) one durable escalation per
+  outage, filed under the project with the most stranded work and resolved
+  when the condition clears (D19's active Discord half).  The passive half,
+  the hourly digest's provider facts, is read straight from the transition
+  log by ``collect_digest_activity``.
 
 Mode (D22): ``off`` records nothing and suppresses nothing; ``observe``
 records, derives, persists and announces but never refuses a launch;
@@ -73,6 +79,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CANARY_TIMEOUT_SECONDS",
+    "ESCALATION_SOURCE_KIND",
     "ProviderAvailabilityService",
     "availability_from_row",
     "availability_to_row",
@@ -90,6 +97,18 @@ _SEEN_SESSIONS_MAX = 4096
 SYSTEM_ACTOR = "system"
 #: Where the state-change messages come from (D19).
 NOTIFY_FROM = ("system", "playbook:provider-failover")
+#: ``escalations.source_kind`` of every provider outage incident (D19).  Its
+#: ``source_identity`` is ``<provider>:<generation>`` -- the generation the
+#: outage had when the incident was raised -- and its ``incident_key`` is
+#: ``provider:<provider>:<generation>``: the key is unique per project for all
+#: time, so a bare ``provider:<provider>`` would refuse the provider's second
+#: outage in the same project forever.
+ESCALATION_SOURCE_KIND = "provider_availability"
+#: How often ``tick`` re-checks the escalations with no transition to prompt
+#: it: long enough that a quiet fleet costs nothing, short enough that
+#: "failing for 30 minutes" is noticed within a minute of the 30.
+ESCALATION_RECONCILE_SECONDS = 60.0
+_OPEN_ESCALATION_STATES = ("needs_human", "reply_received", "resolving")
 
 _VENDOR_ALIASES = {"anthropic": "claude", "openai": "codex", "google": "gemini"}
 
@@ -138,6 +157,22 @@ def _fmt_ts(ts: float | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(float(ts)))
 
 
+def _busiest_project(held: Iterable[Mapping[str, Any]]) -> str | None:
+    """The project with the most *held* tasks, ties by id; ``None`` when nothing is held.
+
+    Escalations are project-scoped, so a fleet-wide outage is filed where it
+    strands the most work (D19).
+    """
+    counts: dict[str, int] = {}
+    for entry in held:
+        project_id = entry.get("project_id")
+        if project_id:
+            counts[project_id] = counts.get(project_id, 0) + 1
+    if not counts:
+        return None
+    return min(counts, key=lambda pid: (-counts[pid], pid))
+
+
 class ProviderAvailabilityService:
     """Owns the availability snapshot and every write to it."""
 
@@ -182,6 +217,16 @@ class ProviderAvailabilityService:
         #: next sweep would give it (D18); without it the three mechanism
         #: kinds below are the whole answer.
         self.reroute: Any = None
+        #: Serialises escalation reconciles: the half-change notification, the
+        #: command and the tick may all ask at once, and exactly one files.
+        self._escalation_lock = asyncio.Lock()
+        #: A transition happened since the last reconcile, so the next tick
+        #: reconciles at once rather than waiting out the interval.
+        self._escalation_dirty = True
+        self._escalation_checked_at = 0.0
+        #: Whether the last reconcile left a provider incident open; ``None``
+        #: until one has run (a restart must look, not assume).
+        self._escalations_open: bool | None = None
         #: Called with each transition that changed half; the orchestrator
         #: wires it to :meth:`notify_state_change`.  Overridable in tests.
         self.on_half_change: Callable[[Transition], Awaitable[Any]] | None = None
@@ -413,6 +458,7 @@ class ProviderAvailabilityService:
                 and now - last >= float(cfg.auth_probe.interval_seconds)
             ):
                 self._start_probe(provider, reason="interval")
+        await self._tick_escalations(now)
         return transitions
 
     async def close(self) -> None:
@@ -849,6 +895,7 @@ class ProviderAvailabilityService:
     async def _announce(self, transition: Transition | None) -> None:
         if transition is None:
             return
+        self._escalation_dirty = True
         logger.warning(
             "provider %s: %s -> %s (%s) %s",
             transition.provider,
@@ -949,14 +996,7 @@ class ProviderAvailabilityService:
             return None
         now = self.now()
         row = self._rows.get(provider)
-        # Every provider some enabled profile launches against -- including
-        # ones that never produced evidence and so have no row yet, which
-        # are available by definition.
-        session_providers = {
-            self.provider_for_profile(p)
-            for p in profiles.values()
-            if getattr(p, "enabled", True) and not getattr(p, "template", False)
-        } - {"", "llm"}
+        session_providers = self._session_providers(profiles.values())
         route = worker_route(
             profile.id,
             harness=getattr(profile, "harness", ""),
@@ -1000,6 +1040,20 @@ class ProviderAvailabilityService:
             "reason": row.effective_reason(now) if row is not None else "",
             "remediation": self.remediation(provider, state),
         }
+
+    def _session_providers(self, profiles: Iterable[Any]) -> set[str]:
+        """Every provider some enabled profile launches against.
+
+        Including ones that never produced evidence and so have no row yet,
+        which are available by definition.  The ``llm`` key is not a session
+        provider: the direct path being down strands routing, not execution
+        (D15), so it never counts toward "every provider".
+        """
+        return {
+            self.provider_for_profile(p)
+            for p in profiles
+            if getattr(p, "enabled", True) and not getattr(p, "template", False)
+        } - {"", "llm"}
 
     def _has_equivalent_rung(
         self, class_id: str, provider: str, profiles: Mapping[str, Any]
@@ -1078,7 +1132,22 @@ class ProviderAvailabilityService:
         event replay and a periodic timer (the ``provider-failover``
         playbook, ``bold-rapids.3``) never message twice.  Flap-damped per
         ``notify.flap_threshold`` over ``recovery.flap_window_seconds``.
+
+        Also reconciles *provider*'s escalation (``escalation`` in the
+        result), whatever the messages did: an escalation is keyed by the
+        outage rather than by the message, so it is just as idempotent, and a
+        damped or already-sent message must not stop a human being paged.
         """
+        result = await self._notify_messages(provider, generation)
+        if result.get("success"):
+            outcomes = await self.reconcile_escalations(provider)
+            result["escalation"] = outcomes[0] if outcomes else None
+        return result
+
+    async def _notify_messages(
+        self, provider: str, generation: int | None = None
+    ) -> dict[str, Any]:
+        """The message half of :meth:`notify_state_change`."""
         cfg = self.config
         row = self._rows.get(provider)
         if row is None:
@@ -1173,6 +1242,380 @@ class ProviderAvailabilityService:
             "held": len(affected["held"]),
             "roles": affected["roles"],
         }
+
+    # -- escalation (D19, the active Discord half) ------------------------------------
+
+    def escalation_verdict(
+        self, provider: str, session_providers: Iterable[str], now: float | None = None
+    ) -> tuple[str, str] | None:
+        """``(trigger, severity)`` when a human must act about *provider*, else ``None``.
+
+        Only when there is something to decide (D19): the CLI is logged out;
+        launches have been ``failing`` for longer than
+        ``notify.escalate_failing_after_seconds``; or every session provider
+        is unavailable and none is due back within
+        ``notify.escalate_all_down_after_seconds`` (D15).  Never for
+        ``exhausted`` on its own -- a known reset leaves nothing to decide --
+        nor for ``disabled``, which an operator chose.  Severity is
+        ``critical`` while everything is down, ``high`` otherwise.  The
+        ``llm`` key has no queued tasks to strand, so it is never filed.
+        """
+        if not self.tracking or provider == "llm":
+            return None
+        row = self._rows.get(provider)
+        if row is None:
+            return None
+        at = self.now() if now is None else now
+        state = row.effective_state(at)
+        if state not in UNAVAILABLE or state == DISABLED:
+            return None
+        notify = self.config.notify
+        session = set(session_providers)
+        all_down = bool(session) and all(self.is_unavailable(p, at) for p in session)
+        severity = "critical" if all_down else "high"
+        if state == UNAUTHENTICATED and notify.escalate_unauthenticated:
+            return UNAUTHENTICATED, severity
+        if state == FAILING and at - row.effective_since(at) >= float(
+            notify.escalate_failing_after_seconds
+        ):
+            return FAILING, severity
+        if all_down and provider in session:
+            untils = [
+                until
+                for p in session
+                if (other := self._rows.get(p)) is not None
+                and (until := other.effective_until(at)) is not None
+            ]
+            earliest = min(untils) if untils else None
+            if earliest is None or earliest - at > float(notify.escalate_all_down_after_seconds):
+                return "all_providers_unavailable", severity
+        return None
+
+    async def _tick_escalations(self, now: float) -> None:
+        """Reconcile at once after a transition, otherwise once a minute.
+
+        A quiet fleet -- nothing unavailable and no incident left open -- is
+        answered from memory, so the five-second cycle costs no query.
+        """
+        if not self._escalation_dirty and now - self._escalation_checked_at < (
+            ESCALATION_RECONCILE_SECONDS
+        ):
+            return
+        self._escalation_dirty = False
+        self._escalation_checked_at = now
+        if self._escalations_open is False and not self.unavailable_providers(now):
+            return
+        await self.reconcile_escalations()
+
+    async def reconcile_escalations(self, provider: str | None = None) -> list[dict[str, Any]]:
+        """Bring the provider escalations in line with the snapshot (D19).
+
+        For each provider (or just *provider*): file one escalation when a
+        human must act and none is open, keep an open one's severity current,
+        and resolve it when the condition has cleared.  Idempotent -- the
+        half-change notification, an event replay, the command and the
+        periodic tick may all call it; an open incident is found by its
+        source kind wherever it was filed, and a generation whose incident a
+        human already closed is never filed again.  Never raises.
+        """
+        if not self.tracking:
+            return []
+        async with self._escalation_lock:
+            now = self.now()
+            try:
+                open_rows = await self._db.list_escalations(
+                    source_kind=ESCALATION_SOURCE_KIND,
+                    states=list(_OPEN_ESCALATION_STATES),
+                    limit=500,
+                )
+                session = self._session_providers(await self._db.list_profiles())
+            except Exception:
+                logger.warning("provider escalations: could not read state", exc_info=True)
+                return []
+            by_provider: dict[str, list[dict[str, Any]]] = {}
+            for incident in open_rows:
+                key = str(incident.get("source_identity") or "").rpartition(":")[0]
+                by_provider.setdefault(key, []).append(incident)
+            if provider is not None:
+                wanted = [provider]
+            else:
+                wanted = sorted(set(self._rows) | set(by_provider))
+            outcomes = []
+            for key in wanted:
+                try:
+                    outcome = await self._reconcile_escalation(
+                        key, by_provider.get(key, []), session, now
+                    )
+                except Exception:
+                    logger.warning(
+                        "provider escalations: reconcile for %s failed", key, exc_info=True
+                    )
+                    outcome = {"provider": key, "outcome": "error"}
+                if outcome.get("outcome") in ("created", "open"):
+                    by_provider[key] = [outcome]
+                elif outcome.get("outcome") == "resolved":
+                    by_provider.pop(key, None)
+                outcomes.append(outcome)
+            if provider is None:
+                self._escalations_open = any(by_provider.values())
+            return outcomes
+
+    async def _reconcile_escalation(
+        self,
+        provider: str,
+        open_incidents: list[dict[str, Any]],
+        session: set[str],
+        now: float,
+    ) -> dict[str, Any]:
+        verdict = self.escalation_verdict(provider, session, now)
+        if verdict is None:
+            if not open_incidents:
+                return {"provider": provider, "outcome": "not_needed"}
+            resolved = []
+            for incident in open_incidents:
+                row = await self._resolve_escalation(incident, provider, now)
+                if row is not None:
+                    resolved.append(row["id"])
+            if len(resolved) < len(open_incidents):
+                # A reply or a supervisor turn moved one underneath us: the
+                # next reconcile re-reads it and tries again.
+                return {"provider": provider, "outcome": "open", "escalation_ids": resolved}
+            return {"provider": provider, "outcome": "resolved", "escalation_ids": resolved}
+        trigger, severity = verdict
+        if open_incidents:
+            for incident in open_incidents:
+                if incident.get("severity") != severity:
+                    await self._reseverity(incident, severity, now)
+            return {
+                "provider": provider,
+                "outcome": "open",
+                "trigger": trigger,
+                "severity": severity,
+                "escalation_ids": [incident["id"] for incident in open_incidents],
+            }
+        row = self._rows[provider]
+        escalation_id = f"escalation-provider-{provider}-{row.generation}"
+        existing = await self._db.get_escalation(escalation_id)
+        if existing is not None:
+            # This outage's incident was already closed -- by a human, or by
+            # the supervisor after one replied.  The same generation is the
+            # same outage: paging again would reopen a decision already made.
+            return {
+                "provider": provider,
+                "outcome": "closed",
+                "escalation_ids": [escalation_id],
+                "state": existing["state"],
+            }
+        affected = await self.affected(provider)
+        project_id = _busiest_project(affected["held"])
+        if project_id is None:
+            return {"provider": provider, "outcome": "no_affected_tasks", "trigger": trigger}
+        incident, created = await self._db.create_escalation(
+            id=escalation_id,
+            project_id=project_id,
+            task_id=None,
+            source_kind=ESCALATION_SOURCE_KIND,
+            source_identity=f"{provider}:{row.generation}",
+            incident_key=f"provider:{provider}:{row.generation}",
+            supervisor_owner=f"supervisor-{project_id}",
+            summary=self._escalation_summary(provider, trigger, now)[:4000],
+            investigation=self._escalation_investigation(
+                provider, trigger, session, affected, now
+            )[:8000],
+            decision_requested=self._escalation_decision(provider, trigger, now)[:4000],
+            choices=None,
+            severity=severity,
+            now=now,
+        )
+        if created:
+            await self._emit_escalation(
+                "escalation.created.v1",
+                {
+                    "escalation_id": incident["id"],
+                    "project_id": incident["project_id"],
+                    "task_id": None,
+                    "source_kind": incident["source_kind"],
+                    "source_identity": incident["source_identity"],
+                    "incident_key": incident["incident_key"],
+                    "state": incident["state"],
+                    "revision": incident["revision"],
+                },
+            )
+        return {
+            "provider": provider,
+            "outcome": "created" if created else "open",
+            "trigger": trigger,
+            "severity": severity,
+            "project_id": incident["project_id"],
+            "escalation_ids": [incident["id"]],
+        }
+
+    async def _resolve_escalation(
+        self, incident: Mapping[str, Any], provider: str, now: float
+    ) -> dict[str, Any] | None:
+        row = self._rows.get(provider)
+        state = row.effective_state(now) if row is not None else AVAILABLE
+        reason = row.effective_reason(now) if row is not None else ""
+        if state not in UNAVAILABLE:
+            outcome = f"Provider {provider} is launchable again ({state}"
+            outcome += f": {reason})." if reason else ")."
+        elif state == DISABLED:
+            outcome = f"Provider {provider} was disabled by an operator: {reason}."
+        else:
+            until = row.effective_until(now) if row is not None else None
+            outcome = (
+                f"Provider {provider} is now {state}: {reason}"
+                + (f"; expected recovery {_fmt_ts(until)}" if until else "")
+                + ". Nothing is left for a human to decide."
+            )
+        resolved = await self._db.resolve_escalation_on_recovery(
+            incident["id"],
+            expected_revision=int(incident["revision"]),
+            source_kind=ESCALATION_SOURCE_KIND,
+            terminal_outcome=outcome,
+            terminal_evidence={
+                "provider": provider,
+                "state": state,
+                "reason_code": row.effective_reason_code(now) if row is not None else "",
+                "generation": row.generation if row is not None else None,
+                "at": now,
+            },
+            now=now,
+        )
+        if resolved is not None:
+            await self._emit_escalation(
+                "escalation.updated.v1",
+                {
+                    "escalation_id": resolved["id"],
+                    "project_id": resolved["project_id"],
+                    "task_id": resolved.get("task_id"),
+                    "state": resolved["state"],
+                    "revision": resolved["revision"],
+                    "terminal_outcome": resolved.get("terminal_outcome"),
+                },
+            )
+        return resolved
+
+    async def _reseverity(self, incident: Mapping[str, Any], severity: str, now: float) -> None:
+        """Keep an open incident's severity current (``critical`` while all is down)."""
+        try:
+            updated = await self._db.transition_escalation(
+                incident["id"],
+                expected_revision=int(incident["revision"]),
+                new_state=incident["state"],
+                severity=severity,
+                now=now,
+            )
+        except Exception:
+            logger.debug("provider escalations: severity update refused", exc_info=True)
+            return
+        if updated is not None:
+            await self._emit_escalation(
+                "escalation.updated.v1",
+                {
+                    "escalation_id": updated["id"],
+                    "project_id": updated["project_id"],
+                    "task_id": updated.get("task_id"),
+                    "state": updated["state"],
+                    "revision": updated["revision"],
+                },
+            )
+
+    async def _emit_escalation(self, event_type: str, payload: dict[str, Any]) -> None:
+        """A version-1 state hint after the row committed, like the command layer's."""
+        body = {"version": 1, **payload}
+        if self._bus is not None:
+            try:
+                await self._bus.emit(event_type, body)
+            except Exception:
+                logger.debug("%s emit failed", event_type, exc_info=True)
+        try:
+            await self._db.log_event(
+                event_type,
+                project_id=payload.get("project_id"),
+                payload=str(payload.get("escalation_id") or ""),
+            )
+        except Exception:
+            logger.debug("%s log_event failed", event_type, exc_info=True)
+
+    def _escalation_summary(self, provider: str, trigger: str, now: float) -> str:
+        row = self._rows[provider]
+        state = row.effective_state(now)
+        vendor = f" ({row.vendor})" if row.vendor else ""
+        if trigger == "all_providers_unavailable":
+            return f"Every provider is unavailable; {provider}{vendor} is {state}"
+        if trigger == FAILING:
+            minutes = (now - row.effective_since(now)) / 60.0
+            return f"Provider {provider}{vendor} has been failing for {minutes:.0f} min"
+        return f"Provider {provider}{vendor} is {state} and needs a login"
+
+    def _escalation_investigation(
+        self,
+        provider: str,
+        trigger: str,
+        session: set[str],
+        affected: Mapping[str, Any],
+        now: float,
+    ) -> str:
+        view = self.describe(provider, now)
+        until = _fmt_ts(view["until"]) if view["until"] else "none known"
+        lines = [
+            (
+                f"{provider} is {view['state']} ({view['reason_code'] or '-'}): "
+                f"{view['reason'] or '-'}"
+            ),
+            f"Since {_fmt_ts(view['since'])}; expected recovery: {until}.",
+        ]
+        if trigger == "all_providers_unavailable" or (
+            session and all(self.is_unavailable(p, now) for p in session)
+        ):
+            others = ", ".join(
+                f"{p} {self.effective_state(p, now)}" for p in sorted(session)
+            )
+            lines.append(f"Every session provider is unavailable: {others}.")
+        held = affected.get("held") or []
+        per_project: dict[str, int] = {}
+        for entry in held:
+            per_project[entry["project_id"]] = per_project.get(entry["project_id"], 0) + 1
+        lines.append(
+            f"Queued tasks routed to {provider}: {len(held)}"
+            + (
+                " (" + ", ".join(f"{pid} {n}" for pid, n in sorted(per_project.items())) + ")"
+                if per_project
+                else ""
+            )
+            + "."
+        )
+        if affected.get("roles"):
+            lines.append(
+                "Role profiles on this provider cannot launch: " + ", ".join(affected["roles"])
+            )
+        lines.append(
+            f"Launches against {provider} are "
+            + ("suppressed." if self.enforcing else "NOT suppressed (observe mode).")
+        )
+        evidence = [
+            f"{entry.get('kind')}{'/' + str(entry['signal']) if entry.get('signal') else ''}"
+            for entry in view["evidence"][:5]
+        ]
+        if evidence:
+            lines.append("Latest evidence: " + ", ".join(evidence) + ".")
+        lines.append(
+            f"`aq provider status {provider} --verbose` shows the evidence and transitions."
+        )
+        return "\n".join(lines)
+
+    def _escalation_decision(self, provider: str, trigger: str, now: float) -> str:
+        state = self.effective_state(provider, now)
+        remediation = self.remediation(provider, state) or f"inspect provider {provider}"
+        text = remediation[0].upper() + remediation[1:]
+        if trigger == "all_providers_unavailable":
+            text += (
+                " Every provider is unavailable, so no queued work can run until one returns;"
+                " `aq provider set-state <provider> available --for 1h --reason ...` re-admits"
+                " one you know to be healthy."
+            )
+        return text
 
     # -- words ---------------------------------------------------------------------
 

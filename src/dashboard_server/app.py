@@ -158,6 +158,9 @@ class DashboardServerApp:
                 "version": self.bundle.version,
                 "files": len(self.bundle.files),
                 "verified": True,
+                # Which build this process serves; `aq status` and `aq doctor`
+                # compare it with the installed manifest to spot a stale server.
+                "manifest_sha256": self.bundle.manifest_sha256,
             },
             "api_url": self.settings.api_url,
             "upstream_ok": await self.proxy.upstream_ok(),

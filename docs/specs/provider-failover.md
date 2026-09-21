@@ -741,7 +741,47 @@ replay and the five-minute timer never notify twice:
 | Global supervisor and the human | `message_send` to `session:supervisor-global` and `user:dashboard`, from `system/playbook:provider-failover` | a provider changes **half** (either direction) | state, reason, since, expected recovery, remediation, moved/held counts by kind, affected role profiles, and the exact commands: `aq provider status`, `aq provider reroute --dry-run`, `aq provider set-state` |
 | Project supervisors | `message_send` to `session:supervisor-<pid>` | first sweep of a batch that moved or held a task **in that project** | that project's moved and held tasks by id. One per batch per project — never one per task, never one per top-up. |
 | Discord, passively | the hourly digest | any half change or batch in the window | `collect_digest_activity` gains a producer over `provider_availability_transitions` and `task_reroutes`, emitting `WorkFact`s in the already-declared, producer-less `system` category with stable keys `provider:<key>:<generation>` / `reroute:<batch_id>`. A system fact makes a window eligible on its own: an outage in a quiet hour is exactly what the digest is for. |
-| Discord, actively | `escalation_create`, `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+| Discord, actively | a durable escalation (the `escalation_create` row, written by the daemon), `source_kind = "provider_availability"`, `source_identity = "<provider>:<generation>"`, `incident_key = "provider:<provider>:<generation>"` | **only when a human must act**: `unauthenticated`; `failing` for longer than `notify.escalate_failing_after_seconds`; or every provider unavailable per D15. Never for `exhausted` with a known `until` — there is nothing to decide. | severity `high` (`critical` when everything is down); `decision_requested` is the remediation. Filed under the project with the most affected tasks (ties by id), because escalations are project-scoped; with no affected task, none is filed. Resolved by the same command when the provider leaves that state. |
+
+**As built (`bold-rapids.6`).** The escalation half lives in
+`ProviderAvailabilityService.reconcile_escalations`
+(`src/providers/availability_service.py`), run by
+`provider_availability_notify` for its provider and by the service's own tick
+— at once after any transition, otherwise once a minute, and not at all while
+nothing is unavailable and nothing is open. Four details the table leaves open:
+
+* **The incident key carries the generation.** `uq_escalations_incident` is
+  unique per project for all time, so a bare `provider:<provider>` would refuse
+  the provider's second outage in the same project forever. One outage is still
+  one thread: an open incident is found by `source_kind` wherever it was filed
+  and kept while the condition holds, even as the state moves inside the
+  unavailable half (`unauthenticated` → `failing` is the same outage). A
+  generation whose incident a human or the supervisor already closed is never
+  filed again.
+* **Affected tasks** are the queued (`READY`, unassigned) tasks routed to the
+  provider — `affected()`, the same count the state-change message reports.
+  `llm` strands no queued task, so it is never filed.
+* **Every provider down** escalates each unavailable session provider whose
+  own state would not (so `exhausted`-with-`until` does page, but only under
+  D15's threshold), all at `critical`; open incidents' severity follows the
+  fleet (`critical` while everything is down, `high` again after). `disabled`
+  never escalates — an operator chose it.
+* **Resolution** is `resolved`, not `stale`/`cancelled`: the recorded outcome is
+  the provider's new state, carried as `terminal_outcome` and
+  `terminal_evidence`. It goes through `resolve_escalation_on_recovery`, the
+  second narrow path from an open state straight to `resolved` (the first is
+  the Discord cutover's), which compares the revision *and* the source kind, so
+  it can close only its own producer's incidents and loses to a concurrent
+  human reply rather than overwriting it.
+
+The digest half is `provider_fact` in `src/database/queries/digest_queries.py`:
+a `system` fact of kind `provider` per half change, with an empty project and
+task — a *fleet* fact, visible whatever `discord.digest.project_ids` selects
+(an outage affects every project and is nobody's private work) and still
+subject to the category filter. Its highlight wording is remembered against
+its own key, so a provider failing the same way next week is still news.
+`provider_failover.notify.digest: false` (or `mode: off`) leaves them out. The
+`reroute:<batch_id>` facts arrive with `task_reroutes` in `bold-rapids.3`.
 
 AQ's Discord surface is deliberately one digest plus one thread per human
 decision, and this keeps to it. If the dead provider is the one the supervisor
@@ -1025,6 +1065,7 @@ assertion takes `perf_strict`.
 | Task | Ships | Decisions |
 |---|---|---|
 | `bold-rapids.2` | Tables, reducer, collectors, snapshot, launch suppression, the derived hold and its explain reason, `provider_status` / `set_state` / `recheck`, API read, the four doctor checks, `provider.state_changed`, `provider_availability_notify` for state changes, config, removal of `provider_cooldowns` and `pause_retry:`. Can run in `observe` first. | D0–D7, D11 (mechanism), D18, D19 (state half), D21, D22 |
+| `bold-rapids.6` | D19's Discord half, split out of `.2`: the provider outage escalation (file, keep severity current, resolve on recovery) and the digest's provider facts. No schema change. | D19 (Discord half) |
 | `bold-rapids.3` | `provider_intent` and its migration, every D9 surface, `provider_reroute` / `reroute-undo`, the playbook and its reviewed bundle, catalog filter and the `held` outcome, the availability-aware project default, `task_reroutes`, batch notifications. | D8–D10, D11 (policy), D12–D17, D19 (batch half) |
 | `bold-rapids.4` | Structured launch-failure fields, provider-attributed failure accounting, `provider_pause`, WIP checkpoint and hand-off note, pool drain, no key quarantine for attributed deaths. | D2 (collector inputs), D13 (in-flight rows) |
 | `bold-rapids.5` | Dashboard, operator runbook, concept and reference pages, supervisor guidance on when to pin, end-to-end scenario and transcript. | D20, D23 (end to end) |

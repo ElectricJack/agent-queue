@@ -20,9 +20,13 @@ agent_surface.py   Agent-facing surface: `aq schema`, `aq prime`, `aq handoff`
 claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
-daemon.py          `aq start` / `stop` / `restart`
+daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dashboard server when a
+                   bundle is installed (`--no-dashboard` only skips the Vite prompt;
+                   `--no-dashboard-server` leaves the server alone)
 dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` commands merge
-                   into it): `aq dashboard serve`, the dashboard server in the foreground
+                   into it): `serve` (foreground) and `start|stop|restart|status` (background,
+                   via src/dashboard_server/process.py); also the helpers `aq start|stop|
+                   restart|status` call, so the PID/log/config paths come from daemon.py
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
 doctor.py          `aq doctor` and `aq costs`
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),

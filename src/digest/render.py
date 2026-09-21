@@ -20,6 +20,8 @@ from src.digest.eligibility import Eligibility
 from src.digest.facts import (
     KIND_COMPLETED,
     KIND_PROGRESS,
+    KIND_PROVIDER,
+    KIND_REROUTE,
     KIND_STARTED,
     DigestWindow,
 )
@@ -78,6 +80,11 @@ def _window_label(window: DigestWindow) -> str:
 
 
 def _highlight_line(fact, project_names: dict[str, str]) -> str:
+    if fact.fleet:
+        # Daemon health belongs to no project or task: its title names the
+        # subject ("provider codex") and its detail says what happened.
+        detail = sanitise(fact.detail) or sanitise(fact.title)
+        return _elide(f"• {sanitise(fact.title)}: {detail}")
     project = sanitise(project_names.get(fact.project_id, fact.project_id))
     detail = sanitise(fact.detail) or sanitise(fact.title)
     verb = _KIND_VERB.get(fact.kind, fact.kind)
@@ -109,7 +116,13 @@ def render_digest(
     completed = eligibility.completed_count
     started = sum(1 for fact in eligibility.facts if fact.kind == KIND_STARTED)
     progressed = sum(1 for fact in eligibility.facts if fact.kind == KIND_PROGRESS)
+    providers = sum(1 for fact in eligibility.facts if fact.kind == KIND_PROVIDER)
+    reroutes = sum(1 for fact in eligibility.facts if fact.kind == KIND_REROUTE)
     counts = []
+    if providers:
+        counts.append(f"{providers} provider change" + ("" if providers == 1 else "s"))
+    if reroutes:
+        counts.append(f"{reroutes} re-route batch" + ("" if reroutes == 1 else "es"))
     if completed:
         counts.append(f"{completed} completed")
     if progressed:

@@ -50,9 +50,11 @@ def highlight_key(fact: WorkFact) -> str:
     rows -- distinct fact keys -- saying the same thing.  §8 forbids reposting
     that as new progress, so the rendered wording is remembered per task as
     well as the row identity.  Two different tasks may legitimately report the
-    same sentence, which is why the task id is part of the key.
+    same sentence, which is why the task id is part of the key.  A fleet fact
+    is scoped to its own key (:attr:`WorkFact.scope`), so a provider's second
+    outage is not mistaken for the first one's wording.
     """
-    return f"{fact.task_id}\x1f{_normalise(fact.detail or fact.title)}"
+    return f"{fact.scope}\x1f{_normalise(fact.detail or fact.title)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +87,7 @@ def _visible(
     return tuple(
         fact
         for fact in facts
-        if (project_ids is None or fact.project_id in project_ids)
+        if (project_ids is None or fact.fleet or fact.project_id in project_ids)
         and (categories is None or fact.category in categories)
     )
 
@@ -105,7 +107,7 @@ def _dedupe(facts: tuple[WorkFact, ...]) -> tuple[WorkFact, ...]:
         if fact.key in seen_keys:
             continue
         seen_keys.add(fact.key)
-        identity = (fact.task_id, fact.kind, _normalise(fact.detail or fact.title))
+        identity = (fact.scope, fact.kind, _normalise(fact.detail or fact.title))
         if identity in seen:
             continue
         seen.add(identity)

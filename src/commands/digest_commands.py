@@ -30,7 +30,7 @@ from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_princip
 from src.digest.aggregate import build_digest
 from src.digest.dispatch import reported_so_far
 from src.digest.facts import CATEGORIES
-from src.digest.schedule import schedule_for, validate_settings
+from src.digest.schedule import provider_facts_enabled, schedule_for, validate_settings
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ class DigestCommandsMixin:
             open_escalations=open_escalations,
             reported_keys=reported_keys,
             reported_highlights=reported_highlights,
+            provider_facts=provider_facts_enabled(self.orchestrator.config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
         result = build_digest(

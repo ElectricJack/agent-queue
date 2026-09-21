@@ -22,6 +22,13 @@ def _pg_backend():
     """Daemon lifecycle probes are mocked; never allocate a real test database."""
 
 
+@pytest.fixture(autouse=True)
+def _no_dashboard_server(monkeypatch):
+    """`aq start` also starts the dashboard server, whose PID file is the real
+    ~/.agent-queue one; tests/test_cli_dashboard_server.py covers that half."""
+    monkeypatch.setattr("src.cli.dashboard.ensure_dashboard_server", lambda: None)
+
+
 @pytest.mark.parametrize("status, expected", [(503, True), (500, False)])
 def test_start_preserves_degraded_daemon_but_rejects_other_http_errors(
     tmp_path, monkeypatch, status, expected,
