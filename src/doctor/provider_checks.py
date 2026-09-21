@@ -187,7 +187,7 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
             detail=(
                 "no claude /usage probe has run — activate the "
                 "provider-usage-probe playbook, or run "
-                "`aq run provider_usage_probe` once to confirm the CLI answers"
+                "`aq system provider-usage-probe` once to confirm the CLI answers"
             ),
             data={"enabled": True, "probe_ran": False, "stale_after_seconds": horizon},
         )
@@ -257,7 +257,7 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
             detail=(
                 "the claude /usage probe has stored no reading — the "
                 "dashboard's Claude card has nothing to draw; run "
-                "`aq run provider_usage_probe` and check what it reports"
+                "`aq system provider-usage-probe` and check what it reports"
             ),
             data=data,
         )
