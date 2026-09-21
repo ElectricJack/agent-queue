@@ -23,6 +23,7 @@ from src.commands.contracts.builtin import (
     set_handler_provider,
 )
 from src.commands.provider_commands import parse_duration, parse_timestamp
+from src.models import AgentProfile, Project, Task, TaskStatus
 from src.providers.availability import AUTH_PROBE, STARTUP_DIALOG
 
 
@@ -143,6 +144,69 @@ async def test_status_counts_held_tasks_for_an_unavailable_provider(handler, ser
     await _trip_codex_unauthenticated(service)
     result = await handler.execute("provider_status", {"provider": "codex"})
     assert result["providers"][0]["held"] == 3
+
+
+async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler, service) -> None:
+    """``held`` counts every queued status and follows the derived default (D13, D18).
+
+    It once listed only ``READY`` tasks and resolved an unrouted task through
+    the raw project default, so the dashboard's banner and the notices
+    disagreed with ``aq task explain``: a ``DEFINED`` task was held but not
+    counted, and an unrouted task whose default has a rung on an available
+    provider was counted but not held.
+    """
+    db = handler.db
+    for profile_id, harness, cls in (
+        ("sh-codex", "codex", "standard-high"),
+        ("sh-claude", "claude", "standard-high"),
+        ("astra-codex", "codex", "astra-high"),  # no other provider runs astra
+    ):
+        await db.create_profile(
+            AgentProfile(id=profile_id, name=profile_id, harness=harness, default_class=cls)
+        )
+    # An unrouted task in "rung" follows sh-codex's equivalent rung on claude;
+    # one in "astra" has nowhere to go.
+    await db.create_project(Project(id="rung", name="rung", default_profile_id="sh-codex"))
+    await db.create_project(Project(id="astra", name="astra", default_profile_id="astra-codex"))
+    tasks = [
+        ("ready", "rung", "sh-codex", TaskStatus.READY),
+        ("defined", "rung", "sh-codex", TaskStatus.DEFINED),
+        ("blocked", "rung", "sh-codex", TaskStatus.BLOCKED),
+        ("paused", "rung", "sh-codex", TaskStatus.PAUSED),
+        ("running", "rung", "sh-codex", TaskStatus.IN_PROGRESS),  # not queued
+        ("on-claude", "rung", "sh-claude", TaskStatus.READY),  # a launchable provider
+        ("unrouted-rung", "rung", None, TaskStatus.READY),  # follows the default's rung
+        ("unrouted-astra", "astra", None, TaskStatus.DEFINED),  # held
+    ]
+    for task_id, project_id, profile_id, status in tasks:
+        await db.create_task(
+            Task(
+                id=task_id,
+                project_id=project_id,
+                title=task_id,
+                description="",
+                status=status,
+                profile_id=profile_id,
+            )
+        )
+    await _trip_codex_unauthenticated(service)
+    assert service.suppresses("codex")
+
+    holds = {}
+    for task_id, *_ in tasks:
+        hold = await service.hold_for(await db.get_task(task_id))
+        if hold is not None:
+            holds[task_id] = hold
+    assert set(holds) == {"ready", "defined", "blocked", "paused", "unrouted-astra"}
+    assert {hold["provider"] for hold in holds.values()} == {"codex"}
+
+    affected = await service.affected("codex")
+    assert {entry["task_id"] for entry in affected["held"]} == set(holds)
+    assert {entry["task_id"]: entry["profile_id"] for entry in affected["held"]} == {
+        task_id: hold["profile_id"] for task_id, hold in holds.items()
+    }
+    result = await handler.execute("provider_status", {"provider": "codex"})
+    assert result["providers"][0]["held"] == len(holds) == 5
 
 
 # -- provider_history --------------------------------------------------------------
