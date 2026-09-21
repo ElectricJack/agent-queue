@@ -72,6 +72,11 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # live repair assignment and separately fences pool calls by claim
         # epoch.  No caller-selected integration identity reaches the service.
         "integration_resolve_candidate_member",
+        # Document-review agents may author/read/list/withdraw only.
+        "review_submit",
+        "review_show",
+        "review_list",
+        "review_withdraw",
     }
 )
 
@@ -114,6 +119,7 @@ LOCAL_INTEGRATION_CONTROLS = frozenset(
         "integration_release_delegates",
     }
 )
+LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
 INTEGRATION_ROLLOUT_FIELDS = frozenset(
     {
         "integration_repository_id",
@@ -144,6 +150,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return None
     if command in LOCAL_INTEGRATION_CONTROLS:
         return "out of scope: integration control requires local operator"
+    if command in LOCAL_REVIEW_CONTROLS:
+        return "out of scope: review control requires local operator"
     if command == "edit_project" and INTEGRATION_ROLLOUT_FIELDS.intersection(args):
         return "out of scope: integration configuration requires local operator"
     if command == "edit_intelligence_class" and not (

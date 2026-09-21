@@ -796,6 +796,39 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     },
 }
 
+# Document-review lifecycle.  The database is authoritative; these payloads
+# are compact invalidation/audit hints for the dashboard and playbooks.
+_REVIEW_SCHEMAS: dict[str, EventSchema] = {
+    "review.submitted": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "vault_path", "seq"],
+    },
+    "review.revised": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "changes_note", "vault_path", "seq"
+        ],
+    },
+    "review.decided": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "decision", "decided_by", "author_task_id",
+            "note", "unblocked_task_ids", "seq",
+        ],
+    },
+    "review.withdrawn": {
+        "required": ["project_id", "review_id"],
+        "optional": [
+            "title", "kind", "revision", "author_task_id", "reason", "withdrawn_by",
+            "flagged_task_ids", "seq",
+        ],
+    },
+    "review.commented": {
+        "required": ["project_id", "review_id"],
+        "optional": ["title", "kind", "revision", "author_task_id", "comment_id", "seq"],
+    },
+}
+
 # ---------------------------------------------------------------------------
 # Git events  (emitted by GitManager — Phase 0.2.5 / playbooks)
 #
@@ -1687,6 +1720,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
     **_ESCALATION_SCHEMAS,
+    **_REVIEW_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
     **_MERGE_SCHEMAS,

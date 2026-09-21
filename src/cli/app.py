@@ -432,6 +432,7 @@ from . import sessions as _sessions_cli  # noqa: E402, F401
 from . import messages as _messages_cli  # noqa: E402, F401
 from . import agent_messages as _agent_messages_cli  # noqa: E402, F401
 from . import questions as _questions_cli  # noqa: E402, F401
+from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401

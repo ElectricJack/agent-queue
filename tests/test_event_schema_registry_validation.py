@@ -388,6 +388,38 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "attempt_count": 1,
         "generation": 0,
     },
+    # Document review command surface
+    "review.submitted": {
+        "project_id": "proj-1",
+        "review_id": "rev-bright-harbor",
+        "title": "Document review",
+        "kind": "spec",
+        "revision": 1,
+    },
+    "review.revised": {
+        "project_id": "proj-1",
+        "review_id": "rev-bright-harbor",
+        "title": "Document review",
+        "kind": "spec",
+        "revision": 2,
+        "changes_note": "Addressed comments",
+    },
+    "review.decided": {
+        "project_id": "proj-1",
+        "review_id": "rev-bright-harbor",
+        "decision": "approve",
+        "decided_by": "human:local-operator",
+    },
+    "review.withdrawn": {
+        "project_id": "proj-1",
+        "review_id": "rev-bright-harbor",
+    },
+    "review.commented": {
+        "project_id": "proj-1",
+        "review_id": "rev-bright-harbor",
+        "revision": 1,
+        "comment_id": "cmt-123",
+    },
     # Git
     "git.commit": {
         "commit_hash": "abc123def456",
