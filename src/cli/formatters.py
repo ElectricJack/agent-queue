@@ -1373,6 +1373,7 @@ def format_provider_table(providers: list[dict]):
     table.add_column("Since", no_wrap=True)
     table.add_column("Recovery", no_wrap=True)
     table.add_column("Held", justify="right")
+    table.add_column("Moved", justify="right")
     table.add_column("Last OK", no_wrap=True)
     table.add_column("Usage", no_wrap=True)
     table.add_column("Reason", overflow="fold")
@@ -1396,6 +1397,7 @@ def format_provider_table(providers: list[dict]):
             _relative_time(row.get("since")),
             _until_text(row.get("until")),
             str(row.get("held", 0)),
+            str(row.get("rerouted", 0)),
             _relative_time(row.get("last_success_at")),
             usage_text,
             str(row.get("reason") or "—"),

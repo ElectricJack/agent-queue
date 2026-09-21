@@ -42,6 +42,8 @@ class ProviderAvailabilityStatus:
             derived_until (float | None | Unset):
             override (None | ProviderOverride | Unset):
             held (int | Unset):  Default: 0.
+            rerouted (int | Unset):  Default: 0.
+            batch_id (None | str | Unset):
             level (int | Unset):  Default: 0.
             generation (int | Unset):  Default: 0.
             consecutive_failures (int | Unset):  Default: 0.
@@ -70,6 +72,8 @@ class ProviderAvailabilityStatus:
     derived_until: float | None | Unset = UNSET
     override: None | ProviderOverride | Unset = UNSET
     held: int | Unset = 0
+    rerouted: int | Unset = 0
+    batch_id: None | str | Unset = UNSET
     level: int | Unset = 0
     generation: int | Unset = 0
     consecutive_failures: int | Unset = 0
@@ -132,6 +136,14 @@ class ProviderAvailabilityStatus:
             override = self.override
 
         held = self.held
+
+        rerouted = self.rerouted
+
+        batch_id: None | str | Unset
+        if isinstance(self.batch_id, Unset):
+            batch_id = UNSET
+        else:
+            batch_id = self.batch_id
 
         level = self.level
 
@@ -220,6 +232,10 @@ class ProviderAvailabilityStatus:
             field_dict["override"] = override
         if held is not UNSET:
             field_dict["held"] = held
+        if rerouted is not UNSET:
+            field_dict["rerouted"] = rerouted
+        if batch_id is not UNSET:
+            field_dict["batch_id"] = batch_id
         if level is not UNSET:
             field_dict["level"] = level
         if generation is not UNSET:
@@ -319,6 +335,17 @@ class ProviderAvailabilityStatus:
 
         held = d.pop("held", UNSET)
 
+        rerouted = d.pop("rerouted", UNSET)
+
+        def _parse_batch_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        batch_id = _parse_batch_id(d.pop("batch_id", UNSET))
+
         level = d.pop("level", UNSET)
 
         generation = d.pop("generation", UNSET)
@@ -416,6 +443,8 @@ class ProviderAvailabilityStatus:
             derived_until=derived_until,
             override=override,
             held=held,
+            rerouted=rerouted,
+            batch_id=batch_id,
             level=level,
             generation=generation,
             consecutive_failures=consecutive_failures,

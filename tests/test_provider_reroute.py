@@ -436,6 +436,11 @@ async def test_acceptance_codex_unavailable(orch):
     comments = (await orch.db.list_task_comments("pref"))["comments"]
     assert any("Re-routed from `standard-high-codex`" in c["body"] for c in comments)
 
+    # ``aq provider status`` counts what the outage moved (D20).
+    status = await handler.execute("provider_status", {"provider": "codex"})
+    [codex] = status["providers"]
+    assert codex["rerouted"] == 1 and codex["batch_id"] == result["batch_ids"][0]
+
     # One supervisor notice for the project, once per batch.
     notices = await orch.db.list_messages(to_kind="session", to_id="supervisor-p-1")
     assert len(notices) == 1 and "pref" in notices[0].body and "pin" in notices[0].body

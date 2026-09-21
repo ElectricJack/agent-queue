@@ -28,11 +28,11 @@ from src.database.queries.metrics_queries import MetricsQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.provider_availability_queries import ProviderAvailabilityQueryMixin
-from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.result_queries import ResultQueryMixin
 from src.database.queries.task_queries import TaskQueryMixin
+from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transcript_queries import TranscriptQueryMixin
 from src.database.queries.workflow_queries import WorkflowQueryMixin
@@ -56,11 +56,11 @@ __all__ = [
     "ProfileQueryMixin",
     "ProjectQueryMixin",
     "ProviderAvailabilityQueryMixin",
-    "TaskRerouteQueryMixin",
     "ProviderUsageQueryMixin",
     "RepoQueryMixin",
     "ResultQueryMixin",
     "TaskQueryMixin",
+    "TaskRerouteQueryMixin",
     "TokenQueryMixin",
     "TranscriptQueryMixin",
     "WorkflowQueryMixin",

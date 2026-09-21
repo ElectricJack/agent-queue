@@ -236,6 +236,21 @@ class ProviderCommandsMixin:
             except Exception:  # a count is decoration, never a failure
                 logger.debug("provider status: held count failed", exc_info=True)
         view["held"] = held
+        # The current outage's batch: how much it moved off this provider (D20).
+        from src.providers.reroute import batch_id_for
+
+        batch = batch_id_for(provider, int(view.get("generation") or 0))
+        rerouted = 0
+        try:
+            rows = await self.db.list_task_reroutes(batch_id=batch, limit=10_000)
+            rerouted = sum(
+                1 for row in rows if row.get("undone_at") is None
+                and row.get("reason_code") == "provider_unavailable"
+            )
+        except Exception:  # a count is decoration, never a failure
+            logger.debug("provider status: rerouted count failed", exc_info=True)
+        view["rerouted"] = rerouted
+        view["batch_id"] = batch if rerouted else None
         usage = None
         if provider != "llm":
             try:

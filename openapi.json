@@ -37695,6 +37695,22 @@
             "title": "Held",
             "default": 0
           },
+          "rerouted": {
+            "type": "integer",
+            "title": "Rerouted",
+            "default": 0
+          },
+          "batch_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
           "level": {
             "type": "integer",
             "title": "Level",

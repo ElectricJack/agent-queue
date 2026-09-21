@@ -125,6 +125,10 @@ class ProviderAvailabilityStatus(BaseModel):
     derived_until: float | None = None
     override: ProviderOverride | None = None
     held: int = 0
+    #: Tasks the current outage's batch moved off this provider and not
+    #: undone (provider-failover D20); ``batch_id`` names that batch.
+    rerouted: int = 0
+    batch_id: str | None = None
     level: int = 0
     generation: int = 0
     consecutive_failures: int = 0
