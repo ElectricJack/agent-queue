@@ -89,7 +89,7 @@ export function useDecideReview(): UseMutationResult<ReviewDecideResponse, Error
 type CommentInput = {
   review_id: string;
   revision: number;
-  quote?: string;
+  quote?: string | null;
   heading_path?: string[];
   body: string;
 };

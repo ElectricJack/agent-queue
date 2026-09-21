@@ -1,0 +1,101 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+
+import ReviewPaneView from "../index";
+
+const hooks = vi.hoisted(() => ({
+  useReview: vi.fn(),
+  comment: { mutateAsync: vi.fn().mockResolvedValue({}) },
+  decide: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
+  importEdits: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
+  listener: null as ((event: { event_type: string; review_id?: string }) => void) | null,
+}));
+
+vi.mock("../../../api/reviews", () => ({
+  useReview: hooks.useReview,
+  useCommentReview: () => hooks.comment,
+  useDecideReview: () => hooks.decide,
+  useImportReviewEdits: () => hooks.importEdits,
+}));
+vi.mock("../../../ws/useEventStream", () => ({
+  useRawEventSubscription: (listener: typeof hooks.listener) => { hooks.listener = listener; },
+}));
+
+const response = {
+  review: { id: "rev-x", title: "Review title", kind: "spec", state: "in_review", current_revision: 2, decider: "user" },
+  revision: { revision: 2, content: "---\nstatus: draft\n---\n# Review title\n\n## Goal\n\nVisible body", changes_note: "Expanded the goal" },
+  revisions: [{ revision: 1 }, { revision: 2, changes_note: "Expanded the goal" }],
+  vault_state: "ok",
+  comments: [],
+  diff: [{ op: "added", text: "new paragraph" }],
+};
+
+function renderPane() {
+  return render(
+    <MemoryRouter>
+      <ReviewPaneView args={{ reviewId: "rev-x" }} close={vi.fn()} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} />
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  hooks.listener = null;
+  hooks.useReview.mockImplementation((_id: string, opts?: { diffFrom?: number }) => ({
+    data: opts?.diffFrom === 1 ? response : { ...response, diff: undefined },
+    isLoading: false,
+    error: null,
+  }));
+});
+
+describe("review pane", () => {
+  it("renders the document title, metadata, TOC, and markdown body", () => {
+    renderPane();
+    expect(screen.getByRole("heading", { name: "Review title" })).toBeInTheDocument();
+    expect(screen.getByText("draft")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Goal" })).toBeInTheDocument();
+    expect(screen.getByText("Visible body")).toBeInTheDocument();
+  });
+
+  it("requests the selected revision and its previous-revision diff", async () => {
+    renderPane();
+    fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
+    await waitFor(() => expect(hooks.useReview).toHaveBeenCalledWith("rev-x", expect.objectContaining({ revision: 1 })));
+    fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "2" } });
+    fireEvent.click(screen.getByLabelText("Changes since previous"));
+    await waitFor(() => expect(hooks.useReview).toHaveBeenCalledWith("rev-x", { revision: 2, diffFrom: 1 }));
+    expect(screen.getByText("new paragraph").closest("pre")).toHaveClass("bg-emerald-950");
+  });
+
+  it("submits a section comment and decisions with the viewed revision", async () => {
+    renderPane();
+    fireEvent.click(screen.getByRole("button", { name: "Comment on this section" }));
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Clarify this." } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    await waitFor(() => expect(hooks.comment.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, quote: null, heading_path: ["Goal"], body: "Clarify this.",
+    }));
+    fireEvent.change(screen.getByLabelText("Decision note"), { target: { value: "Looks good" } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, decision: "approve", note: "Looks good",
+    }));
+  });
+
+  it("shows the live revision banner", async () => {
+    renderPane();
+    await act(async () => hooks.listener?.({ event_type: "review.revised", review_id: "rev-x" }));
+    expect(screen.getByText("Revised since you opened it — reload")).toBeInTheDocument();
+  });
+
+  it("shows the diverged vault banner and imports local edits", async () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, vault_state: "diverged" }, isLoading: false, error: null,
+    }));
+    renderPane();
+    fireEvent.click(screen.getByRole("button", { name: "Import my edits" }));
+    await waitFor(() => expect(hooks.importEdits.mutateAsync).toHaveBeenCalledWith({ review_id: "rev-x" }));
+    expect(screen.getByText("This file was edited outside the review")).toBeInTheDocument();
+  });
+});
