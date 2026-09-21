@@ -614,6 +614,20 @@ class TaskQueryMixin:
                 )
             else:
                 if row["status"] != TaskStatus.PAUSED.value:
+                    # "Task is not paused (status: FAILED)" is true and useless
+                    # for a delegate whose operation ended: it names neither the
+                    # operation nor anything the operator can do.
+                    operation = await self.get_terminal_integration_delegate_operation(
+                        task_id, conn=conn
+                    )
+                    if operation:
+                        from src.integration.delegate_release import retired_delegate_message
+
+                        raise ValueError(
+                            retired_delegate_message(
+                                operation["id"], operation["state"], action="resumed"
+                            )
+                        )
                     raise ValueError(f"Task is not paused (status: {row['status']})")
                 encoded = await self._read_manual_pause(conn, task_id)
                 result = await self._resume_locked(conn, task_id, encoded)
@@ -925,9 +939,12 @@ class TaskQueryMixin:
         ):
             operation = await self.get_terminal_integration_delegate_operation(task_id, conn=conn)
             if operation:
+                from src.integration.delegate_release import retired_delegate_message
+
                 raise ValueError(
-                    f"Integration operation {operation['id']} is {operation['state']}; "
-                    "its delegate is no longer required and cannot be resumed or restarted"
+                    retired_delegate_message(
+                        operation["id"], operation["state"], action="resumed or restarted"
+                    )
                 )
         was_frontier = current_status == TaskStatus.READY and not pre_blocked
         if (

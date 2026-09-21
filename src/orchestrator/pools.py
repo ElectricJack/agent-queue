@@ -45,6 +45,7 @@ from src.models import (
     TaskStatus,
 )
 from src.orchestrator.base_workspace import base_checkout_refusal
+from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
 from src.scheduler import (
     PlacementCandidate,
     PoolKey,
@@ -237,6 +238,7 @@ class PoolsMixin:
         idle_ages: dict[PoolKey, list[tuple[float, str]]] = {}
         now = time.time()
         worktrees_enabled = self._worktrees_enabled()
+        stall_seconds = pool_claim_loop_stall_seconds(self.config.swarm)
 
         system_profiles = await self.db.list_profiles()
 
@@ -307,6 +309,13 @@ class PoolsMixin:
                         local.draining += 1
                     elif s.task_id or s.claim_phase:
                         local.running_busy += 1
+                    elif idle_pool_claim_loop_stalled(s, now=now, stall_seconds=stall_seconds):
+                        # Nothing has claimed from it for two long-poll
+                        # windows — a harness parked on a usage-limit or
+                        # login screen looks exactly like this.  Counting it
+                        # as idle would let it absorb the demand a working
+                        # session should be started for.
+                        local.unresponsive += 1
                     else:
                         local.running_idle += 1
                         local.idle_session_ids.append(s.id)
@@ -317,6 +326,7 @@ class PoolsMixin:
                 sup.running_busy += local.running_busy
                 sup.starting += local.starting
                 sup.draining += local.draining
+                sup.unresponsive += local.unresponsive
                 sup.idle_session_ids.extend(local.idle_session_ids)
                 sup.by_project[project.id] = local
 
@@ -772,10 +782,20 @@ class PoolsMixin:
         candidates.sort(key=lambda candidate: (candidate.profile_id != profile.id, candidate.created_at))
         agent = None
         worker_profile = None
+        pool_harness = getattr(profile, "harness", "") or ""
         for candidate in candidates:
             if not candidate.enabled or candidate.role != "worker":
                 continue
             own_profile = resolve_agent_profile(candidate, profiles)
+            # A pool runs its own profile's CLI. ``task_agent_mismatch`` lets a
+            # generic Claude profile accept any worker of its class, and the
+            # overrides below would then take that worker's harness — so a
+            # Claude pool would spend another provider's budget in its name,
+            # blindly when that provider is exhausted.  Compare the harness the
+            # session would actually run, resolved exactly as it is below.
+            resolved = apply_agent_overrides(profile, candidate, agent_profile=own_profile)
+            if (getattr(resolved, "harness", "") or "") != pool_harness:
+                continue
             if task_agent_mismatch(
                 requirement, candidate, task_profile=profile, agent_profile=own_profile,
                 harness_registry=self.harness_registry, intelligence_classes=classes,

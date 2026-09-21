@@ -199,6 +199,14 @@ class LiveWaitExecutor:
                 diagnostics=(exc.reason,),
             )
 
+        match = correlation_match(correlation)
+        if step.wait_kind == "task" and awaited is not None:
+            # ``awaited`` is the task ref, and the match is the only place a
+            # suspended run records *which* task it is waiting on: it is what
+            # ``settled_child_waits`` joins to ``tasks`` and what the engine
+            # checks a ``ChildTaskCompleted`` against.
+            match.setdefault("task_id", str(awaited))
+
         now = ctx.services.clock()
         iteration = -1 if ctx.iteration_index is None else ctx.iteration_index
         spec = WaitSpec(
@@ -208,7 +216,7 @@ class LiveWaitExecutor:
             iteration=iteration,
             kind=WAIT_KIND_STORAGE[step.wait_kind],
             event_type=str(awaited) if step.wait_kind == "event" and awaited else "",
-            match=correlation_match(correlation),
+            match=match,
             deadline_at=_deadline(step, ctx, now),
             created_at=now,
         )

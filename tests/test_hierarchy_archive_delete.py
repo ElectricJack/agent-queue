@@ -287,6 +287,57 @@ class TestTaskReferenceDispositions:
         assert await db.get_task("t-ref") is not None
 
 
+class TestDeleteIntegrationReferenceScope:
+    """Which tasks the delete's ``integration_owned`` refusal reads: the subtree.
+
+    The refusal is read over the task and every descendant before anything is
+    written, so a held descendant pins its whole subtree while a held task
+    elsewhere in the project pins nothing.
+    """
+
+    async def _held_child(self, db) -> None:
+        """``p`` (IN_PROGRESS) with one child ``c`` a parent episode names."""
+        await _seed_integration_reference(db, "integration_parent_episodes", "c")
+        await mktask(db, "p", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("c", "p", "parent-child")
+
+    async def test_cascade_refuses_a_held_descendant_and_keeps_the_subtree(self, db):
+        """A cascade deletes the subtree as one unit, so a held child pins it all."""
+        await self._held_child(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("p", cascade=True, branch_policy="keep")
+        assert exc.value.code == "integration_owned"
+        assert "integration_parent_episodes(c)" in str(exc.value)
+
+        assert await db.get_task("p") is not None
+        assert await db.get_task("c") is not None
+
+    async def test_a_held_descendant_is_reported_before_has_children(self, db):
+        """Without ``--cascade`` the answer is still the hold, not ``has_children``.
+
+        The hold is read over the whole subtree up front, so retrying with
+        ``--cascade`` would only meet the same row — naming it is the refusal
+        that tells the operator the subtree cannot go at all.
+        """
+        await self._held_child(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("p", branch_policy="keep")
+        assert exc.value.code == "integration_owned"
+        assert await db.get_task("p") is not None
+
+    async def test_a_hold_on_an_unrelated_task_does_not_refuse(self, db):
+        """The hold is scoped to the subtree, not to the table being non-empty."""
+        await _seed_integration_reference(db, "integration_parent_episodes", "held")
+        await mktask(db, "free", status=TaskStatus.COMPLETED)
+
+        await db.delete_task("free", branch_policy="keep")
+
+        assert await db.get_task("free") is None
+        assert await db.get_task("held") is not None
+
+
 async def _seed_integration_reference(db, table: str, task_id: str) -> None:
     """Create *task_id* plus one row in *table* that names it.
 

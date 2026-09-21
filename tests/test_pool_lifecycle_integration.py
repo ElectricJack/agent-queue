@@ -627,6 +627,26 @@ class TestReconcilerInterplay:
         assert "max_active=2" in detail
         assert "at max_active with no idle worker" in detail
 
+    async def test_explain_names_an_unresponsive_worker_instead_of_calling_it_idle(
+        self, orch, db, handler,
+    ):
+        from src.models import SessionRecord
+
+        await ready(db, "waiting")
+        silent_since = time.time() - 10_000
+        await db.create_session(SessionRecord(
+            id="stuck", project_id=PROJECT_ID, profile_id="worker",
+            harness="claude", provider="fake", name="stuck", lifecycle="pool",
+            work_dir="/tmp/unused-pool-explain", epoch="test", instance_token="stuck",
+            started_at=silent_since, last_activity=silent_since, state="running",
+        ))
+
+        result = await handler._cmd_explain_task({"task_id": "waiting"})
+        detail = next(r["detail"] for r in result["reasons"]
+                      if r["code"] == "awaiting_pool_session")
+        assert "project: 0 busy, 0 idle, 0 starting, 1 unresponsive" in detail
+        assert "fleet: 0 busy, 0 idle, 0 starting, 1 unresponsive" in detail
+
     async def test_explain_names_the_quarantine_as_the_blocker(self, orch, db, handler):
         await ready(db, "t1")
         orch._quarantine_pool(PROJECT_ID, "worker", "unknown harness 'nope'")

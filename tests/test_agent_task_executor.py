@@ -36,7 +36,7 @@ from src.commands.contracts.models import (
 )
 from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.playbooks.definition import AgentTaskStep, CapabilityNarrowing, PlaybookDefinition
-from src.playbooks.engine import ChildTaskCompleted, PlaybookEngine
+from src.playbooks.engine import ChildTaskCompleted, PlaybookEngine, TimerFired
 from src.playbooks.executors import executor_for
 from src.playbooks.executors.agent_task import (
     AWAITING_OUTCOME,
@@ -434,6 +434,34 @@ class TestDispatch:
         assert result.receipt_result["child_task_id"] == "child-2"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("timeout_seconds", "run_deadline_at", "expected"),
+        [(None, 400.0, 400.0), (600, 400.0, 400.0), (600, 5_000.0, 700.0), (None, None, None)],
+    )
+    async def test_the_child_wait_never_outlives_the_run_deadline(
+        self, timeout_seconds, run_deadline_at, expected
+    ):
+        """The earlier of the step's timeout and the run's deadline, as a ``WaitStep`` does.
+
+        ``WaitScheduler`` expires only a wait that *has* a deadline, so a child
+        wait with none outlived its run: a child that never settled left the
+        run paused past the deadline that was meant to end it.
+        """
+        from dataclasses import replace
+
+        registry, adapter = registry_with(CREATE_TASK)
+        adapter.queue.append(created("child-2"))
+        db = StubDatabase({"reviewer": StubProfile(aq_commands=["a"])})
+        ctx = replace(
+            context(registry, principal=parent_principal(aq_commands={"a"}), db=db, clock=100.0),
+            run_deadline_at=run_deadline_at,
+        )
+
+        result = await run(agent_task_step(timeout_seconds=timeout_seconds), ctx)
+
+        assert result.wait.deadline_at == expected
+
+    @pytest.mark.asyncio
     async def test_a_refused_creation_takes_the_failed_edge(self):
         registry, adapter = registry_with(CREATE_TASK)
         adapter.queue.append(
@@ -662,6 +690,52 @@ class TestReconciliation:
 
         assert outcome.outcome == "duplicate_child_completion"
         assert outcome.lifecycle is RunLifecycle.PAUSED
+
+    @pytest.mark.asyncio
+    async def test_an_expired_wait_takes_the_timed_out_edge_without_a_second_child(self):
+        """``WaitScheduler`` expires the wait with ``TimerFired``, not a child status.
+
+        The "do not re-run the executor" guard was keyed on ``WaitStep`` alone,
+        so an expired ``AgentTaskStep`` wait walked back into the executor and
+        called ``create_task`` a second time.
+        """
+        repository = RecordingRunRepository()
+        engine, run_id, principal, adapter = await self._paused_run(
+            repository, timeout_seconds=30
+        )
+        # A second child would be handed this; the assertion is that nobody asks.
+        adapter.queue.append(created("child-4"))
+        wait_id = (await repository.load_run(run_id)).wait.wait_id
+
+        outcome = await engine.resume(run_id, TimerFired(wait_id), principal)
+
+        assert adapter.names.count("create_task") == 1
+        assert outcome.snapshot.agent_task_ids == ("child-3",)
+        assert outcome.snapshot.current_step_id == "bad"
+        transitions = [
+            r.selected_transition
+            for r in repository.receipts
+            if r.step_id == "delegate" and r.selected_transition
+        ]
+        assert transitions == ["r::delegate::timed_out"]
+        assert outcome.snapshot.wait is None
+
+    @pytest.mark.asyncio
+    async def test_an_unrelated_resume_leaves_the_child_wait_paused(self):
+        """Any cause but the child's own must not re-enter the executor either."""
+        repository = RecordingRunRepository()
+        engine, run_id, principal, adapter = await self._paused_run(repository)
+        adapter.queue.append(created("child-4"))
+        commits_after_pause = repository.commit_calls
+
+        outcome = await engine.resume(
+            run_id, TimerFired("some-other-wait"), principal
+        )
+
+        assert outcome.lifecycle is RunLifecycle.PAUSED
+        assert adapter.names.count("create_task") == 1
+        assert repository.commit_calls == commits_after_pause
+        assert (await repository.load_run(run_id)).wait is not None
 
     @pytest.mark.asyncio
     async def test_an_unmapped_child_status_is_never_guessed(self):

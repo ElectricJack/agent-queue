@@ -382,6 +382,17 @@ class LiveAgentTaskExecutor:
             )
 
         now = ctx.services.clock()
+        # The earlier of the step's own timeout and the run's deadline, as a
+        # ``WaitStep`` computes it.  ``WaitScheduler`` expires only a wait
+        # that has a deadline, so one left ``None`` outlives its run.
+        deadlines = [
+            value
+            for value in (
+                now + step.timeout_seconds if step.timeout_seconds else None,
+                ctx.run_deadline_at,
+            )
+            if value is not None
+        ]
         wait = WaitSpec(
             wait_id=uuid.uuid4().hex,
             run_id=ctx.run_id,
@@ -389,7 +400,7 @@ class LiveAgentTaskExecutor:
             iteration=-1 if ctx.iteration_index is None else ctx.iteration_index,
             kind="agent_task",
             match={"task_id": child_task_id},
-            deadline_at=(now + step.timeout_seconds) if step.timeout_seconds else None,
+            deadline_at=min(deadlines) if deadlines else None,
             created_at=now,
         )
         return ExecutorResult(

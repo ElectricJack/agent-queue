@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:8f16e5a34a793add4f05da586b7f9089eb1e7a1de601fd5adf7171ee98fe5426` |
+| Contract fingerprint | `sha256:4fbadb47d77270d038f9b14269087d678ea7585bcab5aa9c8ad7cf21b208e4eb` |
 
 ## Parameters
 
@@ -35,6 +35,7 @@
 | `pending_publications` | `string[]` | — |
 | `parked` | `any[]` | — |
 | `preserved_owners` | `string[]` | — |
+| `released_delegates` | `string[]` | — |
 | `project_id` | `string \| null` | — |
 | `operation_id` | `string \| null` | — |
 | `batch_id` | `string \| null` | — |
@@ -74,7 +75,7 @@
 | `reason` | `string \| null` | — |
 | `count` | `integer \| null` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`.
+Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`.
 
 ## Outcomes
 

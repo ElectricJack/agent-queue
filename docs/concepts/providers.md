@@ -480,6 +480,11 @@ directory holds debugging material.
   CLI, and where transcripts come from.
 * [Module catalog — providers](../reference/modules/providers.md) — every module
   in this subsystem, one row each.
+* Background, not instructions: the
+  [provider failover design](../specs/provider-failover.md) (2026-09-20) decides
+  how AQ will notice an exhausted or logged-out provider and move work off it.
+  Nothing in it has shipped; [sessions back off instead](#sessions-back-off-instead)
+  is still what happens today.
 
 ## Source and tests
 

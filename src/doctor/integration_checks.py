@@ -680,6 +680,101 @@ async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _find_stranded_delegates(ctx: DoctorContext) -> list[dict]:
+    """Delegate tickets of an integration operation that has already ended.
+
+    A verifier, a repair-stage writer or a candidate-member resolver whose
+    operation was cancelled, superseded or completed without it will never be
+    scheduled, closed or waited on again.  Left unsettled it sits DEFINED,
+    READY, BLOCKED or PAUSED forever, counts against the project's open work,
+    and refuses to archive.
+
+    Narrow on purpose: a task is *not* listed merely because integration
+    history still names it — that is ``assert_no_integration_task_references``'s
+    question, and listing every historical verifier would bury the ones that
+    are genuinely stuck.  A delegate with a live writer is also excluded — its
+    authority is not doctor's to take.
+    """
+    from src.integration.delegate_release import stranded_delegates
+
+    return await stranded_delegates(ctx.db, limit=200)
+
+
+async def _check_stranded_delegates(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stranded_delegates",
+            severity=Severity.INFO,
+            detail="database not initialised — integration delegate state unknown",
+        )
+    stranded = await _find_stranded_delegates(ctx)
+    if not stranded:
+        return CheckResult(
+            id="integration.stranded_delegates",
+            severity=Severity.OK,
+            detail="no delegate is held open by an integration operation that ended",
+        )
+    first = stranded[0]
+    return CheckResult(
+        id="integration.stranded_delegates",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(stranded)} task(s) are delegates of an integration operation that already "
+            f"ended — e.g. {first['task_id']} ({first['task_status']}, {first['role']} of "
+            f"operation {first['operation_id']}, which is {first['operation_state']}). "
+            "Nothing will ever schedule or close them. Settle them with "
+            "`aq doctor --check integration.stranded_delegates --fix`, which retires each "
+            "ticket as a non-success and records why in integration_delegate_releases"
+        ),
+        fixable=True,
+        data={"count": len(stranded), "delegates": stranded},
+    )
+
+
+async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
+    """Retire each stranded delegate and record the release.
+
+    Safe to repeat: a delegate that is already terminal is not selected again,
+    so a second run reports clean rather than writing a second release.  It
+    settles the *ticket* only — a retained branch owner or workspace lock is
+    preserved exactly as found and recorded as a named cleanup blocker, because
+    releasing either needs proof doctor cannot take.
+    """
+    import time as _time
+
+    from src.integration.delegate_release import release_delegates
+
+    stranded = await _find_stranded_delegates(ctx)
+    if not stranded:
+        return CheckResult(
+            id="integration.stranded_delegates",
+            severity=Severity.OK,
+            detail="no delegate is held open by an integration operation that ended",
+        )
+    released = await release_delegates(
+        ctx.db, now=_time.time(), released_by="doctor", limit=200
+    )
+    blocked = [row for row in released if row["cleanup"]["state"] == "blocked"]
+    detail = (
+        f"released {len(released)} stranded delegate(s); each is terminal FAILED with its "
+        "operation and disposition recorded in integration_delegate_releases"
+    )
+    if blocked:
+        detail += (
+            f". {len(blocked)} still hold a branch owner or workspace lock — see "
+            "`aq task explain <id>`; releasing those needs the guarded integration "
+            "recovery path, not doctor"
+        )
+    return CheckResult(
+        id="integration.stranded_delegates",
+        severity=Severity.OK,
+        detail=detail,
+        fixable=True,
+        fix_applied=True,
+        data={"count": len(released), "released": released},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -733,6 +828,17 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.development_publisher_stalled",
             run=_check_publisher_stalled,
+            owner=OWNER,
+        ),
+        # Fixable, and the fix is the same code the reconciliation tick and
+        # ``integration_abort`` run — one implementation in
+        # ``src.integration.delegate_release``.  It settles a ticket nothing
+        # can schedule any more; it never releases a branch owner, a workspace
+        # lock or a live writer, and it never manufactures a pass.
+        DoctorCheck(
+            id="integration.stranded_delegates",
+            run=_check_stranded_delegates,
+            fix=_fix_stranded_delegates,
             owner=OWNER,
         ),
     ]

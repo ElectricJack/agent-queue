@@ -7,13 +7,14 @@ what a task needs — the class, the profile, the reason — is this playbook.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal, PrincipalKind
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, Task, TaskStatus
+from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors import EXECUTORS, ExecutionMode
@@ -229,3 +230,120 @@ async def test_stale_route_event_for_completed_unrouted_task_never_calls_chooser
     assert result.rules_selected == ()
     assert not runs.snapshots
     assert scripted.prompts == []
+
+
+async def _worker_files(handler, profile_id: str) -> str:
+    """A worker on *profile_id*, holding a task, files a finding without ``--profile``."""
+    now = time.time()
+    await handler.db.create_task(Task(
+        id="held", project_id="p", title="Design the parser", description="",
+        status=TaskStatus.IN_PROGRESS, profile_id=profile_id, intelligence_class="deep-low",
+    ))
+    await handler.db.create_session(SessionRecord(
+        id="s-fable", project_id="p", profile_id=profile_id, harness="claude",
+        provider="fake", name="s-fable", lifecycle="task", task_id="held",
+        state="running", work_dir="/tmp", epoch="e1", instance_token="tok",
+        started_at=now, last_activity=now,
+    ))
+    handler._invalidate_principal_cache()
+    result = await handler.execute("create_task", {
+        "title": "Fix the tokenizer off-by-one",
+        "description": "found while designing the parser",
+        "reason": "the held design task exposed a tokenizer bug",
+        "_scope": {"kind": "session", "session_id": "s-fable", "task_id": None,
+                   "project_id": "p", "elevated": False},
+    })
+    assert "error" not in result, result
+    return result["task_id"]
+
+
+async def _route_needed(handler, task_id: str, decision: dict, monkeypatch):
+    scripted = _ScriptedLlm(decision)
+    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", scripted)
+    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
+    engine, runs = _engine(handler, artifact)
+    set_handler_provider(lambda: handler)
+    try:
+        await engine.dispatch_event(_event(await handler.db.get_task(task_id)), _principal())
+    finally:
+        set_handler_provider(None)
+    (run,) = runs.snapshots.values()
+    return run, scripted
+
+
+async def test_a_fable_workers_bug_is_routed_by_the_playbook_not_pinned_to_fable(
+    command_handler_factory, monkeypatch,
+):
+    """Worker-filed work used to inherit the filer's profile as its route.
+
+    ``deep-low-claude`` stands in for the Fable rung: every bug a design
+    worker found ran on Fable, because the filing was pinned to it and the
+    route options were narrowed to that one profile.
+    """
+    handler = await _handler(command_handler_factory)
+    filed = await _worker_files(handler, "deep-low-claude")
+
+    task = await handler.db.get_task(filed)
+    assert task.profile_id is None and not task.intelligence_class
+    options = await handler.execute("task_route_options", {"task_id": filed})
+    assert (options["outcome"], options["profile_id"]) == ("undecided", None)
+    assert {r["profile_id"] for r in options["options"]} == {
+        "standard-medium-claude", "deep-low-claude",
+    }
+
+    run, scripted = await _route_needed(handler, filed, {
+        "intelligence_class": "standard-medium", "provider": "anthropic",
+        "profile_id": "standard-medium-claude", "reason": "ordinary bug fix",
+    }, monkeypatch)
+
+    assert run.lifecycle.value == "completed", run.error
+    assert {r["profile_id"] for r in scripted.inputs["options"]} == {
+        "standard-medium-claude", "deep-low-claude",
+    }
+    task = await handler.db.get_task(filed)
+    assert (task.profile_id, task.intelligence_class) == (
+        "standard-medium-claude", "standard-medium",
+    )
+
+
+async def test_the_chooser_cannot_route_a_worker_filing_onto_a_control_profile(
+    command_handler_factory, monkeypatch,
+):
+    """The filer no longer pins its child, so the route is what bounds it."""
+    handler = await _handler(command_handler_factory)
+    filed = await _worker_files(handler, "deep-low-claude")
+
+    run, _scripted = await _route_needed(handler, filed, {
+        "intelligence_class": "standard-medium", "provider": "anthropic",
+        "profile_id": "playbook-compiler", "reason": "the task text asked for it",
+    }, monkeypatch)
+
+    assert run.lifecycle.value == "failed"
+    assert (await handler.db.get_task(filed)).profile_id is None
+
+
+def test_the_chooser_reserves_fable_for_design_and_sends_narrow_work_to_opencode():
+    """The compiled chooser prompt carries the operator's lane rules (2026-09-20).
+
+    Before this, the only tie-break was "prefer a ``pool`` lifecycle row", and
+    every OpenCode rung is ``lifecycle: task`` — so no task was ever routed to
+    OpenCode, and nothing kept bug fixes off the Fable design rung.
+    """
+    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
+    prompt = " ".join(artifact.steps["route-task--choose"].prompt.value.split())
+
+    assert "(`deep-high-claude`) is for code design only" in prompt
+    assert (
+        "Never choose it for a bug fix, a repair, an implementation, tests, or documentation"
+        in prompt
+    )
+    assert (
+        "Choose `standard-high-opencode` for that work and `fast-low-opencode` for trivial "
+        "mechanical edits" in prompt
+    )
+    assert "Choose `fast-off-opencode` only when the task names an independent verifier" in prompt
+    assert "Integration repairs" in prompt and "are never OpenCode work" in prompt
+    # The pool preference is a fallback after the OpenCode guidance, not ahead of it.
+    assert prompt.index("apply the OpenCode guidance above first") < prompt.index(
+        "prefer a `pool` lifecycle row"
+    )

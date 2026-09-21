@@ -27,18 +27,21 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import and_, delete, func, insert, or_, select, text, update
+from sqlalchemy import and_, cast, delete, func, insert, or_, select, text, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from src.config import PENDING_EVENT_OVERFLOW_POLICIES
 from src.database.tables import (
+    archived_tasks,
     playbook_artifacts,
     playbook_pending_events,
     playbook_step_receipts,
     playbook_v2_runs,
     playbook_waits,
+    tasks,
 )
 from src.playbooks.receipts import StepReceipt
 from src.playbooks.run_state import (
@@ -63,10 +66,13 @@ from src.playbooks.run_state import (
     validate_transition,
 )
 from src.playbooks.waits import (
+    CHILD_MISSING_STATUS,
+    CHILD_TERMINAL_STATUSES,
     EMPTY_WAIT_CHANGES,
     EVENT_ADDRESSABLE_WAIT_KINDS,
     PENDING_EVENT_DISPATCH_LEASE_SECONDS,
     MatchableEvent,
+    SettledChildWait,
     WaitChangeSet,
     WaitClaim,
     WaitRegistration,
@@ -1392,6 +1398,73 @@ class PlaybookRunQueryMixin:
                     continue
                 claims.append(_row_to_claim(row, None, now, expired=True))
         return claims
+
+    async def settled_child_waits(self, *, limit: int = 100) -> list[SettledChildWait]:
+        """Every active ``agent_task`` wait whose awaited task has settled.
+
+        Read-only, and deliberately so: nothing is claimed.  The registered
+        wait is the engine's idempotency token for a child completion, cleared
+        in the boundary that takes the edge, so a row stays selectable until
+        the resume it earns has actually committed — a crash between this scan
+        and that commit is retried by the next one.
+
+        The join is what keeps ``limit`` honest.  A scan that listed waits and
+        looked each task up afterwards would spend its cap on children that
+        are still running, and a busy install would never reach the settled
+        one behind them.  A wait whose task is in neither ``tasks`` nor
+        ``archived_tasks`` reconciles to :data:`CHILD_MISSING_STATUS` rather
+        than waiting for a row that cannot come back.
+        """
+        if limit <= 0:
+            return []
+        document = cast(playbook_waits.c.match, JSONB)
+        task_ref = func.jsonb_extract_path_text(document, "task_id")
+        status = func.coalesce(tasks.c.status, archived_tasks.c.status)
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(
+                            playbook_waits.c.wait_id,
+                            playbook_waits.c.run_id,
+                            playbook_waits.c.step_id,
+                            task_ref.label("task_id"),
+                            status.label("task_status"),
+                        )
+                        .select_from(
+                            playbook_waits.join(
+                                playbook_v2_runs,
+                                playbook_v2_runs.c.run_id == playbook_waits.c.run_id,
+                            )
+                            .outerjoin(tasks, tasks.c.id == task_ref)
+                            .outerjoin(archived_tasks, archived_tasks.c.id == task_ref)
+                        )
+                        .where(
+                            playbook_waits.c.kind == "agent_task",
+                            playbook_waits.c.state == "active",
+                            playbook_v2_runs.c.lifecycle == RunLifecycle.PAUSED.value,
+                            playbook_v2_runs.c.snapshot_version
+                            == playbook_waits.c.snapshot_version,
+                            task_ref.is_not(None),
+                            or_(status.is_(None), status.in_(sorted(CHILD_TERMINAL_STATUSES))),
+                        )
+                        .order_by(playbook_waits.c.created_at, playbook_waits.c.wait_id)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .fetchall()
+            )
+        return [
+            SettledChildWait(
+                wait_id=row["wait_id"],
+                run_id=row["run_id"],
+                step_id=row["step_id"],
+                task_id=row["task_id"],
+                status=CHILD_TERMINAL_STATUSES.get(row["task_status"], CHILD_MISSING_STATUS),
+            )
+            for row in rows
+        ]
 
     async def clear_for_run(self, run_id: str, *, conn: AsyncConnection | None = None) -> int:
         """Deactivate every active wait of one run; returns how many moved."""

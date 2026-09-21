@@ -681,3 +681,13 @@ class PlaybookCommandsMixin:
             self._v2_engine(), self.db, ExecutionPrincipal.service("playbook-timeout")
         ).tick(time.time(), limit=100)
         return [{"run_id": run_id, "status": "resumed"} for run_id in resumed]
+
+    async def reconcile_playbook_child_tasks(self) -> list[dict]:
+        """Resume every run whose awaited child task has settled."""
+        from src.commands.principal import ExecutionPrincipal
+        from src.playbooks.engine import ChildTaskReconciler
+
+        resumed = await ChildTaskReconciler(
+            self._v2_engine(), self.db, ExecutionPrincipal.service("playbook-child-task")
+        ).tick(limit=100)
+        return [{"run_id": run_id, "status": "resumed"} for run_id in resumed]

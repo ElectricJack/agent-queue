@@ -21,6 +21,8 @@ claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
 daemon.py          `aq start` / `stop` / `restart`
+dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` commands merge
+                   into it): `aq dashboard serve`, the dashboard server in the foreground
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
 doctor.py          `aq doctor` and `aq costs`
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
@@ -51,8 +53,9 @@ tasks.py           Hand-crafted `aq task` commands needing interactive features
 test_runner.py     `aq test` — pytest behind the box-wide test semaphore
 uninstall.py       `aq uninstall` — plans and removes installer-owned resources from the
                    resume record; destructive scopes are opt-in and confirmed one by one
-update.py          `aq update` — stop the daemon, fast-forward the source checkout, reinstall
-                   and rebuild what changed, restart; rolls back on failure (src/install/update.py)
+update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
+                   reinstall / rebuild / restart to a fresh process on the new code
+                   (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 

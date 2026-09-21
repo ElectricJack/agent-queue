@@ -28,6 +28,7 @@ Then, for the fleet-wide view:
 ```bash
 aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
+aq doctor --check integration.stranded_delegates
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
@@ -224,6 +225,56 @@ the old writer's process is stopped, its checkout clean, or its work published.
 The repair is the guarded integration recovery path, which takes those proofs —
 in a development-mode project, `preserve_stopped_owners` does exactly that on
 each sweep, once the session provider confirms the process is really gone.
+
+## A task will not delete, archive, resume or restart
+
+```text
+Integration operation <id> is cancelled; its delegate is no longer required
+and cannot be resumed or restarted.
+```
+
+An integration operation files *delegate* tasks so someone does a piece of its
+work: a verifier, a repair-stage writer, a candidate-member resolver. When the
+operation is cancelled, superseded by a newer generation, or completes without
+ever needing that delegate, the ticket is obsolete — nothing will schedule it,
+nothing waits on it, and nobody will ever close it.
+
+```bash
+aq doctor --check integration.stranded_delegates          # who is stuck, and why
+aq doctor --check integration.stranded_delegates --fix    # settle all of them
+aq integration release-delegates OPERATION_ID             # settle just one operation's
+```
+
+The fix retires each ticket as a terminal **non-success** — never a
+manufactured pass — and records the operation, its state, the disposition
+(`cancelled` or `superseded`) and what the delegate still held in
+`integration_delegate_releases`. `aq task explain <id>` reads the same facts
+back. Cancelling an operation with `aq integration abort` now does this in the
+same transaction, so only delegates of operations that ended before this shipped
+need the fix.
+
+It settles the *ticket* only. A retained branch owner or workspace lock is
+preserved exactly as found and reported as a named cleanup blocker: releasing
+either needs proof doctor cannot take, and belongs to the guarded integration
+recovery path.
+
+Settling a ticket does not by itself make the task deletable or archivable.
+While integration history still names it — an episode or parent verification
+(for a root), the operation's `verifier_task_id`, or a candidate resolution —
+removal is refused with `integration_owned` naming that table, even after the
+operation is over. That is deliberate for now: those four references keep their
+foreign keys until
+`docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md`
+is revised and approved. A repair-stage writer with no such reference is
+removable once settled.
+
+If the refusal instead names an operation that is `active`, `escalated` or
+`human_required`, the delegate is not stranded — it is owned by work still in
+flight. Stop that work first:
+
+```bash
+aq integration abort <operation-id> --reason "..."
+```
 
 ## A branch origin was never materialized
 

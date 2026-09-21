@@ -60,7 +60,8 @@ def _stage_bundle(root: Path) -> None:
     (dist / "index.html").write_text("<!doctype html><title>AQ</title>\n", encoding="utf-8")
     files = {"index.html": hashlib.sha256((dist / "index.html").read_bytes()).hexdigest()}
     (dist / "aq-dashboard-manifest.json").write_text(
-        json.dumps({"schema_version": 1, "version": "0.1.0", "files": files}), encoding="utf-8"
+        json.dumps({"schema_version": 1, "version": "0.1.0", "base": "/", "files": files}),
+        encoding="utf-8",
     )
 
 

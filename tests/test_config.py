@@ -317,6 +317,74 @@ def test_graph_layout_config_validate_rejects_negative():
     errors = GraphLayoutConfig(reconcile_interval_seconds=-1).validate()
     assert [e.field for e in errors] == ["reconcile_interval_seconds"]
 
+
+def _dashboard_server_config(tmp_path, **sections):
+    from src.config import load_config
+
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.dump({
+        "discord": {"bot_token": "t", "guild_id": "1"},
+        "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
+        **sections,
+    }))
+    return load_config(str(p))
+
+
+def test_dashboard_server_config_defaults(tmp_path):
+    """docs/specs/dashboard-server.md §3.1: on, loopback, port 8082."""
+    cfg = _dashboard_server_config(tmp_path)
+    assert (cfg.dashboard_server.enabled, cfg.dashboard_server.host, cfg.dashboard_server.port) == (
+        True, "127.0.0.1", 8082,
+    )
+
+
+def test_dashboard_server_config_reads_both_spellings(tmp_path):
+    nested = _dashboard_server_config(
+        tmp_path, dashboard={"server": {"enabled": False, "host": "::1", "port": 9090}},
+    )
+    assert (nested.dashboard_server.enabled, nested.dashboard_server.host) == (False, "::1")
+    assert nested.dashboard_server.port == 9090
+    # The config editor writes AppConfig field names as top-level keys.
+    top = _dashboard_server_config(tmp_path, dashboard_server={"port": 9191})
+    assert top.dashboard_server.port == 9191
+    # A nested graph_layout block does not hide a top-level dashboard_server one.
+    both = _dashboard_server_config(
+        tmp_path, dashboard={"graph_layout": {"enabled": True}}, dashboard_server={"port": 9292},
+    )
+    assert both.dashboard_server.port == 9292
+
+
+@pytest.mark.parametrize(
+    ("server", "field", "fragment"),
+    [
+        ({"port": 0}, "port", "between 1 and 65535"),
+        ({"port": 65536}, "port", "between 1 and 65535"),
+        ({"port": 8081}, "port", "mcp_server.port"),
+        ({"host": "dashboard.example.com"}, "host", "IP literal"),
+        ({"host": ""}, "host", "IP literal"),
+    ],
+)
+def test_dashboard_server_config_validation_names_the_key(tmp_path, server, field, fragment):
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError) as caught:
+        _dashboard_server_config(tmp_path, dashboard={"server": server})
+    messages = [str(error) for error in caught.value.errors]
+    assert any(
+        m.startswith(f"[dashboard.server] {field}:") and fragment in m for m in messages
+    ), messages
+
+
+def test_dashboard_server_port_is_checked_against_a_moved_daemon_port(tmp_path):
+    from src.config import ConfigValidationError
+
+    with pytest.raises(ConfigValidationError):
+        _dashboard_server_config(
+            tmp_path, mcp_server={"port": 9000}, dashboard={"server": {"port": 9000}},
+        )
+    moved = _dashboard_server_config(tmp_path, mcp_server={"port": 9000})
+    assert moved.dashboard_server.port == 8082
+
 def test_graph_layout_config_reads_top_level_block(tmp_path):
     """``update_config``/``config_editor`` address sections by AppConfig
     field name and write them as TOP-LEVEL yaml keys, so the loader has to

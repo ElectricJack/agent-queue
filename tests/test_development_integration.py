@@ -707,11 +707,18 @@ async def test_cancel_retires_verifier_with_stop_proof(setup, operation_state, v
             == "cancelled"
         )
     assert (await service.rows("p"))[-1]["evidence"]["kind"] == "cancel_preserving"
+    assert sorted(result["released_delegates"]) == ["repair", "verifier"]
+    # Cancelling settles the delegates in its own transaction rather than
+    # leaving them PAUSED for a later tick: terminal, non-success, and never
+    # runnable again.  The hold it placed is kept as evidence on the release.
     for task_id in ("repair", "verifier"):
         task = await db.get_task(task_id)
-        assert task.status == TaskStatus.PAUSED
+        assert task.status == TaskStatus.FAILED
         assert task.resume_after is None
-        assert (await db.get_task_meta(task_id, "manual_pause"))["cleanup_pending"] is False
+        assert await db.get_task_meta(task_id, "manual_pause") is None
+        record = await db.get_task_meta(task_id, "integration_retirement")
+        assert record["disposition"] == "cancelled"
+        assert record["previous_hold"]["cleanup_pending"] is False
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(operations.c.verifier_task_id)) == "verifier"
     before_rows = await service.rows("p")
@@ -1015,7 +1022,7 @@ async def _repair_chain(db, service, depth):
     return previous
 
 
-async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
+async def test_archived_repair_source_does_not_wedge_the_publisher(setup, monkeypatch):
     """The exact incident: manifest -> source closes -> source archived -> tick.
 
     ``development-repair-8d6e0c872accc17c1d65`` was a generation-3 repair that
@@ -1024,14 +1031,27 @@ async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
     repair and raised ``repair source ... is not in project``, which aborted
     the whole sweep for five months of ticks.
     """
+    from src.database.queries.hierarchy_queries import HierarchyError
+
     db, service, _source, _remote, _repo = setup
     await feature(setup, "original")
     previous = await _repair_chain(db, service, 3)
 
     await _park(service, "wedged", [{"task_id": previous, "source_sha": "a" * 40}])
 
-    # The generation-3 repair closes pass and is archived.
+    # The generation-3 repair closes pass.  Archive now refuses a task an
+    # unsettled batch still names ...
     await db.update_task(previous, status=TaskStatus.COMPLETED.value)
+    with pytest.raises(HierarchyError, match="development batch wedged"):
+        await db.archive_task(previous)
+
+    # ... but the incident's repair was archived by a daemon that predated that
+    # guard, and such rows are still in installs, so the publisher must survive
+    # them.  Archive it the way that daemon did.
+    async def _no_hold(ids, project_id, *, conn):
+        return None
+
+    monkeypatch.setattr(db, "_development_integration_hold", _no_hold)
     assert await db.archive_task(previous)
     assert await db.get_task(previous) is None
     assert (await db.get_archived_task(previous))["status"] == TaskStatus.COMPLETED.value

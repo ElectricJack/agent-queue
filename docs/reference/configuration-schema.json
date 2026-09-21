@@ -215,6 +215,30 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "dashboard_server": {
+      "additionalProperties": false,
+      "default": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8082
+      },
+      "properties": {
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "host": {
+          "default": "127.0.0.1",
+          "type": "string"
+        },
+        "port": {
+          "default": 8082,
+          "type": "integer"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "data_dir": {
       "default": "/home/jkern/.agent-queue",
       "type": "string",
@@ -2088,6 +2112,7 @@
       "agents_config",
       "archive",
       "auto_task",
+      "dashboard_server",
       "docs",
       "global_token_budget_daily",
       "graph_layout",

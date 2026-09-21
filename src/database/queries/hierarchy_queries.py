@@ -803,6 +803,28 @@ class HierarchyQueryMixin:
         ).first()
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
+        if mutation in {"delete", "archive"}:
+            # A running operation refuses first, naming itself and the
+            # command that lets go.  This also covers
+            # ``integration_repair_stages.repair_task_id``, which has no
+            # foreign key and is not a ``refused`` reference.  Finished
+            # history is refused just below by
+            # ``assert_no_integration_task_references``.
+            from src.integration.delegate_release import RELEASE_COMMAND, live_integration_owner
+
+            owner = await live_integration_owner(conn, list(ids))
+            if owner is not None:
+                raise HierarchyError(
+                    "integration_owned",
+                    (
+                        f"integration operation {owner['operation_id']} is "
+                        f"{owner['state']} and owns this task as its {owner['role']}; "
+                        f"{mutation} is refused while it runs. Stop it with "
+                        f"`aq integration abort {owner['operation_id']} --reason \"...\"`, "
+                        f"then release its delegates with `{RELEASE_COMMAND}`"
+                    ),
+                    {"integration_operation": owner},
+                )
         rollover_operation = None
         if mutation == "reopen":
             checkpoint_episode = (

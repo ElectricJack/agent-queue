@@ -1511,10 +1511,11 @@ class Orchestrator(
 
             if self._command_handler is None:
                 raise RuntimeError("Playbooks enabled before command handler was wired")
-            installed = ensure_reviewed_playbook_bundles(self.config.data_dir)
-            if installed:
+            written = ensure_reviewed_playbook_bundles(self.config.data_dir)
+            if written:
                 logger.info(
-                    "Installed reviewed required playbook bundles: %s", ", ".join(installed)
+                    "Seeded or refreshed reviewed playbook bundles in the vault: %s",
+                    ", ".join(written),
                 )
             self.required_playbook_reconciler = RequiredPlaybookReconciler(
                 config=self.config, db=self.db, handler=self._command_handler
@@ -2109,6 +2110,53 @@ class Orchestrator(
             replay = await self.required_playbook_reconciler.replay_route_needed_events()
             if replay.get("errors"):
                 logger.error("Required playbook late replay errors: %s", replay["errors"])
+
+    async def refresh_required_playbook_status(self) -> dict[str, Any]:
+        """Recompute required-playbook readiness from the activations as they are now.
+
+        Readiness used to be a snapshot taken in :meth:`initialize`, so
+        ``/health`` kept answering 503 for a required activation an operator
+        had already repaired, and the runtime kept treating routing as down,
+        until the daemon restarted.  The health endpoint and every activation
+        write call this instead.  Read-only; a failure keeps the last verdict.
+        """
+        reconciler = getattr(self, "required_playbook_reconciler", None)
+        if reconciler is None:
+            return self.required_playbook_status
+        try:
+            status = await reconciler.refresh_status()
+        except Exception:
+            logger.warning("Could not refresh required playbook status", exc_info=True)
+            return self.required_playbook_status
+        self.required_playbook_status = status
+        if self.playbook_manager is not None:
+            try:
+                await self.playbook_manager.apply_required_playbook_status(status)
+            except Exception:
+                logger.warning(
+                    "Could not publish required playbook status to the runtime", exc_info=True
+                )
+        return status
+
+    async def reconcile_required_playbooks(self) -> dict[str, Any]:
+        """Re-run the startup reconcile: import shipped bundles, repair activations.
+
+        For ``aq doctor --check playbooks.reviewed_bundles --fix``, which
+        refreshes the vault bundles and then needs them imported and a broken
+        activation re-pointed without waiting for a restart.
+        """
+        reconciler = getattr(self, "required_playbook_reconciler", None)
+        if reconciler is None:
+            return self.required_playbook_status
+        self.required_playbook_status = await reconciler.reconcile()
+        if self.playbook_manager is not None:
+            await self.playbook_manager.apply_required_playbook_status(
+                self.required_playbook_status
+            )
+        replay = await reconciler.replay_route_needed_events()
+        if replay.get("errors"):
+            logger.error("Required playbook replay errors: %s", replay["errors"])
+        return self.required_playbook_status
 
     async def _recover_stale_state(self, skip_task_ids: set[str] | None = None) -> None:
         """Reset any in-flight work from a previous daemon run.
@@ -2746,6 +2794,11 @@ class Orchestrator(
 
             # 11. V1 memory compaction removed (roadmap 8.6).
             # Memory lifecycle is now managed by MemoryPlugin.
+
+            # 12a. Resume playbook runs suspended on a child task that has
+            #      settled.  Before the timeout sweep on purpose: a child that
+            #      finished in the same tick as its deadline is a completion.
+            await self._reconcile_playbook_child_tasks()
 
             # 12. Check paused playbook runs for timeout (roadmap 5.4.4).
             #     Sweeps paused runs and handles expired timeouts — either

@@ -1280,6 +1280,101 @@ class TestArchiveWithIntegrationBookkeeping:
         assert blocked.roots == []
 
 
+async def _seed_settled_batch_repair(db: Database, verifier_task_id: str) -> str:
+    """A *completed* batch repair operation whose verifier was *verifier_task_id*.
+
+    Settled on purpose: ``archive_task``'s active-repair guard only looks at
+    ``active``/``escalated``/``human_required`` operations, so a refusal can
+    only come from the foreign-key guard.
+    """
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_repair_operations
+
+    operation_id = f"op-{verifier_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id=operation_id,
+                target_kind="batch",
+                batch_id="b-1",
+                parent_task_id=None,
+                episode_id="ep-batch",
+                active_stage=0,
+                state="completed",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="v1",
+                verifier_task_id=verifier_task_id,
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    return operation_id
+
+
+class TestArchiveIntegrationReferenceScope:
+    """How far the integration-reference refusal reaches.
+
+    The class above and ``tests/test_hierarchy_archive_delete.py`` cover a task
+    the bookkeeping names directly.  These pin the rest: a named *descendant*
+    holds its root in either integration mode, the explicit bulk path skips the
+    held task like the hourly sweep does, and a batch repair's verifier is
+    named as well as a parent repair's.
+    """
+
+    @pytest.mark.parametrize("hierarchical", [False, True], ids=["legacy", "hierarchy"])
+    async def test_a_held_descendant_pins_its_root(self, db, hierarchical):
+        """The subtree moves together, so a child the bookkeeping names holds the root."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "kid", pid="p-hier", status=TaskStatus.COMPLETED, parent_task_id="root"
+        )
+        await _seed_parent_episode(db, "kid")
+        if hierarchical:
+            await _enable_hierarchy_mode(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("root")
+        assert exc.value.code == "integration_owned"
+        assert exc.value.context["references"] == [
+            {"task_id": "kid", "table": "integration_parent_episodes", "column": "parent_task_id"}
+        ]
+        assert await db.get_task("root") is not None
+        assert await db.get_task("kid") is not None
+
+    async def test_archive_completed_tasks_skips_the_held_task(self, db):
+        """The explicit bulk command archives the rest instead of stopping."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "held", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "other", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "held")
+
+        archived = await db.archive_completed_tasks(project_id="p-hier")
+
+        assert archived == ["other"]
+        assert await db.get_archived_task("other") is not None
+        assert await db.get_task("held") is not None
+        assert await db.get_archived_task("held") is None
+
+    async def test_a_settled_batch_repairs_verifier_is_refused(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-1", status=TaskStatus.COMPLETED)
+        await _seed_settled_batch_repair(db, "t-1")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-1")
+        assert exc.value.code == "integration_owned"
+        assert "integration_repair_operations(t-1)" in exc.value.detail
+        assert await db.get_task("t-1") is not None
+        assert await db.get_archived_task("t-1") is None
+
+
 class TestArchiveRefusalRecord:
     """The sweep records why each root it skipped was refused (F3)."""
 
@@ -1557,3 +1652,226 @@ class TestFailureSignature:
         assert "\n" not in signature
         assert signature.startswith("RuntimeError: first line")
         assert len(signature) < 250
+
+
+# ---------------------------------------------------------------------------
+# Development integration owns its manifest members and repair sources
+# ---------------------------------------------------------------------------
+
+
+async def _seed_development_delivery(
+    db: Database,
+    delivery_id: str,
+    *,
+    state: str,
+    task_ids: list[str],
+    project_id: str = "p-1",
+    created_at: float = 1.0,
+) -> None:
+    """Insert one ``development_deliveries`` row naming *task_ids*."""
+    from sqlalchemy import insert
+
+    from src.database.tables import development_deliveries
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(development_deliveries).values(
+                id=delivery_id,
+                project_id=project_id,
+                repository_id="repo",
+                target_ref="refs/heads/main",
+                expected_sha=None,
+                prepared_sha=None,
+                state=state,
+                manifest=[{"task_id": tid, "source_sha": "a" * 40} for tid in task_ids],
+                evidence={},
+                reason="development batch",
+                created_at=created_at,
+                updated_at=created_at,
+            )
+        )
+
+
+async def _set_delivery_state(db: Database, delivery_id: str, state: str) -> None:
+    from sqlalchemy import update
+
+    from src.database.tables import development_deliveries
+
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(development_deliveries)
+            .where(development_deliveries.c.id == delivery_id)
+            .values(state=state)
+        )
+
+
+async def _backdate(db: Database, *task_ids: str, seconds: float = 86400) -> None:
+    old = time.time() - seconds
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"),
+                {"t": old, "id": tid},
+            )
+
+
+class TestDevelopmentIntegrationArchiveGuard:
+    """A development batch or repair still owes work to the tasks it names."""
+
+    @pytest.fixture
+    async def handler(self, db, tmp_path):
+        config = AppConfig(
+            discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+            workspace_dir=str(tmp_path / "workspaces"),
+            data_dir=str(tmp_path / "data"),
+            database=DatabaseConfig(url=lease_dsn("test.db")),
+        )
+        orchestrator = Orchestrator(config)
+        orchestrator.db = db
+        orchestrator.git = MagicMock()
+        return CommandHandler(orchestrator, config)
+
+    @pytest.mark.parametrize("state", ["prepared", "publishing", "parked"])
+    async def test_unfinished_batch_member_is_refused_and_names_the_batch(self, db, state):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state=state, task_ids=["t-src"])
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-src")
+        assert exc.value.code == "integration_owned"
+        assert "batch-1" in exc.value.detail
+        assert state in exc.value.detail
+        assert "t-src" in exc.value.detail
+        assert await db.get_task("t-src") is not None
+
+    @pytest.mark.parametrize("state", ["delivered", "adopted", "cancelled"])
+    async def test_member_is_archivable_once_the_batch_settles(self, db, state):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+        await _set_delivery_state(db, "batch-1", state)
+
+        assert await db.archive_task("t-src") is True
+        assert await db.get_archived_task("t-src") is not None
+
+    async def test_an_unrelated_task_is_untouched_by_an_open_batch(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-other", status=TaskStatus.COMPLETED, title="Other")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+
+        assert await db.archive_task("t-other") is True
+
+    async def test_a_named_descendant_holds_the_whole_subtree(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-parent", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "t-child", status=TaskStatus.COMPLETED, title="Child", parent_task_id="t-parent"
+        )
+        await _seed_development_delivery(db, "batch-1", state="prepared", task_ids=["t-child"])
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-parent")
+        assert exc.value.code == "integration_owned"
+        assert "t-child" in exc.value.detail
+
+    async def test_auto_archive_sweep_skips_the_member_then_takes_it(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-free", status=TaskStatus.COMPLETED, title="Free")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+        await _backdate(db, "t-src", "t-free")
+
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == [
+            "t-free"
+        ]
+        assert await db.get_task("t-src") is not None
+
+        await _set_delivery_state(db, "batch-1", "delivered")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == [
+            "t-src"
+        ]
+
+    async def test_manual_archive_command_reports_integration_owned(self, handler, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_development_delivery(db, "batch-1", state="publishing", task_ids=["t-src"])
+
+        result = await handler.execute("archive_task", {"task_id": "t-src"})
+        assert result["code"] == "hierarchy.integration_owned"
+        assert "batch-1" in result["error"]
+        assert await db.get_task("t-src") is not None
+
+        await _set_delivery_state(db, "batch-1", "delivered")
+        assert (await handler.execute("archive_task", {"task_id": "t-src"}))["archived"] == "t-src"
+
+    async def test_bulk_archive_skips_the_member_and_reports_it(self, handler, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-free", status=TaskStatus.COMPLETED, title="Free")
+        await _seed_development_delivery(db, "batch-1", state="parked", task_ids=["t-src"])
+
+        result = await handler.execute("archive_task", {"project_id": "p-1"})
+        assert result["archived_ids"] == ["t-free"]
+        assert result["skipped"] == [
+            {
+                "task_id": "t-src",
+                "code": "hierarchy.integration_owned",
+                "detail": result["skipped"][0]["detail"],
+            }
+        ]
+        assert "batch-1" in result["skipped"][0]["detail"]
+
+    async def test_open_development_repair_holds_its_sources(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "development-repair-abc", status=TaskStatus.READY, title="Repair"
+        )
+        await db.set_task_meta(
+            "development-repair-abc",
+            "development_repair_sources",
+            [{"task_id": "t-src", "source_sha": "b" * 40}],
+        )
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("t-src")
+        assert exc.value.code == "integration_owned"
+        assert "development-repair-abc" in exc.value.detail
+        assert "t-src" in exc.value.detail
+
+    async def test_source_is_archivable_once_the_repair_is_terminal(self, db):
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(
+            db, "development-repair-abc", status=TaskStatus.READY, title="Repair"
+        )
+        await db.set_task_meta(
+            "development-repair-abc",
+            "development_repair_sources",
+            [{"task_id": "t-src", "source_sha": "b" * 40}],
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE tasks SET status = 'COMPLETED' WHERE id = :id"),
+                {"id": "development-repair-abc"},
+            )
+
+        assert await db.archive_task("t-src") is True
+
+    async def test_non_list_metadata_values_do_not_break_the_guard(self, db):
+        """Every task metadata value is JSON, but most are scalars, not manifests."""
+        await _seed_project(db)
+        await _seed_task(db, "t-src", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "t-noise", status=TaskStatus.READY, title="Noise")
+        await db.set_task_meta("t-noise", "needs_attention", "session_exited_open")
+        await db.set_task_meta("t-noise", "development_repair_sources", "not-a-manifest")
+
+        assert await db.archive_task("t-src") is True
