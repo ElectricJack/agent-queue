@@ -840,18 +840,30 @@ class SessionSpecBuilder:
                 class_id,
             )
             return {}
+        from src.intelligence_classes import resolve_class
+
         provider = (
             getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
         )
         if not provider:
+            # A provider-agnostic CLI (OpenCode's ``--model`` takes
+            # ``provider/model``) carries the vendor inside the model string,
+            # so naming a vendor on the harness asserts something that need
+            # not be true. Fall back to a slice keyed by the harness id before
+            # giving up. This is deliberately a *fallback*: a harness whose
+            # provider is known never reaches here, so the codex slice's
+            # id-and-command strictness below is untouched.
+            harness_id = getattr(harness, "id", "")
+            slice_ = resolve_class(cls, harness_id) if harness_id else {}
+            if str(slice_.get("model") or "").strip():
+                return slice_
             logger.warning(
-                "intelligence-class '%s': could not infer provider for harness %r; "
-                "no launch model resolved",
+                "intelligence-class '%s': could not infer a provider for harness "
+                "%r and no slice is keyed by its id; no launch model resolved",
                 class_id,
-                getattr(harness, "id", "") or getattr(harness, "command", ""),
+                harness_id or getattr(harness, "command", ""),
             )
             return {}
-        from src.intelligence_classes import resolve_class
 
         # Codex account models are a separate namespace from OpenAI API
         # defaults. The optional CLI slice never changes provider reporting or

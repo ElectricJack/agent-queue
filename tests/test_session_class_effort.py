@@ -150,7 +150,7 @@ def test_invalid_codex_reasoning_is_not_sent_to_the_cli(effort, caplog):
 ])
 def test_openai_mapping_does_not_invent_flags_for_other_commands(harness_id, command):
     harness = Harness(id=harness_id, command=command, model_flag="-m")
-    harness = SimpleNamespace(**vars(harness), env_map=harness.env_map, provider="openai")
+    harness = SimpleNamespace(**{**vars(harness), "provider": "openai"}, env_map=harness.env_map)
     spec = build(harness, level="high")
     assert spec.command[spec.command.index("-m") + 1] == "gpt-5"
     assert "-c" not in spec.command
