@@ -18,7 +18,10 @@ Safety, in the order it is applied:
   undone by moving the code back.  A backup that fails stops the update before
   the daemon is stopped.
 * **Stop the daemon, keep the agents.**  `aq stop --keep-sessions` leaves agent
-  sessions running; the restarted daemon re-adopts them.
+  sessions running; the restarted daemon re-adopts them.  The dashboard server
+  is stopped first, and it is stopped again before a rollback moves the code
+  back, so no dashboard server is ever left running code the checkout no
+  longer holds (docs/specs/dashboard-server.md §6.2).
 * **Only fast-forward.**  The checkout moves forward to its upstream and never
   merges; a shallow installer clone is reset to the upstream tip, which is safe
   because the tree was verified clean.
@@ -68,7 +71,7 @@ from .dashboard import (
     source_fingerprint,
     stamp_path,
 )
-from .onboarding import DASHBOARD_PATH, HttpProbe, _read_config, api_base_url, http_status
+from .onboarding import HttpProbe, _read_config, api_base_url, http_status
 from .redaction import redact
 
 #: Seconds `aq stop` / `aq start` may take; both wait on the daemon themselves.
@@ -367,12 +370,19 @@ def _distribution_present(name: str) -> bool:
     return True
 
 
+#: ``/__aq/health`` of whatever answers at a dashboard server URL: the identity
+#: when it is ours, else ``None``.
+IdentityProbe = Callable[[str], "dict | None"]
+
+
 @dataclass
 class Host:
     """Everything `apply_update` reaches outside itself, so a test can replace it."""
 
     execute: CommandRunner = run_command
     probe: HttpProbe = http_status
+    #: ``None`` probes for real (:func:`src.dashboard_server.process.probe_identity`).
+    identify: IdentityProbe | None = None
     python: str = sys.executable
     aq: str = "aq"
     system: str = sys.platform
@@ -428,10 +438,50 @@ def _daemon_address(host: Host) -> tuple[str, Callable[[], bool]]:
     return base, healthy
 
 
+@dataclass(frozen=True)
+class _DashboardServer:
+    """The dashboard server as `aq update` sees it: where it answers, and whether it is managed."""
+
+    #: ``None`` when ``dashboard.server`` cannot be read: nothing to stop or check.
+    url: str | None
+    #: ``dashboard.server.enabled`` -- only a managed server is started and validated.
+    managed: bool
+    identify: IdentityProbe
+
+    def identity(self) -> dict | None:
+        return self.identify(self.url) if self.url is not None else None
+
+    def up(self) -> bool:
+        return self.identity() is not None
+
+
+def _dashboard_server(host: Host) -> _DashboardServer:
+    # Imported on first use, which `_apply_locked` makes before the code moves:
+    # a module first imported after the pull would be the new code running in
+    # this old process.  The finisher imports it after reinstalling.
+    from src.dashboard_server.process import OURS, configured, probe_identity
+
+    config = configured(host.state_dir / "config.yaml")
+
+    def identify(url: str) -> dict | None:
+        if host.identify is not None:
+            return host.identify(url)
+        kind, identity = probe_identity(url)
+        return identity if kind == OURS else None
+
+    return _DashboardServer(url=config.url, managed=config.enabled, identify=identify)
+
+
+def dashboard_server_running(host: Host) -> bool:
+    """Whether a dashboard server answers as ours where this install's config puts it."""
+    return _dashboard_server(host).up()
+
+
 def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool) -> UpdateReport:
     checkout = plan.checkout
     config_path = host.state_dir / "config.yaml"
     base, healthy = _daemon_address(host)
+    dashboard = _dashboard_server(host)
 
     # -- 1. back up, while nothing has been stopped yet ---------------------
     if plan.migrations and backup:
@@ -451,8 +501,20 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
         report.backup = destination
         step("Back up the database", True, str(destination))
 
-    # -- 2. stop the daemon, keeping agent sessions ------------------------
+    # -- 2. stop the dashboard server, then the daemon (keeping agents) -----
+    # The dashboard server first: refusing after the daemon was stopped would
+    # leave it stopped, and refusing now changes nothing.
     was_running = healthy()
+    dashboard_was_running = dashboard.up()
+    if dashboard_was_running:
+        stopped = host.execute([host.aq, "dashboard", "stop"], timeout=DAEMON_TIMEOUT)
+        if not stopped.ok or dashboard.up():
+            step("Stop the dashboard server", False, stopped.message())
+            raise UpdateRefused(
+                "the dashboard server did not stop, so the update did not start",
+                "Nothing was changed. Run `aq dashboard stop`, then rerun `aq update`.",
+            )
+        step("Stop the dashboard server", True)
     if was_running:
         stopped = host.execute([host.aq, "stop", "--keep-sessions"], timeout=DAEMON_TIMEOUT)
         for _ in range(20):
@@ -480,18 +542,28 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
 
         # -- 4-6. dependencies, dashboard, daemon: the new code's job ------
         handed_off = True
-        _finish_on_new_code(plan, host, step, start_daemon=was_running)
+        _finish_on_new_code(
+            plan, host, step,
+            start_daemon=was_running,
+            # `aq start` brings the dashboard server up with the daemon; alone,
+            # it is restarted only if it was running before.
+            start_dashboard_server=dashboard_was_running and not was_running,
+        )
     except _StepFailed as failure:
         step(failure.name, False, failure.message)
         return _recover(
-            plan, host, report, step, failure, was_running, failure.daemon_started, base, healthy
+            plan, host, report, step, failure, was_running, failure.daemon_started, base, healthy,
+            dashboard_was_running=dashboard_was_running,
         )
     except Exception as error:  # noqa: BLE001 - the daemon is stopped; never leave it so
         failure = _StepFailed("Update AQ", f"unexpected {_describe(error)}")
         step(failure.name, False, failure.message)
         # Nothing says how far the finisher got, so assume the furthest.
         started = handed_off and was_running
-        return _recover(plan, host, report, step, failure, was_running, started, base, healthy)
+        return _recover(
+            plan, host, report, step, failure, was_running, started, base, healthy,
+            dashboard_was_running=dashboard_was_running,
+        )
 
     report.outcome = OUTCOME_UPDATED
     return report
@@ -510,7 +582,9 @@ def _describe(error: BaseException) -> str:
     return redact(f"{type(error).__name__}: {error}")
 
 
-def finish_command(plan: UpdatePlan, host: Host, *, start_daemon: bool) -> list[str]:
+def finish_command(
+    plan: UpdatePlan, host: Host, *, start_daemon: bool, start_dashboard_server: bool = False
+) -> list[str]:
     """The finisher's command line.  Arguments are only ever added, never changed."""
     argv = [
         host.python,
@@ -535,10 +609,14 @@ def finish_command(plan: UpdatePlan, host: Host, *, start_daemon: bool) -> list[
     ]
     if start_daemon:
         argv.append("--start-daemon")
+    if start_dashboard_server:
+        argv.append("--start-dashboard-server")
     return argv
 
 
-def _finish_on_new_code(plan: UpdatePlan, host: Host, step, *, start_daemon: bool) -> None:
+def _finish_on_new_code(
+    plan: UpdatePlan, host: Host, step, *, start_daemon: bool, start_dashboard_server: bool = False
+) -> None:
     """Run the post-pull steps in a fresh process started from the new checkout.
 
     `-m` puts the working directory first on the module path, so the `src` the
@@ -546,7 +624,9 @@ def _finish_on_new_code(plan: UpdatePlan, host: Host, step, *, start_daemon: boo
     the copy of the previous version this process holds.
     """
     output = host.execute(
-        finish_command(plan, host, start_daemon=start_daemon),
+        finish_command(
+            plan, host, start_daemon=start_daemon, start_dashboard_server=start_dashboard_server
+        ),
         timeout=FINISH_TIMEOUT,
         cwd=str(plan.checkout),
     )
@@ -621,17 +701,74 @@ def _rebuild_dashboard(host: Host, checkout: Path, step) -> None:
     step("Rebuild the dashboard", True)
 
 
-def _start_daemon(host: Host, base: str, checkout: Path, healthy) -> None:
+def _start_daemon(
+    host: Host, base: str, checkout: Path, healthy, *, require_dashboard_server: bool = True
+) -> str | None:
+    """`aq start` the daemon and validate it; returns the dashboard server URL it validated.
+
+    `aq start --no-dashboard` also starts the dashboard server (the flag only
+    skips the Vite prompt), so a healthy start is the daemon's ``/health`` plus
+    the dashboard server's identity and ``GET /``.  The daemon itself is never
+    probed for browser content.  ``require_dashboard_server=False`` is for a
+    rollback to a state in which the dashboard server was not running anyway:
+    it is started, but not failing it is not what restores that state.
+    """
     started = host.execute([host.aq, "start", "--no-dashboard"], timeout=DAEMON_TIMEOUT)
     if not started.ok or not healthy():
         raise _StepFailed("Start the daemon", started.message() or "it did not answer /health")
-    if bundle_directory(checkout).is_dir():
-        status = host.probe(f"{base}{DASHBOARD_PATH}/")
-        if status is None or status >= 400:
-            raise _StepFailed("Start the daemon", "the daemon is up but not serving the dashboard")
+    try:
+        return _check_dashboard_server(host, checkout)
+    except _StepFailed:
+        if require_dashboard_server:
+            raise
+        return None
 
 
-def _recover(plan, host: Host, report, step, failure, was_running, started_new, base, healthy):
+def _start_dashboard_server(host: Host, checkout: Path) -> str | None:
+    """`aq dashboard start` alone -- the daemon was not running -- and validate it."""
+    started = host.execute([host.aq, "dashboard", "start"], timeout=DAEMON_TIMEOUT)
+    if not started.ok:
+        raise _StepFailed("Start the dashboard server", started.message())
+    return _check_dashboard_server(host, checkout)
+
+
+def _check_dashboard_server(host: Host, checkout: Path) -> str | None:
+    """The dashboard server's URL once it is validated, or ``None`` when there is none to check.
+
+    None to check: a contributor checkout with no bundle (it runs Vite), or
+    ``dashboard.server.enabled: false``.  Otherwise it must answer
+    ``/__aq/health`` as ours with a verified bundle, and ``GET /`` with 200.
+    """
+    if not bundle_directory(checkout).is_dir():
+        return None
+    dashboard = _dashboard_server(host)
+    if not dashboard.managed or dashboard.url is None:
+        return None
+    log = host.state_dir / "dashboard-server.log"
+    identity = dashboard.identity()
+    if identity is None:
+        raise _StepFailed(
+            "Start the dashboard server",
+            f"nothing answers as the dashboard server at {dashboard.url}; see {log}",
+        )
+    bundle = identity.get("bundle")
+    if not (isinstance(bundle, dict) and bundle.get("verified") is True):
+        raise _StepFailed(
+            "Start the dashboard server", "the dashboard server reports no verified bundle"
+        )
+    status = host.probe(dashboard.url)
+    if status != 200:
+        raise _StepFailed(
+            "Start the dashboard server",
+            f"the dashboard server answered {status or 'nothing'} for {dashboard.url}",
+        )
+    return dashboard.url
+
+
+def _recover(
+    plan, host: Host, report, step, failure, was_running, started_new, base, healthy,
+    *, dashboard_was_running: bool = False,
+):
     checkout = plan.checkout
     log = host.state_dir / "daemon.log"
     if plan.migrations and started_new:
@@ -645,6 +782,22 @@ def _recover(plan, host: Host, report, step, failure, was_running, started_new, 
             f"{backup}"
         )
         return report
+
+    dashboard = _dashboard_server(host)
+    if dashboard.up():
+        # The new code's dashboard server: stopped while the checkout still
+        # holds the code it runs, so none is orphaned by the move back.
+        host.execute([host.aq, "dashboard", "stop"], timeout=DAEMON_TIMEOUT)
+        if dashboard.up():
+            report.outcome = OUTCOME_FAILED
+            report.remediation = (
+                f"{failure.name} failed ({failure.message}), and the dashboard server it had "
+                f"started would not stop, so the code was left at {plan.target[:9]}. Run "
+                f"`aq dashboard stop`, `aq stop`, `git -C {checkout} reset --hard "
+                f"{plan.current}` and `aq start`."
+            )
+            step("Stop the new dashboard server", False)
+            return report
 
     if healthy():
         # The new daemon came up and something after that failed.  `aq start`
@@ -680,8 +833,13 @@ def _recover(plan, host: Host, report, step, failure, was_running, started_new, 
             _install_dependencies(host, checkout)
         _rebuild_dashboard(host, checkout, step)
         if was_running:
-            _start_daemon(host, base, checkout, healthy)
+            _start_daemon(
+                host, base, checkout, healthy, require_dashboard_server=dashboard_was_running
+            )
             step("Start the previous daemon", True)
+        elif dashboard_was_running:
+            _start_dashboard_server(host, checkout)
+            step("Start the previous dashboard server", True)
     except Exception as error:  # noqa: BLE001 - reported with where things stand, never raised
         again = (
             error
@@ -704,7 +862,9 @@ def _recover(plan, host: Host, report, step, failure, was_running, started_new, 
     return report
 
 
-def describe(plan: UpdatePlan, *, backup: bool, daemon_running: bool) -> list[str]:
+def describe(
+    plan: UpdatePlan, *, backup: bool, daemon_running: bool, dashboard_server_running: bool = False
+) -> list[str]:
     """What the update is about to do, for a person deciding whether to go ahead."""
     lines = [
         f"{len(plan.subjects) or 'new'} commit(s) from {plan.upstream} "
@@ -719,6 +879,8 @@ def describe(plan: UpdatePlan, *, backup: bool, daemon_running: bool) -> list[st
         lines.append("Reinstalls Python dependencies")
     if plan.dashboard_inputs:
         lines.append("Rebuilds the dashboard")
+    if dashboard_server_running:
+        lines.append("Stops the dashboard server for the update and starts it again")
     if daemon_running:
         lines.append(
             "Stops the daemon for the update and starts it again; running agents keep running"
@@ -744,6 +906,7 @@ __all__ = [
     "UpdateReport",
     "apply_update",
     "backup_database",
+    "dashboard_server_running",
     "describe",
     "find_pg_dump",
     "finish_command",

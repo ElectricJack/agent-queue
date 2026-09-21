@@ -76,7 +76,9 @@ def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
     # added after the audit lands there and does not turn this gate red on its own.
     counts = inventory["counts"]["acceptance_status"]
     assert {k: counts[k] for k in ("working", "broken", "obsolete", "unsupported")} == {
-        "working": 55,
+        # +4: `aq dashboard start|stop|restart|status`, earned by
+        # tests/test_cli_dashboard_server.py against a real server process.
+        "working": 59,
         "broken": 0,
         "obsolete": 1,
         "unsupported": 0,

@@ -64,6 +64,10 @@ class DashboardBundle:
     files: dict[str, str]
     #: The manifest's ``base``; ``None`` for a bundle built for the daemon mount.
     base: str | None
+    #: SHA-256 of the manifest file itself.  ``version`` is the project version,
+    #: which every rebuild of one release shares, so this is what tells a
+    #: running server's build from the one installed now (:func:`manifest_sha256`).
+    manifest_sha256: str = ""
 
 
 def installed_version() -> str:
@@ -82,9 +86,26 @@ def dashboard_directory() -> Path:
     return Path(str(package_root.joinpath("dist")))
 
 
-def _read_manifest(directory: Path) -> dict[str, Any]:
+def manifest_sha256(directory: Path | None = None) -> str | None:
+    """SHA-256 of the installed manifest's bytes, or ``None`` when there is none.
+
+    The fingerprint of one build: every file's digest is in the manifest, so
+    two builds that differ anywhere differ here.  Deliberately not a
+    verification -- ``aq status`` and ``aq doctor`` use it to ask "is the
+    running server serving what is installed?", and the server verifies what
+    it serves when it starts.
+    """
     try:
-        payload = json.loads((directory / MANIFEST_NAME).read_text(encoding="utf-8"))
+        raw = ((directory or dashboard_directory()) / MANIFEST_NAME).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _read_manifest(directory: Path) -> tuple[dict[str, Any], str]:
+    try:
+        raw = (directory / MANIFEST_NAME).read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError(f"dashboard manifest is unavailable or invalid: {error}") from error
     if not isinstance(payload, dict) or payload.get("schema_version") != 1:
@@ -93,7 +114,7 @@ def _read_manifest(directory: Path) -> dict[str, Any]:
         raise ValueError("dashboard manifest has no artifact version")
     if not isinstance(payload.get("files"), dict) or not payload["files"]:
         raise ValueError("dashboard manifest has no file inventory")
-    return payload
+    return payload, hashlib.sha256(raw).hexdigest()
 
 
 def _is_safe_relative(relative: str) -> bool:
@@ -107,7 +128,7 @@ def _is_safe_relative(relative: str) -> bool:
 
 def _verify(directory: Path | None) -> tuple[DashboardBundle, dict[str, Any]]:
     directory = directory or dashboard_directory()
-    payload = _read_manifest(directory)
+    payload, digest = _read_manifest(directory)
     try:
         root = directory.resolve(strict=True)
     except OSError as error:
@@ -139,6 +160,7 @@ def _verify(directory: Path | None) -> tuple[DashboardBundle, dict[str, Any]]:
         version=payload["version"],
         files=files,
         base=base if isinstance(base, str) else None,
+        manifest_sha256=digest,
     )
     return bundle, payload
 

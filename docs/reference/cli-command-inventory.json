@@ -2,27 +2,27 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 350,
+    "leaf_commands": 354,
     "registration": {
       "generated": 245,
-      "handwritten": 105
+      "handwritten": 109
     },
     "ownership": {
-      "core": 311,
+      "core": 315,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 349
+      "supported": 353
     },
     "evidence_level": {
-      "behavioral": 10,
+      "behavioral": 14,
       "dispatch": 245,
       "registration": 95
     },
     "acceptance_status": {
-      "working": 55,
+      "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
@@ -863,6 +863,36 @@
       }
     },
     {
+      "path": "aq dashboard restart",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_restart",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq dashboard serve",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -884,6 +914,36 @@
         "optional": [
           "--host",
           "--port",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard start",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_start",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -1021,6 +1081,66 @@
         ],
         "optional": [
           "--subject",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard status",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_status",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard stop",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_stop",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -6866,6 +6986,7 @@
         "required": [],
         "optional": [
           "--no-dashboard",
+          "--no-dashboard-server",
           "--json",
           "--brief",
           "--api-url"
@@ -7263,6 +7384,7 @@
         "required": [],
         "optional": [
           "--no-dashboard",
+          "--no-dashboard-server",
           "--json",
           "--brief",
           "--api-url"
@@ -7323,6 +7445,7 @@
         "required": [],
         "optional": [
           "--keep-sessions",
+          "--no-dashboard-server",
           "--json",
           "--brief",
           "--api-url"

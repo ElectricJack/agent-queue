@@ -11,6 +11,7 @@ dispatcher sends each path to the right one (docs/specs/dashboard-server.md
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -74,6 +75,10 @@ def stage_bundle(tmp_path: Path, **kwargs: Any) -> Path:
     destination = tmp_path / "package-data"
     _release_builder().stage_dashboard(source, destination, version="9.9.9", **kwargs)
     return destination
+
+
+def _manifest_digest(bundle: Path) -> str:
+    return hashlib.sha256((bundle / "aq-dashboard-manifest.json").read_bytes()).hexdigest()
 
 
 class StubProxy:
@@ -262,7 +267,12 @@ async def test_the_identity_endpoint_names_the_process_and_its_bundle(tmp_path):
         "service": "aq-dashboard-server",
         "version": "1.2.3",
         "pid": os.getpid(),
-        "bundle": {"version": "9.9.9", "files": 2, "verified": True},
+        "bundle": {
+            "version": "9.9.9",
+            "files": 2,
+            "verified": True,
+            "manifest_sha256": _manifest_digest(tmp_path / "package-data"),
+        },
         "api_url": "http://127.0.0.1:9999",
         "upstream_ok": True,
     }
@@ -582,7 +592,12 @@ async def test_the_process_serves_proxies_and_stops_on_sigterm(tmp_path):
             async with aiohttp.ClientSession() as client:
                 identity = await _wait_for_identity(client, url, process)
                 assert identity["pid"] == process.pid
-                assert identity["bundle"] == {"version": "9.9.9", "files": 2, "verified": True}
+                assert identity["bundle"] == {
+                    "version": "9.9.9",
+                    "files": 2,
+                    "verified": True,
+                    "manifest_sha256": _manifest_digest(bundle),
+                }
                 async with client.get(url + "/settings/messaging") as deep:
                     assert (deep.status, await deep.text()) == (200, INDEX_HTML)
                 async with client.get(url + "/api/echo") as echo:
