@@ -115,6 +115,7 @@ from src.database.tables import (
     task_proposals,
     task_results,
     task_session_attempts,
+    task_subtasks,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -155,6 +156,8 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    # No FK to tasks: checklist rows survive archive like task_comments.
+    task_subtasks,
     dashboard_state_documents,
     agent_questions,
     subagent_events,
