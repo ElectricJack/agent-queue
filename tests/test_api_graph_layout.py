@@ -1206,7 +1206,7 @@ async def test_locate_does_not_find_a_dropped_finished_epic_in_the_active_view(
 async def test_stale_expanded_id_for_a_dropped_epic_is_simply_ignored(db, client_factory):
     """A viewer whose persisted expansion still names the dropped epic.
 
-    It has no row in ``active``, so ``_variant_for_expanded`` finds no stub to
+    It has no row in ``active``, so ``_variant_for_scope`` finds no stub to
     promote on, the request stays on ``active``, and the response is the same
     one an empty ``expanded`` would get — no error, no promotion, no rows.
     """
