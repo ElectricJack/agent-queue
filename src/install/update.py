@@ -22,16 +22,31 @@ Safety, in the order it is applied:
 * **Only fast-forward.**  The checkout moves forward to its upstream and never
   merges; a shallow installer clone is reset to the upstream tip, which is safe
   because the tree was verified clean.
+* **Let the new code finish its own update.**  This process imported its code
+  before the pull, so everything it still knows is the *old* version: which
+  modules exist, how to install and build, what a healthy new daemon answers.
+  Once the checkout has moved it therefore does nothing but start
+  ``python -m src.install.update_finish`` from the new checkout and read what
+  that fresh process reports (:func:`_finish_on_new_code`).  Rolling back is
+  the mirror image: the code is the old version again, and so is this process.
 * **Rebuild only what changed**: Python dependencies when `pyproject.toml` or
   the generated client changed, the dashboard when its build inputs did.
 * **Roll back on failure** to the previous commit and start the old daemon
-  again -- unless the update brought migrations *and* the new daemon was
-  started, because the database may already be ahead of the old code.  Then
-  the update stops, says so, and names the backup.
+  again -- whatever failed, including an error nobody planned for, so a
+  surprise never leaves the daemon stopped on moved code.  The one exception:
+  the update brought migrations *and* the new daemon was started, because the
+  database may already be ahead of the old code.  Then the update stops, says
+  so, and names the backup.
+
+The hand-off is a compatibility surface between two versions of AQ: the
+finisher's command line is written by an *older* updater and its output is read
+by one.  So the finisher never drops or renames an argument and ignores ones it
+does not know, and the updater ignores output it does not understand.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
@@ -44,6 +59,8 @@ from pathlib import Path
 from .command import CommandOutput, CommandRunner, run_command
 from .dashboard import (
     BUILD_INPUTS,
+    BUILD_TIMEOUT,
+    NPM_INSTALL_TIMEOUT,
     BuildOutcome,
     build_bundle,
     bundle_directory,
@@ -59,6 +76,21 @@ DAEMON_TIMEOUT = 180.0
 GIT_TIMEOUT = 300.0
 PIP_TIMEOUT = 900.0
 BACKUP_TIMEOUT = 1800.0
+
+
+#: The fresh process the pulled code is handed to, started from the new
+#: checkout.  The name is part of the hand-off: a future version that moves the
+#: finisher keeps a module here.
+FINISH_MODULE = "src.install.update_finish"
+#: Everything the finisher may have to do, each at its own worst case.
+FINISH_TIMEOUT = 2 * PIP_TIMEOUT + NPM_INSTALL_TIMEOUT + 2 * BUILD_TIMEOUT + DAEMON_TIMEOUT + 600.0
+
+#: The finisher reports on stdout, one JSON object per line, each tagged with
+#: this key; any other line is a tool's own output and is skipped.
+EVENT_KEY = "aq_update"
+EVENT_STEP = "step"
+#: Sent just before `aq start`: from here on the database may have migrated.
+EVENT_DAEMON_STARTING = "daemon_starting"
 
 LOCK_NAME = "update.lock"
 BACKUP_DIR = "backups"
@@ -386,13 +418,20 @@ def apply_update(
         lock.unlink(missing_ok=True)
 
 
-def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool) -> UpdateReport:
-    checkout = plan.checkout
-    config_path = host.state_dir / "config.yaml"
-    base = api_base_url(_read_config(config_path))
+def _daemon_address(host: Host) -> tuple[str, Callable[[], bool]]:
+    """The daemon's API base, and whether a daemon answers there."""
+    base = api_base_url(_read_config(host.state_dir / "config.yaml"))
 
     def healthy() -> bool:
         return host.probe(f"{base}/health") in (200, 503)
+
+    return base, healthy
+
+
+def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool) -> UpdateReport:
+    checkout = plan.checkout
+    config_path = host.state_dir / "config.yaml"
+    base, healthy = _daemon_address(host)
 
     # -- 1. back up, while nothing has been stopped yet ---------------------
     if plan.migrations and backup:
@@ -428,7 +467,7 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
             )
         step("Stop the daemon", True, "agent sessions keep running")
 
-    daemon_started_new_code = False
+    handed_off = False
     try:
         # -- 3. move the code forward -------------------------------------
         if plan.shallow:
@@ -439,34 +478,111 @@ def _apply_locked(plan, host: Host, report: UpdateReport, step, *, backup: bool)
             raise _StepFailed("Update the code", moved.message())
         step("Update the code", True, f"{plan.current[:9]} -> {plan.target[:9]}")
 
-        # -- 4. dependencies ----------------------------------------------
-        if plan.dependencies:
-            _install_dependencies(host, checkout)
-            step("Reinstall Python dependencies", True)
-
-        # -- 5. dashboard --------------------------------------------------
-        _rebuild_dashboard(host, checkout, step)
-
-        # -- 6. start the daemon on the new code ---------------------------
-        if was_running:
-            daemon_started_new_code = True
-            _start_daemon(host, base, checkout, healthy)
-            step("Start the daemon", True, "agent sessions are re-adopted")
+        # -- 4-6. dependencies, dashboard, daemon: the new code's job ------
+        handed_off = True
+        _finish_on_new_code(plan, host, step, start_daemon=was_running)
     except _StepFailed as failure:
         step(failure.name, False, failure.message)
         return _recover(
-            plan, host, report, step, failure, was_running, daemon_started_new_code, base, healthy
+            plan, host, report, step, failure, was_running, failure.daemon_started, base, healthy
         )
+    except Exception as error:  # noqa: BLE001 - the daemon is stopped; never leave it so
+        failure = _StepFailed("Update AQ", f"unexpected {_describe(error)}")
+        step(failure.name, False, failure.message)
+        # Nothing says how far the finisher got, so assume the furthest.
+        started = handed_off and was_running
+        return _recover(plan, host, report, step, failure, was_running, started, base, healthy)
 
     report.outcome = OUTCOME_UPDATED
     return report
 
 
 class _StepFailed(Exception):
-    def __init__(self, name: str, message: str) -> None:
+    def __init__(self, name: str, message: str, *, daemon_started: bool = False) -> None:
         super().__init__(message)
         self.name = name
         self.message = message
+        #: The new daemon was (or may have been) started before this failed.
+        self.daemon_started = daemon_started
+
+
+def _describe(error: BaseException) -> str:
+    return redact(f"{type(error).__name__}: {error}")
+
+
+def finish_command(plan: UpdatePlan, host: Host, *, start_daemon: bool) -> list[str]:
+    """The finisher's command line.  Arguments are only ever added, never changed."""
+    argv = [
+        host.python,
+        "-m",
+        FINISH_MODULE,
+        "--checkout",
+        str(plan.checkout),
+        "--state-dir",
+        str(host.state_dir),
+        "--previous",
+        plan.current,
+        "--target",
+        plan.target,
+        "--aq",
+        host.aq,
+        "--system",
+        host.system,
+        "--arch",
+        host.arch,
+        "--extras",
+        ",".join(host.extras),
+    ]
+    if start_daemon:
+        argv.append("--start-daemon")
+    return argv
+
+
+def _finish_on_new_code(plan: UpdatePlan, host: Host, step, *, start_daemon: bool) -> None:
+    """Run the post-pull steps in a fresh process started from the new checkout.
+
+    `-m` puts the working directory first on the module path, so the `src` the
+    finisher imports is the checkout's -- the code that was just pulled, not
+    the copy of the previous version this process holds.
+    """
+    output = host.execute(
+        finish_command(plan, host, start_daemon=start_daemon),
+        timeout=FINISH_TIMEOUT,
+        cwd=str(plan.checkout),
+    )
+    daemon_started = False
+    for event in _events(output.stdout):
+        kind = event.get(EVENT_KEY)
+        if kind == EVENT_DAEMON_STARTING:
+            daemon_started = True
+        elif kind == EVENT_STEP:
+            name = str(event.get("name") or "Finish the update")
+            message = str(event.get("message") or "")
+            if not event.get("ok"):
+                raise _StepFailed(name, message, daemon_started=daemon_started)
+            step(name, True, message)
+    if not output.ok:
+        # It died without naming a step: it could not be imported, crashed or
+        # was killed.  Its last line is the best account there is.
+        raise _StepFailed(
+            "Finish the update on the new code",
+            redact(output.message()),
+            daemon_started=daemon_started,
+        )
+
+
+def _events(stdout: str) -> list[dict]:
+    events = []
+    for line in stdout.splitlines():
+        if not line.lstrip().startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and EVENT_KEY in event:
+            events.append(event)
+    return events
 
 
 def _install_dependencies(host: Host, checkout: Path) -> None:
@@ -530,6 +646,25 @@ def _recover(plan, host: Host, report, step, failure, was_running, started_new, 
         )
         return report
 
+    if healthy():
+        # The new daemon came up and something after that failed.  `aq start`
+        # leaves a running daemon alone, so without this the old code would be
+        # "started" while the new daemon kept running.
+        host.execute([host.aq, "stop", "--keep-sessions"], timeout=DAEMON_TIMEOUT)
+        for _ in range(20):
+            if not healthy():
+                break
+            host.sleep(0.5)
+        if healthy():
+            report.outcome = OUTCOME_FAILED
+            report.remediation = (
+                f"{failure.name} failed ({failure.message}), and the daemon it had started "
+                f"would not stop, so the code was left at {plan.target[:9]}. Run `aq stop`, "
+                f"`git -C {checkout} reset --hard {plan.current}` and `aq start`."
+            )
+            step("Stop the new daemon", False)
+            return report
+
     reset = _git(host.execute, checkout, "reset", "--hard", "--quiet", plan.current)
     if not reset.ok:
         report.outcome = OUTCOME_FAILED
@@ -547,11 +682,17 @@ def _recover(plan, host: Host, report, step, failure, was_running, started_new, 
         if was_running:
             _start_daemon(host, base, checkout, healthy)
             step("Start the previous daemon", True)
-    except _StepFailed as again:
+    except Exception as error:  # noqa: BLE001 - reported with where things stand, never raised
+        again = (
+            error
+            if isinstance(error, _StepFailed)
+            else _StepFailed("Restore the previous version", f"unexpected {_describe(error)}")
+        )
         step(again.name, False, again.message)
         report.outcome = OUTCOME_FAILED
         report.remediation = (
-            f"The code is back at {plan.current[:9]}, but {again.name.lower()} failed too: "
+            f"{failure.name} failed ({failure.message}). The code is back at "
+            f"{plan.current[:9]}, but {again.name.lower()} failed too: "
             f"{again.message}. Read {log}, fix it, and run `aq start`."
         )
         return report
@@ -587,8 +728,12 @@ def describe(plan: UpdatePlan, *, backup: bool, daemon_running: bool) -> list[st
 
 
 __all__ = [
+    "EVENT_DAEMON_STARTING",
+    "EVENT_KEY",
+    "EVENT_STEP",
     "EXIT_CODES",
     "EXIT_REFUSED",
+    "FINISH_MODULE",
     "Host",
     "OUTCOME_FAILED",
     "OUTCOME_ROLLED_BACK",
@@ -601,6 +746,7 @@ __all__ = [
     "backup_database",
     "describe",
     "find_pg_dump",
+    "finish_command",
     "installed_extras",
     "plan_update",
 ]
