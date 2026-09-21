@@ -236,15 +236,16 @@ _WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "git_create_pr"})
 _WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
 
 
-async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str] | None:
-    """Return the branch names a live worker session may act on, else ``None``.
+async def held_task_for_session(db, scope: RequestScope):
+    """Return the task a live worker session holds, else ``None``.
 
     Authority comes from persisted state only: the session row, the task it
     holds, and the agent that holds it.  Both lifecycles are covered --
     ``task`` (pushed work) and ``pool`` (a claimed task) -- because both close
-    through the same protocol.  The branch set is the task's recorded
-    ``branch_name`` plus the conventional ``aq/<task_id>``; a client-supplied
-    branch outside it is refused.
+    through the same protocol.  A pool token is minted with no ``task_id``
+    (its task changes with every claim), so for a pool session this, not the
+    token, names the task: the session's current claim, fenced by
+    ``last_claim_epoch`` so a reclaimed task is no longer held.
     """
     from src.models import AgentState, TaskStatus
 
@@ -283,6 +284,19 @@ async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str]
         and agent.state == AgentState.BUSY
         and agent.current_task_id == task.id
     ):
+        return None
+    return task
+
+
+async def worker_branches_for_session(db, scope: RequestScope) -> frozenset[str] | None:
+    """Return the branch names a live worker session may act on, else ``None``.
+
+    The session must hold a task (:func:`held_task_for_session`).  The branch
+    set is that task's recorded ``branch_name`` plus the conventional
+    ``aq/<task_id>``; a client-supplied branch outside it is refused.
+    """
+    task = await held_task_for_session(db, scope)
+    if task is None:
         return None
     branches = {f"aq/{task.id}"}
     if task.branch_name:
