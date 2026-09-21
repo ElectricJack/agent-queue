@@ -11,9 +11,16 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.database import Database
-from src.database.queries.digest_queries import DigestQueryMixin
-from src.database.tables import agent_questions, task_comments, task_session_attempts, tasks
+from src.database.queries.digest_queries import DigestQueryMixin, provider_fact
+from src.database.tables import (
+    agent_questions,
+    provider_availability_transitions,
+    task_comments,
+    task_session_attempts,
+    tasks,
+)
 from src.digest import DigestWindow, build_digest
+from src.digest.facts import KIND_PROVIDER
 from src.models import Project, SessionRecord, Task, TaskCompletion
 from tests.db_fixtures import lease_dsn
 
@@ -264,3 +271,95 @@ async def test_lookback_picks_up_a_row_written_after_its_window_closed(db):
         reported_keys=first.reported_keys,
     )
     assert build_digest(again).send is False
+
+
+# --- provider availability: the fleet's ``system`` facts (provider-failover D19) ---
+
+
+async def transition(db, generation, from_state, to_state, *, at, provider="codex",
+                     reason="", until=None):
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(provider_availability_transitions).values(
+                provider=provider, from_state=from_state, to_state=to_state,
+                reason_code="", reason=reason, until=until, generation=generation,
+                actor="system", detail={}, at=at,
+            )
+        )
+
+
+async def one_outage(db):
+    """Down and back up inside the window, plus noise either side of it."""
+    await transition(db, 1, "available", "degraded", at=NOW - 50 * 60)
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="a launch died on its login dialog")
+    await transition(db, 3, "unauthenticated", "exhausted", at=NOW - 30 * 60,
+                     until=NOW + HOUR)
+    await transition(db, 4, "exhausted", "degraded", at=NOW - 10 * 60, reason="recovering")
+    await transition(db, 5, "degraded", "unauthenticated", at=NOW - 3 * HOUR)
+
+
+async def test_only_a_change_of_half_is_a_provider_fact(db):
+    await one_outage(db)
+    inputs = await collect(db)
+    facts = {fact.key: fact for fact in inputs.facts}
+    assert set(facts) == {"provider:codex:2", "provider:codex:4"}
+    down = facts["provider:codex:2"]
+    assert (down.kind, down.category, down.project_id, down.task_id) == (
+        KIND_PROVIDER, "system", "", "",
+    )
+    assert down.detail == "unavailable (unauthenticated) — a launch died on its login dialog"
+    assert facts["provider:codex:4"].detail == "launchable again (degraded) — recovering"
+
+
+def test_an_expected_recovery_is_part_of_the_fact():
+    fact = provider_fact({
+        "provider": "claude", "from_state": "available", "to_state": "exhausted",
+        "reason": "", "until": 0.0 + 90 * 60, "generation": 7, "at": 1.0,
+    })
+    assert fact.key == "provider:claude:7"
+    assert fact.detail == "unavailable (exhausted) until 1970-01-01 01:30 UTC"
+
+
+async def test_provider_facts_ignore_the_project_selection_but_obey_the_switch(db):
+    await one_outage(db)
+    scoped = await collect(db, project_ids=("p",))
+    assert {fact.key for fact in scoped.facts} == {"provider:codex:2", "provider:codex:4"}
+    off = await collect(db, provider_facts=False)
+    assert off.facts == ()
+
+
+async def test_an_outage_makes_a_quiet_window_speak_once(db):
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="login required")
+    inputs = await collect(db)
+    assert inputs.active == () and len(inputs.facts) == 1
+    result = build_digest(inputs, project_ids=frozenset({"p"}))
+    assert result.send is True
+    assert "1 provider change" in result.text
+    assert "• provider codex: unavailable (unauthenticated) — login required" in result.text
+    # A system fact is still subject to the category filter...
+    assert build_digest(inputs, categories=frozenset({"work"})).send is False
+    # ...and, once reported, is not reported again by a later lookback.
+    again = await collect(
+        db, window=DigestWindow(since=NOW, until=NOW + HOUR), now=NOW + HOUR,
+        lookback_seconds=2 * HOUR, reported_keys=result.reported_keys,
+        reported_highlights=result.reported_highlights,
+    )
+    assert build_digest(again).send is False
+
+
+async def test_a_second_outage_worded_like_the_first_is_still_news(db):
+    await transition(db, 2, "degraded", "unauthenticated", at=NOW - 40 * 60,
+                     reason="login required")
+    first = build_digest(await collect(db))
+    await transition(db, 6, "degraded", "unauthenticated", at=NOW + 20 * 60,
+                     reason="login required")
+    later = await collect(
+        db, window=DigestWindow(since=NOW, until=NOW + HOUR), now=NOW + HOUR,
+        lookback_seconds=2 * HOUR, reported_keys=first.reported_keys,
+        reported_highlights=first.reported_highlights,
+    )
+    result = build_digest(later)
+    assert result.send is True
+    assert result.reported_keys == frozenset({"provider:codex:6"})

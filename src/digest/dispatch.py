@@ -48,7 +48,7 @@ from typing import Any
 from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
-from src.digest.schedule import DigestSchedule, schedule_for
+from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
 from src.escalations.plan import MAX_ATTEMPTS, backoff_for
 from src.escalations.transport import (
     EscalationTransport,
@@ -306,6 +306,7 @@ class DigestScheduleService:
             open_escalations=open_escalations,
             reported_keys=reported_keys,
             reported_highlights=reported_highlights,
+            provider_facts=provider_facts_enabled(self._config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
         return build_digest(
