@@ -1090,10 +1090,10 @@ async def test_bulk_archive_rechecks_root_status_after_selection(db, monkeypatch
         await conn.execute(update(tasks).values(updated_at=time.time() - 10000))
     archive = db.archive_task
 
-    async def reopen_before_archive(task_id):
+    async def reopen_before_archive(task_id, **kwargs):
         if task_id == "reopened":
             await db.update_task(task_id, status=status)
-        return await archive(task_id)
+        return await archive(task_id, **kwargs)
 
     monkeypatch.setattr(db, "archive_task", reopen_before_archive)
     archived = (
@@ -1477,7 +1477,7 @@ class TestArchiveRefusalRecord:
         await _seed_task(db, "root", status=TaskStatus.COMPLETED)
         await self._eligible(db, "root")
 
-        async def boom(task_id):
+        async def boom(task_id, **_kwargs):
             raise RuntimeError("something\nwith newlines\nand detail")
 
         monkeypatch.setattr(db, "archive_task", boom)

@@ -1367,3 +1367,480 @@ async def test_invalid_policy_arms_its_own_deadline_instead_of_spinning(setup):
     service.next_due.clear()
     await service.tick(now)
     assert service.next_due["p"] > now, "the deadline is armed even though validation failed"
+
+
+# -- branches a delivery made obsolete (quick-ridge) -----------------------
+
+
+async def aq_feature(setup, task_id, *, filename=None, content="new\n"):
+    """A COMPLETED task on ``aq/<task_id>`` whose close reports its head."""
+    db, _service, source, _remote, _repo = setup
+    branch = "aq/" + task_id
+    git(source, "checkout", "-B", branch, "main")
+    (source / (filename or task_id + ".txt")).write_text(content)
+    git(source, "add", ".")
+    git(source, "commit", "-m", task_id)
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", branch)
+    await db.create_task(
+        Task(
+            id=task_id, project_id="p", repo_id="r", title=task_id, description="",
+            branch_name=branch, status=TaskStatus.COMPLETED,
+        )
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id=f"close-{task_id}", task_id=task_id, outcome="pass", commits=[head],
+            completed_at=time.time(),
+        )
+    )
+    return head
+
+
+def remote_branches(remote):
+    return set(git(remote, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split())
+
+
+def candidate_branch(head):
+    import hashlib
+
+    return f"aq/development/{hashlib.sha256(b'p').hexdigest()[:12]}/{head}"
+
+
+async def journal_row(service, identity):
+    return next(r for r in await service.rows("p") if r["id"] == identity)
+
+
+async def test_delivery_deletes_task_candidate_and_parent_branches(setup):
+    db, service, _source, remote, _repo = setup
+    await db.create_task(
+        Task(id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED)
+    )
+    await aq_feature(setup, "one")
+    await aq_feature(setup, "child")
+    async with db.immediate() as conn:
+        await db.set_parent("child", "epic", conn=conn)
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    before = remote_branches(remote)
+    parents = {b for b in before if b.startswith("aq/development/parent/")}
+    assert {"aq/one", "aq/child", candidate_branch(result["head_sha"])} <= before
+    assert len(parents) == 1
+    armed = await journal_row(service, result["id"])
+    assert armed["evidence"]["branch_cleanup"] == {"state": "pending", "attempts": 0}
+
+    collected = await service.collect_delivered_branches("p")
+
+    assert remote_branches(remote) == {"main"}
+    [record] = collected["rows"]
+    assert record["state"] == "complete"
+    assert sorted((d["branch"], d["kind"]) for d in record["deleted"]) == sorted(
+        [("aq/child", "task"), ("aq/one", "task"),
+         (candidate_branch(result["head_sha"]), "assembly"), (parents.pop(), "assembly")]
+    )
+    stored = (await journal_row(service, result["id"]))["evidence"]["branch_cleanup"]
+    assert stored["deleted"] == record["deleted"]
+    assert stored["kept"] == [] and stored["missing"] == []
+    # Idempotent, and delivery itself is unaffected by the missing sources.
+    assert (await service.collect_delivered_branches("p"))["outcome"] == "idle"
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    events = [e for e in await db.get_recent_events(20)
+              if e["event_type"] == "development.branches_deleted"]
+    assert len(events) == 1
+
+
+async def test_tick_collects_right_after_the_sweep_delivers(setup):
+    _db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    service.next_due.clear()  # configure() armed the periodic deadline
+    await service.tick(time.time())
+    assert remote_branches(remote) == {"main"}
+
+
+async def test_a_branch_that_moved_past_its_delivery_is_kept(setup):
+    _db, service, source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    result = await service.sweep("p")
+    git(source, "checkout", "aq/one")
+    (source / "later.txt").write_text("later\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "work after delivery")
+    git(source, "push", "origin", "aq/one")
+
+    [record] = (await service.collect_delivered_branches("p"))["rows"]
+
+    assert remote_branches(remote) == {"main", "aq/one"}
+    assert record["state"] == "complete"
+    assert record["kept"] == [{"branch": "aq/one", "reason": "has commits not on main"}]
+    assert [d["branch"] for d in record["deleted"]] == [candidate_branch(result["head_sha"])]
+
+
+@pytest.mark.parametrize("hold", ["reopened", "owner", "namesake"])
+async def test_a_branch_something_still_references_is_kept(setup, hold):
+    from src.database.tables import integration_branch_owners
+
+    db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    await service.sweep("p")
+    if hold == "reopened":
+        await db.transition_task("one", TaskStatus.READY, context="test", force=True)
+    elif hold == "owner":
+        async with db.immediate() as conn:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="owner-one", repository_id="r", ref="refs/heads/aq/one", owner_id="one",
+                owner_role="worker", fence_token=1, handoff_state="reserved",
+                created_at=1.0, updated_at=1.0,
+            ))
+    else:
+        await db.create_task(Task(
+            id="redeliver", project_id="p", title="re-deliver one", description="",
+            branch_name="aq/one", status=TaskStatus.IN_PROGRESS,
+        ))
+
+    [record] = (await service.collect_delivered_branches("p"))["rows"]
+
+    assert "aq/one" in remote_branches(remote)
+    [kept] = [k for k in record["kept"] if k["branch"] == "aq/one"]
+    assert {
+        "reopened": "task is READY",
+        "owner": "integration owner one is reserved",
+        "namesake": "task redeliver is IN_PROGRESS",
+    }[hold] == kept["reason"]
+
+
+async def test_parked_candidate_waits_then_goes_with_its_repair(setup):
+    """A superseded candidate is deleted once every member it carries landed."""
+    db, service, source, remote, _repo = setup
+    await service.configure(
+        "p", {"commands": ["test ! -f bad.txt"]}, reason="reject bad.txt", operator_id="local"
+    )
+    await aq_feature(setup, "bad", filename="bad.txt")
+    await aq_feature(setup, "good")
+    parked = await service.sweep("p")
+    assert parked["outcome"] == "parked"
+    held_candidate = candidate_branch(parked["head_sha"])
+
+    # Unrelated work lands while the batch is parked: only its own refs go.
+    await aq_feature(setup, "free")
+    free = await service.sweep("p")
+    assert free["outcome"] == "delivered"
+    await service.collect_delivered_branches("p")
+    assert remote_branches(remote) == {"main", "aq/bad", "aq/good", held_candidate}
+
+    # The repair worker resolves the parked batch on its own branch.
+    row = next(r for r in await service.rows("p") if r["state"] == "parked")
+    identity = service._repair_identity(row["manifest"])
+    repair = await db.get_task(identity)
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", repair.branch_name, "origin/main")
+    git(source, "merge", "--no-edit", "origin/aq/bad", "origin/aq/good")
+    git(source, "rm", "-q", "bad.txt")
+    git(source, "commit", "-m", "repair: drop bad.txt")
+    repaired = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", repair.branch_name)
+    await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
+    await db.save_task_completion(TaskCompletion(
+        id="repair-close", task_id=identity, outcome="pass", commits=[repaired],
+        completed_at=time.time(),
+    ))
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert (await journal_row(service, row["id"]))["state"] == "adopted"
+
+    await service.collect_delivered_branches("p")
+
+    assert remote_branches(remote) == {"main"}
+
+
+async def test_a_failed_repair_is_moot_once_its_source_lands_on_its_own(setup):
+    db, service, source, remote, _repo = setup
+    await service.configure(
+        "p", {"commands": ["test ! -f bad.txt"]}, reason="reject bad.txt", operator_id="local"
+    )
+    await aq_feature(setup, "bad", filename="bad.txt")
+    parked = await service.sweep("p")
+    assert parked["outcome"] == "parked"
+    row = next(r for r in await service.rows("p") if r["state"] == "parked")
+    repair = await db.get_task(service._repair_identity(row["manifest"]))
+    # The repair pushed a partial attempt and then failed.
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", repair.branch_name, "origin/main")
+    (source / "attempt.txt").write_text("attempt\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "partial repair")
+    git(source, "push", "origin", repair.branch_name)
+    await db.transition_task(repair.id, TaskStatus.FAILED, context="test", force=True)
+    # An operator lands the source on main by hand and relaxes the policy.
+    git(source, "checkout", "-B", "main", "origin/main")
+    git(source, "merge", "--no-edit", "origin/aq/bad")
+    git(source, "push", "origin", "main")
+    await service.configure(
+        "p", {"commands": ["true"]}, reason="accept bad.txt", operator_id="local"
+    )
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    resolved = await journal_row(service, row["id"])
+    assert "resolved_by_main_ancestry" in resolved["evidence"]
+
+    result = await service.collect_delivered_branches("p")
+
+    assert remote_branches(remote) == {"main"}
+    kinds = {d["branch"]: d["kind"] for r in result["rows"] for d in r["deleted"]}
+    assert kinds[repair.branch_name] == "moot_repair"
+    assert kinds["aq/bad"] == "task"
+
+
+async def test_unconfirmed_deletes_retry_with_backoff_then_give_up(setup, monkeypatch):
+    from src.git.manager import GitError
+    from src.integration import development
+
+    _db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    result = await service.sweep("p")
+
+    async def unreachable(*_args, **_kwargs):
+        raise GitError("remote hung up")
+
+    monkeypatch.setattr(development, "delete_remote_branches", unreachable)
+    now = time.time()
+    [record] = (await service.collect_delivered_branches("p", now=now))["rows"]
+    assert record["state"] == "pending"
+    assert record["attempts"] == 1
+    assert record["last_error"] == "GitError: remote hung up"
+    assert record["next_attempt_at"] == now + development.BRANCH_CLEANUP_RETRY_SECONDS
+    # Not due yet: nothing is attempted.
+    assert (await service.collect_delivered_branches("p", now=now + 1))["outcome"] == "idle"
+
+    for attempt in range(2, development.BRANCH_CLEANUP_MAX_ATTEMPTS + 1):
+        now += development.BRANCH_CLEANUP_RETRY_MAX_SECONDS
+        [record] = (await service.collect_delivered_branches("p", now=now))["rows"]
+        assert record["attempts"] == attempt
+    assert record["state"] == "exhausted"
+    assert record["next_attempt_at"] is None
+    assert (await service.collect_delivered_branches("p", now=now * 2))["outcome"] == "idle"
+    assert "aq/one" in remote_branches(remote)
+    stored = (await journal_row(service, result["id"]))["evidence"]["branch_cleanup"]
+    assert stored["state"] == "exhausted"
+
+
+async def test_a_delete_the_remote_did_not_apply_is_retried(setup, monkeypatch):
+    from src.integration import development
+
+    _db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    await service.sweep("p")
+    real = development.delete_remote_branches
+
+    async def ignored(git_, run_git, store, targets):
+        return {branch: "failed" for branch in targets}
+
+    monkeypatch.setattr(development, "delete_remote_branches", ignored)
+    now = time.time()
+    [record] = (await service.collect_delivered_branches("p", now=now))["rows"]
+    assert record["state"] == "pending"
+    assert record["last_error"].startswith("2 delete(s) not confirmed")
+    monkeypatch.setattr(development, "delete_remote_branches", real)
+    [record] = (
+        await service.collect_delivered_branches(
+            "p", now=now + development.BRANCH_CLEANUP_RETRY_SECONDS
+        )
+    )["rows"]
+    assert record["state"] == "complete"
+    assert record["attempts"] == 2
+    assert remote_branches(remote) == {"main"}
+
+
+async def test_rows_from_before_branch_cleanup_are_left_to_doctor(setup):
+    _db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    result = await service.sweep("p")
+    row = await journal_row(service, result["id"])
+    evidence = {k: v for k, v in row["evidence"].items() if k != "branch_cleanup"}
+    await service.change(result["id"], evidence=evidence)
+
+    assert (await service.collect_delivered_branches("p"))["outcome"] == "idle"
+    assert "aq/one" in remote_branches(remote)
+
+
+async def test_adoption_and_reconciled_publish_arm_branch_cleanup(setup):
+    _db, service, _source, remote, _repo = setup
+    head = await aq_feature(setup, "one")
+    published = await service.sweep("p")
+    # A crash between push and journal: reconciliation confirms the publish.
+    await service.change(
+        published["id"], state="publishing",
+        evidence={k: v for k, v in (await journal_row(service, published["id"]))[
+            "evidence"].items() if k != "branch_cleanup"},
+    )
+    await service.sweep("p")
+    reconciled = await journal_row(service, published["id"])
+    assert reconciled["state"] == "delivered"
+    assert reconciled["evidence"]["branch_cleanup"]["state"] == "pending"
+
+    await aq_feature(setup, "two")
+    main = git(remote, "rev-parse", "main")
+    adopted = await service.adopt(
+        project_id="p", task_ids=["two"], target_ref="refs/heads/main", head_sha=main,
+        reason="landed elsewhere", operator_id="local", accept_equivalent=True,
+    )
+    assert (await journal_row(service, adopted["id"]))["evidence"]["branch_cleanup"] == {
+        "state": "pending", "attempts": 0,
+    }
+    await service.collect_delivered_branches("p")
+    assert remote_branches(remote) == {"main"}
+    assert head
+
+
+async def test_live_branch_references_names_every_hold(setup):
+    from src.database.tables import (
+        development_deliveries,
+        integration_branch_owners,
+        task_branch_origins,
+    )
+    from src.integration.delivery_branches import live_branch_references
+
+    db, _service, _source, _remote, _repo = setup
+    await db.create_task(Task(
+        id="running", project_id="p", title="t", description="", branch_name="aq/running",
+        status=TaskStatus.IN_PROGRESS,
+    ))
+    await aq_feature(setup, "undelivered")
+    await db.create_task(Task(
+        id="development-repair-x", project_id="p", title="t", description="",
+        branch_name="aq/development-repair-x", status=TaskStatus.READY,
+    ))
+    await db.set_task_meta(
+        "development-repair-x", "development_repair_sources",
+        [{"task_id": "repair-src", "source_sha": "c" * 40}],
+    )
+    await _live_parent_operation(db, "running")
+    now = time.time()
+    async with db.immediate() as conn:
+        manifest = [{"task_id": "gone-src", "source_sha": "a" * 40}]
+        journal = {"project_id": "p", "repository_id": "r", "manifest": manifest,
+                   "evidence": {}, "reason": "t", "created_at": now, "updated_at": now}
+        await conn.execute(insert(development_deliveries).values([
+            {**journal, "id": "parked", "target_ref": "refs/heads/main", "state": "parked"},
+            {**journal, "id": "cand", "state": "delivered",
+             "target_ref": "refs/heads/aq/development/abc/" + "a" * 40},
+        ]))
+        owner = {"repository_id": "r", "owner_role": "worker", "fence_token": 0,
+                 "created_at": now, "updated_at": now}
+        await conn.execute(insert(integration_branch_owners).values([
+            {**owner, "id": "o1", "ref": "aq/owned", "owner_id": "owned",
+             "handoff_state": "attached"},
+            {**owner, "id": "o2", "ref": "aq/released", "owner_id": "released",
+             "handoff_state": "released"},
+        ]))
+        await conn.execute(insert(task_branch_origins).values(
+            id="origin", task_id="discarding", repository_id="r", base_sha="b" * 40,
+            creation_generation=0, reserved=True, materialized=True, retired_at=now,
+            created_at=now, discard_state="pending",
+        ))
+        holds = await live_branch_references(conn)
+
+    assert holds["aq/running"] == "task running is IN_PROGRESS"
+    assert holds["aq/running-wip"] == "task running is IN_PROGRESS"
+    assert holds["aq/undelivered"] == "task undelivered is not delivered yet"
+    # A member no table resolves still holds its conventional branch.
+    assert holds["aq/gone-src"] == "development batch parked is parked"
+    assert holds["aq/development/abc/" + "a" * 40] == (
+        "assembly carries an undelivered batch member"
+    )
+    assert holds["aq/repair-src"] == "open development repair development-repair-x"
+    assert holds["aq/owned"] == "integration owner owned is attached"
+    assert holds["aq/discarding"] == "branch discard is pending"
+    assert "aq/released" not in holds
+    assert "main" not in holds  # never a candidate: deleters skip the default branch
+
+
+async def test_doctor_finds_and_deletes_the_landed_backlog(setup, tmp_path):
+    from types import SimpleNamespace
+
+    from src.doctor.integration_checks import CHECKS
+    from src.doctor.models import DoctorContext, Severity
+    from src.doctor.runner import apply_fix
+
+    db, service, source, remote, _repo = setup
+    # Delivered before branch cleanup existed: the task and its candidate linger.
+    await aq_feature(setup, "old")
+    result = await service.sweep("p")
+    row = await journal_row(service, result["id"])
+    await service.change(result["id"], evidence={
+        k: v for k, v in row["evidence"].items() if k != "branch_cleanup"
+    })
+    # A rebased copy: the same author stamp and subject is on main.
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", "aq/rebased", "origin/main")
+    (source / "rebased.txt").write_text("rebased\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "rebased work")
+    git(source, "push", "origin", "aq/rebased")
+    git(source, "checkout", "-B", "main", "origin/main")
+    (source / "main-only.txt").write_text("main\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "unrelated main work")
+    git(source, "cherry-pick", "aq/rebased")
+    git(source, "push", "origin", "main")
+    # Same subject, different author time: not the same work.
+    git(source, "checkout", "-B", "aq/lookalike", "origin/main")
+    (source / "lookalike.txt").write_text("different\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "rebased work", "--date=2020-01-01T00:00:00")
+    git(source, "push", "origin", "aq/lookalike")
+    # A twinned commit plus a hand-resolved merge carrying work of its own.
+    git(source, "checkout", "-B", "aq/evil", "aq/rebased")
+    git(source, "merge", "--no-commit", "--no-ff", "origin/main~1")
+    (source / "only-in-the-merge.txt").write_text("resolution work\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "merge main")
+    git(source, "push", "origin", "aq/evil")
+    # Held (a live task at main's head), and a person's merged branch.
+    git(source, "push", "origin", "main:aq/fresh", "main:fix/human")
+    await db.create_task(Task(
+        id="fresh", project_id="p", title="fresh", description="", branch_name="aq/fresh",
+        status=TaskStatus.READY,
+    ))
+    [check] = [c for c in CHECKS if c.id == "integration.landed_branches"]
+    ctx = DoctorContext(config=SimpleNamespace(data_dir=str(tmp_path / "doctor")), db=db)
+
+    found = await check.run(ctx)
+
+    assert found.severity == Severity.WARN
+    assert found.fixable
+    [project] = found.data["projects"]
+    assert sorted(project["branches"]) == sorted(
+        ["aq/old", "aq/rebased", candidate_branch(result["head_sha"])]
+    )
+    assert project["by_subject"] == 1
+    assert project["held_examples"] == [{
+        "branch": "aq/fresh", "head": git(remote, "rev-parse", "aq/fresh"),
+        "found_by": "ancestry", "reason": "task fresh is READY",
+    }]
+    assert project["unlanded"] == 2 and project["out_of_scope"] == 1
+
+    fixed = await apply_fix(check, ctx)
+
+    assert fixed.severity == Severity.OK
+    assert remote_branches(remote) == {
+        "main", "aq/fresh", "aq/lookalike", "aq/evil", "fix/human",
+    }
+
+
+async def test_doctor_reports_a_project_it_cannot_reach(setup, tmp_path):
+    from types import SimpleNamespace
+
+    from src.database.tables import repos
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+
+    db, _service, _source, _remote, _repo = setup
+
+    async with db.immediate() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "r").values(
+            url=str(tmp_path / "gone.git")
+        ))
+    result = await run_check(
+        db, "integration.landed_branches",
+        config=SimpleNamespace(data_dir=str(tmp_path / "doctor")),
+    )
+    assert result.severity == Severity.INFO
+    assert result.data["errors"][0]["project_id"] == "p"

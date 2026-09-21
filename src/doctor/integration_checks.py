@@ -54,6 +54,12 @@ _STALL_TICKS = 2
 #: publisher which has stopped collecting is caught the same working session.
 _UNCOLLECTED_AFTER_SECONDS = 60 * 60
 
+#: A landed-branch scan fetches each development project's origin and runs one
+#: ``git log`` per branch not merged by ancestry; its fix pushes the deletes.
+_LANDED_BRANCHES_TIMEOUT_S = 300.0
+#: Branch names listed per project in ``data``; counts stay exact.
+_LANDED_EXAMPLES = 20
+
 #: Cap on ``gh pr view`` calls per run.  Doctor is meant to be fast and to work
 #: offline; a backlog of 200 stranded PRs is already diagnosed by the first
 #: handful, and the count in ``data`` stays accurate regardless.
@@ -831,6 +837,158 @@ async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _development_publisher(ctx: DoctorContext):
+    """The daemon's publisher when doctor runs inside it, else a fresh one."""
+    factory = getattr(ctx.handler, "_development_integration", None)
+    if factory is not None:
+        return factory()
+    from src.integration.development import DevelopmentIntegration
+
+    return DevelopmentIntegration(ctx.db, data_dir=ctx.config.data_dir)
+
+
+async def _scan_landed_branches(ctx: DoctorContext, *, delete: bool = False):
+    """One :meth:`DevelopmentIntegration.landed_branches` report per project.
+
+    Development projects only: their publisher keeps the clone this needs,
+    and they are the projects whose delivery leaves branches behind.  A
+    project whose remote cannot be read is reported, never allowed to hide
+    the others.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import projects
+
+    async with ctx.db._engine.connect() as conn:
+        project_ids = list(
+            (
+                await conn.execute(
+                    select(projects.c.id)
+                    .where(
+                        projects.c.hierarchical_integration_mode == "development",
+                        projects.c.integration_repository_id.is_not(None),
+                    )
+                    .order_by(projects.c.id)
+                )
+            ).scalars()
+        )
+    publisher = _development_publisher(ctx) if project_ids else None
+    reports, errors = [], []
+    for project_id in project_ids:
+        try:
+            reports.append(await publisher.landed_branches(project_id, delete=delete))
+        except Exception as exc:  # noqa: BLE001 - one remote must not hide the rest
+            errors.append({"project_id": project_id, "error": f"{type(exc).__name__}: {exc}"})
+    return reports, errors
+
+
+def _landed_summary(report: dict) -> dict:
+    landed = report["landed"]
+    summary = {
+        "project_id": report["project_id"],
+        "repository_id": report["repository_id"],
+        "landed": len(landed),
+        "by_ancestry": sum(1 for e in landed if e["found_by"] == "ancestry"),
+        "by_subject": sum(1 for e in landed if e["found_by"] == "subject"),
+        "held": len(report["kept"]),
+        "unlanded": report["unlanded"],
+        "out_of_scope": report["out_of_scope"],
+        "branches": [e["branch"] for e in landed[:_LANDED_EXAMPLES]],
+        "held_examples": report["kept"][:_LANDED_EXAMPLES],
+    }
+    if "deleted" in report:
+        summary.update(
+            deleted=len(report["deleted"]),
+            moved=report["moved"],
+            failed=report["failed"],
+        )
+    return summary
+
+
+async def _check_landed_branches(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.landed_branches"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — origin branches not checked",
+        )
+    reports, errors = await _scan_landed_branches(ctx)
+    count = sum(len(r["landed"]) for r in reports)
+    data = {
+        "count": count,
+        "projects": [_landed_summary(r) for r in reports],
+        "errors": errors,
+    }
+    if count:
+        first = next(r["landed"][0]["branch"] for r in reports if r["landed"])
+        return CheckResult(
+            id=check_id,
+            severity=Severity.WARN,
+            detail=(
+                f"{count} aq/ branch(es) on origin carry work already on the default "
+                f"branch and nothing references them — e.g. {first}. "
+                "`aq doctor --check integration.landed_branches --fix` deletes them "
+                "(each on a lease at the head found here)"
+            ),
+            fixable=True,
+            data=data,
+        )
+    if errors:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail=(
+                f"could not read origin for {len(errors)} project(s) — e.g. "
+                f"{errors[0]['project_id']}: {errors[0]['error']}"
+            ),
+            data=data,
+        )
+    held = sum(len(r["kept"]) for r in reports)
+    return CheckResult(
+        id=check_id,
+        severity=Severity.OK,
+        detail=(
+            "no landed aq/ branch is left on origin"
+            + (f" ({held} landed but still referenced)" if held else "")
+        ),
+        data=data,
+    )
+
+
+async def _fix_landed_branches(ctx: DoctorContext) -> CheckResult:
+    """Delete every landed, unreferenced branch the scan finds right now.
+
+    The fix re-scans rather than trusting the check's snapshot: holds and
+    remote heads are read again under the publisher's exclusion, and each
+    delete is a lease on the head that scan saw.  A branch that moved in
+    between is left alone and reported.
+    """
+    reports, errors = await _scan_landed_branches(ctx, delete=True)
+    deleted = sum(len(r.get("deleted", [])) for r in reports)
+    failed = [b for r in reports for b in r.get("failed", [])]
+    moved = [b for r in reports for b in r.get("moved", [])]
+    detail = f"deleted {deleted} landed branch(es) from origin"
+    if moved:
+        detail += f"; {len(moved)} moved while being deleted and were kept"
+    if failed:
+        detail += f"; {len(failed)} delete(s) not confirmed (e.g. {failed[0]}) — run again"
+    if errors:
+        detail += f"; {len(errors)} project(s) not reached"
+    return CheckResult(
+        id="integration.landed_branches",
+        severity=Severity.WARN if failed or errors else Severity.OK,
+        detail=detail,
+        fixable=True,
+        fix_applied=True,
+        data={
+            "deleted": deleted,
+            "projects": [_landed_summary(r) for r in reports],
+            "errors": errors,
+        },
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -903,6 +1061,18 @@ def integration_checks() -> list[DoctorCheck]:
             run=_check_stranded_delegates,
             fix=_fix_stranded_delegates,
             owner=OWNER,
+        ),
+        # Fixable: the fix deletes remote branches, but only ``aq/`` ones
+        # whose work is already on the default branch and that nothing in
+        # ``live_branch_references`` holds, each on a lease at its observed
+        # head.  New deliveries clean up after themselves
+        # (``collect_delivered_branches``); this clears what predates that.
+        DoctorCheck(
+            id="integration.landed_branches",
+            run=_check_landed_branches,
+            fix=_fix_landed_branches,
+            owner=OWNER,
+            timeout_s=_LANDED_BRANCHES_TIMEOUT_S,
         ),
     ]
 
