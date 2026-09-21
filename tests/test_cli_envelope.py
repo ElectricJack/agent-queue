@@ -1010,15 +1010,43 @@ class TestJsonErrorEnvelope:
         assert result.exit_code == 3
         assert json.loads(result.stdout)["error"]["code"] == "daemon_unreachable"
 
-    def test_human_mode_daemon_prompt_is_preserved(self, runner):
+    def test_human_mode_daemon_prompt_is_preserved(self, runner, monkeypatch):
         from src.cli.app import cli
         from src.cli.exceptions import DaemonNotRunningError
 
+        # The prompt is the operator-shell branch. A worker session exports both
+        # of these, and with either one set the CLI refuses to offer a start —
+        # so without the scrub this test fails whenever an agent runs it.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
         with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(cli, ["task", "list"], input="n\n")
         assert result.exit_code == 3
         assert "Start the daemon?" in result.output
+
+    @pytest.mark.parametrize(
+        "worker_env",
+        [{"AQ_SESSION_ID": "pool-test"}, {"AQ_DB_SCOPE": "worker"}],
+        ids=["session_id", "worker_db_scope"],
+    )
+    def test_human_mode_never_offers_a_worker_the_daemon_start(
+        self, runner, monkeypatch, worker_env
+    ):
+        """Either marker alone is enough: a worker must never be handed the
+        `Start the daemon?` prompt, which would block on stdin and then start a
+        second daemon from inside a slot."""
+        from src.cli.app import cli
+        from src.cli.exceptions import DaemonNotRunningError
+
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
+        mock = _mock_client({"list_tasks": DaemonNotRunningError("http://127.0.0.1:8081")})
+        with patch("src.cli.tasks._get_client", return_value=mock):
+            result = runner.invoke(cli, ["task", "list"], input="", env=worker_env)
+        assert result.exit_code == 3
+        assert "Start the daemon?" not in result.output
+        assert "do not exit the pool loop" in result.output
 
 
 class TestErrorDetailsPlumbing:

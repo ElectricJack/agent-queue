@@ -236,6 +236,12 @@ result in a ledger. Two things follow for everyone else:
 * Do not link a historical page as though it were instructions. Link it as
   background, with the date it describes.
 
+A design record can also run *ahead* of the code. The one open at present is
+[the dashboard server and API-only daemon](specs/dashboard-server.md)
+(2026-09-20): approved, not yet implemented. It moves the dashboard out of the
+daemon into its own process; until that lands, the
+[dashboard guide](guides/dashboard.md) describes what ships.
+
 Known contradictions between existing pages and current behaviour are already
 recorded in
 [known-inaccuracies.md](plans/documentation-overhaul/known-inaccuracies.md);
