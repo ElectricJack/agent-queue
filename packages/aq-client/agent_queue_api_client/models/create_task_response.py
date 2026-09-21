@@ -35,6 +35,7 @@ class CreateTaskResponse:
         gate_id (None | str | Unset):
         status (None | str | Unset):
         reason (None | str | Unset):
+        parent_id (None | str | Unset):
         depends_on (list[CreateTaskResponseDependsOnItem] | Unset):
     """
 
@@ -54,6 +55,7 @@ class CreateTaskResponse:
     gate_id: None | str | Unset = UNSET
     status: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
+    parent_id: None | str | Unset = UNSET
     depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -141,6 +143,12 @@ class CreateTaskResponse:
         else:
             reason = self.reason
 
+        parent_id: None | str | Unset
+        if isinstance(self.parent_id, Unset):
+            parent_id = UNSET
+        else:
+            parent_id = self.parent_id
+
         depends_on: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.depends_on, Unset):
             depends_on = []
@@ -183,6 +191,8 @@ class CreateTaskResponse:
             field_dict["status"] = status
         if reason is not UNSET:
             field_dict["reason"] = reason
+        if parent_id is not UNSET:
+            field_dict["parent_id"] = parent_id
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
 
@@ -317,6 +327,15 @@ class CreateTaskResponse:
 
         reason = _parse_reason(d.pop("reason", UNSET))
 
+        def _parse_parent_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
+
         _depends_on = d.pop("depends_on", UNSET)
         depends_on: list[CreateTaskResponseDependsOnItem] | Unset = UNSET
         if _depends_on is not UNSET:
@@ -343,6 +362,7 @@ class CreateTaskResponse:
             gate_id=gate_id,
             status=status,
             reason=reason,
+            parent_id=parent_id,
             depends_on=depends_on,
         )
 

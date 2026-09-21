@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from src.cli.install import build_options, load_install_input
+from src.cli.install import build_options, load_install_input, resolve_project_folder
 from src.install.results import EXIT_CODES, InstallOutcome
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +24,22 @@ DOC = ROOT / "docs" / "reference" / "cli" / "install.md"
 @pytest.fixture(autouse=True)
 def _pg_backend():
     """The installer CLI runs before a database exists."""
+
+
+@pytest.fixture(autouse=True)
+def supported_host(monkeypatch):
+    """Pin the host the CLI sees to a supported one.
+
+    ``aq install`` refuses an unsupported host before it plans anything
+    (exit 12 ``unsupported_host``), and GitHub's runners are plain Ubuntu,
+    not WSL2 -- so a test about a flag, a rerun or the wizard must not
+    depend on the machine running it.  Host detection itself is covered in
+    ``tests/test_install_platform.py``.
+    """
+    from src.cli import install as install_cli
+    from tests.installer_machine import WSL2
+
+    monkeypatch.setattr(install_cli, "describe_host", lambda: WSL2)
 
 
 @pytest.fixture
@@ -112,8 +128,13 @@ def test_an_unattended_run_without_approval_stops_at_needs_user(install_home):
     assert result.exit_code == EXIT_CODES[InstallOutcome.NEEDS_USER]
     payload = _payload(result)
     assert payload["outcome"] == "needs_user"
-    assert payload["blocking_step"] == "prereq.data-dir"
-    assert "--approve prereq.data-dir" in payload["next_action"]
+    # Which step that is depends on the host -- WSL installs its apt
+    # prerequisites first, macOS its Homebrew ones -- so the claim under test is
+    # "the first mutating step, named with the flag that approves it", not an id.
+    blocking = payload["blocking_step"]
+    first_mutating = next(row["step_id"] for row in payload["plan"] if row["mutating"])
+    assert blocking == first_mutating
+    assert f"--approve {blocking}" in payload["next_action"]
 
 
 def test_approving_every_step_completes_and_records_state(install_home, without_database_steps):
@@ -557,9 +578,7 @@ def test_a_run_with_no_coding_agent_is_asked_again(
 def test_advanced_keeps_asking_before_each_step(
     install_home, wizard_registry, scripted_questions, tmp_path
 ):
-    result = _invoke(
-        "--interactive", "--advanced", input=f"\n\n{tmp_path / 'code'}\n" + "n\n" * 20
-    )
+    result = _invoke("--interactive", "--advanced", input=f"\n\n{tmp_path / 'code'}\n" + "n\n" * 20)
 
     assert "Go ahead?" not in result.output
     assert "[Y/n]" in result.output.split("Where do your code projects live?")[1]
@@ -660,3 +679,46 @@ def test_a_repair_carries_forward_the_capabilities_the_record_selected(
 
     repaired = _payload(_invoke("--repair", "--non-interactive", "--yes", "--json"))
     assert repaired["capabilities"] == selected["capabilities"]
+
+
+def test_a_non_interactive_run_falls_back_to_the_default_projects_folder(tmp_path):
+    """Nobody is asked under `curl … | bash`, so the wizard's default stands in.
+
+    Without this the install finished "ready" and then told the operator no
+    project root was configured, leaving one manual edit between them and their
+    first project -- an extra step the one-line install exists to remove.
+    """
+    home = tmp_path / "person"
+    (home / "Code").mkdir(parents=True)
+
+    folder = resolve_project_folder(None, dry_run=False, cwd=home / "Code", home=home, roots=[])
+
+    assert folder == home / "Code"
+
+
+def test_an_answer_the_person_gave_is_never_second_guessed(tmp_path):
+    chosen = tmp_path / "elsewhere"
+
+    assert resolve_project_folder(chosen, dry_run=False, roots=[]) == chosen
+    assert resolve_project_folder(chosen, dry_run=False, roots=["/srv/mine"]) == chosen
+
+
+def test_a_configured_project_root_is_left_alone(tmp_path):
+    home = tmp_path / "person"
+    (home / "Code").mkdir(parents=True)
+
+    folder = resolve_project_folder(
+        None, dry_run=False, cwd=home / "Code", home=home, roots=["/srv/mine"]
+    )
+
+    assert folder is None
+
+
+def test_a_dry_run_proposes_no_projects_folder_of_its_own(tmp_path):
+    """A dry run writes nothing, so it must not print a root it would not add."""
+    home = tmp_path / "person"
+    (home / "Code").mkdir(parents=True)
+
+    assert (
+        resolve_project_folder(None, dry_run=True, cwd=home / "Code", home=home, roots=[]) is None
+    )

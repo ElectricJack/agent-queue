@@ -41,6 +41,41 @@ async def _check_stale_attention(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_archive_blocked(ctx: DoctorContext) -> CheckResult:
+    """Report terminal roots the auto-archive sweep keeps skipping.
+
+    Report-only and read-only: it reads the refusal each root's last sweep
+    attempt actually recorded, so it never attempts an archive and never
+    re-derives the archive path's rules.  There is no ``--fix`` — every
+    reason here (integration bookkeeping, a sealed batch, an open
+    descendant, a live session) is resolved by the subsystem that owns it,
+    not by doctor.
+    """
+    check_id = "tasks.archive_blocked"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    cfg = getattr(ctx.config, "archive", None) if ctx.config is not None else None
+    if cfg is None or not cfg.enabled or not cfg.statuses:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="auto-archive is disabled")
+    blocked = await ctx.db.list_archive_blocked_roots(
+        statuses=list(cfg.statuses), older_than_seconds=cfg.after_hours * 3600
+    )
+    if not blocked.total:
+        return CheckResult(
+            id=check_id, severity=Severity.OK, detail="no eligible root is blocked from archiving"
+        )
+    reasons = sorted({row["reason"] for row in blocked.roots})
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=(
+            f"{blocked.total} terminal root(s) eligible for auto-archive cannot be "
+            f"archived ({', '.join(reasons)})"
+        ),
+        data={"count": blocked.total, "roots": blocked.roots},
+    )
+
+
 async def _fix_stale_attention(ctx: DoctorContext) -> CheckResult:
     if ctx.db is not None:
         for stale in await _find_stale_attention(ctx):
@@ -55,7 +90,12 @@ def task_checks() -> list[DoctorCheck]:
             run=_check_stale_attention,
             fix=_fix_stale_attention,
             owner=OWNER,
-        )
+        ),
+        DoctorCheck(
+            id="tasks.archive_blocked",
+            run=_check_archive_blocked,
+            owner=OWNER,
+        ),
     ]
 
 

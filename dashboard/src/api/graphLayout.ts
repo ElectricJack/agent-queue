@@ -28,11 +28,16 @@ import { refetchLayout } from "../pages/command-center/layout-v2/liveRegistry";
 
 export type Variant = "all" | "active";
 
+/**
+ * The canvas never expands a container in place (operator decision
+ * 2026-09-20): `expanded` is always empty and the scope is chosen with
+ * `root` instead. The wire request still carries the field, and the server
+ * still honors a non-empty one for other callers.
+ */
 export interface TilesParams {
   variant: Variant;
   expanded: string[];
   root?: string | null;
-  maxDepth?: number | null;
   q?: string;
   status?: string;
 }
@@ -52,7 +57,6 @@ export async function fetchTiles(
       rect,
       expanded: params.expanded,
       root: params.root ?? null,
-      max_depth: params.maxDepth ?? null,
       q: params.q ?? "",
       status: params.status ?? "",
     },
@@ -65,6 +69,9 @@ export async function fetchTiles(
 export interface ListParams {
   variant: Variant;
   expanded: string[];
+  /** The container entered: the server pages that scope, root open and its
+   *  own child containers collapsed. */
+  root?: string | null;
   q: string;
   status: string;
   cursor: string | null;
@@ -139,6 +146,39 @@ export function useLayoutExtents(
   });
 }
 
+/**
+ * The `all` variant's total node count, read ONLY from whatever the query
+ * cache already holds for it -- `enabled: false` means this never issues a
+ * request of its own. It captions the empty-graph state with how many
+ * finished tasks are hidden when that number is already known for free (the
+ * operator toggled Show completed on and off again, or another view already
+ * fetched it); otherwise it returns `null` and the caption leaves the number
+ * out rather than paying for a fetch just to fill in a caption.
+ */
+export function useHiddenFinishedCount(
+  projectIds: string[],
+  variant: Variant,
+): number | null {
+  const results = useQueries({
+    queries: projectIds.map((pid) => ({
+      queryKey: layoutExtentKey(pid, "all"),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchExtent(pid, "all", signal),
+      enabled: false,
+      staleTime: 30_000,
+    })),
+    combine: (results) => results.map((r) => r.data as ExtentResponse | { pending: true } | undefined),
+  });
+  // Only meaningful while active work is the one being hidden -- once the
+  // canvas is already requesting `all`, there is nothing left to reveal.
+  if (variant !== "active" || projectIds.length === 0) return null;
+  let total = 0;
+  for (const extent of results) {
+    if (!extent || "pending" in extent) return null;
+    total += extent.node_count;
+  }
+  return total;
+}
+
 export function useLayoutNode(projectId: string | undefined, taskId: string | null) {
   return useQuery({
     queryKey: ["layoutNode", projectId, taskId],
@@ -165,15 +205,15 @@ export async function locate(
   variant: Variant,
   q: string,
   status: string,
-  expanded: string[] = [],
+  root: string | null = null,
 ): Promise<LocateResponse> {
-  // `expanded` rides along because a hit's position depends on it: collapsing
-  // a container reflows everything after it, so the persisted coordinate is
-  // not where the canvas draws the match.
+  // `root` rides along because a hit's position depends on the scope on
+  // screen: entering a container re-packs its scope, so the persisted
+  // coordinate is not where the canvas draws the match.
   const r = await postLocateApiProjectsProjectIdGraphLocatePost({
     client,
     path: { project_id: projectId },
-    body: { variant, q, status, expanded },
+    body: { variant, q, status, root },
     throwOnError: true,
   });
   return r.data as LocateResponse;

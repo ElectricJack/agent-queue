@@ -33,6 +33,7 @@ from src.database.tables import (
     task_labels,
     task_metadata,
     task_results,
+    task_subtasks,
     task_tools,
     task_workspace_requirements,
     tasks,
@@ -1410,13 +1411,19 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
-        await self.guard_integration_mutation(
+        from src.database.queries.task_references import assert_no_integration_task_references
+
+        hierarchical = await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
         ).scalar()
         ids = await self.subtree_ids(task_id, conn=conn)
+        if not hierarchical:
+            # See ``archive_task``: a project no longer in hierarchy/train mode
+            # can still hold integration audit rows the guard skipped.
+            await assert_no_integration_task_references(conn, ids, "delete")
         if len(ids) > 1 and not cascade:
             raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
         affected = await self._collect_affected(set(ids), conn)
@@ -1473,6 +1480,7 @@ class TaskQueryMixin:
         conn,
         preserve_comments: bool = False,
         preserve_completion: bool = False,
+        preserve_subtasks: bool = False,
         gate_resolution: str = "last waiter task deleted",
     ) -> None:
         """Delete an active task and its FK references; archives retain comments and completion history.
@@ -1571,6 +1579,11 @@ class TaskQueryMixin:
             await conn.execute(delete(task_comments).where(
                 task_comments.c.task_id == task_id,
                 task_comments.c.project_id == comment_project_id,
+            ))
+        if not preserve_subtasks:
+            await conn.execute(delete(task_subtasks).where(
+                task_subtasks.c.task_id == task_id,
+                task_subtasks.c.project_id == comment_project_id,
             ))
 
     async def get_task_updated_at(self, task_id: str) -> float | None:
@@ -1702,6 +1715,29 @@ class TaskQueryMixin:
                 )
             ).fetchall()
         return {r[0] for r in rows}
+
+    async def get_task_meta_bulk(self, task_ids: list[str], key: str) -> dict[str, object]:
+        """``{task_id: decoded_value}`` for *task_ids* carrying metadata *key*.
+
+        One query for a whole candidate set, mirroring ``count_task_subtasks``
+        — a per-task ``get_task_meta`` would be one round-trip each on the
+        graph layout endpoints, which ask this for every visible id.  Task
+        ids with no *key* metadata are absent from the result.
+        """
+        if not task_ids:
+            return {}
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        and_(
+                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            task_metadata.c.key == key,
+                        )
+                    )
+                )
+            ).fetchall()
+        return {r[0]: json.loads(r[1]) for r in rows}
 
     # ---- task_labels (free-text tags — aq-surface spec `task_set`) ----
 

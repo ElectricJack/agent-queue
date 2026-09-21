@@ -22,10 +22,12 @@ import {
   type GateSummary,
 } from "../../api/hooks";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
+import { integrationHistoryRefusal } from "../../api/deleteRefusals";
 import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
 import TaskComments from "../../components/TaskComments";
+import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
 import TaskAttention from "../../components/TaskAttention";
 import TaskDescription from "../../components/TaskDescription";
@@ -101,6 +103,10 @@ export default function TaskDetailPane({
       state: { from },
     });
   }, [args.taskId, close, from, navigate]);
+
+  // A subtree append-only integration audit rows still name can never be
+  // deleted; the dialog explains that instead of inviting another attempt.
+  const historyRefusal = deleteTask.isError ? integrationHistoryRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
 
@@ -314,6 +320,8 @@ export default function TaskDetailPane({
 
       {task && <TaskSessions taskId={args.taskId} onOpenSession={close} fromTaskPane />}
 
+      {task && <TaskSubtaskList taskId={args.taskId} />}
+
       {task && <TaskComments taskId={args.taskId} />}
 
       {task && (
@@ -453,14 +461,17 @@ export default function TaskDetailPane({
           <p className="text-sm text-gray-300">
             Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {branchPrompt && (
+          {branchPrompt && !historyRefusal && (
             <BranchDiscardPrompt
               branches={branchPrompt}
               choice={branchChoice}
               onChoose={setBranchChoice}
             />
           )}
-          {deleteTask.isError && !branchPrompt && (
+          {historyRefusal && (
+            <p role="alert" className="text-sm text-amber-200">{historyRefusal}</p>
+          )}
+          {deleteTask.isError && !branchPrompt && !historyRefusal && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
@@ -489,7 +500,7 @@ export default function TaskDetailPane({
                   },
                 )
               }
-              disabled={deleteTask.isPending}
+              disabled={deleteTask.isPending || !!historyRefusal}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
               {deleteTask.isPending

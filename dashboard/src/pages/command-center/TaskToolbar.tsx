@@ -3,23 +3,32 @@ import { useLocation } from "react-router-dom";
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import CreateTaskModal from "../../components/CreateTaskModal";
 import { useTidyLayout } from "../../api/graphLayout";
+import { useAppliedVariant } from "./layout-v2/appliedVariant";
 import { useJumpToResult } from "./layout-v2/useJumpToResult";
 import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useGraphState } from "./useGraphHierarchy";
+import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
   const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, clearFilters } = useTaskWorkspace();
-  const variant = filters.showCompleted || focusId ? "all" : "active";
+  // The variant the canvas was actually SERVED, not the one the filters ask
+  // for: the daemon promotes a focused request to the full layout when the
+  // entered container is not in the active one, and searching that container
+  // against `active` would find nothing. Before the canvas has answered (or
+  // on the Tasks tab, where it is not mounted) the filters are the best
+  // guess there is.
+  const served = useAppliedVariant();
+  const variant = served ?? (filters.showCompleted ? "all" : "active");
   // Only the graph pans to a hit, and only a server-side layout knows where
   // one is: on the Tasks tab the control would do nothing, so it is not shown
   // and the `locate` request is never issued.
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
-    onGraph ? projectId : undefined, variant, filters);
-  const { clearGraphPositions } = useGraphState();
+    onGraph ? projectId : undefined, variant, filters, focusId);
+  const { clearGraphPositions, density, setDensity } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -50,9 +59,9 @@ export default function TaskToolbar() {
         <option value="">Any time</option>
         {ACTIVITY_WINDOWS.map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
       </select>
-      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={focusId ? "Disabled while focused" : filters.window ? "Included with a time range" : undefined}>
+      <label className="flex h-9 items-center gap-2 px-1 text-xs text-gray-400" title={filters.window ? "Included with a time range" : undefined}>
         <input type="checkbox" checked={filters.showCompleted || FINISHED_STATUSES.has(filters.status)}
-          disabled={!!focusId || !!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
+          disabled={!!filters.window} onChange={(e) => setShowCompleted(e.target.checked)} className="accent-indigo-500 disabled:opacity-50" />
         Show completed
       </label>
       {onGraph && jumpCount > 0 && <button type="button" onClick={jumpNext}
@@ -62,6 +71,15 @@ export default function TaskToolbar() {
       </button>}
       {hasFilters && <button type="button" aria-label="Clear task filters" title="Clear filters" onClick={clearFilters}
         className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100"><XMarkIcon className="h-4 w-4" /></button>}
+      {onGraph && <label className="flex h-9 items-center rounded-md border border-gray-700 px-3 text-xs text-gray-200">
+        Density
+        <select aria-label="Graph density" value={density} onChange={(e) => setDensity(e.target.value as LayoutDensity)}
+          className="ml-2 bg-transparent text-xs text-white outline-none">
+          <option value="compact">Compact</option>
+          <option value={DEFAULT_DENSITY}>Comfortable</option>
+          <option value="spacious">Spacious</option>
+        </select>
+      </label>}
       {projectId && <button type="button" disabled={tidy.isPending}
         title="Re-arrange every node in this project"
         onClick={() => { if (window.confirm("Tidy re-arranges every node in this project. Continue?")) tidy.mutate(); }}

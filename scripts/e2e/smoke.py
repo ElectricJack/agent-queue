@@ -50,7 +50,7 @@ API_URL = os.environ.get("AQ_API_URL", "http://127.0.0.1:8099").rstrip("/")
 PROJECT = "e2e"
 OTHER_PROJECT = "other"
 POOL_PROFILE = "worker"
-POOL_CLASS = "standard-medium"
+POOL_CLASS = "fast-high"
 
 #: How long a scenario waits for the 5s cascade to converge before failing.
 CONVERGE_TIMEOUT = float(os.environ.get("AQ_E2E_CONVERGE_TIMEOUT", "60"))
@@ -636,12 +636,17 @@ def s3_worker_filed_work(state: dict) -> str:
     held = worker.task_id
     state["s3_worker"] = worker
 
+    # A bare worker filing lands as a child of the held task with no gate of
+    # its own (7d5af2879; tests/test_worker_filing.py).  The durable routing
+    # gate this scenario exercises belongs to a *root* filing -- cross-cutting
+    # work that does not ship with the held deliverable -- so ask for one.
     filed = api(
         "create_task",
         {
             "title": "S3 discovered work",
             "description": "filed by a worker mid-task",
             "reason": "follow-up work discovered while executing the held task",
+            "root": True,
         },
         token=worker.token,
     )
@@ -659,6 +664,7 @@ def s3_worker_filed_work(state: dict) -> str:
         f"worker-filed work moved to unexpected status {row['status']}",
     )
     check(row["is_blocked"], "worker-filed work lost its routing blocker")
+    check(row.get("parent_task_id") is None, f"root filing got a parent: {row.get('parent_task_id')}")
     check(row["project_id"] == PROJECT, "worker-filed work escaped the session's project")
     check(
         row["profile_id"] == POOL_PROFILE,

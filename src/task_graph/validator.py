@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 from collections import deque
-from typing import Any
+from typing import Any, NamedTuple
 
 from src.aq_uri import path_is_within
 from src.database.tables import TASK_DEP_TYPES
@@ -113,6 +113,12 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
         # `unknown_profile '{p}'` *and* a bogus `unused_var 'p'`.
         graph.parent.profile = expand(graph.parent.profile)
 
+    for phase in graph.phases:
+        # The key is graph-local plumbing, like ``node.key``, and is left
+        # alone; the title and label are what a reader sees.
+        phase.title = expand(phase.title) or ""
+        phase.label = expand(phase.label)
+
     for node in graph.nodes:
         node.title = expand(node.title) or ""
         node.description = expand(node.description) or ""
@@ -129,6 +135,9 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
             ctx.content = expand(ctx.content)
         for need in node.needs:
             need.on = expand(need.on) or need.on
+        for subtask in node.subtasks:
+            subtask.title = expand(subtask.title) or subtask.title
+            subtask.context = expand(subtask.context) or subtask.context
 
     unknown |= _surviving_var_names(graph)
     return used, unknown
@@ -155,6 +164,10 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
         for label in graph.parent.labels:
             scan(label)
 
+    for phase in graph.phases:
+        scan(phase.title)
+        scan(phase.label)
+
     for node in graph.nodes:
         scan(node.title)
         scan(node.description)
@@ -171,6 +184,9 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
             scan(ctx.content)
         for need in node.needs:
             scan(need.on)
+        for subtask in node.subtasks:
+            scan(subtask.title)
+            scan(subtask.context)
 
     return names
 
@@ -265,6 +281,242 @@ def _check_keys(graph: TaskGraph) -> list[GraphError]:
             errors.append(_error("duplicate_key", f"duplicate node key '{node.key}'", node.key))
         seen.add(node.key)
     return errors
+
+
+def _check_phases(graph: TaskGraph) -> list[GraphError]:
+    """The ``phases:``/``phase:`` rules (planning-emits-phases §7.3).
+
+    Three errors — a duplicate phase key, a node naming a phase that was
+    never declared, and a **phase-inverted** gating path — and two warnings.
+    The warnings are warnings on purpose: an empty phase and a
+    belt-and-braces backward edge are both *legal*, and whether they are
+    wanted is the planner's judgement, not the validator's (§3.5).
+
+    **The cross-phase rule.** Only *gating* edges count
+    (:data:`BLOCKING_DEP_TYPES`); ``related``/``discovered-from`` and friends
+    schedule nothing, so they can neither deadlock nor be redundant.
+
+    - Backward, **per edge**: a phased node needing a node in an earlier
+      phase is ``redundant_phase_edge`` (warning) — the phase gate already
+      orders them.
+    - Within one phase: nothing.  That is ordinary ordering inside a stage.
+    - Forward, **transitively**: if a gating path from a phased node reaches
+      a phased node in a *later* phase — directly, or through any number of
+      **unphased** intermediates — it is ``inverted_phase_edge``.
+
+    The forward rule has to be transitive, and the earlier per-edge version
+    of it was unsound.  An unphased node is a direct child of the epic, so no
+    phase *withholds* it through the ``parent-child`` rule — but it is still
+    gated by its own edges.  With ``A`` in phase 1 needing unphased ``U``
+    needing ``B`` in phase 2: ``B`` is withheld under phase 2 (DEFINED,
+    because its ``blocks`` edge onto phase 1 is unsatisfied), so ``U``'s edge
+    never satisfies, so ``A`` never completes, so phase 1 never settles and
+    phase 2 never releases.  A permanent deadlock, and one neither
+    :func:`_check_cycles` nor a per-edge check can see, because the loop runs
+    through the phase containers, which are not edges in this document.
+
+    Propagation stops at a phased node: a phased intermediate is reported by
+    its *own* outgoing edge, so carrying its reach further would report the
+    same deadlock twice under different names.  The search is a memoised DFS
+    over the gating ``needs`` graph.  In a **cyclic** document it cuts back
+    edges and may therefore under-report — that is deliberate and harmless:
+    :func:`_check_cycles` already errors on a gating cycle, so nothing is
+    created either way.
+
+    **Every gating type is an error — there is no soft class.** A
+    ``waits-for`` looks like one: ``_waits_for_unsat``
+    (``src/database/queries/blocked_state.py``) is vacuously satisfied while
+    its target has no ``parent-child`` children.  But a document *can* give a
+    node children — ``needs: [{on: X, dep_type: "parent-child"}]`` is legal
+    and the creator writes that row verbatim — so an in-document
+    ``waits-for`` into a later phase is a real deadlock as soon as any node
+    declares such a need.  Ranking it below the hard types was also unsound
+    in its own right: one finding is emitted per node, so a farther soft
+    reach masked a nearer hard one and the deadlocked graph was created.
+    Refusing the occasional plan that would have run (drop the edge — the
+    phase gate already orders it) is strictly better than creating a graph
+    nothing can recover.
+    """
+    findings: list[GraphError] = []
+    order: dict[str, int] = {}
+    for index, phase in enumerate(graph.phases):
+        if phase.key in order:
+            findings.append(
+                _error("duplicate_phase_key", f"duplicate phase key '{phase.key}'")
+            )
+            continue
+        order[phase.key] = index
+
+    populated: set[str] = set()
+    for node in graph.nodes:
+        if node.phase is None:
+            continue
+        if node.phase not in order:
+            findings.append(
+                _error(
+                    "unknown_phase",
+                    f"node '{node.key}' names phase '{node.phase}', which the document's "
+                    "'phases' does not declare",
+                    node.key,
+                )
+            )
+            continue
+        populated.add(node.phase)
+
+    for key in order:
+        if key not in populated:
+            findings.append(
+                _error(
+                    "phase_without_nodes",
+                    f"phase '{key}' has no nodes; it is created anyway and stays open "
+                    "until work is filed into it or it is deleted",
+                    severity="warning",
+                )
+            )
+
+    node_phase = {node.key: node.phase for node in graph.nodes}
+    for node in graph.nodes:
+        if node.phase not in order:
+            continue
+        for need in node.needs:
+            if need.dep_type not in BLOCKING_DEP_TYPES:
+                continue
+            target = node_phase.get(need.on)
+            if target is None or target not in order:
+                continue
+            if order[target] < order[node.phase]:
+                findings.append(
+                    _error(
+                        "redundant_phase_edge",
+                        f"node '{node.key}' needs '{need.on}', which is in the earlier "
+                        f"phase '{target}' — the phase gate already covers it",
+                        node.key,
+                        severity="warning",
+                    )
+                )
+
+    findings.extend(_check_inverted_phase_paths(graph, order, node_phase))
+    return findings
+
+
+#: How many node keys a reported route prints in full before it is folded.
+#: A chain can be thousands of nodes long; nobody reads that as a message.
+_MAX_ROUTE_KEYS = 8
+
+
+class _Reach(NamedTuple):
+    """The worst later phase reachable from a node over gating edges.
+
+    ``order`` is that phase's index and ``path`` the node keys walked to get
+    there, excluding the node itself.  There is deliberately no severity
+    dimension: **every** gating dep type that reaches a later phase is an
+    error (see :func:`_check_phases`).
+    """
+
+    order: int
+    path: tuple[str, ...]
+
+
+def _worse(a: _Reach | None, b: _Reach | None) -> _Reach | None:
+    """The more serious of two reaches — the one landing in the later phase."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return b if b.order > a.order else a
+
+
+def _render_route(keys: tuple[str, ...]) -> str:
+    """``a -> b -> c``, folded in the middle once it stops being readable."""
+    if len(keys) <= _MAX_ROUTE_KEYS:
+        return " -> ".join(keys)
+    head = " -> ".join(keys[:3])
+    tail = " -> ".join(keys[-3:])
+    return f"{head} -> … ({len(keys) - 6} more) … -> {tail}"
+
+
+def _check_inverted_phase_paths(
+    graph: TaskGraph, order: dict[str, int], node_phase: dict[str, str | None]
+) -> list[GraphError]:
+    """One ``inverted_phase_edge`` per phased node that reaches a later phase.
+
+    See :func:`_check_phases` for why this is transitive and where it stops.
+
+    The traversal is **iterative** — a document may declare a gating chain
+    thousands of nodes long (the size cap is 2,000,000 characters) and a
+    recursive walk raised ``RecursionError`` out of validation.  Nodes are
+    settled in reverse topological order of the gating ``needs`` graph
+    (Kahn's algorithm over the reversed edges, the same shape
+    :func:`_check_cycles` uses), so each node is merged into its predecessors
+    exactly once and the whole pass is linear in nodes + gating edges.
+
+    A node inside a gating **cycle** never reaches out-degree zero and keeps
+    whatever partial reach its settled targets gave it.  That is the same
+    "cut the back edge" behaviour the recursive version had, and it is
+    harmless: :func:`_check_cycles` errors on the cycle, so nothing is
+    created either way.
+    """
+    nodes = {node.key: node for node in graph.nodes}
+    predecessors: dict[str, list[str]] = {key: [] for key in nodes}
+    unsettled: dict[str, int] = {}
+    for node in graph.nodes:
+        out = 0
+        for need in node.needs:
+            if need.dep_type not in BLOCKING_DEP_TYPES or need.on not in nodes:
+                # Non-gating, or an id naming a task outside this document —
+                # which no phase declared here withholds.
+                continue
+            if need.on == node.key:
+                # ``_check_self_edges`` reports this; counting it would leave
+                # the node permanently unsettled.
+                continue
+            predecessors[need.on].append(node.key)
+            out += 1
+        unsettled[node.key] = out
+
+    best: dict[str, _Reach | None] = dict.fromkeys(nodes, None)
+    queue = deque(key for key in nodes if unsettled[key] == 0)
+    while queue:
+        key = queue.popleft()
+        target_phase = node_phase.get(key)
+        for parent in predecessors[key]:
+            if target_phase in order:
+                # Stop here: a phased node answers for its own edges, so its
+                # own reach is not carried past it.
+                candidate = _Reach(order[target_phase], (key,))
+            elif best[key] is not None:
+                candidate = _Reach(best[key].order, (key, *best[key].path))
+            else:
+                candidate = None
+            best[parent] = _worse(best[parent], candidate)
+            unsettled[parent] -= 1
+            if unsettled[parent] == 0:
+                queue.append(parent)
+
+    findings: list[GraphError] = []
+    for node in graph.nodes:
+        if node.phase not in order:
+            # An unphased node's own start is gated by nothing, so it is only
+            # ever the *carrier* of someone else's deadlock, never its owner.
+            continue
+        worst = best[node.key]
+        if worst is None or worst.order <= order[node.phase]:
+            continue
+        target_key = worst.path[-1]
+        target_phase = node_phase[target_key]
+        route = _render_route((node.key, *worst.path))
+        findings.append(
+            _error(
+                "inverted_phase_edge",
+                f"node '{node.key}' in phase '{node.phase}' depends on '{target_key}' in the "
+                f"later phase '{target_phase}' ({route}) — that deadlocks: phase "
+                f"'{target_phase}' cannot start until phase '{node.phase}' completes, which "
+                f"waits on '{node.key}'. Move one of them, or drop the phases and order the "
+                "tasks with needs/blocks edges",
+                node.key,
+            )
+        )
+    return findings
 
 
 def _check_titles(graph: TaskGraph) -> list[GraphError]:
@@ -478,6 +730,49 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
     return errors
 
 
+async def _check_subtasks_reportable(graph: TaskGraph, db: Any) -> list[GraphError]:
+    """Warn when a node's checklist is one its worker could not tick off.
+
+    ``ensure_default_profiles`` is write-if-absent, so a vault upgraded from
+    before the subtask grants existed has profiles without
+    ``task_subtask_update``.  Such a worker still *sees* the checklist in
+    prime — it just is not told to report progress — so the checklist is
+    still worth writing and this is a **warning**, not an error.  Saying so
+    at ``--dry-run`` time is what lets a planner fix the grants first.
+
+    Runs after :func:`_check_profiles`, which rewrites ``node.profile`` to the
+    id that actually resolved, so the reseed command this names is the real
+    profile id.  A node with no profile resolves to nothing and is skipped —
+    ``profile_allows_command`` fails open there, and so does this.
+    """
+    if db is None:
+        return []
+    from src.prime.sections import SUBTASK_UPDATE_COMMAND, profile_allows_command
+
+    findings: list[GraphError] = []
+    allowed: dict[str, bool] = {}
+    for node in graph.nodes:
+        if not node.subtasks or not node.profile:
+            continue
+        if node.profile not in allowed:
+            allowed[node.profile] = await profile_allows_command(
+                db, node.profile, SUBTASK_UPDATE_COMMAND
+            )
+        if allowed[node.profile]:
+            continue
+        findings.append(
+            _error(
+                "subtasks_unreportable",
+                f"profile '{node.profile}' cannot run '{SUBTASK_UPDATE_COMMAND}', so the "
+                "worker will see this checklist but not be told to tick it off — "
+                f"run `aq agent profile-reseed --profile-id {node.profile} --grants-only`",
+                node.key,
+                severity="warning",
+            )
+        )
+    return findings
+
+
 def _check_spec_refs(
     graph: TaskGraph,
     *,
@@ -573,6 +868,7 @@ async def validate_graph(
         )
 
     findings.extend(_check_keys(graph))
+    findings.extend(_check_phases(graph))
     findings.extend(_check_titles(graph))
     findings.extend(_check_acceptance(graph))
     findings.extend(_check_dep_types(graph))
@@ -581,6 +877,7 @@ async def validate_graph(
     findings.extend(_check_foreign_projects(graph, project_id))
     findings.extend(await _check_needs(graph, project_id, db))
     findings.extend(await _check_profiles(graph, project_id, db))
+    findings.extend(await _check_subtasks_reportable(graph, db))
     findings.extend(_check_spec_refs(graph, vault_root=vault_root))
 
     return findings

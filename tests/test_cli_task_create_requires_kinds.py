@@ -403,6 +403,11 @@ INTENTIONALLY_EXCLUDED = {
     "depends_on": "Edges are added after creation with 'aq task deps'.",
     "discovered_from": "Provenance stamped by worker filing, not a CLI flag.",
     "labels": "Labels are managed by the auto-generated label commands.",
+    "parent_key": (
+        "The standing parent is for automated creators (playbooks, the sentinel); an "
+        "operator names the container with --parent."
+    ),
+    "parent_title": "Only meaningful alongside parent_key.",
     "preferred_workspace_id": (
         "Superseded by requires_kinds; workspace instances are chosen at acquisition."
     ),

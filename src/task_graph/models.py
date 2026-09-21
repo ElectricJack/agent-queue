@@ -100,6 +100,44 @@ class GraphContext:
 
 
 @dataclass
+class GraphSubtask:
+    """One ``task_subtasks`` checklist row a node declares.
+
+    Subtasks are never scheduled or claimed — they are per-task progress
+    visibility for the single agent that holds the task.  They live in the
+    graph grammar because the subtask write fence only lets a session write
+    subtasks on the task it *holds*, so a planner can never seed them after
+    the fact: whoever writes the task row must write the checklist with it
+    (see the planning-emits-subtasks design §2.1).
+    """
+
+    title: str
+    context: str = ""
+
+    def to_dict(self) -> dict:
+        return {"title": self.title, "context": self.context}
+
+
+@dataclass
+class GraphPhase:
+    """One ordered phase container the graph's nodes are filed into.
+
+    A phase is an ordinary container task carrying ``task_metadata.phase``
+    plus a ``blocks`` edge onto every earlier sibling phase, so everything in
+    phase *N+1* waits for phase *N* with no per-task edge (work-graph §13b).
+    ``key`` is graph-local — a node names it in its own ``phase`` field — and
+    document order is the phase order, 1..N.
+    """
+
+    key: str
+    title: str = ""
+    label: str | None = None
+
+    def to_dict(self) -> dict:
+        return {"key": self.key, "title": self.title, "label": self.label}
+
+
+@dataclass
 class GraphNode:
     """One task in the graph, keyed graph-locally by ``key``."""
 
@@ -110,6 +148,11 @@ class GraphNode:
     deliverables: list[dict[str, str]] = field(default_factory=list)
     context: list[GraphContext] = field(default_factory=list)
     needs: list[GraphNeed] = field(default_factory=list)
+    #: Checklist rows seeded onto this node's task, in document order.
+    subtasks: list[GraphSubtask] = field(default_factory=list)
+    #: ``key`` of the declared phase this node belongs to.  ``None`` keeps the
+    #: node a direct child of the container, beside the phases.
+    phase: str | None = None
     labels: list[str] = field(default_factory=list)
     priority: int = 100
     profile: str | None = None
@@ -128,6 +171,8 @@ class GraphNode:
             "deliverables": [dict(item) for item in self.deliverables],
             "context": [c.to_dict() for c in self.context],
             "needs": [n.to_dict() for n in self.needs],
+            "subtasks": [s.to_dict() for s in self.subtasks],
+            "phase": self.phase,
             "labels": list(self.labels),
             "priority": self.priority,
             "profile": self.profile,
@@ -165,6 +210,9 @@ class TaskGraph:
     vars: dict[str, str] = field(default_factory=dict)
     defaults: dict = field(default_factory=dict)
     parent: GraphParent | None = None
+    #: Ordered phase containers, document order = phase order 1..N.  Empty
+    #: for every document written before the key existed.
+    phases: list[GraphPhase] = field(default_factory=list)
     nodes: list[GraphNode] = field(default_factory=list)
     #: Set when the graph came from ``--from-spec``.  Drives the severity of
     #: the ``spec_ref`` checks: error from a spec, warning from a bare graph
@@ -183,6 +231,7 @@ class TaskGraph:
             "vars": dict(self.vars),
             "defaults": dict(self.defaults),
             "parent": self.parent.to_dict() if self.parent else None,
+            "phases": [p.to_dict() for p in self.phases],
             "nodes": [n.to_dict() for n in self.nodes],
             "from_spec": self.from_spec,
             "source_path": self.source_path,

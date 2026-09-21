@@ -8,11 +8,13 @@ authentication readiness are deliberately owned by the follow-up login flow.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from .prerequisites import STEP_TMUX
 from .results import ResourceRecord, StepResult
@@ -21,6 +23,41 @@ from .steps import StepContext, StepSpec
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 CommandLookup = Callable[[str], str | None]
 _VERSION_PATTERN = re.compile(r"\b[vV]?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9._-]+)?\b")
+
+
+#: The directories a provider's own installer writes into, relative to ``$HOME``.
+#: ``claude.ai/install.sh`` and ``chatgpt.com/codex/install.sh`` both link their
+#: executable into ``~/.local/bin``, and npm's user prefix is the same place.
+USER_BIN_DIRS: tuple[str, ...] = (".local/bin", "bin")
+
+
+def user_bin_aware_which(
+    base: CommandLookup | None = None,
+    home: Path | None = None,
+) -> CommandLookup:
+    """``which`` that also looks where a provider's installer puts its binary.
+
+    ``~/.local/bin`` is on the *next* login shell's PATH -- the bootstrap appends
+    it to the profile -- but not necessarily on this process's, so the install
+    step installed Claude Code into it and then reported "claude was not
+    executable on PATH after installation", stopping a run whose work had
+    actually succeeded.  Looking in the directory the installer just wrote to is
+    the same fix ``brew_aware_which`` makes for a Homebrew prefix.
+    """
+    lookup = base or shutil.which
+    root = home or Path.home()
+
+    def which(command: str) -> str | None:
+        found = lookup(command)
+        if found:
+            return found
+        for folder in USER_BIN_DIRS:
+            candidate = root / folder / command
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        return None
+
+    return which
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +98,25 @@ def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, check=False, capture_output=True, text=True)
 
 
+#: How much of a provider installer's own output a failure carries.
+EXCERPT_LINES = 8
+
+
+def _excerpt(completed: subprocess.CompletedProcess[str]) -> str:
+    """The installer's own last lines, for a failure that cannot explain itself.
+
+    Provider installers are third-party scripts; when one of them ends in a state
+    AQ did not expect, what it printed is the evidence.  stderr first, because a
+    script that fails usually says so there.
+    """
+    for stream in (completed.stderr, completed.stdout):
+        lines = [line.rstrip() for line in (stream or "").splitlines() if line.strip()]
+        if lines:
+            tail = lines[-EXCERPT_LINES:]
+            return "; installer output: " + " | ".join(tail)
+    return ""
+
+
 def probe_executable(
     installer: ProviderInstaller,
     *,
@@ -72,7 +128,12 @@ def probe_executable(
     if not path:
         return ExecutableProbe(path=None)
     try:
-        result = runner((installer.executable, "--version"))
+        # The *resolved* path, not the bare name: a CLI its own installer put in
+        # ~/.local/bin is findable (see user_bin_aware_which) but not runnable by
+        # name until a new login shell picks up PATH, and running the name
+        # instead made every such install report "not runnable" right after it
+        # had succeeded.
+        result = runner((path, "--version"))
     except OSError:
         # A stale PATH entry is not an available harness.  The install step
         # will offer the documented repair path instead of reporting success.
@@ -130,17 +191,26 @@ def provider_step(
         if completed.returncode != 0:
             return StepResult.failed(
                 installer.step_id,
-                f"the {installer.title} installer exited with status {completed.returncode}",
+                f"the {installer.title} installer exited with status {completed.returncode}"
+                + _excerpt(completed),
                 installer.install_hint,
             )
 
         after = observe()
         if not after.available:
+            # The installer said it succeeded and left nothing runnable behind.
+            # Its own last words are the only evidence of why, and dropping them
+            # left a failure whose single hint ("open a new shell") was a guess:
+            # a half-written download and a PATH that has not caught up look
+            # identical from here.
             return StepResult.failed(
                 installer.step_id,
-                f"{installer.executable} was not executable on PATH after installation",
-                f"Open a new shell so PATH updates take effect, then rerun `aq install --with "
-                f"{installer.capability}`. {installer.install_hint}",
+                f"the {installer.title} installer reported success but "
+                f"{installer.executable} is not runnable" + _excerpt(completed),
+                f"Run `{' '.join(installer.install_command)}` yourself to see the installer's "
+                f"own output, then rerun `aq install --with {installer.capability}`. "
+                f"{installer.install_hint}",
+                detail={"install_command": list(installer.install_command)},
             )
         return StepResult.succeeded(
             installer.step_id,
@@ -222,12 +292,15 @@ def provider_steps(
 
 __all__ = [
     "CLAUDE_CODE",
+    "EXCERPT_LINES",
     "CODEX",
-    "GEMINI",
     "ExecutableProbe",
+    "GEMINI",
     "ProviderInstaller",
+    "USER_BIN_DIRS",
     "probe_executable",
     "provider_installers",
     "provider_step",
     "provider_steps",
+    "user_bin_aware_which",
 ]

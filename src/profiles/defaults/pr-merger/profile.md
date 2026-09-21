@@ -64,7 +64,8 @@ For each PR your task names:
     "Bash", "Read", "Write", "Edit", "Glob", "Grep", "Task", "TodoWrite", "Skill"
   ],
   "aq_commands": [
-    "get_task", "task_close", "task_heartbeat", "task_comment", "pr_merge"
+    "get_task", "task_close", "task_heartbeat", "task_comment", "pr_merge",
+    "task_subtask_add", "task_subtask_get", "task_subtask_update", "task_subtasks"
   ],
   "plugin_tools": []
 }

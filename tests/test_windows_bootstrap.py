@@ -39,7 +39,7 @@ def test_windows_entrypoint_reuses_the_actual_ubuntu_2404_alias_safely() -> None
     assert "Test-SupportedUbuntuRelease" in text
     assert "[switch]$CheckOnly" in text
     assert '$line = $line -replace [char]0, ""' in text
-    assert '$repoArgument = "\'$Repository\'"' in text
+    assert "$repoArgument = \"'$Repository'\"" in text
 
 
 def test_windows_entrypoint_starts_wsl_in_linux_home_and_delegates() -> None:
@@ -55,7 +55,7 @@ def test_shell_bootstrap_serves_both_supported_hosts() -> None:
     text = SHELL_BOOTSTRAP.read_text()
 
     # One script, two branches -- and nothing else installable.
-    assert "Darwin) host=\"macos\" ;;" in text
+    assert 'Darwin) host="macos" ;;' in text
     assert 'host="wsl"' in text
     assert "Unsupported operating system" in text
     assert "is not a WSL2 distribution" in text
@@ -99,7 +99,10 @@ def test_shell_bootstrap_never_types_a_password_for_the_user() -> None:
         if line.strip() and not line.strip().startswith("#")
     ]
     escalations = [line for line in commands if line.startswith("sudo ")]
-    assert escalations == ["sudo apt-get update", "sudo apt-get install -y git python3-venv"]
+    assert escalations == [
+        "sudo apt-get update",
+        'sudo apt-get install -y "${missing[@]}"',
+    ]
 
     # Homebrew's installer appears escaped inside a next_action message -- it is
     # printed for the user and the script exits 10, rather than being run.
@@ -230,8 +233,10 @@ def test_dependencies_are_reinstalled_on_every_pass() -> None:
 
     # The venv is created only when missing, but the installs are unconditional.
     assert 'if [[ ! -x "$checkout_dir/.venv/bin/python" ]]; then' in block
-    venv_guard_end = block.index("fi", block.index('if [[ ! -x "$checkout_dir/.venv/bin/python" ]]'))
-    assert block.index("pip install --quiet -e \".[cli]\"") > venv_guard_end
+    venv_guard_end = block.index(
+        "fi", block.index('if [[ ! -x "$checkout_dir/.venv/bin/python" ]]')
+    )
+    assert block.index('pip install --quiet -e ".[cli]"') > venv_guard_end
 
 
 def test_the_old_wsl_url_still_reaches_the_shared_bootstrap() -> None:
@@ -239,3 +244,37 @@ def test_the_old_wsl_url_still_reaches_the_shared_bootstrap() -> None:
 
     assert "scripts/install.sh" in text
     assert 'bash -s -- "$@"' in text
+
+
+def test_the_bootstrap_probes_ensurepip_not_the_venv_module() -> None:
+    """The venv module alone does not mean a venv can be built.
+
+    ``python3 -m venv --help`` succeeds on a distribution that has no
+    ``python3-venv`` package, because the module ships in ``python3-minimal``
+    and only ``ensurepip`` is missing.  With that as the probe, a machine that
+    already had Git -- so the whole prerequisite branch was skipped -- failed
+    later with "The virtual environment was not created successfully because
+    ensurepip is not available", which no installer message covered.  Each
+    prerequisite is also probed on its own, so having one no longer skips the
+    other.
+    """
+    text = SHELL_BOOTSTRAP.read_text()
+
+    assert "import ensurepip" in text
+    code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    assert not [line for line in code if "-m venv --help" in line]
+    start = text.index("missing=()")
+    branch = text[start : text.index('python_bin="python3"', start)]
+    assert 'command -v git >/dev/null || missing+=("git")' in branch
+    assert 'missing+=("python3-venv")' in branch
+    # apt is given exactly what was found missing, not a fixed pair.
+    assert 'sudo apt-get install -y "${missing[@]}"' in branch
+
+
+def test_the_bootstrap_installs_no_prerequisite_aq_install_owns() -> None:
+    """tmux and PostgreSQL belong to `aq install`, which reports what it did."""
+    text = SHELL_BOOTSTRAP.read_text()
+    start = text.index("missing=()")
+    branch = text[start : text.index('python_bin="python3"', start)]
+    assert "tmux" not in branch
+    assert "postgres" not in branch

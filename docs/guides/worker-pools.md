@@ -603,10 +603,12 @@ aq doctor --fix                             # apply fixable repairs, then re-run
 | `pools.preparing_stuck` | ERROR | yes | A session sat in `claim_phase` `claiming`/`preparing` past `2 × prepare_timeout` with no live preparation request. The fix releases the exact expired preparation as `prepare_failed`; an active reset or a claim that has since activated stays held. |
 | `pools.stranded_feature_branches` | WARN / INFO | prints the command | A remote branch that has had PRs merged **into** it, is ahead of the default branch, and has no open PR taking it there — its merged work is not on `main`. A second, INFO-only bucket lists non-`aq/` branches ahead of the default branch with no open PR to it. `--fix` prints the `gh pr create --base <default> --head <branch>` command; it never opens the PR, because `aq doctor --fix` runs every fix and opening a PR is outward-facing and not undoable. |
 | `pools.disabled` | WARN | no | Pool profiles exist but `swarm.enabled` is false — see §1. Report-only on purpose. |
+| `pools.task_lifecycle_shadow` | WARN | no | A task-lifecycle **worker** profile has the same harness and class as a pool, so tasks routed to it start unpooled sessions on the pool's route while the pool's supply reads zero; also lists READY/IN_PROGRESS tasks with no profile or a duplicate one. Only worker routes count (`src/profiles/catalog.py::worker_route`, the same rule rung seeding uses): the shipped stages (`reviewer`, `final-reviewer`, `spec-ingest`, `triage`, `playbook-compiler`, `pr-merger`, the supervisor) run at some class a pool also runs at on every fresh install and are never a duplicate, and neither is a `read_only` or `lifecycle: named` profile. Report-only: turning the copy into a pool or rerouting its tasks is an operator decision. |
 | `pools.global_bounds_migration` | INFO | no | This profile's ceiling shrank when bounds became fleet-wide, and nobody has re-scaled it since. Names the old effective ceiling, the new one, and the `max_active` that would restore it — §3a. Report-only: fleet size is an operator decision. |
 | `pools.floor_exceeds_max` | WARN | no | `max(min_active, Σ min_per_project)` is greater than `max_active`. Nothing breaks — sizing clamps to `max_active` — but some projects will never get the warm worker their `min_per_project` asks for. Raise `max_active` or lower `min_per_project`. |
 | `pools.placement_starved` | WARN | no | A profile has had authorised starts and no eligible project for over 5 minutes, with the blocking reason per project (`quarantined` / `no workspace capacity` / `at project cap`). Reads the running orchestrator's observation, so it reports INFO ("cannot see") when no daemon is reachable. |
 | `claims.holder_consistency` | WARN | no | An IN_PROGRESS task whose claim holder disagrees with `agents.current_task_id` or with the `claimed_by_session` task-meta. Report-only. |
+| `agents.dangling_current_task` | WARN | yes | An agent's `current_task_id` names a task that is missing or not `ASSIGNED`/`IN_PROGRESS`, and the agent has no live session attempt on it. Broader than the BUSY-only reconciler rescue: any agent row, since the dashboard's graph markers read `current_task_id` regardless of `state`. `--fix` resets the agent (`IDLE`, `current_task_id=None`) and emits `agent.updated`; it never touches `tasks.assigned_agent_id`. |
 
 ### The agent-row rule, and the one thing not to do
 
@@ -940,6 +942,49 @@ file you had marked `customized: true` is left alone.
 aq system list-intelligence-classes
 ls ~/.agent-queue/vault/intelligence-classes/*.retired   # your old bytes
 ```
+
+### A shipped profile that gained a new grant
+
+`ensure_default_profiles()` is write-if-absent, and so is every reseed path:
+once `vault/agent-types/<id>/profile.md` exists, an upgrade never touches it.
+That is the right default for operator edits, but it means a release that adds
+a *capability* to a shipped profile — a new command in `## Config.aq_commands`
+— reaches a fresh install and no existing one.
+
+The graph-visibility release is exactly that case: the shipped worker,
+planner, supervisor, reviewer and pipeline profiles gained
+`task_subtask_add` / `task_subtasks` / `task_subtask_get` /
+`task_subtask_update` and `phase_create` / `phase_list`. On an upgraded box
+the vault copies keep their old command lists, so a worker told by prime to
+run `aq task subtask-done N` gets `capability_denied`, and then a
+`subtasks.open` refusal when it tries to close. (Prime itself now omits the
+"report progress" line for a profile that lacks `task_subtask_update`, so the
+symptom is a checklist the worker can read but not tick, not a denial loop.)
+
+`profiles.system_drift` now sees this directly — it diffs each vault copy's
+`## Capabilities` block against the shipped default and reports
+`missing_grants` per namespace (`harness_tools` / `aq_commands` /
+`plugin_tools`), naming the exact commands a profile is missing. The repair
+that keeps your edits is `--grants-only`:
+
+```bash
+aq doctor --check profiles.system_drift                          # which vault copies diverge, and how
+aq agent profile-reseed --profile-id <id> --grants-only           # merge in only the missing grants
+```
+
+`profiles.system_drift` is report-only by design — overwriting a vault copy
+would discard operator edits silently. `--grants-only` appends only the
+grant names the shipped default has that your vault copy lacks to its own
+`## Capabilities` JSON, writing a `.bak-<epoch>` first; everything else —
+`## Config` (including a `harness` you changed), other sections, and any
+grant you added yourself — is left exactly as it was. It refuses (no write,
+no backup) if the vault copy predates `## Capabilities` entirely (still on
+the legacy `## Tools` block) or if the merge would not parse cleanly.
+
+A full `aq agent profile-reseed --profile-id <id>` (no `--grants-only`)
+remains for that legacy-`## Tools` case, or for any other divergence you'd
+rather just take the shipped version of — it overwrites the whole file (also
+behind a `.bak-<epoch>`), so reconcile edits from the backup afterwards.
 
 ### Retiring a shipped default
 

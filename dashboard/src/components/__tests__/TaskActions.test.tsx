@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskActions from "../TaskActions";
@@ -6,6 +6,11 @@ import TaskActions from "../TaskActions";
 const mockNavigate = vi.fn();
 const mockDelete = vi.fn();
 const mockSendChatMessage = vi.fn();
+/** The delete mutation's reported failure; a test that cares sets its own. */
+const GENERIC_FAILURE = new Error("A descendant still has a live session");
+const deleteFailure = vi.hoisted(() => ({
+  current: null as unknown,
+}));
 
 vi.mock("../../api/chat", () => ({
   sendChatMessage: (...args: unknown[]) => mockSendChatMessage(...args),
@@ -32,9 +37,13 @@ vi.mock("../../api/hooks", () => {
       reset: vi.fn(),
       isPending: false,
       isError: true,
-      error: new Error("A descendant still has a live session"),
+      error: deleteFailure.current,
     }),
   };
+});
+
+beforeEach(() => {
+  deleteFailure.current = GENERIC_FAILURE;
 });
 
 const task = {
@@ -53,6 +62,38 @@ describe("TaskActions deletion", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "A descendant still has a live session",
     );
+  });
+
+  it("explains an integration-history refusal instead of offering another attempt", async () => {
+    // The daemon refuses before any write because append-only integration
+    // audit rows still name the subtree. Retrying cannot help and there is no
+    // branch question to ask, so the dialog says why in plain words and stops
+    // offering the button.
+    deleteFailure.current = Object.assign(new Error("API 422"), {
+      payload: {
+        success: false,
+        code: "hierarchy.integration_owned",
+        error:
+          "hierarchy.integration_owned: delete would orphan 1 integration record(s): " +
+          "integration_batch_members(azure-beacon)",
+        references: [{ task_id: "azure-beacon", table: "integration_batch_members" }],
+      },
+    });
+    mockDelete.mockReset();
+
+    render(<TaskActions task={task} />);
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    const dialog = screen.getByRole("dialog");
+    const alert = within(dialog).getByRole("alert");
+    expect(alert).toHaveTextContent(/permanent record, so it cannot be deleted/);
+    expect(alert).toHaveTextContent(/once archiving tasks with integration history is supported/);
+    expect(alert).not.toHaveTextContent(/hierarchy\.|integration_batch_members/);
+    expect(
+      within(dialog).getByRole("button", { name: "Delete task and descendants" }),
+    ).toBeDisabled();
+    // No branch question either.
+    expect(within(dialog).queryByLabelText(/Delete the branch/)).not.toBeInTheDocument();
   });
 
   it("closes a pane and does not create a duplicate navigation entry when returnTo is current", async () => {

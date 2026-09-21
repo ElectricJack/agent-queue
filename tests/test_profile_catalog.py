@@ -6,8 +6,8 @@ import json
 
 from src.install.logins import AuthProbe
 from src.profiles.catalog import (
-    active_catalog_profile_ids,
     activation_path,
+    active_catalog_profile_ids,
     evaluate_catalog,
     refresh_catalog_profiles,
     shipped_profile_catalog,
@@ -209,6 +209,31 @@ def test_a_stage_profile_does_not_block_the_rung_of_its_class(tmp_path):
     created = set(refresh_catalog_profiles(tmp_path, _probes("claude"))["created"])
 
     assert {"fast-low-claude", "deep-high-claude"} <= created
+
+
+def test_a_read_only_or_named_profile_does_not_block_the_rung_of_its_class(tmp_path):
+    """An operator's auditor or a named session at a route is a role, not a worker."""
+    _seed_vault(tmp_path)
+    for profile_id, config in (
+        ("auditor", '{"harness": "codex", "default_class": "astra-high", "read_only": true}'),
+        (
+            "codex-butler",
+            (
+                '{"harness": "codex", "default_class": "astra-low", "lifecycle": "named", '
+                '"mode": "on_demand", "wake_mode": "resume", "idle_timeout": 60}'
+            ),
+        ),
+    ):
+        path = tmp_path / "vault" / "agent-types" / profile_id / "profile.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"---\nid: {profile_id}\nname: {profile_id}\n---\n\n## Config\n```json\n{config}\n```\n",
+            encoding="utf-8",
+        )
+
+    created = set(refresh_catalog_profiles(tmp_path, _probes("codex"))["created"])
+
+    assert {"astra-high-codex", "astra-low-codex"} <= created
 
 
 def test_default_selector_excludes_catalog_profiles_not_in_activation_record():

@@ -646,9 +646,7 @@ def test_a_dry_run_still_fails_a_check_no_planned_step_would_satisfy(tmp_path):
                 title="Check",
                 run=lambda ctx: StepResult.failed("check", "git is missing", "Install git."),
             ),
-            StepSpec(
-                id="later", title="Later", run=_Counter("later"), depends_on=("check",)
-            ),
+            StepSpec(id="later", title="Later", run=_Counter("later"), depends_on=("check",)),
         )
     )
     result = _run(registry, tmp_path, dry_run=True)
@@ -903,3 +901,78 @@ def test_an_unwritable_data_directory_names_the_path_and_the_fix(tmp_path):
         pytest.skip("this user can write to a mode-0500 directory")
     assert result.blocking_step.step_id == STEP_DATA_DIR
     assert str(target) in result.blocking_step.remediation
+
+
+# -- advisory steps ----------------------------------------------------------
+
+
+def test_an_advisory_step_reports_its_problem_and_the_run_continues(tmp_path):
+    """The WSL2 boot step's lesson: a report must not cost the steps after it.
+
+    ``postgres.boot`` cannot enable PostgreSQL at boot on a WSL distribution
+    without systemd, and returning needs_user there stopped the run -- so the
+    operator lost their configuration, daemon and dashboard over a restart
+    concern that `sudo service postgresql start` answers.
+    """
+    after = _Counter("after")
+    registry = StepRegistry(
+        (
+            StepSpec(
+                id="advisory",
+                title="advisory",
+                run=_Counter(
+                    "advisory",
+                    StepResult.needs_user("advisory", "cannot be done here", "do it yourself"),
+                ),
+                advisory=True,
+            ),
+            StepSpec(id="after", title="after", run=after),
+        )
+    )
+
+    result = _run(registry, tmp_path)
+
+    assert result.outcome is InstallOutcome.READY
+    assert after.calls == 1, "the step after an advisory one still runs"
+    states = {step.step_id: step.state for step in result.steps}
+    assert states == {"advisory": StepState.NEEDS_USER, "after": StepState.SUCCEEDED}
+
+
+def test_a_failing_advisory_step_is_recorded_but_never_the_outcome(tmp_path):
+    registry = StepRegistry(
+        (
+            StepSpec(
+                id="advisory",
+                title="advisory",
+                run=_Counter("advisory", StepResult.failed("advisory", "broke", "look at it")),
+                advisory=True,
+            ),
+            StepSpec(id="after", title="after", run=_Counter("after")),
+        )
+    )
+
+    result = _run(registry, tmp_path)
+
+    assert result.outcome is InstallOutcome.READY
+    assert result.blocking_step is None
+    record = json.loads((tmp_path / "install-state.json").read_text())
+    advisory = next(row for row in record["steps"] if row["step_id"] == "advisory")
+    assert advisory["state"] == "failed", "the record still says what happened"
+
+
+def test_nothing_may_depend_on_an_advisory_step(tmp_path):
+    """A dependent would be claiming the guarantee an advisory step withholds."""
+    registry = StepRegistry(
+        (
+            StepSpec(id="advisory", title="advisory", run=_Counter("advisory"), advisory=True),
+            StepSpec(
+                id="dependent",
+                title="dependent",
+                run=_Counter("dependent"),
+                depends_on=("advisory",),
+            ),
+        )
+    )
+
+    with pytest.raises(InstallPlanError, match="advisory"):
+        registry.ordered()

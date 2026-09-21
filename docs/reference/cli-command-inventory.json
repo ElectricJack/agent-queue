@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 340,
+    "leaf_commands": 348,
     "registration": {
-      "generated": 243,
-      "handwritten": 97
+      "generated": 245,
+      "handwritten": 103
     },
     "ownership": {
-      "core": 301,
+      "core": 309,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 339
+      "supported": 347
     },
     "evidence_level": {
       "behavioral": 10,
-      "dispatch": 243,
-      "registration": 87
+      "dispatch": 245,
+      "registration": 93
     },
     "acceptance_status": {
       "working": 55,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 284
+      "untested": 292
     }
   },
   "commands": [
@@ -722,6 +722,7 @@
         ],
         "optional": [
           "--backup",
+          "--grants-only",
           "--json",
           "--brief",
           "--api-url"
@@ -10042,6 +10043,7 @@
           "--command",
           "--deliverable-unmet",
           "--abandon-children",
+          "--skip-open-subtasks",
           "--claim-next",
           "--wait",
           "--claim-epoch",
@@ -10431,6 +10433,8 @@
           "--priority",
           "--profile-id",
           "--intelligence-class",
+          "--parent-key",
+          "--parent-title",
           "--json",
           "--brief",
           "--api-url"
@@ -10977,6 +10981,76 @@
           "--task-id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task phase-create",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "phase_create",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--title"
+        ],
+        "optional": [
+          "--label",
+          "--parent-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task phase-list",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "phase_list",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--parent-id",
           "--json",
           "--brief",
           "--api-url"
@@ -11558,6 +11632,204 @@
         ],
         "optional": [
           "--yes",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtask-add",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtask_add",
+      "callback": "src.cli.tasks.task_subtask_add",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "task_id",
+          "--title",
+          "--context",
+          "--from-file",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtask-done",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtask_update",
+      "callback": "src.cli.tasks._cmd",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "ordinal"
+        ],
+        "optional": [
+          "--task",
+          "--note",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtask-show",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtask_get",
+      "callback": "src.cli.tasks.task_subtask_show",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "ordinal"
+        ],
+        "optional": [
+          "--task",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtask-skip",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtask_update",
+      "callback": "src.cli.tasks._cmd",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "ordinal",
+          "--note"
+        ],
+        "optional": [
+          "--task",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtask-start",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtask_update",
+      "callback": "src.cli.tasks._cmd",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "ordinal"
+        ],
+        "optional": [
+          "--task",
+          "--note",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task subtasks",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_subtasks",
+      "callback": "src.cli.tasks.task_subtasks",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "task_id",
           "--json",
           "--brief",
           "--api-url"

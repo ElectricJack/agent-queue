@@ -197,6 +197,71 @@ class TestGoldenAssembly:
         assert "DEFINED" in body
         assert "Do the thing, carefully." in body
 
+    async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Subtasks" not in body
+
+    async def test_task_section_renders_subtasks_with_status_glyphs_in_order(
+        self, db, config, task
+    ):
+        await db.add_task_subtasks(
+            "task-1",
+            "proj-1",
+            [{"title": "First"}, {"title": "Second"}, {"title": "Third"}, {"title": "Fourth"}],
+        )
+        await db.update_task_subtask("task-1", 1, status="done")
+        await db.update_task_subtask("task-1", 2, status="skipped", note="n/a")
+        await db.update_task_subtask("task-1", 3, status="in_progress")
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+
+        assert "## Subtasks" in body
+        assert "- [x] 1. First" in body
+        assert "- [-] 2. Second" in body
+        assert "- [~] 3. Third" in body
+        assert "- [ ] 4. Fourth" in body
+        assert "Report progress as you go: `aq task subtask-done N`." in body
+        assert "Full context for one: `aq task subtask-show N`." in body
+        assert "Work them in order unless the task says otherwise." in body
+
+    async def test_subtasks_list_without_the_progress_line_when_updates_are_denied(
+        self, db, config, task
+    ):
+        """An install upgraded from before the grants existed still shows the
+        checklist, but is not told to run a command its own policy denies."""
+        await db.update_profile(
+            "coder",
+            aq_commands=["task_close", "task_subtasks"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        await db.add_task_subtasks("task-1", "proj-1", [{"title": "First"}])
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+
+        assert "## Subtasks" in body
+        assert "- [ ] 1. First" in body
+        assert "Report progress as you go" not in body
+        assert "Work them in order unless the task says otherwise." in body
+
+    async def test_the_progress_line_returns_once_the_profile_grants_the_update(
+        self, db, config, task
+    ):
+        await db.update_profile(
+            "coder",
+            aq_commands=["task_close", "task_subtask_update"],
+            harness_tools=["Bash", "Read"],
+            plugin_tools=[],
+        )
+        await db.add_task_subtasks("task-1", "proj-1", [{"title": "First"}])
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "Report progress as you go: `aq task subtask-done N`." in body
+
     async def test_section_order_is_canonical(self, db, config, task):
         from src.prime.models import SECTION_KEYS
 
@@ -669,6 +734,10 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq task restart": "restart_task",
     "aq task set": "task_set",
     "aq task show": "task_show",
+    "aq task subtask-done": "task_subtask_update",
+    "aq task subtask-skip": "task_subtask_update",
+    "aq task subtask-show": "task_subtask_get",
+    "aq task subtasks": "task_subtasks",
     "aq message inbox": "message_inbox",
     "aq message reply": "message_reply",
     "aq message send": "message_send",

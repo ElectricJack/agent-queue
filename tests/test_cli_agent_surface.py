@@ -103,6 +103,36 @@ class TestTaskCloseCLI:
         ]
 
 
+    def test_forwards_skip_open_subtasks(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"task_close": {"success": True, "task_id": "task-1"}})
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
+            result = runner.invoke(
+                cli,
+                ["task", "close", "task-1", "--outcome", "pass", "--skip-open-subtasks"],
+            )
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            ("task_close", {"task_id": "task-1", "outcome": "pass", "skip_open_subtasks": True})
+        ]
+
+    def test_omits_skip_open_subtasks_when_not_asked(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"task_close": {"success": True, "task_id": "task-1"}})
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=None),
+        ):
+            result = runner.invoke(cli, ["task", "close", "task-1", "--outcome", "pass"])
+        assert result.exit_code == 0, result.output
+        assert "skip_open_subtasks" not in mock.calls[0][1]
+
+
 class TestTaskCreateCLI:
     def test_forwards_json_deliverable_declarations(self, runner):
         from src.cli.app import cli

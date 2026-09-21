@@ -5,9 +5,23 @@
 #   ./scripts/regenerate-api-client.sh --offline    # build the spec in-process
 #   ./scripts/regenerate-api-client.sh              # fetch it from a running daemon
 #   ./scripts/regenerate-api-client.sh --from-file  # use saved openapi.json
+#   ... --install                                   # also pip install -e the client
 #
 # --offline is the canonical path: the spec is a pure function of the
 # checkout, so it needs no daemon and cannot pick up another instance's state.
+#
+# The script writes tracked files and nothing else.  It used to end with an
+# unconditional `pip install -e packages/aq-client`, and from a worktree slot
+# `pip` is the *shared* venv's: that one line re-pointed
+# site-packages/agent_queue_api_client.pth at the slot, after which the daemon,
+# the CLI and every other slot's tests imported the client from a tree that is
+# reset onto another branch between tasks.  An editable install is a pointer at
+# the source directory, so regenerating in place already changes what is
+# imported -- the reinstall only matters on a box that never installed the
+# client.  It is therefore opt-in (--install), refused in a worker session
+# (AQ_DB_SCOPE=worker), and refuses to move an install that currently resolves
+# to another tree; both refusals happen before anything is regenerated.  A
+# plain run reports where the installed client comes from instead.
 #
 # Prerequisites:
 #   pip install 'openapi-python-client==0.29.0'
@@ -37,8 +51,6 @@
 # from the checkout alone.
 #
 # The generated client lives in packages/aq-client/ and should be committed.
-# After regenerating, reinstall it:
-#   pip install -e packages/aq-client/
 
 set -euo pipefail
 
@@ -47,6 +59,96 @@ ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 SPEC_FILE="$ROOT_DIR/openapi.json"
 CLIENT_DIR="$ROOT_DIR/packages/aq-client"
 API_URL="${AGENT_QUEUE_API_URL:-http://127.0.0.1:8081}"
+
+MODE=""
+INSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --offline | --from-file)
+            if [[ -n "$MODE" && "$MODE" != "$arg" ]]; then
+                echo "Error: $MODE and $arg are different spec sources; pass one." >&2
+                exit 2
+            fi
+            MODE="$arg"
+            ;;
+        --install)
+            INSTALL=1
+            ;;
+        *)
+            # An unrecognised argument used to fall through to the
+            # fetch-from-a-daemon branch below, so a typo regenerated the
+            # client from whatever daemon happened to be listening.
+            echo "Error: unknown argument: $arg" >&2
+            echo "Usage: $0 [--offline | --from-file] [--install]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+# Where `agent_queue_api_client` imports from in this environment, asked of the
+# same python3 that `--install` hands to `-m pip`, so the answer and the
+# install cannot be about two different environments.  Prints `absent`,
+# `here`, or `elsewhere` followed by the directory on a second line.  The
+# working directory is dropped from sys.path: `python3 -c` puts it first, and
+# run from inside packages/aq-client it would answer `here` on any box.
+installed_client_location() {
+    python3 - "$CLIENT_DIR" <<'PY'
+import importlib.util
+import os
+import sys
+
+client_dir = os.path.realpath(sys.argv[1])
+cwd = os.path.realpath(os.getcwd())
+sys.path[:] = [p for p in sys.path if p and os.path.realpath(p) != cwd]
+try:
+    spec = importlib.util.find_spec("agent_queue_api_client")
+except (ImportError, ValueError):
+    spec = None
+if spec is None or not spec.origin:
+    print("absent")
+else:
+    found = os.path.dirname(os.path.dirname(os.path.realpath(spec.origin)))
+    if found == client_dir:
+        print("here")
+    else:
+        print("elsewhere")
+        print(found)
+PY
+}
+
+# A worker session's interpreter is the environment the daemon and every other
+# slot share.  It is never offered the install, by flag or by hint: an agent
+# that reads "to move the install here, run ..." is liable to run it.
+WORKER=0
+if [[ "${AQ_DB_SCOPE:-}" == "worker" ]]; then
+    WORKER=1
+fi
+
+if [[ "$INSTALL" == 1 ]]; then
+    if [[ "$WORKER" == 1 ]]; then
+        echo "Error: --install is refused in a worker session (AQ_DB_SCOPE=worker)." >&2
+        echo "       This session's pip belongs to an environment shared with the daemon and every" >&2
+        echo "       other slot; an editable install from here would make all of them import the" >&2
+        echo "       client from this slot, which is reset onto another branch between tasks." >&2
+        echo "       Regenerate without --install: the contract tests read packages/aq-client/ from" >&2
+        echo "       the checkout, and PYTHONPATH=packages/aq-client runs this tree's client." >&2
+        exit 1
+    fi
+    if ! LOCATION="$(installed_client_location)"; then
+        echo "Error: could not tell where agent-queue-api-client is installed, so --install cannot" >&2
+        echo "       rule out re-pointing another tree's install. Is python3 on PATH?" >&2
+        exit 1
+    fi
+    if [[ "$(head -n 1 <<<"$LOCATION")" == "elsewhere" ]]; then
+        echo "Error: --install would re-point this environment's agent-queue-api-client, which" >&2
+        echo "       currently imports from another tree:" >&2
+        echo "         $(tail -n 1 <<<"$LOCATION")" >&2
+        echo "       Everything else using this environment would follow it here.  If that is what" >&2
+        echo "       you want, do it by hand:" >&2
+        echo "         python3 -m pip install -e $CLIENT_DIR" >&2
+        exit 1
+    fi
+fi
 
 # The exact openapi-python-client the committed packages/aq-client/ tree was
 # generated by.  See the note in the header before changing it.
@@ -76,7 +178,7 @@ if ! command -v ruff >/dev/null 2>&1; then
     exit 1
 fi
 
-case "${1:-}" in
+case "$MODE" in
     --offline)
         # No daemon needed: create_app() builds the whole route surface from
         # the command registry, so the spec is a pure function of the
@@ -141,11 +243,46 @@ DIGEST_FILE="$SCRIPT_DIR/aq-client-boilerplate.sha256"
     agent_queue_api_client/py.typed) > "$DIGEST_FILE"
 echo "Recorded boilerplate digests at $DIGEST_FILE"
 
-# Reinstall.  PEP 668 marks some interpreters externally managed; the client
-# is a dev artifact, so fall back rather than failing the regeneration.
-pip install -e "$CLIENT_DIR" --quiet \
-    || pip install -e "$CLIENT_DIR" --quiet --break-system-packages \
-    || echo "WARNING: could not pip install $CLIENT_DIR — install it manually" >&2
-echo "Installed agent-queue-api-client"
+# The environment is only touched on request -- see the header.  PEP 668 marks
+# some interpreters externally managed; the client is a dev artifact, so fall
+# back rather than failing the regeneration.
+if [[ "$INSTALL" == 1 ]]; then
+    if python3 -m pip install -e "$CLIENT_DIR" --quiet \
+        || python3 -m pip install -e "$CLIENT_DIR" --quiet --break-system-packages; then
+        echo "Installed agent-queue-api-client from $CLIENT_DIR"
+    else
+        echo "WARNING: could not pip install $CLIENT_DIR — install it manually" >&2
+    fi
+else
+    # A report, not a gate: the regeneration above already succeeded.
+    LOCATION="$(installed_client_location 2>/dev/null || echo unknown)"
+    case "$(head -n 1 <<<"$LOCATION")" in
+        here)
+            echo "agent-queue-api-client already imports from $CLIENT_DIR — nothing to reinstall."
+            ;;
+        elsewhere)
+            echo "Left the environment alone: agent-queue-api-client imports from another tree,"
+            echo "  $(tail -n 1 <<<"$LOCATION")"
+            echo "so the client just regenerated is not the one 'import agent_queue_api_client' finds."
+            echo "To run this tree's copy:  PYTHONPATH=$CLIENT_DIR <command>"
+            if [[ "$WORKER" == 0 ]]; then
+                echo "To move the install here (every user of this environment follows it):"
+                echo "  python3 -m pip install -e $CLIENT_DIR"
+            fi
+            ;;
+        absent)
+            echo "agent-queue-api-client is not installed in this environment."
+            if [[ "$WORKER" == 0 ]]; then
+                echo "To install it:  python3 -m pip install -e $CLIENT_DIR    (or rerun with --install)"
+            fi
+            ;;
+        *)
+            echo "Could not tell where agent-queue-api-client is installed; left the environment alone."
+            if [[ "$WORKER" == 0 ]]; then
+                echo "To install this tree's copy:  python3 -m pip install -e $CLIENT_DIR"
+            fi
+            ;;
+    esac
+fi
 
 echo "Done. Don't forget to commit packages/aq-client/, openapi.json and $DIGEST_FILE"

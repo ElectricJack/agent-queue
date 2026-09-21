@@ -244,7 +244,8 @@ class Orchestrator(
         from src.orchestrator.agent_reconciler import AgentReconciler
 
         self._agent_reconciler = AgentReconciler(
-            self.db, worktrees_enabled=config.worktrees.enabled, data_dir=config.data_dir
+            self.db, worktrees_enabled=config.worktrees.enabled, data_dir=config.data_dir,
+            bus=self.bus,
         )
         from src.assignment_routing import ExplicitRouting
 

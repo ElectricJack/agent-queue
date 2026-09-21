@@ -126,7 +126,11 @@ async def build_project_role_section(
 
 
 def build_task_section(
-    task: Any, *, review_deliverables: str = "", integration_delivery: str = ""
+    task: Any,
+    *,
+    review_deliverables: str = "",
+    integration_delivery: str = "",
+    subtasks_block: str = "",
 ) -> PrimeSection:
     """Task id/title/status/description (design §5.2 #3).
 
@@ -158,7 +162,51 @@ def build_task_section(
         lines.extend(["", review_deliverables])
     if integration_delivery:
         lines.extend(["", integration_delivery])
+    if subtasks_block:
+        lines.extend(["", subtasks_block])
     return PrimeSection(key="task", title=SECTION_TITLES["task"], body="\n".join(lines).strip())
+
+
+#: Checklist glyph per subtask status (C3: workers see their subtasks).
+_SUBTASK_GLYPHS: dict[str, str] = {
+    "done": "[x]",
+    "skipped": "[-]",
+    "in_progress": "[~]",
+    "pending": "[ ]",
+}
+
+
+async def build_task_subtasks_summary(
+    db: Any, task: Any, *, allow_updates: bool = True
+) -> str:
+    """Render the ``## Subtasks`` block, or ``""`` when the task has none.
+
+    Titles only — never ``context`` (the full per-subtask brief a worker
+    fetches on demand with ``aq task subtask-show N``).
+
+    ``allow_updates=False`` drops the "report progress" instruction. The
+    subtask grants are new, and ``ensure_default_profiles`` is write-if-
+    absent, so an install upgraded from before they existed has vault
+    profiles that never gained ``task_subtask_update``: telling such a
+    session to run ``aq task subtask-done N`` buys it a ``capability_denied``
+    and then a ``subtasks.open`` refusal at close. The checklist itself is
+    still worth showing — it is the decomposition the task was filed with.
+    """
+    subtasks = await db.list_task_subtasks(task.id)
+    if not subtasks:
+        return ""
+    lines = ["## Subtasks"]
+    for item in subtasks:
+        glyph = _SUBTASK_GLYPHS.get(item["status"], "[ ]")
+        lines.append(f"- {glyph} {item['ordinal']}. {item['title']}")
+    progress = (
+        "Report progress as you go: `aq task subtask-done N`. " if allow_updates else ""
+    )
+    lines.append(
+        f"{progress}Full context for one: `aq task subtask-show N`. "
+        "Work them in order unless the task says otherwise."
+    )
+    return "\n".join(lines)
 
 
 async def build_integration_delivery_summary(db: Any, task: Any) -> str:
@@ -517,9 +565,15 @@ def build_tool_guidance_section() -> PrimeSection:
 #: is gated on this name — see :func:`profile_allows_create_task`.
 CREATE_TASK_COMMAND = "create_task"
 
+#: The command the ``## Subtasks`` block's "report progress" line tells a
+#: session to run. ``ensure_default_profiles`` is write-if-absent, so an
+#: install that predates the subtask grants has vault profiles without it —
+#: see :func:`build_task_subtasks_summary`.
+SUBTASK_UPDATE_COMMAND = "task_subtask_update"
 
-async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
-    """Whether *profile_id*'s capability policy can dispatch ``create_task``.
+
+async def profile_allows_command(db: Any, profile_id: str | None, command: str) -> bool:
+    """Whether *profile_id*'s capability policy can dispatch *command*.
 
     The capability gate is profile-owned and is a *second* gate after
     ``check_request_scope`` (``tests/test_api_scope.py::TestScopeAndCapabilityCompose``),
@@ -550,7 +604,12 @@ async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
     except Exception:
         logger.debug("prime: could not resolve policy for %s", profile_id, exc_info=True)
         return True
-    return CREATE_TASK_COMMAND in policy.aq_commands
+    return command in policy.aq_commands
+
+
+async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
+    """Whether *profile_id* may dispatch ``create_task`` (emergent work)."""
+    return await profile_allows_command(db, profile_id, CREATE_TASK_COMMAND)
 
 
 def build_completion_protocol_section(

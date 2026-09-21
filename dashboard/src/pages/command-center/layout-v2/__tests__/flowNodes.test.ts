@@ -7,7 +7,7 @@ const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
   container_id: null, kind, context_only: false,
   agg_children: 2, agg_descendants: 3, agg_completed: 1, agg_running: 0, agg_blocked: 0, agg_active: 2, ...extra,
 });
-const ctx = { projectId: "p1", offsetY: 0, expanded: new Set<string>(), handlers: { onOpenTask: () => {}, onToggleChildren: () => {}, onFocus: () => {} } };
+const ctx = { projectId: "p1", offsetY: 0, focusId: null, handlers: { onOpenTask: () => {}, onFocus: () => {} } };
 
 describe("toFlowElements", () => {
   it("maps kinds to node types and scales positions", () => {
@@ -22,7 +22,7 @@ describe("toFlowElements", () => {
     expect(byId.e!.position).toEqual({ x: 0, y: 0 });
     expect(byId.e!.width).toBe(720); expect(byId.e!.height).toBe(312);
     expect(byId.c!.type).toBe("task");
-    expect((byId.c!.data as { hierarchy: { expanded: boolean; descendantCount: number } }).hierarchy).toMatchObject({ expanded: false, descendantCount: 3 });
+    expect((byId.c!.data as { hierarchy: { descendantCount: number } }).hierarchy).toMatchObject({ descendantCount: 3 });
     expect(byId.z!.position).toEqual({ x: 480, y: 624 });
     expect(edges).toHaveLength(1);
     expect(edges[0]).toMatchObject({ source: "c", target: "z", label: "×2", sourceHandle: "out-right", targetHandle: "in-left" });
@@ -161,6 +161,75 @@ describe("toFlowElements", () => {
     const moved = toFlowElements(store, { ...ctx, offsetY: 4 }, first.cache);
     expect(moved.nodes[0]).not.toBe(first.nodes[0]);
     expect(moved.nodes[0]!.position.y).toBeCloseTo(4 * 156);
+  });
+
+  it("renders a discovered-from provenance edge dashed, dimmed and without an arrowhead", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],
+      edges: [
+        { from: "b", to: "a", dep_type: "blocks", description: null, count: 1 },
+        { from: "a", to: "b", dep_type: "discovered-from", description: null, count: 1 },
+      ],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { edges } = toFlowElements(store, ctx);
+    const blocks = edges.find((e) => (e.data as { depType: string }).depType === "blocks")!;
+    const discovered = edges.find((e) => (e.data as { depType: string }).depType === "discovered-from")!;
+    expect(blocks.markerEnd).toBeDefined();
+    expect(discovered.markerEnd).toBeUndefined();
+    expect(discovered.style).toMatchObject({ strokeDasharray: "2 4" });
+  });
+
+  it("carries subtask counts in the card payload, defaulting to zero", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("z", "card", 0, 0, { subtasks_total: 3, subtasks_settled: 1 }), n("y", "card", 1, 0)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const z = nodes.find((x) => x.id === "z")!;
+    const y = nodes.find((x) => x.id === "y")!;
+    expect((z.data as { subtasks: { total: number; settled: number } }).subtasks).toEqual({ total: 3, settled: 1 });
+    expect((y.data as { subtasks: { total: number; settled: number } }).subtasks).toEqual({ total: 0, settled: 0 });
+  });
+
+  it("rebuilds a card when only its subtask counts change", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0, { subtasks_total: 2, subtasks_settled: 0 })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = () => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(tiles)) as never);
+    const first = toFlowElements(wire(), ctx);
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { subtasks_total: 2, subtasks_settled: 1 })] };
+    const second = toFlowElements(
+      mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
+  });
+
+  it("carries phase order/label in the card payload, null when absent", () => {
+    const store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("e", "container", 0, 0, { phase_order: 2, phase_label: "Build" }), n("z", "card", 1, 0)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const { nodes } = toFlowElements(store, ctx);
+    const e = nodes.find((x) => x.id === "e")!;
+    const z = nodes.find((x) => x.id === "z")!;
+    expect((e.data as { node: { phase_order: number | null } }).node.phase_order).toBe(2);
+    expect((z.data as { phase: { order: number; label: string } | null }).phase).toBeNull();
+  });
+
+  it("rebuilds a card when only its phase fields change", () => {
+    const tiles = {
+      nodes: [n("a", "card", 0, 0, { phase_order: 1, phase_label: "Foundation" })],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    };
+    const wire = () => mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(tiles)) as never);
+    const first = toFlowElements(wire(), ctx);
+    const changed = { ...tiles, nodes: [n("a", "card", 0, 0, { phase_order: 1, phase_label: "Renamed" })] };
+    const second = toFlowElements(
+      mergeTiles(emptyStore(), ["0:0"], JSON.parse(JSON.stringify(changed)) as never), ctx, first.cache);
+    const byId = (r: { nodes: { id: string }[] }, id: string) => r.nodes.find((x) => x.id === id)!;
+    expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
   it("drops to straight unlabelled edges at far zoom", () => {

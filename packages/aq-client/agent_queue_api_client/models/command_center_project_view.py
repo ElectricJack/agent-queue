@@ -21,11 +21,13 @@ class CommandCenterProjectView:
         expanded_task_ids (list[str] | Unset):
         expanded_finished_task_ids (list[str] | Unset):
         manual_positions (CommandCenterProjectViewManualPositions | Unset):
+        expanded_initialised (bool | Unset):  Default: False.
     """
 
     expanded_task_ids: list[str] | Unset = UNSET
     expanded_finished_task_ids: list[str] | Unset = UNSET
     manual_positions: CommandCenterProjectViewManualPositions | Unset = UNSET
+    expanded_initialised: bool | Unset = False
 
     def to_dict(self) -> dict[str, Any]:
         expanded_task_ids: list[str] | Unset = UNSET
@@ -40,6 +42,8 @@ class CommandCenterProjectView:
         if not isinstance(self.manual_positions, Unset):
             manual_positions = self.manual_positions.to_dict()
 
+        expanded_initialised = self.expanded_initialised
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -49,6 +53,8 @@ class CommandCenterProjectView:
             field_dict["expanded_finished_task_ids"] = expanded_finished_task_ids
         if manual_positions is not UNSET:
             field_dict["manual_positions"] = manual_positions
+        if expanded_initialised is not UNSET:
+            field_dict["expanded_initialised"] = expanded_initialised
 
         return field_dict
 
@@ -68,10 +74,13 @@ class CommandCenterProjectView:
         else:
             manual_positions = CommandCenterProjectViewManualPositions.from_dict(_manual_positions)
 
+        expanded_initialised = d.pop("expanded_initialised", UNSET)
+
         command_center_project_view = cls(
             expanded_task_ids=expanded_task_ids,
             expanded_finished_task_ids=expanded_finished_task_ids,
             manual_positions=manual_positions,
+            expanded_initialised=expanded_initialised,
         )
 
         return command_center_project_view

@@ -7,7 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.delete_task_request import DeleteTaskRequest
 from ...models.delete_task_response import DeleteTaskResponse
-from ...models.delete_task_response_422 import DeleteTaskResponse422
+from ...models.hierarchy_refusal_response import HierarchyRefusalResponse
 from ...types import Response
 
 
@@ -32,14 +32,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> DeleteTaskResponse | DeleteTaskResponse422 | None:
+) -> DeleteTaskResponse | HierarchyRefusalResponse | None:
     if response.status_code == 200:
         response_200 = DeleteTaskResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 422:
-        response_422 = DeleteTaskResponse422.from_dict(response.json())
+        response_422 = HierarchyRefusalResponse.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[DeleteTaskResponse | DeleteTaskResponse422]:
+) -> Response[DeleteTaskResponse | HierarchyRefusalResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -64,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
-) -> Response[DeleteTaskResponse | DeleteTaskResponse422]:
+) -> Response[DeleteTaskResponse | HierarchyRefusalResponse]:
     """Delete a task. Cannot delete a task that is currently in progress.
 
      Delete a task. Cannot delete a task that is currently in progress.
@@ -77,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[DeleteTaskResponse | DeleteTaskResponse422]
+        Response[DeleteTaskResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -95,7 +95,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
-) -> DeleteTaskResponse | DeleteTaskResponse422 | None:
+) -> DeleteTaskResponse | HierarchyRefusalResponse | None:
     """Delete a task. Cannot delete a task that is currently in progress.
 
      Delete a task. Cannot delete a task that is currently in progress.
@@ -108,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        DeleteTaskResponse | DeleteTaskResponse422
+        DeleteTaskResponse | HierarchyRefusalResponse
     """
 
     return sync_detailed(
@@ -121,7 +121,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
-) -> Response[DeleteTaskResponse | DeleteTaskResponse422]:
+) -> Response[DeleteTaskResponse | HierarchyRefusalResponse]:
     """Delete a task. Cannot delete a task that is currently in progress.
 
      Delete a task. Cannot delete a task that is currently in progress.
@@ -134,7 +134,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[DeleteTaskResponse | DeleteTaskResponse422]
+        Response[DeleteTaskResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -150,7 +150,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteTaskRequest,
-) -> DeleteTaskResponse | DeleteTaskResponse422 | None:
+) -> DeleteTaskResponse | HierarchyRefusalResponse | None:
     """Delete a task. Cannot delete a task that is currently in progress.
 
      Delete a task. Cannot delete a task that is currently in progress.
@@ -163,7 +163,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        DeleteTaskResponse | DeleteTaskResponse422
+        DeleteTaskResponse | HierarchyRefusalResponse
     """
 
     return (

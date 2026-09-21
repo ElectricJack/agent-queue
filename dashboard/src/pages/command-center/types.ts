@@ -38,13 +38,10 @@ export interface TaskHierarchy {
   parentTitle: string | null;
   depth: number;
   childCount: number;
-  visibleChildCount: number;
   descendantCount: number;
   completedCount: number;
   runningCount: number;
   blockedCount: number;
-  expanded: boolean;
-  autoExpanded: boolean;
   contextOnly: boolean;
 }
 
@@ -54,17 +51,21 @@ export interface TaskNodeData extends Record<string, unknown> {
   projectId: string;
   hierarchy: TaskHierarchy;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
-  onToggleChildren?: (taskId: string, finished?: boolean) => void;
+  /** Enter this container: the canvas re-scopes to it (there is no inline
+   *  expansion). Absent on a leaf, and on the container already entered. */
   onFocus?: (taskId: string) => void;
   /** Presentation-only scale selected in the tiled graph. */
   layoutScale?: number;
+  /** This task's own durable subtask checklist counts, when it has any. */
+  subtasks?: { total: number; settled: number };
+  /** Set when this node is a phase container (graph-visibility A1). */
+  phase?: { order: number; label: string } | null;
 }
 
 export interface ContainerNodeData extends Record<string, unknown> {
   node: import("@aq/ts-client").LayoutNode;
   projectId: string;
   onFocus?: (taskId: string) => void;
-  onToggleChildren?: (taskId: string, finished?: boolean) => void;
   onOpenTask?: (taskId: string, task?: SelectableTask) => void;
   layoutScale?: number;
 }

@@ -20,6 +20,7 @@ from src.database.tables import (
     task_dependencies,
     task_metadata,
     task_results,
+    task_subtasks,
     task_tools,
     tasks,
     token_ledger,
@@ -206,6 +207,9 @@ class ProjectQueryMixin:
             # commit between child cleanup and the parent deletion.
             await conn.execute(
                 delete(task_comments).where(task_comments.c.project_id == project_id)
+            )
+            await conn.execute(
+                delete(task_subtasks).where(task_subtasks.c.project_id == project_id)
             )
             await conn.execute(delete(workspaces).where(workspaces.c.project_id == project_id))
             await conn.execute(delete(repos).where(repos.c.project_id == project_id))

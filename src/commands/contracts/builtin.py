@@ -46,6 +46,11 @@ class CreateTaskArgs(CommandArgs):
     depends_on: str | list[Any] | None = None
     parent_id: str | None = None
     root: bool | None = None
+    # A keyed standing parent: resolve-or-create one container per
+    # (project, parent_key) and file the task inside it.  Mutually exclusive
+    # with ``parent_id``/``root`` and refused for worker sessions.
+    parent_key: str | None = None
+    parent_title: str | None = None
     labels: list[str] | None = None
     reason: str | None = None
     discovered_from: str | None = None
@@ -91,6 +96,8 @@ class EnsureTaskArgs(CommandArgs):
     # null (or ``root``) deliberately files at the project root.
     parent_id: str | None = None
     root: bool | None = None
+    parent_key: str | None = None
+    parent_title: str | None = None
     reason: str | None = None
     discovered_from: str | None = None
 
@@ -98,6 +105,7 @@ class EnsureTaskArgs(CommandArgs):
 class EnsureTaskValue(CommandValue):
     task_id: str
     created: bool
+    parent_id: str | None = None
 
 
 class EditTaskArgs(CommandArgs):
@@ -516,7 +524,17 @@ def _handler() -> Any:
 
 def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     """Map each legacy return shape to a declared business outcome."""
-    if raw.get("error") or raw.get("success") is False:
+    refused = bool(raw.get("error")) or raw.get("success") is False
+    if name == "ci_baseline_status" and (raw.get("success") is True or not refused):
+        # A successful verdict explains ``unknown`` (no GitHub remote, checks
+        # unreadable) in ``error``; that is the next tick's problem, not a
+        # broken step.  Refusals and the handler's exception path, which
+        # carries no ``success`` key, still fall through to ``rejected``.
+        state = str(raw.get("state") or "unknown")
+        if state == "red" and raw.get("escalated"):
+            return "red_escalated"
+        return state if state in {"green", "red", "pending", "unknown"} else "unknown"
+    if refused:
         if name == "read_project_memory_file" and raw.get("missing"):
             return "missing"
         if name == "add_dependency" and "already exists" in str(raw.get("error", "")).lower():
@@ -540,11 +558,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "provider_usage_probe":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _PROBE_OUTCOMES else "rejected"
-    if name == "ci_baseline_status":
-        state = str(raw.get("state") or "unknown")
-        if state == "red" and raw.get("escalated"):
-            return "red_escalated"
-        return state if state in {"green", "red", "pending", "unknown"} else "unknown"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
     if name == "task_route_options":

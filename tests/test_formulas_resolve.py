@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from src.task_graph.models import GraphParseError
+from src.task_graph.parser import parse_graph
 from src.task_graph.formulas import (
     FormulaError,
     FormulaRegistry,
@@ -86,8 +88,64 @@ def test_merge_nodes_by_key_child_wins_new_appended(reg):
     assert doc["parent"]["title"] == "Review and fix {branch}"
     assert doc["defaults"] == {
         "profile": "{reviewer}",
-        "intelligence_class": "standard-low",
+        "intelligence_class": "fast-low",
     }
+
+
+def test_merge_phases_by_key_child_amends_and_appends(reg, tmp_path):
+    """Document order is the gate order, so a child can only add LATER phases."""
+    r, vault = reg
+    (vault / "formulas" / "root-phases.md").write_text(
+        "---\nname: root-phases\n---\n"
+        "```aq-graph\nversion: 1\nphases:\n  - key: one\n    title: One\n"
+        "nodes:\n  - key: x\n    title: x\n    phase: one\n```\n"
+    )
+    (vault / "formulas" / "child-phases.md").write_text(
+        "---\nname: child-phases\nextends: root-phases\n---\n"
+        "```aq-graph\nversion: 1\nphases:\n  - key: two\n    title: Two\n"
+        "  - key: one\n    label: renamed\n"
+        "nodes:\n  - key: y\n    title: y\n    phase: two\n```\n"
+    )
+    load_from_vault(r, str(vault))
+    doc = merge_documents(resolve_chain(r, "child-phases", project_id=None))
+    assert [p["key"] for p in doc["phases"]] == ["one", "two"]  # parent order kept
+    assert doc["phases"][0] == {"key": "one", "title": "One", "label": "renamed"}
+
+
+def test_merge_malformed_phases_survives_to_the_parser():
+    """A non-list ``phases`` must not crash a later hop's merge — the parser
+    is what reports it, as ``bad_phase``.
+
+    Built by hand rather than through the registry: ``parse_formula`` already
+    refuses such a file, so this branch is only reachable by a caller merging
+    documents itself.  It exists so the merge cannot raise an AttributeError
+    instead of producing something the parser can report.
+    """
+    from src.task_graph.formulas import Formula
+
+    def formula(name: str, doc: dict) -> Formula:
+        return Formula(
+            name=name, description="", scope="system", project_id=None,
+            rel_path=f"formulas/{name}.md", vars={}, extends=None,
+            graph_block="", graph_doc=doc, content_sha="",
+        )
+
+    chain = [
+        formula("root", {"version": 1, "phases": 7, "nodes": [{"key": "x", "title": "x"}]}),
+        formula(
+            "child",
+            {
+                "version": 1,
+                "phases": [{"key": "two", "title": "Two"}],
+                "nodes": [{"key": "y", "title": "y"}],
+            },
+        ),
+    ]
+    doc = merge_documents(chain)
+    assert doc["phases"] == 7
+    with pytest.raises(GraphParseError) as exc:
+        parse_graph(doc)
+    assert [e.rule for e in exc.value.errors] == ["bad_phase"]
 
 
 def test_merge_defaults_child_null_does_not_clobber_inherited(reg, tmp_path):

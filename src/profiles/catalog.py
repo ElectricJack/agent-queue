@@ -406,38 +406,82 @@ def _stage_profile_ids() -> frozenset[str]:
     return frozenset(SPECIAL_PURPOSE_PROFILE_IDS | EXCLUDED_PROFILE_IDS | {"pr-merger"})
 
 
+def worker_route(
+    profile_id: str,
+    *,
+    harness: object,
+    default_class: object,
+    lifecycle: object = "task",
+    template: bool = False,
+    read_only: bool = False,
+) -> tuple[str, str] | None:
+    """The ``(harness, class)`` execution route *profile_id* is a worker on, or ``None``.
+
+    "Worker" means a profile that could stand in for the generic worker on
+    that route — the thing a derived rung is, and the thing a pool sizes.
+    Both places that compare profiles by route use this one answer:
+    :func:`_existing_profile_routes` (does an operator's worker already serve
+    the route a rung would be seeded on?) and doctor's
+    ``pools.task_lifecycle_shadow`` (does a push profile duplicate a pool's
+    route?).  Counting a non-worker as a route was a bug in both — it
+    suppressed real rungs, and it warned about the shipped stages on every
+    fresh install once ``aq install`` made every active rung a pool.
+
+    A profile is **not** a worker route when:
+
+    - it names no harness or no class — it has no route at all;
+    - it is a ``template: true`` file, which is not runnable;
+    - its lifecycle is ``named`` — a resident session is not a task route;
+    - it is ``read_only`` — a profile that may not write cannot do worker
+      work, whatever class it reads at;
+    - its id is a shipped stage profile — ``triage`` running ``fast-low`` on
+      Claude says nothing about whether this host wants a ``fast-low-claude``
+      worker.  An operator's own single-purpose profile that is writable and
+      carries none of the signals above is still a route, because nothing
+      structural distinguishes it from a hand-authored worker.
+    """
+    harness_id = str(harness or "").strip()
+    class_id = str(default_class or "").strip()
+    if not (harness_id and class_id):
+        return None
+    if template or read_only:
+        return None
+    if str(lifecycle or "task").strip() not in {"task", "pool"}:
+        return None
+    if profile_id in _stage_profile_ids():
+        return None
+    return (harness_id, class_id)
+
+
 def _existing_profile_routes(profiles_root: Path) -> dict[tuple[str, str], str]:
     """Return the first valid *worker* profile for each harness/class route.
 
     A derived rung is a convenience, never a reason to shadow an operator's
-    already-working worker.  Lifecycle is deliberately excluded: a
-    task-lifecycle profile still proves that this host has an authored
-    harness/class choice.
-
-    Two kinds of profile are **not** a route, and counting them was a bug that
-    suppressed real rungs: a ``template: true`` file is not runnable at all,
-    and a stage profile is single-purpose — ``triage`` running ``fast-low`` on
-    Claude says nothing about whether this host wants a ``fast-low-claude``
-    worker, and blocking one because of it left the class with no worker.
+    already-working worker.  A task-lifecycle worker counts: it still proves
+    that this host has an authored harness/class choice.  What does and does
+    not count as a worker is :func:`worker_route`'s decision.
     """
     routes: dict[tuple[str, str], str] = {}
     if not profiles_root.is_dir():
         return routes
-    stages = _stage_profile_ids()
     for path in sorted(profiles_root.glob("*/profile.md")):
         try:
             parsed = parse_profile(path.read_text(encoding="utf-8"))
         except OSError:
             continue
-        if not parsed.is_valid or parsed.frontmatter.template:
+        if not parsed.is_valid:
             continue
         profile_id = parsed.frontmatter.id or path.parent.name
-        if profile_id in stages:
-            continue
-        harness = str(parsed.config.get("harness") or "").strip()
-        default_class = str(parsed.config.get("default_class") or "").strip()
-        if harness and default_class:
-            routes.setdefault((harness, default_class), profile_id)
+        route = worker_route(
+            profile_id,
+            harness=parsed.config.get("harness"),
+            default_class=parsed.config.get("default_class"),
+            lifecycle=parsed.config.get("lifecycle"),
+            template=parsed.frontmatter.template,
+            read_only=parsed.config.get("read_only") is True,
+        )
+        if route is not None:
+            routes.setdefault(route, profile_id)
     return routes
 
 
@@ -456,8 +500,15 @@ def _write_activation(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 __all__ = [
-    "ACTIVATION_FILENAME", "ACTIVATION_SCHEMA_VERSION", "CatalogProfile", "ProfileActivation",
+    "ACTIVATION_FILENAME",
+    "ACTIVATION_SCHEMA_VERSION",
     "WORKER_PROVIDERS",
-    "active_catalog_profile_ids", "activation_path", "evaluate_catalog",
-    "refresh_catalog_profiles", "shipped_profile_catalog",
+    "CatalogProfile",
+    "ProfileActivation",
+    "activation_path",
+    "active_catalog_profile_ids",
+    "evaluate_catalog",
+    "refresh_catalog_profiles",
+    "shipped_profile_catalog",
+    "worker_route",
 ]

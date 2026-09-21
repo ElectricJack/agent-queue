@@ -18,6 +18,13 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_set",
         "task_comment",
         "task_comments",
+        # Durable, non-schedulable checklist rows inside one task (graph-
+        # visibility C2). Fenced exactly like task comments: reads by
+        # project scope, writes by claim epoch.
+        "task_subtask_add",
+        "task_subtasks",
+        "task_subtask_get",
+        "task_subtask_update",
         "task_close",
         "task_children",
         "task_progress",
@@ -49,6 +56,12 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "project_ready",
         "formula_list",
         "formula_show",
+        # Phase planning (graph-visibility A1).  Both are project-scoped
+        # reads/writes over container tasks; the ``project_id`` pin below
+        # confines a planner session to its own project, and neither command
+        # names a task, so nothing here reaches another agent's work.
+        "phase_create",
+        "phase_list",
         # A worker may move a task it filed (swarm-work-model §12): the
         # command re-derives the held task from the session and admits only
         # worker-filed tasks provenance-linked to it, moved to a parent the
@@ -335,6 +348,7 @@ _PLAYBOOK_COMPILER_COMMANDS = frozenset(
 # they reach exactly one task: the one this review was spawned for.
 _REVIEWER_COMMANDS = frozenset({
     "reopen_with_feedback", "task_show", "get_task", "task_comments",
+    "task_subtasks", "task_subtask_get",
 })
 
 # A final review is a branch-wide verdict.  Its authority is derived from the
@@ -343,6 +357,7 @@ _REVIEWER_COMMANDS = frozenset({
 # The worker tasks must agree on one branch and PR URL; ambiguity fails closed.
 _FINAL_REVIEWER_COMMANDS = frozenset({
     "reopen_with_feedback", "task_show", "get_task", "task_comments", "pr_merge", "git_diff",
+    "task_subtasks", "task_subtask_get",
 })
 
 
@@ -676,7 +691,10 @@ async def check_request_scope(
                 return "out of scope: project_id mismatch"
             if args.get("session_id") not in (None, scope.session_id):
                 return "out of scope: session_id mismatch"
-            branch_bound = {"reopen_with_feedback", "task_show", "get_task", "task_comments"}
+            branch_bound = {
+                "reopen_with_feedback", "task_show", "get_task", "task_comments",
+                "task_subtasks", "task_subtask_get",
+            }
             if command == "pr_merge" and args.get("pr_url") != pr_url:
                 return "out of scope: a final reviewer may only merge its review branch PR"
             if command in branch_bound and args.get("task_id") not in worker_ids:

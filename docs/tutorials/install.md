@@ -43,8 +43,11 @@ On Windows, everything — AQ, PostgreSQL, your project checkouts and the
 harness — runs *inside* the WSL2 distribution. Do not mix a Windows path with a
 Linux daemon path.
 
-The installer checks Python 3.12+, Git and `tmux` itself, and on macOS it can
-install the missing ones through Homebrew. PostgreSQL is required and the
+The installer checks Python 3.12+, Git and `tmux` itself, and installs the
+missing ones for you: with Homebrew on macOS (`macos.packages`) and with apt
+inside WSL (`wsl.packages`). Both ask before changing anything, and neither ever
+types a password — if `sudo` would prompt, the step stops and gives you the one
+command to run. PostgreSQL is required and the
 installer will either use a server you already run or, when you ask it to,
 install a local one. SQLite is not a runtime option; an existing SQLite
 database can only be imported (`aq db import-sqlite`).
@@ -217,11 +220,14 @@ documents every step, flag and exit code.
 ### Signing in to a harness
 
 **AQ never logs you in.** When a selected harness is not authenticated, the run
-stops at that step, names the provider's own login command (`claude auth
-login`, `codex login`, `gemini` then `/auth`) and exits `10`. Run it in your
-own terminal, then run `aq install` again: it revalidates everything that was
-already done and carries on from where it stopped. Skipping a harness entirely
-is a supported answer — the install still finishes.
+names the provider's own login command (`claude auth login`, `codex login`,
+`gemini` then `/auth`) and exits `10`. It does not stop there: the same run still
+writes your configuration, starts the daemon and builds the dashboard, so the
+machine is set up and signing in is the only thing left. Run the login command in
+your own terminal, then run `aq install` again: it revalidates what was already
+done and, now that the harness answers, activates its worker profiles and creates
+their pools. Skipping a harness entirely is a supported answer — the install
+still finishes.
 
 The browser/device prompt belongs to the provider and must be completed by a
 human. Do not give an API key, device code, password, or browser session to AQ,

@@ -223,6 +223,7 @@ Related structural checks:
 aq doctor --check claims.holder_consistency
 aq doctor --check pools.orphan_agents
 aq doctor --check tasks.stale_attention
+aq doctor --check tasks.archive_blocked
 ```
 
 ## `stale_claim`: the task moved on without you
@@ -416,6 +417,45 @@ aq doctor --check sessions.env_markers
 `sessions.env_markers` catches a different restart hazard: a daemon started
 from *inside* an agent's terminal inherits that harness's control variables and
 behaves strangely. Restart it from a clean shell.
+
+## Finished work that never leaves the graph
+
+**Symptom.** `aq task archive-settings` reports a large `eligible_count` that
+never goes down, and the task graph keeps growing with COMPLETED roots.
+
+```bash
+aq doctor --check tasks.archive_blocked
+```
+
+The hourly auto-archive sweep skips any root it cannot archive and carries on
+with the rest — one bad root no longer stops the pass. It records why it
+skipped each one, and this check reports that record for every root that is
+still eligible. `archive-settings` shows the same thing as `blocked_count`
+plus a capped `blocked` list.
+
+The reason codes are the archive path's own refusals:
+
+| reason | what it means | what to do |
+|---|---|---|
+| `open_descendants` | something under the root is still non-terminal | close or delete the descendant; the next sweep takes the root |
+| `live_descendants` | a worker is still draining on a task in the subtree | wait, or `aq session kill` it if it is stuck |
+| `sealed` | the subtree is inside a live integration batch | let the batch finish or fail; the root archives after |
+| `delivery_target_fixed` | archiving would change already-delivered branch identity | nothing to do — the root stays until integration releases it |
+| `integration_owned` | durable integration bookkeeping still names the root | see below |
+| `unexpected` | a bug — the detail names the exception and constraint | report it with the detail verbatim |
+
+**`integration_owned` is the one you cannot clear.** Hierarchy and train
+projects write append-only audit rows (`integration_parent_episodes`,
+`integration_parent_verifications` and friends) that name the parent task; a
+database trigger forbids deleting them and their foreign key onto `tasks` is
+`RESTRICT`, so the root cannot leave the table while they exist. Archiving is
+refused cleanly rather than failing with a constraint error. A schema change
+that lets those rows outlive the task — the way `task_comments` already do —
+is proposed but not yet applied, so for now those roots stay in the graph.
+Everything else still archives.
+
+`tasks.archive_blocked` is report-only: there is no `--fix`, because every
+reason above is resolved by the subsystem that owns it.
 
 ## Related pages
 

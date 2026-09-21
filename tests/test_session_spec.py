@@ -1047,3 +1047,101 @@ class TestSpecShape:
             instance_token="t",
         )
         assert spec.env["AQ_API_URL"] == "http://127.0.0.1:9000"
+
+
+class TestDeclaredProvider:
+    """A harness outside the shipped three resolves a model by declaring one.
+
+    ``_infer_provider_from_harness`` maps only claude/codex/gemini. Every
+    other harness returns ``""`` there, and resolution then logs and leaves
+    the launch model unset -- so the declaration on the harness file is the
+    only way an OpenCode/Ollama session gets a class-driven model.
+    """
+
+    @staticmethod
+    def _builder():
+        return SessionSpecBuilder(
+            _Cfg(),
+            intelligence_classes={
+                "deep-high": IntelligenceClass(
+                    id="deep-high",
+                    name="Deep High",
+                    description="",
+                    mapping={"ollama": {"model": "ollama/qwen3.8:27b"}},
+                )
+            },
+        )
+
+    def test_declared_provider_resolves_the_class_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+            provider="ollama",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == "ollama/qwen3.8:27b"
+
+    def test_undeclared_provider_resolves_no_model(self):
+        harness = Harness(
+            id="opencode",
+            name="OpenCode",
+            command="opencode",
+            model_flag="--model",
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert self._builder()._resolve_model(profile, harness, None) == ""
+
+
+class TestHarnessIdSlice:
+    """A harness with no derivable provider falls back to a slice keyed by its id.
+
+    A provider-agnostic CLI carries the vendor inside the model string it is
+    given (OpenCode's ``--model`` takes ``provider/model``), so naming the
+    vendor a second time on the harness asserts something that need not be
+    true. Keying the slice by the harness id lets such a CLI resolve a model
+    without claiming to *be* a vendor.
+
+    This is a fallback, not a general precedence rule: a harness whose
+    provider is known keeps reading the provider slice, so the deliberate
+    strictness around the codex slice (id *and* command must both be codex --
+    see tests/test_codex_fast_classes.py) is untouched.
+    """
+
+    @staticmethod
+    def _builder(mapping):
+        return SessionSpecBuilder(
+            _Cfg(),
+            intelligence_classes={
+                "deep-high": IntelligenceClass(
+                    id="deep-high", name="Deep High", description="", mapping=mapping
+                )
+            },
+        )
+
+    def test_unknown_harness_resolves_a_slice_keyed_by_its_id(self):
+        builder = self._builder({"opencode": {"model": "ollama/qwen3.8:27b"}})
+        harness = Harness(id="opencode", command="opencode", model_flag="--model")
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == "ollama/qwen3.8:27b"
+
+    def test_unknown_harness_without_a_matching_slice_resolves_nothing(self):
+        builder = self._builder({"anthropic": {"model": "claude-opus-5"}})
+        harness = Harness(id="opencode", command="opencode", model_flag="--model")
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == ""
+
+    def test_a_declared_provider_still_wins_over_an_id_slice(self):
+        """The id slice is the fallback, so it must not shadow a real provider."""
+        builder = self._builder(
+            {
+                "opencode": {"model": "id-slice-model"},
+                "ollama": {"model": "provider-slice-model"},
+            }
+        )
+        harness = Harness(
+            id="opencode", command="opencode", model_flag="--model", provider="ollama"
+        )
+        profile = _Profile(harness="opencode", default_class="deep-high")
+        assert builder._resolve_model(profile, harness, None) == "provider-slice-model"

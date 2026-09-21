@@ -102,6 +102,19 @@ class StepSpec:
     #: this: a check that fails because something already on the host is broken
     #: must still fail, because no planned step would repair it.
     provisioned_by: tuple[str, ...] = ()
+    #: False when this step not succeeding must not stop the rest of the run.
+    #: Stopping is the right default -- most steps are something later ones need
+    #: -- but a few are not: an unauthenticated harness is a human action that
+    #: has nothing to do with writing a configuration, starting the daemon or
+    #: building the dashboard, and halting there cost the operator all three.
+    #: Nothing may depend on a step that does not halt, because a dependent
+    #: would be claiming a guarantee the step does not give.
+    halts: bool = True
+    #: True when this step's outcome is a *report*, never a gate: it never halts
+    #: (see ``halts``) and the overall outcome ignores it entirely, because what
+    #: it was about is something the operator can settle whenever they like --
+    #: PostgreSQL coming back by itself after a restart, say.
+    advisory: bool = False
     consent_prompt: str | None = None
     #: Read-only revalidation.  Returns a bool, or the ``StepResult`` it
     #: observed when the step is read-only enough to verify by running.
@@ -112,6 +125,10 @@ class StepSpec:
     def __post_init__(self) -> None:
         if not self.id:
             raise InstallPlanError("step id must be non-empty")
+        if self.advisory:
+            # A step whose outcome is ignored cannot also be one the run waits
+            # on: that would stop everything for a result nobody reads.
+            object.__setattr__(self, "halts", False)
         if self.mutating and not self.consent_prompt:
             object.__setattr__(
                 self,
@@ -127,6 +144,8 @@ class StepSpec:
             "depends_on": list(self.depends_on),
             "capability": self.capability,
             "mutating": self.mutating,
+            "halts": self.halts,
+            "advisory": self.advisory,
             "provisioned_by": list(self.provisioned_by),
             "owner": self.owner,
             "input_schema_version": self.input_schema_version,
@@ -199,6 +218,20 @@ class StepRegistry:
         if unknown:
             raise InstallPlanError(
                 "step dependencies name unregistered steps: " + ", ".join(sorted(unknown))
+            )
+
+        # A step that does not halt the run may not be depended on: a dependent
+        # would be ordered after something that may not have happened at all.
+        on_non_halting = {
+            f"{step.id} -> {dependency}"
+            for step in self._steps.values()
+            for dependency in step.depends_on
+            if not self._steps[dependency].halts
+        }
+        if on_non_halting:
+            raise InstallPlanError(
+                "steps depend on steps that do not gate the run: "
+                + ", ".join(sorted(on_non_halting))
             )
 
         remaining = {step_id: set(step.depends_on) for step_id, step in self._steps.items()}

@@ -420,7 +420,10 @@ layout_jobs = Table(
     Column("id", Text, primary_key=True),
     Column("project_id", Text, nullable=False),
     Column("variant", Text, nullable=False),
-    Column("kind", Text, nullable=False),  # 'tidy' | 'backfill'
+    # 'tidy' | 'backfill' | 'rules:<n>' (the engine-rules convergence ledger,
+    # src/task_graph/layout/constants.py:ENGINE_RULES_VERSION). Free text by
+    # design: a new kind is a label, never a schema change.
+    Column("kind", Text, nullable=False),
     Column("status", Text, nullable=False),  # queued | running | done | failed
     Column("requested_at", Float, nullable=False),
     Column("started_at", Float, nullable=True),
@@ -465,6 +468,31 @@ task_comments = Table(
     CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_task_comment_body_length"),
     Index("idx_task_comments_task_created", "task_id", "created_at", "id"),
     Index("idx_task_comments_project_created", "task_id", "project_id", "created_at", "id"),
+)
+
+# Durable, non-schedulable checklist rows a single agent ticks off inside one
+# task — distinct from task_dependencies/hierarchy, which are schedulable
+# work. No FK on task_id: subtasks survive archive, like task_comments.
+task_subtasks = Table(
+    "task_subtasks",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("task_id", Text, nullable=False),
+    Column("project_id", Text, nullable=False),
+    Column("ordinal", Integer, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("context", Text, nullable=False, server_default=""),
+    Column("status", Text, nullable=False, server_default="pending"),
+    Column("note", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint(
+        "status IN ('pending','in_progress','done','skipped')", name="ck_task_subtasks_status"
+    ),
+    CheckConstraint("length(title) BETWEEN 1 AND 300", name="ck_task_subtasks_title_length"),
+    CheckConstraint("length(context) <= 16000", name="ck_task_subtasks_context_length"),
+    UniqueConstraint("task_id", "ordinal", name="uq_task_subtasks_task_ordinal"),
+    Index("idx_task_subtasks_task", "task_id", "ordinal"),
 )
 
 task_metadata = Table(

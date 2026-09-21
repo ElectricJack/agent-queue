@@ -8,11 +8,26 @@ to clients.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from src.task_graph.layout.compaction import Box as BoxLike
+from src.task_graph.layout.constants import DRAWN_TYPES
 from src.task_graph.layout.model import LayoutRow
+
+__all__ = [
+    "DRAWN_TYPES",
+    "Visible",
+    "active_expansion",
+    "ancestors_of",
+    "cap_stubs",
+    "depth_first_order",
+    "dock_workers",
+    "forced_expansion_for",
+    "owner_map",
+    "remap_edges",
+    "resolve_visible",
+]
 
 
 def ancestors_of(path: str) -> list[str]:
@@ -90,9 +105,6 @@ def depth_first_order(rows: dict[str, LayoutRow]) -> list[str]:
     return sorted(rows, key=lambda t: key(rows[t]))
 
 
-DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovered-from"})
-
-
 def owner_map(
     paths_in_collapsed: Mapping[str, str],
     collapsed_paths: dict[str, str],
@@ -101,12 +113,23 @@ def owner_map(
 
     `paths_in_collapsed` is task_id -> path (not full `LayoutRow`s): the
     caller only needs paths for this, and hidden subtrees can be large.
+
+    A path's components *are* the ancestors' ids, so the owner is looked up
+    by walking the chain (deepest first, which is the longest prefix) rather
+    than by testing every collapsed path against every hidden task. The
+    difference is the whole cost of this function on a wide view: the §9
+    reference project's fully collapsed root has ~100 collapsed containers
+    over ~5,300 hidden tasks, which is half a million `startswith` calls
+    against three dictionary probes per task.
     """
-    by_len = sorted(collapsed_paths.items(), key=lambda kv: -len(kv[1]))
+    collapsed = set(collapsed_paths)
     out: dict[str, str] = {}
     for tid, path in paths_in_collapsed.items():
-        for cid, p in by_len:
-            if path.startswith(p):
+        if tid in collapsed:
+            out[tid] = tid
+            continue
+        for cid in reversed(ancestors_of(path)):
+            if cid in collapsed:
                 out[tid] = cid
                 break
     return out
@@ -218,6 +241,31 @@ def dock_workers(
         elif cur in hidden_owner:
             out.append({"agent": a, "docked_at": hidden_owner[cur], "in_collapsed": True})
     return out
+
+
+def active_expansion(rows: Iterable[LayoutRow], *, cap: int) -> list[str]:
+    """The "land on the active subgraph" expanded set (design A3).
+
+    Active = every container with ``agg_running > 0``; when nothing is
+    running project-wide, every ROOT container with ``agg_active > 0``
+    instead. A row is only a candidate when ``kind == "container"`` --
+    a finished container under ``variant="active"`` is a ``"stub"`` and
+    must never be opened.
+
+    ``agg_running``/``agg_active`` are subtree rollups
+    (``driver.py::_refresh_aggregates``), so a running container's whole
+    ancestor chain already qualifies on its own aggregate -- no separate
+    ancestor walk is needed. Capping shallowest-first (``depth``, then
+    ``order_key``) is what keeps an ancestor chain intact under the cap:
+    every ancestor of a kept row sorts before it and is kept too.
+    """
+    containers = [r for r in rows if r.kind == "container"]
+    running = [r for r in containers if r.agg_running > 0]
+    selected = running if running else [
+        r for r in containers if r.container_id is None and r.agg_active > 0
+    ]
+    selected.sort(key=lambda r: (r.depth, r.order_key))
+    return [r.task_id for r in selected[:cap]]
 
 
 def forced_expansion_for(matches: set[str], rows: dict[str, LayoutRow]) -> set[str]:

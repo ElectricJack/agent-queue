@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import { useLocation, useParams, useSearchParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useProjects } from "../../api/hooks";
-import { projectNavigation } from "../../shell/projectNavigation";
 import { useGraphLive } from "./useGraphLive";
 import { GraphStateProvider } from "./useGraphHierarchy";
 import { FINISHED_STATUSES, readTaskFilters, writeTaskFilters, type TaskFilters } from "./taskFilters";
@@ -28,28 +27,22 @@ const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 /** The route is the only project scope; query parameters travel with every tab. */
 export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const { projectId } = useParams<{ projectId: string }>();
-  const location = useLocation();
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
   const focusId = rawFilters.focus || null;
-  const graphDefaultShowsCompleted = projectNavigation(location.pathname).tab === "graph";
+  // Entering a container no longer implies finished work: inside one the
+  // default is the same as at the root, unfinished children only.
   const filters = useMemo(() => ({
     ...rawFilters,
-    showCompleted: rawFilters.showCompleted || !!focusId || !!rawFilters.window || (graphDefaultShowsCompleted && params.get("completed") !== "0"),
-  }), [rawFilters, focusId, graphDefaultShowsCompleted, params]);
+    showCompleted: rawFilters.showCompleted || !!rawFilters.window,
+  }), [rawFilters]);
   const projectIds = useMemo(() => projectId ? [projectId] : projects.map((p) => p.id), [projectId, projects]);
   useGraphLive(projectIds);
 
   const update = useCallback((patch: Partial<TaskFilters>) => {
-    setParams((previous) => {
-      const next = writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch });
-      if (graphDefaultShowsCompleted && previous.get("completed") === "0" && !("showCompleted" in patch)) {
-        next.set("completed", "0");
-      }
-      return next;
-    }, { replace: true });
-  }, [setParams, graphDefaultShowsCompleted]);
+    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), ...patch }), { replace: true });
+  }, [setParams]);
   const setQuery = useCallback((query: string) => update({ query }), [update]);
   const setStatus = useCallback((status: string) => {
     update({ status, ...(FINISHED_STATUSES.has(status) ? { showCompleted: true } : {}) });
@@ -57,17 +50,18 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const setShowCompleted = useCallback((show: boolean) => {
     setParams((previous) => {
       const current = readTaskFilters(previous);
-      if (current.focus) return previous;
-      const next = writeTaskFilters(previous, {
+      return writeTaskFilters(previous, {
         ...current, showCompleted: show,
         status: !show && FINISHED_STATUSES.has(current.status) ? "" : current.status,
       });
-      if (graphDefaultShowsCompleted && !show) next.set("completed", "0");
-      return next;
     }, { replace: true });
-  }, [setParams, graphDefaultShowsCompleted]);
+  }, [setParams]);
   const setWindow = useCallback((window: string) => update({ window }), [update]);
-  const setFocus = useCallback((id: string | null) => update({ focus: id ?? "" }), [update]);
+  // Entering a container (or leaving one) is navigation, not a filter edit:
+  // it PUSHES, so the browser's Back button goes back up a level.
+  const setFocus = useCallback((id: string | null) => {
+    setParams((previous) => writeTaskFilters(previous, { ...readTaskFilters(previous), focus: id ?? "" }));
+  }, [setParams]);
   const clearFilters = useCallback(() => {
     setParams((previous) => {
       const current = readTaskFilters(previous);

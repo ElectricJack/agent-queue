@@ -117,6 +117,14 @@ class CommandCenterProjectView(DashboardValueModel):
     expanded_task_ids: list[str] = Field(default_factory=list, max_length=5000)
     expanded_finished_task_ids: list[str] = Field(default_factory=list, max_length=5000)
     manual_positions: dict[str, ManualPosition] = Field(default_factory=dict, max_length=5000)
+    #: Whether the viewer has ever stored an expansion for this project
+    #: (design A3, "land on the active subgraph") -- distinguishes "never
+    #: expanded anything" (server should compute and apply the active
+    #: subgraph) from "chose an empty expansion" (`expanded_task_ids == []`
+    #: is itself a stored default and must not be re-expanded). Set
+    #: whenever the client writes `expanded_task_ids`, including when it
+    #: persists a server-computed `expanded_applied`.
+    expanded_initialised: bool = False
 
     @model_validator(mode="after")
     def validate_expansion(self) -> "CommandCenterProjectView":

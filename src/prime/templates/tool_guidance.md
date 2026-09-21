@@ -22,3 +22,7 @@ both hit the same command handler and return identical results. The ask_human co
 part of the supported surface; report blockers with message_send to the user. `task_close`'s only two
 outcomes are `pass` and `fail` (`aq schema`'s `outcome` enum). If you're missing context to
 finish, say so in the summary and close `fail`.
+
+If your task shows a `## Subtasks` checklist, settle each one with `aq task subtask-done N` /
+`aq task subtask-skip N --note …` as you go — closing with `--outcome pass` while any remain
+pending or in progress is refused (`subtasks.open`) unless you pass `--skip-open-subtasks`.

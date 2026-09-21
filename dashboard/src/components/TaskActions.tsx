@@ -24,6 +24,7 @@ import {
 } from "../api/hooks";
 import { sendChatMessage } from "../api/chat";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../api/branchDiscard";
+import { integrationHistoryRefusal } from "../api/deleteRefusals";
 import Modal from "./Modal";
 import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
@@ -91,6 +92,10 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     asking ||
     deleteTask.isPending ||
     provideInput.isPending;
+
+  // Integration history is a permanent record, so this delete will never
+  // succeed: explain it and take the button away instead of inviting a retry.
+  const historyRefusal = deleteTask.isError ? integrationHistoryRefusal(deleteTask.error) : null;
 
   const s = task.status?.toUpperCase() ?? "";
 
@@ -278,14 +283,17 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
           <p className="text-sm text-gray-300">
             Delete <strong>{task.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {branchPrompt && (
+          {branchPrompt && !historyRefusal && (
             <BranchDiscardPrompt
               branches={branchPrompt}
               choice={branchChoice}
               onChoose={setBranchChoice}
             />
           )}
-          {deleteTask.isError && !branchPrompt && (
+          {historyRefusal && (
+            <p role="alert" className="text-sm text-amber-200">{historyRefusal}</p>
+          )}
+          {deleteTask.isError && !branchPrompt && !historyRefusal && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
@@ -299,7 +307,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
             </button>
             <button
               onClick={handleSubmitModal}
-              disabled={isPending}
+              disabled={isPending || !!historyRefusal}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
               {isPending

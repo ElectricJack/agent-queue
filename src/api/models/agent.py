@@ -300,13 +300,24 @@ class ProfileDriftResponse(BaseModel):
 
 class ProfileReseedResponse(BaseModel):
     profile_id: str
-    #: The vault path that was written.
+    #: The vault path that was written. Empty for a ``grants_only`` merge,
+    #: which doesn't report a path (see ``mode``/``added``/``changed``).
     path: str = ""
-    #: ``None`` when there was no existing file to back up.
+    #: ``None`` when there was no existing file to back up, or when a
+    #: ``grants_only`` merge was a no-op.
     backup_path: str | None = None
     created: bool = False
     #: True when this reseed also cleared a delete-time retirement tombstone.
+    #: Full reseed only — a ``grants_only`` merge never sets this.
     unretired: bool = False
+    #: ``"grants_only"`` when this was the additive merge repair rather than
+    #: a full overwrite; absent (``None``) for a full reseed.
+    mode: str | None = None
+    #: ``grants_only`` only: per capability namespace, the grant names that
+    #: were appended to the vault copy.
+    added: dict[str, list[str]] | None = None
+    #: ``grants_only`` only: False for a no-op (nothing was missing).
+    changed: bool | None = None
     warnings: list[str] | None = None
     sync_errors: list[str] | None = None
 

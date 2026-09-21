@@ -11,12 +11,15 @@ import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
 import { edgeStyleForType } from "./edgeStyle";
 import { useGraphState } from "../useGraphHierarchy";
-import { useLayoutExtents, useLayoutNode, type TilesParams, type Variant } from "../../../api/graphLayout";
+import {
+  useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
+} from "../../../api/graphLayout";
 import { useLayoutTiles } from "./useLayoutTiles";
+import { publishAppliedVariant } from "./appliedVariant";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
 import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
-import { CELL, fromPx, maxDepthForZoom, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
-import { DEFAULT_DENSITY, type LayoutDensity } from "./density";
+import { CELL, fromPx, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
+import type { LayoutDensity } from "./density";
 import { PLAYBOOK_POSITION_SCOPE } from "./manualPositions";
 import {
   NODE_HEIGHT, NODE_WIDTH, type ContainerNodeData, type GraphViewProps, type GraphWorker,
@@ -49,14 +52,16 @@ const nodeTypes = {
   projectHeader: ProjectHeaderNode, overflowMarker: OverflowMarkerNode,
 };
 const NO_PLAYBOOKS: NonNullable<GraphViewProps["playbooks"]> = [];
+/** Stable identity for "nothing is expanded", which is now always the case. */
+const NO_EXPANSION: string[] = [];
 const PROJECT_GAP = 2;
 const PLAYBOOKS_PER_ROW = 4;
 const initialViewport = { x: 0, y: 0, zoom: 1 };
 /**
  * Below this zoom a card is a few pixels tall: the smoothstep router and the
  * ×N labels are detail nobody can read, so the edges drop to straight lines.
- * Nesting and collapse state are user-owned and unaffected — this is paint,
- * not structure.
+ * Which nodes are drawn is unaffected — zoom is paint here, never structure:
+ * containers are compact tiles at every zoom and are opened by entering them.
  */
 const SIMPLE_EDGE_ZOOM = 0.5;
 const RELATION_LABELS: Record<string, string> = {
@@ -89,6 +94,9 @@ export interface LayoutCanvasProps extends Pick<GraphViewProps,
   filters: TaskFilters;
   focusId: string | null;
   setFocus: (id: string | null) => void;
+  /** Wired to the empty state's "Show completed" button, when the canvas has
+   * nothing to draw because finished work is hidden. */
+  setShowCompleted: (show: boolean) => void;
   /** A located match the toolbar asked for; each request is a fresh object. */
   jumpTarget?: LocateHit | null;
 }
@@ -100,17 +108,8 @@ interface LayerElements {
   pending: boolean;
   loaded: boolean;
   error: Error | null;
-}
-
-/** Where a toggled container sat on screen, so the reflow can be pinned to it. */
-interface ReflowAnchor {
-  id: string;
-  screenX: number;
-  screenY: number;
-  worldX: number;
-  worldY: number;
-  /** The refetch for the new expanded set has been observed in flight. */
-  sawLoading: boolean;
+  /** The variant the daemon served this layer's last response from. */
+  variantApplied: string | null;
 }
 
 interface LayerProps {
@@ -121,9 +120,8 @@ interface LayerProps {
   viewport: Viewport | null;
   width: number;
   height: number;
-  expanded: ReadonlySet<string>;
+  focusId: string | null;
   handlers: FlowHandlers;
-  onBudgetExceeded: () => void;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
   simpleEdges: boolean;
@@ -151,7 +149,8 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  * project isolated: only the layer whose store changed re-runs its conversion.
  */
 function ProjectLayer({
-  projectId, projectNames, offsetY, params, viewport, width, height, expanded, handlers, onBudgetExceeded, onElements, density, simpleEdges,
+  projectId, projectNames, offsetY, params, viewport, width, height, focusId, handlers,
+  onElements, density, simpleEdges,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -171,10 +170,7 @@ function ProjectLayer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const rect = useMemo<Rect | null>(() => rawRect, [coverage]);
 
-  const budget = useRef(onBudgetExceeded);
-  budget.current = onBudgetExceeded;
-  const options = useMemo(() => ({ onBudgetExceeded: () => budget.current() }), []);
-  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect, options);
+  const { store, pending, loaded, error, refetchVisible } = useLayoutTiles(projectId, params, rect);
 
   useEffect(
     () => registerLayoutRefetch(projectId, refetchVisible),
@@ -187,7 +183,7 @@ function ProjectLayer({
   const flowCache = useRef<FlowCache | undefined>(undefined);
   useEffect(() => {
     const { nodes, edges, cache } = toFlowElements(
-      store, { projectId, offsetY, expanded, handlers, projectNames, density, simpleEdges }, flowCache.current,
+      store, { projectId, offsetY, focusId, handlers, projectNames, density, simpleEdges }, flowCache.current,
     );
     flowCache.current = cache;
     // Docking is resolved server-side, so a worker's `docked_at` is already a
@@ -196,24 +192,33 @@ function ProjectLayer({
       id: worker.agent_id, name: worker.name, current_task_id: worker.docked_at,
       in_collapsed: worker.in_collapsed, profile_id: null, session_id: null,
     }));
-    onElements(projectId, { nodes, edges, workers, pending, loaded, error });
-  }, [store, pending, loaded, error, projectId, projectNames, offsetY, expanded, handlers, onElements, density, simpleEdges]);
+    onElements(projectId, {
+      nodes, edges, workers, pending, loaded, error, variantApplied: store.variantApplied,
+    });
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, simpleEdges]);
 
   return null;
 }
 
 function Inner(props: LayoutCanvasProps) {
   const {
-    projectIds, projectNames, variant, filters, focusId, setFocus, jumpTarget, onTaskClick, onBackgroundClick,
-    selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
+    projectIds, projectNames, variant, filters, focusId, setFocus, setShowCompleted, jumpTarget, onTaskClick,
+    onBackgroundClick, selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
-  const { expandedTaskIds, expandedFinishedIds, toggleExpanded, density, setDensity, manualPositions, saveGraphPosition } = useGraphState();
-  const requestVariant: Variant = focusId || expandedFinishedIds.size > 0 ? "all" : variant;
-  const { fitBounds, setCenter, getViewport, setViewport: setFlowViewport } = useReactFlow();
+  const { density, manualPositions, saveGraphPosition } = useGraphState();
+  // Entering a container is the root view one level down: the same variant,
+  // so "Show completed" still means what it says inside a container. The
+  // daemon promotes a focused request to the full layout by itself when the
+  // container entered is one the active layout dropped.
+  const requestVariant: Variant = variant;
+  // Only meaningful for the empty-graph caption: how many finished tasks are
+  // hidden, read only from whatever the "all" variant's extent already sits
+  // in the query cache -- never a request of its own.
+  const hiddenFinishedCount = useHiddenFinishedCount(projectIds, requestVariant);
+  const { fitBounds, setCenter } = useReactFlow();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [viewport, setViewport] = useState<Viewport | null>(initialViewport);
-  const [depthOverride, setDepthOverride] = useState<number | null>(null);
   const [layers, setLayers] = useState<ReadonlyMap<string, LayerElements>>(new Map());
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const [kbFocusId, setKbFocusId] = useState<string | null>(null);
@@ -249,16 +254,6 @@ function Inner(props: LayoutCanvasProps) {
   // the edge rebuild happens on that crossing and not on every frame of a
   // pinch.
   const simpleEdges = (viewport?.zoom ?? 1) < SIMPLE_EDGE_ZOOM;
-  const zoomDepth = maxDepthForZoom(viewport?.zoom ?? 1);
-  const maxDepth = depthOverride === null ? zoomDepth : Math.min(depthOverride, zoomDepth ?? Infinity);
-  const paramsSignature = `${focusId ?? ""}|${requestVariant}|${filters.query.trim()}|${filters.status}|${[...expandedTaskIds].sort().join(",")}`;
-  // A new query means a new node population: the previous budget cut no longer
-  // describes it.
-  useEffect(() => { setDepthOverride(null); }, [viewport?.zoom, paramsSignature]);
-  const onBudgetExceeded = useCallback(
-    () => setDepthOverride((current) => Math.max(0, (current ?? zoomDepth ?? 2) - 1)),
-    [zoomDepth],
-  );
 
   // Projects stack vertically: each starts below the previous project's extent.
   const extents = useLayoutExtents(projectIds, requestVariant);
@@ -300,14 +295,16 @@ function Inner(props: LayoutCanvasProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingExtents]);
 
+  // One scope per view: the project root, or the container entered. Nothing
+  // is ever expanded in place, so `expanded` is always empty and no zoom
+  // level changes which nodes are asked for (operator decision 2026-09-20).
   const params = useMemo<TilesParams>(() => ({
     variant: requestVariant,
-    expanded: [...expandedTaskIds].sort(),
+    expanded: NO_EXPANSION,
     root: focusId,
-    maxDepth: maxDepth === null || maxDepth === Infinity ? null : maxDepth,
     q: filters.query.trim(),
     status: filters.status,
-  }), [requestVariant, focusId, expandedTaskIds, maxDepth, filters.query, filters.status]);
+  }), [requestVariant, focusId, filters.query, filters.status]);
 
   const selectedId = selectedPlaybookId
     ? `playbook:${selectedPlaybookId}`
@@ -334,30 +331,9 @@ function Inner(props: LayoutCanvasProps) {
     onBackgroundClick?.();
   }, [onBackgroundClick]);
 
-  // Toggling a container reflows everything after it, so the container the
-  // operator clicked is pinned to the pixel it was already on: the reflow
-  // then reads as the siblings moving, not as the canvas jumping.
-  const reflowAnchor = useRef<ReflowAnchor | null>(null);
-  const nodesRef = useRef<Node[]>([]);
-  const toggleChildren = useCallback((id: string, finished = false) => {
-    const node = nodesRef.current.find((candidate) => candidate.id === id);
-    if (node) {
-      const vp = getViewport();
-      reflowAnchor.current = {
-        id,
-        screenX: node.position.x * vp.zoom + vp.x,
-        screenY: node.position.y * vp.zoom + vp.y,
-        worldX: node.position.x,
-        worldY: node.position.y,
-        sawLoading: false,
-      };
-    }
-    toggleExpanded(id, finished, node ? positionScope(node) ?? undefined : undefined);
-  }, [getViewport, toggleExpanded]);
-
   const handlers = useMemo<FlowHandlers>(
-    () => ({ onOpenTask: openTask, onToggleChildren: toggleChildren, onFocus: setFocus }),
-    [openTask, toggleChildren, setFocus],
+    () => ({ onOpenTask: openTask, onFocus: setFocus }),
+    [openTask, setFocus],
   );
   const onElements = useCallback(
     (pid: string, elements: LayerElements) => setLayers((prev) => new Map(prev).set(pid, elements)),
@@ -450,34 +426,10 @@ function Inner(props: LayoutCanvasProps) {
   );
   const pending = projectIds.some((pid) => layers.get(pid)?.pending ?? true);
   const allLoaded = projectIds.every((pid) => layers.get(pid)?.loaded);
-
-  // The toggled container is still drawn at its old position while the new
-  // expanded set is in flight, so wait for it to actually move before
-  // compensating -- then pan by exactly the distance it travelled.
-  nodesRef.current = nodes;
-  useEffect(() => {
-    const pin = reflowAnchor.current;
-    if (!pin) return;
-    if (!allLoaded) {
-      pin.sawLoading = true;
-      return;
-    }
-    const node = nodes.find((candidate) => candidate.id === pin.id);
-    if (node && (node.position.x !== pin.worldX || node.position.y !== pin.worldY)) {
-      const vp = getViewport();
-      setFlowViewport({
-        x: pin.screenX - node.position.x * vp.zoom,
-        y: pin.screenY - node.position.y * vp.zoom,
-        zoom: vp.zoom,
-      });
-      reflowAnchor.current = null;
-    } else if (pin.sawLoading) {
-      // The new expanded set has landed and the container did not move (it
-      // is a fixed point of the compaction unless something else republished
-      // the layout underneath us): nothing to compensate.
-      reflowAnchor.current = null;
-    }
-  }, [nodes, allLoaded, getViewport, setFlowViewport]);
+  // A focused response ALWAYS carries the container entered, so "nothing
+  // here" is "nothing but the container itself" -- gating on an empty node
+  // list could never fire inside one.
+  const nothingDrawn = nodes.every((node) => node.id === focusId);
 
   // A failed tiles request must never be reported as an empty graph.
   const layerError = projectIds.map((pid) => layers.get(pid)?.error).find(Boolean) ?? null;
@@ -490,14 +442,26 @@ function Inner(props: LayoutCanvasProps) {
     [edges],
   );
 
-  // Focus zooms to the focused container; its subtree already arrives whole,
-  // and dependencies leaving it arrive as stubs.
+  // Entering zooms to the container entered; its direct children arrive as
+  // tiles (their own children collapsed into them) and dependencies leaving
+  // the container arrive as stubs.
   const focusProject = projectIds[0];
   const focusOffset = offsets.get(focusProject ?? "") ?? 0;
   // A project whose layout is still building answers 202 for the focus node:
   // there is no box to fit and no title to show until it lands.
   const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
+  // What the daemon actually served, which is not always what was asked for:
+  // entering a container the active layout stubbed or dropped is answered
+  // from `all`. That condition is the LAYOUT's (a container every one of
+  // whose descendants has finished is stubbed whatever its own status), so it
+  // is read from the response and never inferred.
+  const appliedVariant = layers.get(focusProject ?? "")?.variantApplied ?? null;
+  const showingCompleted = appliedVariant === "all" && !filters.showCompleted;
+  useEffect(() => { publishAppliedVariant((appliedVariant as Variant | null) ?? null); }, [appliedVariant]);
+  // Only on unmount: publishing null between values would make the toolbar
+  // fall back to the filters' variant for a render and re-issue its locate.
+  useEffect(() => () => publishAppliedVariant(null), []);
   useEffect(() => {
     if (!focusId || !focusNode) return;
     const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset, density);
@@ -505,16 +469,43 @@ function Inner(props: LayoutCanvasProps) {
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
   }, [focusId, focusNode, fitBounds, focusOffset, density]);
 
-  // Jumping to a search result only needs the hit's box: the tiles covering it
-  // load from the viewport change like any other pan.
+  // Jumping to a search result in THIS scope only needs the hit's box: the
+  // tiles covering it load from the viewport change like any other pan. A hit
+  // that lives inside another container is reached by entering that container
+  // -- there is no inline expansion to reveal it, and its coordinates belong
+  // to that scope, so fitting them here would frame the wrong place.
   const jumpOffset = offsets.get(focusProject ?? "") ?? 0;
+  // Acting on a hit can change the scope, which re-runs this effect: the hit
+  // is spent once so the coordinates of the scope it was located in are never
+  // applied to the scope it took us to.
+  const jumpHandled = useRef<LocateHit | null>(null);
   useEffect(() => {
-    if (!jumpTarget) return;
+    if (!jumpTarget || jumpHandled.current === jumpTarget) return;
+    jumpHandled.current = jumpTarget;
+    setKbFocusId(jumpTarget.id);
+    const container = jumpTarget.container_id ?? null;
+    // A search force-opens the ancestors of its matches server-side -- the
+    // one case where a container is drawn open -- so a hit can already be on
+    // screen in another container's tile. Re-scoping then would throw the
+    // operator's place away for nothing: pan to it instead.
+    const drawn = nodes.some((node) => node.id === jumpTarget.id);
+    if (!drawn && container !== focusId) {
+      setFocus(container);
+      return;
+    }
     const position = toPx(jumpTarget.x, jumpTarget.y + jumpOffset, density);
     const box = sizePx(jumpTarget.w, jumpTarget.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
-    setKbFocusId(jumpTarget.id);
-  }, [jumpTarget, jumpOffset, fitBounds, density]);
+    // `nodes` is deliberately not a dependency: the hit is spent on first
+    // use, so re-running on every node delivery would do nothing but churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTarget, jumpOffset, fitBounds, density, focusId, setFocus]);
+
+  /** Double-clicking a tile that can be entered goes into it; the enter
+   *  control on the tile is the same action. */
+  const enterNode = (node: Node) => {
+    (node.data as { onFocus?: (id: string) => void }).onFocus?.(node.id);
+  };
 
   const openNode = (node: Node) => {
     if (node.type === "playbook") openPlaybook(String((node.data.playbook as { id: string }).id));
@@ -580,12 +571,18 @@ function Inner(props: LayoutCanvasProps) {
         ancestors={focusNode?.ancestors?.map((ancestor) => ({ id: ancestor.id, title: ancestor.title })) ?? []}
         current={focusNode ? { id: focusNode.node.id, title: focusNode.node.title } : { id: focusId, title: focusId }}
         onSelect={setFocus} />}
+      {/* A container the active layout does not carry is answered from the
+        * full one, so finished children are on screen with "Show completed"
+        * off. Say so, rather than leaving the reader to wonder. */}
+      {focusId && showingCompleted && <p role="status" className="shrink-0 border-b border-gray-800 px-4 py-1 text-xs text-gray-400">
+        No active work here, so completed work is shown inside this container.
+      </p>}
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
-            viewport={viewport} width={size.w} height={size.h} expanded={expandedTaskIds} handlers={handlers}
-            onBudgetExceeded={onBudgetExceeded} onElements={onElements} density={density} simpleEdges={simpleEdges} />
+            viewport={viewport} width={size.w} height={size.h} focusId={focusId} handlers={handlers}
+            onElements={onElements} density={density} simpleEdges={simpleEdges} />
         ))}
         <ReactFlow
           nodes={nodes}
@@ -610,23 +607,13 @@ function Inner(props: LayoutCanvasProps) {
           zoomOnScroll={false}
           proOptions={{ hideAttribution: true }}
           onNodeClick={(_, node) => openNode(node)}
+          onNodeDoubleClick={(_, node) => enterNode(node)}
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
           onPaneClick={clearSelection}
         >
           <Background gap={24} color="#1f2937" />
           <Controls position="bottom-right" showInteractive={false} />
-          <Panel position="top-right">
-            <label className="rounded border border-gray-700 bg-gray-950/95 px-2 py-1 text-xs text-gray-300">
-              Density
-              <select aria-label="Graph density" value={density} onChange={(event) => setDensity(event.target.value as LayoutDensity)}
-                className="ml-2 bg-transparent text-xs text-white outline-none">
-                <option value="compact">Compact</option>
-                <option value={DEFAULT_DENSITY}>Comfortable</option>
-                <option value="spacious">Spacious</option>
-              </select>
-            </label>
-          </Panel>
           <AgentAvatarLayer agents={workers} />
           {relationTypes.length > 0 && (
             <Panel position="bottom-left">
@@ -648,7 +635,29 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {allLoaded && !pending && !layerError && nodes.length === 0 && <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">No tasks or playbooks match these filters.</p>}
+        {allLoaded && !pending && !layerError && nothingDrawn && (
+          filters.showCompleted ? (
+            <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">
+              No tasks yet.
+            </p>
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-gray-500">
+              {/* Show completed defaults off (design decision 2026-09-20), so a
+                * fully-finished project would otherwise land on a blank canvas
+                * with no explanation. */}
+              <p className="pointer-events-none">
+                No unfinished work here.
+                {hiddenFinishedCount !== null && hiddenFinishedCount > 0 && (
+                  <> {hiddenFinishedCount} finished {hiddenFinishedCount === 1 ? "task" : "tasks"} hidden.</>
+                )}
+              </p>
+              <button type="button" onClick={() => setShowCompleted(true)}
+                className="pointer-events-auto rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">
+                Show completed
+              </button>
+            </div>
+          )
+        )}
       </div>
     </div>
   );

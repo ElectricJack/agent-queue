@@ -47,7 +47,9 @@ tags: [system, review, dv2-phase2]
     "task_handoff",
     "task_heartbeat",
     "task_set",
-    "task_show"
+    "task_show",
+    "task_subtask_get",
+    "task_subtasks"
   ],
   "plugin_tools": [
     "memory_save",

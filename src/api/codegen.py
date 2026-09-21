@@ -31,6 +31,7 @@ from src.api.models.dashboard import (
 )
 from src.api.models.escalation import EscalationErrorResponse
 from src.api.models.system import EditIntelligenceClassConflictResponse
+from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
 from src.cli.auto_commands import _strip_category_prefix
@@ -84,6 +85,47 @@ DASHBOARD_STATE_COMMANDS: frozenset[str] = frozenset(
         "dashboard_state_reset",
     }
 )
+
+#: Commands whose *refusal body* is part of their contract, not just prose.
+#: The generic typed-route error envelope is ``{"error": "<prose>"}``, which
+#: drops every other key the handler returned; for these commands the surface
+#: branches on a stable ``code``/``error_code`` and renders the refusal's
+#: detail keys, so that envelope would make the response unusable. Adding a
+#: command here is what makes its full result survive the HTTP boundary.
+#:
+#: ``delete_task``/``archive_task`` are here for the hierarchy refusals: the
+#: dashboard's delete dialog asks about the branches named by
+#: ``hierarchy.branch_discard_required`` and explains
+#: ``hierarchy.integration_owned`` instead of reporting it, and neither is
+#: possible from prose alone.
+DETAILED_ERROR_COMMANDS: frozenset[str] = (
+    frozenset(
+        {
+            "list_project_roots",
+            "browse_project_root",
+            "get_github_auth_status",
+            "list_github_owners",
+            "search_github_repositories",
+            "onboard_project",
+            "get_project_onboarding",
+            "escalation_create",
+            "escalation_list",
+            "escalation_get",
+            "escalation_reply",
+            "escalation_update",
+            "escalation_apply_reply",
+            "digest_preview",
+            "digest_status",
+            "delete_task",
+            "archive_task",
+        }
+    )
+    | DASHBOARD_STATE_COMMANDS
+)
+
+#: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
+#: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
+HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset({"delete_task", "archive_task"})
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
@@ -267,33 +309,12 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
                     {"error": result["error"], "error_code": "capability_denied"},
                     status_code=403,
                 )
-            # Onboarding has a documented recovery contract: its dashboard
-            # attaches stable error codes, phases, surviving resources and
-            # field errors to the form.  The generic route used to discard
-            # that data and made the generated client incapable of rendering
-            # a useful retry state.  JSONResponse deliberately bypasses the
-            # success response model for this non-2xx payload.
-            if (
-                cmd_name
-                in {
-                    "list_project_roots",
-                    "browse_project_root",
-                    "get_github_auth_status",
-                    "list_github_owners",
-                    "search_github_repositories",
-                    "onboard_project",
-                    "get_project_onboarding",
-                    "escalation_create",
-                    "escalation_list",
-                    "escalation_get",
-                    "escalation_reply",
-                    "escalation_update",
-                    "escalation_apply_reply",
-                    "digest_preview",
-                    "digest_status",
-                }
-                | DASHBOARD_STATE_COMMANDS
-            ):
+            # These commands' refusals carry data the surface acts on (see
+            # DETAILED_ERROR_COMMANDS); the generic envelope below would
+            # discard it and leave the generated client unable to render a
+            # useful state.  JSONResponse deliberately bypasses the success
+            # response model for this non-2xx payload.
+            if cmd_name in DETAILED_ERROR_COMMANDS:
                 return JSONResponse(result, status_code=422)
             return JSONResponse(
                 {"error": result["error"]},
@@ -432,6 +453,8 @@ def build_category_routers() -> list[APIRouter]:
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
                                 else {"model": EscalationErrorResponse}
                                 if cmd_name.startswith(("escalation_", "digest_"))
+                                else {"model": HierarchyRefusalResponse}
+                                if cmd_name in HIERARCHY_REFUSAL_COMMANDS
                                 else {
                                     "content": {
                                         "application/json": {

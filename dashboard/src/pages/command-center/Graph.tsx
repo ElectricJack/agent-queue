@@ -5,7 +5,6 @@ import { projectPlaybooks } from "./playbooks";
 import { useLayoutExtents } from "../../api/graphLayout";
 import LayoutCanvas from "./layout-v2/LayoutCanvas";
 import { MobileLayoutLists } from "./layout-v2/MobileLayoutList";
-import { useExpandedTaskIds } from "./useGraphHierarchy";
 import { useJumpTarget } from "./layout-v2/useJumpToResult";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useTaskSelection } from "./useTaskSelection";
@@ -88,7 +87,7 @@ function GraphShell(props: ShellProps) {
 
 /** The graph tab: server-laid-out tiles on demand, so no full snapshot is fetched. */
 export default function CommandCenterGraph() {
-  const { projectId, projectIds, projects, filters, focusId, setFocus, isLoadingProjects, projectsError } = useTaskWorkspace();
+  const { projectId, projectIds, projects, filters, focusId, setFocus, setShowCompleted, isLoadingProjects, projectsError } = useTaskWorkspace();
   const chrome = useGraphChrome();
   const { selectTask } = chrome;
   // The tiled canvas hands back the clicked card's payload, so a task that
@@ -98,8 +97,9 @@ export default function CommandCenterGraph() {
     [selectTask],
   );
   const mobile = usePortraitMobile();
-  const { expandedTaskIds, expandedFinishedIds, toggleExpanded } = useExpandedTaskIds();
-  const variant = filters.showCompleted || focusId || expandedFinishedIds.size > 0 ? "all" : "active";
+  // Entering a container does not imply finished work: the daemon promotes a
+  // focused request to the full layout by itself when it has to.
+  const variant = filters.showCompleted ? "all" : "active";
   const extents = useLayoutExtents(projectIds, variant);
   const nodeCount = extents.reduce(
     (total, extent) => total + (extent && !("pending" in extent) ? extent.node_count : 0), 0,
@@ -119,10 +119,10 @@ export default function CommandCenterGraph() {
       loadingPlaybooks={chrome.loadingPlaybooks} loading={loading}>
       {mobile
         ? <MobileLayoutLists projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            expanded={expandedTaskIds} toggleExpanded={toggleExpanded} onFocus={setFocus}
+            focusId={focusId} onFocus={setFocus}
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            focusId={focusId} setFocus={setFocus} jumpTarget={jumpTarget}
+            focusId={focusId} setFocus={setFocus} setShowCompleted={setShowCompleted} jumpTarget={jumpTarget}
             selectedTaskId={chrome.selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={chrome.clearSelection}
             playbooks={chrome.playbooks} selectedPlaybookId={chrome.selectedPlaybookId}
             onPlaybookClick={chrome.openPlaybook} />}

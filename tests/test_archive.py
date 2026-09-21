@@ -509,6 +509,22 @@ class TestArchiveCommands:
         result = await handler.execute("archive_settings", {})
         assert result["archived_count"] == 1
 
+    async def test_archive_settings_reports_blocked_roots(self, handler, db):
+        """The backlog the sweep keeps skipping is visible without running it."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        result = await handler.execute("archive_settings", {})
+        assert result["blocked_count"] == 1
+        assert result["blocked"][0]["task_id"] == "root"
+        assert result["blocked"][0]["reason"] == "integration_owned"
+        # Read-only — the command never archives.
+        assert await db.get_task("root") is not None
+
 
 # ---------------------------------------------------------------------------
 # Markdown note export tests
@@ -1127,3 +1143,417 @@ async def test_completion_history_survives_archive_and_restore(db):
     assert (await db.get_task_completion("history")).summary == "Keep findings"
     await db.delete_task("history")
     assert await db.get_task_completion("history") is None
+
+
+# ---------------------------------------------------------------------------
+# Integration bookkeeping that outlives the task it describes
+# ---------------------------------------------------------------------------
+
+
+async def _seed_hierarchy_project(db: Database, pid: str = "p-hier") -> None:
+    """A hierarchy-mode project with one repo, as the operator's install has."""
+    from src.models import RepoConfig
+
+    await db.create_project(Project(id=pid, name=f"project-{pid}"))
+    await db.create_repo(
+        RepoConfig(id=f"repo-{pid}", project_id=pid, source_type=RepoSourceType.LINK)
+    )
+
+
+async def _enable_hierarchy_mode(db: Database, pid: str = "p-hier") -> None:
+    """Switch the project to hierarchy mode once its task graph is built."""
+    await db.update_project(
+        pid,
+        hierarchical_integration_mode="hierarchy",
+        integration_repository_id=f"repo-{pid}",
+    )
+
+
+async def _seed_parent_episode(db: Database, parent_task_id: str, pid: str = "p-hier") -> str:
+    """Write the append-only parent-episode row hierarchy completion writes."""
+    from sqlalchemy import insert
+
+    from src.database.tables import integration_parent_episodes
+
+    episode_id = f"ep-{parent_task_id}"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id=episode_id,
+                parent_task_id=parent_task_id,
+                repository_id=f"repo-{pid}",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+    return episode_id
+
+
+async def _age(db: Database, *task_ids: str) -> None:
+    old = time.time() - 86400
+    async with db._engine.begin() as conn:
+        for tid in task_ids:
+            await conn.execute(
+                text("UPDATE tasks SET updated_at = :t WHERE id = :id"), {"t": old, "id": tid}
+            )
+
+
+class TestArchiveWithIntegrationBookkeeping:
+    """The production failure: one integration-tracked root killed the sweep."""
+
+    async def _seed(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.IN_PROGRESS)
+        await _seed_task(db, "kid", pid="p-hier", status=TaskStatus.READY)
+        await db.add_dependency("kid", "root", "parent-child")
+        async with db._engine.begin() as conn:
+            for tid in ("root", "kid"):
+                await conn.execute(
+                    text("UPDATE tasks SET status = 'COMPLETED' WHERE id = :id"), {"id": tid}
+                )
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await _age(db, "root", "kid", "solo")
+
+    async def test_sweep_survives_an_integration_tracked_root(self, db):
+        await self._seed(db)
+
+        archived = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        # The unrelated root leaves the graph; the tracked one stays put.
+        assert archived == ["solo"]
+        assert await db.get_archived_task("solo") is not None
+        assert await db.get_task("root") is not None
+        assert await db.get_task("kid") is not None
+
+    async def test_archive_task_refuses_instead_of_raising_integrityerror(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.archive_task("root")
+        assert exc.value.code == "integration_owned"
+        assert "integration_parent_episodes" in str(exc.value)
+
+    async def test_delete_task_refuses_instead_of_raising_integrityerror(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await self._seed(db)
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("root", cascade=True, branch_policy="keep")
+        assert exc.value.code == "integration_owned"
+        assert await db.get_task("root") is not None
+
+    async def test_blocked_roots_are_reported_read_only(self, db):
+        """The report reads what the sweep actually recorded — it derives nothing."""
+        await self._seed(db)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert blocked.total == 1
+        assert [b["task_id"] for b in blocked.roots] == ["root"]
+        assert blocked.roots[0]["reason"] == "integration_owned"
+        assert "integration_parent_episodes" in blocked.roots[0]["detail"]
+        assert blocked.roots[0]["since"] > 0
+        # Read-only: the report itself moved nothing the sweep had not.
+        assert await db.get_task("root") is not None
+        assert await db.get_archived_task("solo") is not None
+
+    async def test_nothing_is_reported_before_the_sweep_has_tried(self, db):
+        """No record, no report — the sweep is the only thing that decides."""
+        await self._seed(db)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert blocked.total == 0
+        assert blocked.roots == []
+
+
+class TestArchiveRefusalRecord:
+    """The sweep records why each root it skipped was refused (F3)."""
+
+    async def _eligible(self, db, *task_ids: str) -> None:
+        await _age(db, *task_ids)
+
+    async def test_records_the_refusal_the_sweep_actually_hit(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        record = await db.get_task_meta("root", "archive_refusal")
+        assert record["code"] == "integration_owned"
+        assert "integration_parent_episodes" in record["detail"]
+        assert "\n" not in record["detail"]
+        assert record["at"] > 0
+
+    async def test_records_a_refusal_the_report_could_not_have_derived(self, db):
+        """A sealed root: the old report re-derived conditions and missed this one."""
+        from sqlalchemy import insert
+
+        from src.database.tables import (
+            integration_batch_members,
+            integration_batches,
+            integration_review_evidence,
+        )
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_batches).values(
+                    id="b",
+                    project_id="p-hier",
+                    repository_id="repo-p-hier",
+                    request_id="r",
+                    trigger="manual",
+                    source_manifest_digest="sha256:" + "4" * 64,
+                    base_sha="a" * 40,
+                    lifecycle="sealing",
+                    current_revision=0,
+                    integration_branch="refs/heads/aq/integration/p-hier/1",
+                    policy_snapshot={},
+                    artifact_snapshot={},
+                    cleanup_state="pending",
+                    created_at=1.0,
+                    updated_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_review_evidence).values(
+                    id="rev",
+                    source_task_id="root",
+                    repository_id="repo-p-hier",
+                    source_base="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    reviewer_task_id="reviewer",
+                    reviewer_session_attempt_id=None,
+                    review_kind="leaf",
+                    generation=1,
+                    verdict="approved",
+                    evidence={"decision": "approved"},
+                    created_at=1.0,
+                )
+            )
+            await conn.execute(
+                insert(integration_batch_members).values(
+                    batch_id="b",
+                    ordinal=0,
+                    task_id="root",
+                    repository_id="repo-p-hier",
+                    source_base_sha="a" * 40,
+                    reviewed_head_sha="b" * 40,
+                    reviewed_tree_sha="c" * 40,
+                    review_evidence_id="rev",
+                    review_evidence={},
+                )
+            )
+        await self._eligible(db, "root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        record = await db.get_task_meta("root", "archive_refusal")
+        assert record["code"] == "sealed"
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert [r["reason"] for r in blocked.roots] == ["sealed"]
+
+    async def test_records_an_unexpected_failure_with_a_one_line_signature(self, db, monkeypatch):
+        await _seed_project(db)
+        await _seed_task(db, "root", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "root")
+
+        async def boom(task_id):
+            raise RuntimeError("something\nwith newlines\nand detail")
+
+        monkeypatch.setattr(db, "archive_task", boom)
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        record = await db.get_task_meta("root", "archive_refusal")
+        assert record["code"] == "unexpected"
+        assert record["detail"].startswith("RuntimeError")
+        assert "\n" not in record["detail"]
+
+    async def test_the_record_does_not_touch_tasks_updated_at(self, db):
+        """The eligibility cutoff reads updated_at — recording must not move it."""
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+        before = await db.get_task_updated_at("root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        after_first = await db.get_task_updated_at("root")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        assert after_first == before
+        assert await db.get_task_updated_at("root") == before
+        # Still eligible, so still reported — it never oscillated out.
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert blocked.total == 1
+
+    async def test_an_unchanged_refusal_is_not_rewritten_every_sweep(self, db):
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        first = await db.get_task_meta("root", "archive_refusal")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        assert await db.get_task_meta("root", "archive_refusal") == first
+
+    async def test_the_record_goes_when_the_refusal_does(self, db):
+        from sqlalchemy import delete as sa_delete
+
+        from src.database.tables import integration_parent_episodes
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root")
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+        assert await db.get_task_meta("root", "archive_refusal") is not None
+
+        # The append-only trigger forbids deleting an episode, so drop it the
+        # only way a test can — directly, with the trigger off for this
+        # statement — to stand in for the schema change that would let the
+        # root archive.
+        async with db._engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE integration_parent_episodes DISABLE TRIGGER USER"))
+            await conn.execute(sa_delete(integration_parent_episodes))
+            await conn.execute(text("ALTER TABLE integration_parent_episodes ENABLE TRIGGER USER"))
+
+        archived = await db.archive_old_terminal_tasks(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+
+        assert archived == ["root"]
+        assert await db.get_task_meta("root", "archive_refusal") is None
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600
+        )
+        assert blocked.total == 0
+
+    async def test_a_failed_record_write_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        """The reporting write is not allowed to reintroduce the bug it reports."""
+        import logging
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+        await _seed_task(db, "solo", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, "root", "solo")
+
+        async def boom(task_id, code, detail):
+            raise RuntimeError("metadata write failed")
+
+        monkeypatch.setattr(db, "_record_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # The unrelated root still leaves the graph and the call returns.
+        assert archived == ["solo"]
+        assert await db.get_task("root") is not None
+        warnings = [r for r in caplog.records if "root" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "RuntimeError" in warnings[0].getMessage()
+
+    async def test_a_failed_clear_does_not_abandon_the_rest_of_the_sweep(
+        self, db, monkeypatch, caplog
+    ):
+        import logging
+
+        await _seed_project(db)
+        await _seed_task(db, "first", status=TaskStatus.COMPLETED)
+        await _seed_task(db, "second", status=TaskStatus.COMPLETED)
+        await self._eligible(db, "first", "second")
+
+        async def boom(task_id):
+            raise RuntimeError("metadata clear failed")
+
+        monkeypatch.setattr(db, "_clear_archive_refusal", boom)
+        with caplog.at_level(logging.WARNING, logger="src.database.queries.archive_queries"):
+            archived = await db.archive_old_terminal_tasks(
+                statuses=["COMPLETED"], older_than_seconds=3600
+            )
+
+        # Both really archived, and the failed tidy did not unmake either.
+        assert sorted(archived) == ["first", "second"]
+        assert await db.get_archived_task("first") is not None
+        assert await db.get_archived_task("second") is not None
+        assert len([r for r in caplog.records if "RuntimeError" in r.getMessage()]) == 2
+
+    async def test_blocked_count_is_the_true_total_not_the_page_size(self, db):
+        await _seed_hierarchy_project(db)
+        for n in range(4):
+            await _seed_task(db, f"root-{n}", pid="p-hier", status=TaskStatus.COMPLETED)
+            await _seed_parent_episode(db, f"root-{n}")
+        await _enable_hierarchy_mode(db)
+        await self._eligible(db, *[f"root-{n}" for n in range(4)])
+        await db.archive_old_terminal_tasks(statuses=["COMPLETED"], older_than_seconds=3600)
+
+        blocked = await db.list_archive_blocked_roots(
+            statuses=["COMPLETED"], older_than_seconds=3600, limit=2
+        )
+
+        assert blocked.total == 4
+        assert len(blocked.roots) == 2
+
+
+class TestFailureSignature:
+    """F1: the signature is one line and names the constraint asyncpg reports."""
+
+    async def test_names_the_constraint_from_a_real_wrapped_integrityerror(self, db):
+        from sqlalchemy import delete as sa_delete
+        from sqlalchemy.exc import IntegrityError
+
+        from src.database.queries.archive_queries import _failure_signature
+        from src.database.tables import tasks as tasks_table
+
+        await _seed_hierarchy_project(db)
+        await _seed_task(db, "root", pid="p-hier", status=TaskStatus.COMPLETED)
+        await _seed_parent_episode(db, "root")
+
+        with pytest.raises(IntegrityError) as exc:
+            async with db._engine.begin() as conn:
+                await conn.execute(sa_delete(tasks_table).where(tasks_table.c.id == "root"))
+
+        signature = _failure_signature(exc.value)
+        assert signature == "IntegrityError(fk_integration_parent_episodes_parent_task)"
+
+    def test_falls_back_to_one_truncated_line(self):
+        from src.database.queries.archive_queries import _failure_signature
+
+        signature = _failure_signature(RuntimeError("first line\nsecond line\n" + "x" * 500))
+        assert "\n" not in signature
+        assert signature.startswith("RuntimeError: first line")
+        assert len(signature) < 250

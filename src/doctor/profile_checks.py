@@ -8,12 +8,20 @@ older release keeps its old schema and old semantics forever.  That is the
 right default for operator edits and the wrong default for load-bearing
 ``## Config`` fields: a stale ``read_only: false`` on ``reviewer`` re-arms
 the require-a-PR close gate for a session that is told never to push
-(``src/orchestrator/git_ops.py`` ``_task_produces_no_code``).
+(``src/orchestrator/git_ops.py`` ``_task_produces_no_code``).  The same blind
+spot applies to capability grants: a shipped release adding a command to
+``## Capabilities.aq_commands`` never reaches a vault copy that already
+exists, so this check also reports ``missing_grants`` per profile
+(:func:`src.profiles.drift.diff_profile`).
 
 Report-only by design.  There is no ``--fix``: overwriting the vault copy
 would silently discard operator edits, so the repair is the explicit
-``profile_reseed`` command (``aq agent profile-reseed <id>``), which writes
-a ``.bak-<epoch>`` first.
+``profile_reseed`` command.  A full ``aq agent profile-reseed <id>``
+overwrites the whole file and writes a ``.bak-<epoch>`` first; when the only
+divergence is missing grants, ``aq agent profile-reseed --profile-id <id>
+--grants-only`` (:func:`src.profiles.drift.merge_profile_grants`) instead
+merges just the missing names into the vault copy's own ``## Capabilities``
+block, preserving operator edits such as ``harness: codex``.
 
 ``profiles.project_overrides``
 Project-scoped profiles were retired: agents are shared between projects, so
@@ -84,6 +92,11 @@ async def _check_system_profile_drift(ctx: DoctorContext) -> CheckResult:
         f"default: {shown}. "
         "Reseed one with `aq agent profile-reseed <id>` (writes a .bak first)."
     )
+    if any(d.missing_grants for d in diverged):
+        detail += (
+            " Add missing grants with `aq agent profile-reseed --profile-id <id> "
+            "--grants-only` (keeps your edits, writes a .bak first)."
+        )
     return CheckResult(
         id=CHECK_ID,
         severity=severity,

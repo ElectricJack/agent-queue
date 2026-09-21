@@ -8,6 +8,7 @@ interactive prompts (wizard, confirmation dialogs, fuzzy search).
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import click
@@ -907,3 +908,194 @@ def task_comments(ctx: click.Context, task_id: str, limit: int, offset: int) -> 
             console.print(_getval(row, "body", ""), markup=False, highlight=False)
 
     emit(ctx, _run(_comments()), entity="task_comments", render=_render)
+
+
+def _resolved_task_id(explicit: str | None) -> str | None:
+    """``explicit`` (a positional or ``--task``), else ``$AQ_TASK_ID``, else ``None``.
+
+    ``None`` means: send no ``task_id`` and let the daemon resolve it from
+    the session's held task (``_scoped_held_task_id``).
+    """
+    return explicit or os.environ.get("AQ_TASK_ID")
+
+
+@task.command("subtasks")
+@click.argument("task_id", required=False)
+@click.pass_context
+@_handle_errors
+def task_subtasks(ctx: click.Context, task_id: str | None) -> None:
+    """List a task's durable checklist subtasks, in order."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    resolved = _resolved_task_id(task_id)
+    args: dict[str, Any] = {}
+    if resolved is not None:
+        args["task_id"] = resolved
+
+    async def _list():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_subtasks", args)
+
+    def _render(data: dict) -> None:
+        from rich.table import Table
+        from rich.text import Text
+
+        table = Table(title=f"Subtasks: {_getval(data, 'task_id', resolved or '')}")
+        table.add_column("#", justify="right")
+        table.add_column("status")
+        table.add_column("title")
+        for row in _getval(data, "subtasks", []):
+            table.add_row(
+                str(_getval(row, "ordinal", "")),
+                _getval(row, "status", ""),
+                Text(_getval(row, "title", "")),
+            )
+        console.print(table)
+        console.print(
+            f"{_getval(data, 'settled', 0)}/{_getval(data, 'total', 0)} settled", markup=False
+        )
+
+    emit(ctx, _run(_list()), entity="task_subtasks", render=_render)
+
+
+@task.command("subtask-add")
+@click.argument("task_id", required=False)
+@click.option("--title", "titles", multiple=True, help="Subtask title (repeatable).")
+@click.option("--context", "context", default=None, help="Optional detail for the last --title.")
+@click.option(
+    "--from-file",
+    "from_file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="JSON file containing a list of {\"title\", \"context\"?} objects.",
+)
+@claim_epoch_option
+@click.pass_context
+@_handle_errors
+def task_subtask_add(
+    ctx: click.Context,
+    task_id: str | None,
+    titles: tuple[str, ...],
+    context: str | None,
+    from_file: str | None,
+    claim_epoch: int | None,
+) -> None:
+    """Append one or more subtasks to a task."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    if from_file:
+        with open(from_file, encoding="utf-8") as fh:
+            items = json.load(fh)
+        if not isinstance(items, list):
+            raise click.UsageError("--from-file must contain a JSON list of subtasks")
+    elif titles:
+        items = [{"title": title} for title in titles]
+        if context is not None:
+            items[-1]["context"] = context
+    else:
+        raise click.UsageError("provide at least one --title or --from-file")
+
+    resolved = _resolved_task_id(task_id)
+    args: dict[str, Any] = {"subtasks": items}
+    if resolved is not None:
+        args["task_id"] = resolved
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        args["claim_epoch"] = epoch
+
+    async def _add():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_subtask_add", args)
+
+    def _render(data: dict) -> None:
+        rows = _getval(data, "subtasks", [])
+        console.print(f"Added {len(rows)} subtask(s) to {_getval(data, 'task_id', '')}", markup=False)
+
+    emit(ctx, _run(_add()), entity="task_subtask_add", render=_render)
+
+
+@task.command("subtask-show")
+@click.argument("ordinal", type=int)
+@click.option("--task", "task_id", default=None, help="Task id (defaults to $AQ_TASK_ID).")
+@click.pass_context
+@_handle_errors
+def task_subtask_show(ctx: click.Context, ordinal: int, task_id: str | None) -> None:
+    """Show one subtask's title, status, note and context."""
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+    resolved = _resolved_task_id(task_id)
+    args: dict[str, Any] = {"ordinal": ordinal}
+    if resolved is not None:
+        args["task_id"] = resolved
+
+    async def _get():
+        async with _get_client(api_url) as client:
+            return await client.execute("task_subtask_get", args)
+
+    def _render(data: dict) -> None:
+        row = _getval(data, "subtask", {})
+        console.print(f"#{_getval(row, 'ordinal', '')} {_getval(row, 'title', '')}", markup=False)
+        console.print(f"status: {_getval(row, 'status', '')}", markup=False)
+        note = _getval(row, "note", None)
+        if note:
+            console.print(f"note: {note}", markup=False)
+        context = _getval(row, "context", "")
+        if context:
+            console.print(f"context: {context}", markup=False)
+
+    emit(ctx, _run(_get()), entity="task_subtask_get", render=_render)
+
+
+def _subtask_update_command(name: str, status: str | None, *, note_required: bool = False):
+    @task.command(name)
+    @click.argument("ordinal", type=int)
+    @click.option("--task", "task_id", default=None, help="Task id (defaults to $AQ_TASK_ID).")
+    @click.option(
+        "--note",
+        "note",
+        default=None,
+        required=note_required,
+        help="Note." if note_required else "Optional note.",
+    )
+    @claim_epoch_option
+    @click.pass_context
+    @_handle_errors
+    def _cmd(
+        ctx: click.Context,
+        ordinal: int,
+        task_id: str | None,
+        note: str | None,
+        claim_epoch: int | None,
+    ) -> None:
+        api_url = ctx.obj.get("api_url") if ctx.obj else None
+        resolved = _resolved_task_id(task_id)
+        args: dict[str, Any] = {"ordinal": ordinal}
+        if resolved is not None:
+            args["task_id"] = resolved
+        if status is not None:
+            args["status"] = status
+        if note is not None:
+            args["note"] = note
+        epoch = resolve_claim_epoch(claim_epoch)
+        if epoch is not None:
+            args["claim_epoch"] = epoch
+
+        async def _update():
+            async with _get_client(api_url) as client:
+                return await client.execute("task_subtask_update", args)
+
+        def _render(data: dict) -> None:
+            row = _getval(data, "subtask", {})
+            console.print(
+                f"Subtask #{_getval(row, 'ordinal', '')} -> {_getval(row, 'status', '')}",
+                markup=False,
+            )
+
+        emit(ctx, _run(_update()), entity="task_subtask_update", render=_render)
+
+    _cmd.__name__ = name.replace("-", "_")
+    _cmd.__doc__ = f"Mark a subtask {status or 'updated'}."
+    return _cmd
+
+
+task_subtask_done = _subtask_update_command("subtask-done", "done")
+task_subtask_start = _subtask_update_command("subtask-start", "in_progress")
+task_subtask_skip = _subtask_update_command("subtask-skip", "skipped", note_required=True)

@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .providers import CLAUDE_CODE, CODEX, GEMINI, ProviderInstaller
+from .providers import CLAUDE_CODE, CODEX, GEMINI, ProviderInstaller, user_bin_aware_which
 from .results import StepResult
 from .steps import StepContext, StepSpec
 
@@ -298,7 +298,8 @@ def probe_login(
     value.
     """
     process_env = os.environ if environ is None else environ
-    if which(login.executable) is None:
+    executable = which(login.executable)
+    if executable is None:
         return AuthProbe(login.provider_id, installed=False, authenticated=False)
 
     # The provider applies its settings-file `env` block to every session, on
@@ -317,7 +318,13 @@ def probe_login(
     if login.status_command:
         rendered = " ".join(login.status_command)
         checked.append(rendered)
-        if _status_command_says_signed_in(login.status_command, runner):
+        # Ask the executable this probe actually found.  The status command names
+        # the CLI by its bare name, which does not run when the CLI lives
+        # somewhere this process's PATH does not cover (~/.local/bin, a Homebrew
+        # prefix): the command then "could not answer", and a signed-in harness
+        # was reported as unauthenticated.
+        command = (executable, *login.status_command[1:])
+        if _status_command_says_signed_in(command, runner):
             return AuthProbe(
                 login.provider_id,
                 installed=True,
@@ -455,6 +462,13 @@ def login_step(
         run=run,
         depends_on=(login.install_step_id,),
         capability=login.capability,
+        # Signing in is a human action in a browser, and nothing later in the
+        # install depends on it: writing the configuration, starting the daemon
+        # and building the dashboard are all independent.  Halting here made one
+        # unauthenticated harness cost the operator their whole machine setup and
+        # a second `aq install`; the run now finishes and still reports
+        # needs_user, with the sign-in as the next action.
+        halts=False,
         verify=lambda context: observe().authenticated,
         owner="provider",
     )
@@ -653,7 +667,7 @@ def login_steps(
 def probe_all(
     *,
     environ: Mapping[str, str] | None = None,
-    which: CommandLookup = shutil.which,
+    which: CommandLookup | None = None,
     runner: CommandRunner = _run,
     additional: Iterable[ProviderLogin] = (),
 ) -> tuple[AuthProbe, ...]:
@@ -664,8 +678,14 @@ def probe_all(
     selected harness marked authenticated or needs-user in one pass.  This is
     that pass, and it mutates nothing.
     """
+    # The same lookup the install steps use, for the same reason: a provider CLI
+    # its own installer put in ~/.local/bin is installed, and a readiness report
+    # that says "Claude Code is not installed" right after installing it sends
+    # the operator after the wrong thing -- and leaves its worker profiles
+    # inactive, so no pool is created for it.
+    lookup = which or user_bin_aware_which()
     return tuple(
-        probe_login(login, environ=environ, which=which, runner=runner)
+        probe_login(login, environ=environ, which=lookup, runner=runner)
         for login in provider_logins(additional)
     )
 

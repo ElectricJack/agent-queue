@@ -376,3 +376,100 @@ async def test_ensure_task_still_reviews_ordinary_and_unknown_tasks(handler, db)
             },
         )
         assert res["success"] is True and res["created"] is True, (reviewed, res)
+
+
+# ── parent_key on ensure_task (graph-visibility A2) ──────────────────────
+
+
+async def standing_ids(db, key="maintenance"):
+    from src.database.tables import tasks as tasks_table
+
+    async with db._engine.begin() as conn:
+        rows = (
+            await conn.execute(
+                tasks_table.select().where(
+                    tasks_table.c.project_id == PROJECT_ID,
+                    tasks_table.c.dedup_key == f"parent:{key}",
+                )
+            )
+        ).mappings().fetchall()
+    return [row["id"] for row in rows]
+
+
+async def test_ensure_task_files_under_the_standing_parent(handler, db):
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:abc:1",
+            "title": "Repair CI",
+            "parent_key": "maintenance",
+        },
+    )
+    assert res["success"] is True
+    assert res["created"] is True
+    container_ids = await standing_ids(db)
+    assert len(container_ids) == 1
+    assert res["parent_id"] == container_ids[0]
+    assert (await db.get_task(res["task_id"])).parent_task_id == container_ids[0]
+    assert (await db.get_task(container_ids[0])).title == "Maintenance"
+
+
+async def test_ensure_task_dedup_still_holds_for_the_child(handler, db):
+    args = {
+        "project_id": PROJECT_ID,
+        "dedup_key": "ci-baseline:abc:1",
+        "title": "Repair CI",
+        "parent_key": "maintenance",
+    }
+    first = await handler.execute("ensure_task", args)
+    second = await handler.execute("ensure_task", dict(args))
+    assert second["created"] is False
+    assert second["task_id"] == first["task_id"]
+    # A replay neither creates a second container nor a second child.
+    assert len(await standing_ids(db)) == 1
+    assert len(await db.get_children(first["parent_id"])) == 1
+
+
+async def test_ensure_task_reuses_the_container_across_keys(handler, db):
+    first = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:abc:1",
+            "title": "Repair one",
+            "parent_key": "maintenance",
+        },
+    )
+    second = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "ci-baseline:def:1",
+            "title": "Repair two",
+            "parent_key": "maintenance",
+        },
+    )
+    assert second["created"] is True
+    assert second["parent_id"] == first["parent_id"]
+    assert len(await standing_ids(db)) == 1
+    assert len(await db.get_children(first["parent_id"])) == 2
+
+
+async def test_ensure_task_parent_key_conflicts_with_parent_id(handler, db):
+    await db.create_task(
+        Task(id="other", project_id=PROJECT_ID, title="o", description="o")
+    )
+    res = await handler.execute(
+        "ensure_task",
+        {
+            "project_id": PROJECT_ID,
+            "dedup_key": "k",
+            "title": "t",
+            "parent_key": "maintenance",
+            "parent_id": "other",
+        },
+    )
+    assert res["success"] is False
+    assert res["code"] == "hierarchy.parent_conflict"
+    assert await standing_ids(db) == []

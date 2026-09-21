@@ -59,6 +59,11 @@ class CreateTaskRequest:
         parent_id (None | str | Unset): Create as a child of this container; the id becomes <parent>.<n>
         root (bool | Unset): For worker-filed work, create at project root instead of defaulting beside the held task.
             Mutually exclusive with parent_id. Default: False.
+        parent_key (None | str | Unset): File under the standing container keyed by this name, creating it if none is
+            open (e.g. 'maintenance'), so automated work does not accumulate in the project root. Mutually exclusive with
+            parent_id and root, and refused for worker sessions, which already file under the task they hold.
+        parent_title (None | str | Unset): Title for the standing container when parent_key has to create one. Defaults
+            to the key, title-cased.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
@@ -86,6 +91,8 @@ class CreateTaskRequest:
     requires_kinds: list[Any] | None | Unset = UNSET
     parent_id: None | str | Unset = UNSET
     root: bool | Unset = False
+    parent_key: None | str | Unset = UNSET
+    parent_title: None | str | Unset = UNSET
     depends_on: list[Any] | None | Unset = UNSET
     discovered_from: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
@@ -194,6 +201,18 @@ class CreateTaskRequest:
 
         root = self.root
 
+        parent_key: None | str | Unset
+        if isinstance(self.parent_key, Unset):
+            parent_key = UNSET
+        else:
+            parent_key = self.parent_key
+
+        parent_title: None | str | Unset
+        if isinstance(self.parent_title, Unset):
+            parent_title = UNSET
+        else:
+            parent_title = self.parent_title
+
         depends_on: list[Any] | None | Unset
         if isinstance(self.depends_on, Unset):
             depends_on = UNSET
@@ -262,6 +281,10 @@ class CreateTaskRequest:
             field_dict["parent_id"] = parent_id
         if root is not UNSET:
             field_dict["root"] = root
+        if parent_key is not UNSET:
+            field_dict["parent_key"] = parent_key
+        if parent_title is not UNSET:
+            field_dict["parent_title"] = parent_title
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if discovered_from is not UNSET:
@@ -434,6 +457,24 @@ class CreateTaskRequest:
 
         root = d.pop("root", UNSET)
 
+        def _parse_parent_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_key = _parse_parent_key(d.pop("parent_key", UNSET))
+
+        def _parse_parent_title(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        parent_title = _parse_parent_title(d.pop("parent_title", UNSET))
+
         def _parse_depends_on(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
@@ -497,6 +538,8 @@ class CreateTaskRequest:
             requires_kinds=requires_kinds,
             parent_id=parent_id,
             root=root,
+            parent_key=parent_key,
+            parent_title=parent_title,
             depends_on=depends_on,
             discovered_from=discovered_from,
             reason=reason,

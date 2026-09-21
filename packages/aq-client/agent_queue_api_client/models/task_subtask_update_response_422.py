@@ -8,11 +8,11 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
-T = TypeVar("T", bound="DeleteTaskResponse422")
+T = TypeVar("T", bound="TaskSubtaskUpdateResponse422")
 
 
 @_attrs_define
-class DeleteTaskResponse422:
+class TaskSubtaskUpdateResponse422:
     """
     Attributes:
         error (str | Unset):
@@ -37,12 +37,12 @@ class DeleteTaskResponse422:
         d = dict(src_dict)
         error = d.pop("error", UNSET)
 
-        delete_task_response_422 = cls(
+        task_subtask_update_response_422 = cls(
             error=error,
         )
 
-        delete_task_response_422.additional_properties = d
-        return delete_task_response_422
+        task_subtask_update_response_422.additional_properties = d
+        return task_subtask_update_response_422
 
     @property
     def additional_keys(self) -> list[str]:

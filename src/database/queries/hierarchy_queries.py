@@ -31,6 +31,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_queries import TransitionResult
+from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -58,6 +59,19 @@ from src.task_names import MAX_STRUCTURAL_DEPTH, child_task_id
 
 CONTAINER_KEY = "container"
 CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
+#: ``task_metadata`` key a phase container carries (graph-visibility A1).
+#: Its presence, not its value, is what :func:`childless_held_open_container`
+#: keys off.
+PHASE_KEY = "phase"
+#: ``task_metadata`` key a keyed standing parent carries (graph-visibility A2).
+#: Written by ``_resolve_standing_parent`` in the same transaction as the
+#: container flag; its presence is the second half of
+#: :func:`childless_held_open_container`.
+STANDING_PARENT_KEY = "standing_parent"
+#: Every ``task_metadata`` key that holds a childless container open.  A
+#: container carrying any of these is created *before* the work it will hold,
+#: so it must survive the window in which it has no children at all.
+HELD_OPEN_CONTAINER_KEYS = (PHASE_KEY, STANDING_PARENT_KEY)
 #: Two-key PostgreSQL advisory-lock namespace "AQHI" (AQ hierarchy).
 HIERARCHY_LOCK_NAMESPACE = 0x41514849
 #: Bounds the recursive walk on an already-cyclic graph; far above any real
@@ -85,9 +99,71 @@ def container_flag_exists():
     )
 
 
+def childless_held_open_container():
+    """``WHERE`` clause: the row is a held-open container with no children.
+
+    A *held-open* container — a phase (A1) or a keyed standing parent (A2) —
+    is created *before* the work that belongs to it, so it spends a window
+    with no children at all.  The §7 settlement predicate below asks "no
+    child is un-COMPLETED", which is vacuously true of zero children, and
+    would therefore complete such a container the instant the promotion
+    cascade released it (``_check_defined_tasks`` promotes an unblocked
+    DEFINED task, ``_release_ready_containers`` flips a flagged one straight
+    to IN_PROGRESS, and settlement seeds off that) — after which
+    ``container_closed`` refuses the very work the container was created to
+    hold.  The window is real and unavoidable: the container and its first
+    child commit on separate connections, so a crash, a refused child
+    creation, or an ordinary 5-second cascade tick can land between them.
+
+    The exclusion is deliberately narrowed to containers that *say* they are
+    held open, rather than to every childless container: an ordinary
+    container emptied by reparenting its last child away must still settle,
+    or an epic whose work moved elsewhere would hang IN_PROGRESS forever
+    (``test_emptied_container_settles_on_reparent``).  A phase or a standing
+    parent emptied the same way stops settling, which is the same rule read
+    the other way round and is asserted explicitly in ``tests/test_phases.py``.
+
+    The two kinds differ in what an abandoned empty one costs.
+
+    **An empty phase must be deleted, not left in place.**  Because it never
+    settles, it holds its ``blocks`` edge shut and every later phase with it,
+    indefinitely — there is no timeout and no sweep that will clear it.  The
+    escape hatch is ``task_delete`` (``aq task delete <phase-id>``): deleting
+    the phase removes the edge with it and releases the next phase on the
+    following cascade (``test_deleting_an_abandoned_empty_phase_releases_the_next``).
+
+    **An empty standing parent needs no escape hatch.**  It gates nothing, and
+    because it stays non-terminal the next ``parent_key`` call resolves it and
+    files work into it — an orphan is *reused*, not leaked.  A standing parent
+    that did hold children and saw them all complete settles normally, and a
+    settled one is then never reused: the next call creates a fresh container
+    beside it.
+
+    Shared by :meth:`HierarchyQueryMixin.settle_containers` and
+    :meth:`HierarchyQueryMixin.settle_candidates` so the event path and the
+    backstop sweep can never disagree about what settles.
+    """
+    child = tasks.alias()
+    return and_(
+        exists(
+            select(literal(1)).where(
+                and_(
+                    task_metadata.c.task_id == tasks.c.id,
+                    task_metadata.c.key.in_(HELD_OPEN_CONTAINER_KEYS),
+                )
+            )
+        ),
+        ~exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+    )
+
+
 #: Project ``hierarchical_integration_mode`` values that gate the two claim
 #: predicates below.  ``disabled`` (and anything unrecognised) does not.
 HIERARCHY_MODES = ("hierarchy", "train")
+
+#: Refusal code both phase doors return in a :data:`HIERARCHY_MODES` project —
+#: ``phase_create`` and a graph document declaring ``phases:``.
+PHASES_UNSUPPORTED_MODE_CODE = "hierarchy.phases_unsupported_mode"
 
 
 @dataclass(frozen=True)
@@ -338,6 +414,43 @@ class HierarchyQueryMixin:
                 "integration_required",
                 "bulk parent writes must use atomic hierarchy filing",
             )
+
+    async def phase_mode_refusal(self, project_id: str, *, conn=None) -> dict | None:
+        """The phase refusal for *project_id*, or ``None`` when phases are fine.
+
+        Phases are refused in :data:`HIERARCHY_MODES` and nowhere else.  There
+        a phase container owns a branch and its children deliver *to it*, so
+        phase *N+1* can open on a base without phase *N*'s work and one FAILED
+        child strands the whole stage — the hazard
+        ``hierarchy.parent_key_unsupported_mode`` already bars for standing
+        parents.  In ``disabled``/``observe``/``development`` a container is a
+        plain task row with no branch and phases are safe.
+
+        This is the *one* check behind both doors: ``phase_create`` calls it
+        before filing anything, and ``write_plan`` calls it inside the graph's
+        transaction so a caller that skipped the command layer cannot bypass
+        it.  *conn* joins that transaction instead of opening a connection.
+        """
+        stmt = select(projects.c.hierarchical_integration_mode).where(
+            projects.c.id == project_id
+        )
+        if conn is not None:
+            mode = (await conn.execute(stmt)).scalar_one_or_none()
+        else:
+            async with self._engine.connect() as owned:
+                mode = (await owned.execute(stmt)).scalar_one_or_none()
+        if mode not in HIERARCHY_MODES:
+            return None
+        return {
+            "success": False,
+            "code": PHASES_UNSUPPORTED_MODE_CODE,
+            "error": (
+                f"project '{project_id}' delivers hierarchically, where a phase container "
+                "would own its children's delivery branch and hold a whole stage's work "
+                "off the default branch; order the work with 'aq task add-dependency' "
+                "instead"
+            ),
+        }
 
     async def hierarchy_runnable_task_ids(self, task_ids: list[str]) -> set[str]:
         """Return tasks whose project mode/origin permits writer assignment."""
@@ -734,6 +847,15 @@ class HierarchyQueryMixin:
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
+        if retire_pending:
+            # Removal paths only (``archive`` / ``delete``): the ``tasks`` row
+            # is about to go, and the integration subsystem's append-only
+            # bookkeeping holds RESTRICT foreign keys onto it that nothing may
+            # delete.  Refuse here — before the origins below are retired — so
+            # the caller never sees a raw ``IntegrityError`` from the final
+            # ``DELETE FROM tasks``.  ``reopen``/``disposition`` keep the row
+            # and are deliberately untouched.
+            await assert_no_integration_task_references(conn, ids, mutation)
         origins = (
             (
                 await conn.execute(
@@ -1195,7 +1317,9 @@ class HierarchyQueryMixin:
         """Complete every seeded container whose children are all done (spec §7).
 
         Predicate: container flag ∧ status = IN_PROGRESS ∧ no live session holds
-        it ∧ no non-COMPLETED child (vacuously true when empty).  Each hit goes
+        it ∧ no non-COMPLETED child (vacuously true when empty) ∧ not a
+        childless *held-open* container (see
+        :func:`childless_held_open_container`).  Each hit goes
         through ``_apply_transition``, which — via its ``_settle_depth``
         keyword — seeds its own parent back into this method one level
         deeper; the climb is bounded by ``MAX_STRUCTURAL_DEPTH`` levels of
@@ -1265,6 +1389,7 @@ class HierarchyQueryMixin:
                             )
                         )
                     ),
+                    ~childless_held_open_container(),
                     or_(
                         ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                         ~exists(
@@ -1306,7 +1431,13 @@ class HierarchyQueryMixin:
         return result
 
     async def settle_candidates(self) -> list[str]:
-        """Every container the §7 predicate would settle right now (backstop)."""
+        """Every container the §7 predicate would settle right now (backstop).
+
+        Shares :func:`childless_held_open_container` with
+        :meth:`settle_containers`, so the backstop sweep cannot complete a
+        brand-new phase or standing parent the event path deliberately left
+        alone.
+        """
         child = tasks.alias("child")
         stmt = (
             select(tasks.c.id)
@@ -1339,6 +1470,7 @@ class HierarchyQueryMixin:
                             )
                         )
                     ),
+                    ~childless_held_open_container(),
                     or_(
                         ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
                         ~exists(

@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import Counter
+from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     archived_tasks,
@@ -17,11 +20,87 @@ from src.database.tables import (
     sessions,
     task_comments,
     task_completion_records,
+    task_metadata,
+    task_subtasks,
     tasks,
 )
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
+
+
+#: ``task_metadata`` key holding why the sweep last refused to archive a root.
+#: ``{"code", "detail", "at"}``.  Written by the sweep itself, from the refusal
+#: it actually hit, so no reader has to re-derive the archive path's rules.
+ARCHIVE_REFUSAL_KEY = "archive_refusal"
+
+#: Longest one-line detail kept in a log line or a refusal record.
+MAX_REFUSAL_DETAIL = 200
+
+
+def _one_line(text: str, limit: int = MAX_REFUSAL_DETAIL) -> str:
+    """First line of *text*, truncated — a refusal detail is never multi-line.
+
+    A driver message carries the failing SQL and its parameters on later
+    lines; at WARNING, once an hour, per root, that is a wall of text for one
+    fact.
+    """
+    first = (text or "").strip().splitlines()
+    head = first[0].strip() if first else ""
+    return head if len(head) <= limit else head[: limit - 1] + "…"
+
+
+def _constraint_name(exc: BaseException) -> str | None:
+    """The constraint asyncpg reports, wherever SQLAlchemy has buried it.
+
+    SQLAlchemy wraps the driver error twice: ``IntegrityError.orig`` is the
+    asyncpg *adapter*'s exception, and only its ``__cause__`` is the real
+    ``asyncpg.exceptions.ForeignKeyViolationError`` that carries
+    ``constraint_name``.  Reading ``exc.orig.constraint_name`` therefore
+    always returned ``None``, which is why the log line fell back to the full
+    message.  Walk the whole wrapping chain instead.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop(0)
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        name = getattr(current, "constraint_name", None)
+        if name:
+            return str(name)
+        for link in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(link, BaseException):
+                pending.append(link)
+    return None
+
+
+def _failure_signature(exc: BaseException) -> str:
+    """``IntegrityError(fk_…)`` — the exception class plus, where the driver
+    gives one, the constraint that refused.  One line always: specific enough
+    to name the offending table in a bug report, short enough to log."""
+    name = type(exc).__name__
+    constraint = _constraint_name(exc)
+    return f"{name}({constraint})" if constraint else _one_line(f"{name}: {exc}")
+
+
+@dataclass(frozen=True)
+class ArchiveBlockedRoots:
+    """Roots the sweep could not archive: the true count, and a capped page.
+
+    ``total`` is every still-eligible root carrying a refusal record, not
+    ``len(roots)`` — the list is capped so a surface can render it, and a
+    count that saturated at the cap would understate the backlog it exists to
+    report.
+    """
+
+    total: int
+    roots: list[dict]
 
 
 class ArchiveQueryMixin:
@@ -41,12 +120,19 @@ class ArchiveQueryMixin:
             # work, so the branch always stays on the remote.  Retiring the
             # origin is what lets a task whose branch was materialized leave the
             # queue at all (deletion-with-materialized-branches §2 decision 2).
-            await self.guard_integration_mutation(
+            hierarchical = await self.guard_integration_mutation(
                 task_id, "archive", conn=conn, retire_pending=True, branch_policy="keep"
             )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
+            if not hierarchical:
+                # The guard checks integration bookkeeping only for a project
+                # that is *currently* in hierarchy/train mode; a project that
+                # has since been switched back still holds those rows, and
+                # they still RESTRICT the delete.  Nothing has been written
+                # yet at this point, so the refusal is clean either way.
+                await assert_no_integration_task_references(conn, ids, "archive")
             repair = (await conn.execute(
                 select(integration_repair_operations.c.id)
                 .join(integration_repair_stages,
@@ -215,7 +301,8 @@ class ArchiveQueryMixin:
             )
 
         # Use the same FK cleanup as permanent deletion, but keep comments
-        # attached to the archived task identity and preserve session history.
+        # and subtasks attached to the archived task identity and preserve
+        # session history.
         await conn.execute(
             update(agents).where(agents.c.current_task_id == task_id).values(current_task_id=None)
         )
@@ -224,6 +311,7 @@ class ArchiveQueryMixin:
             conn=conn,
             preserve_comments=True,
             preserve_completion=True,
+            preserve_subtasks=True,
             gate_resolution="last waiter task archived",
         )
 
@@ -238,6 +326,12 @@ class ArchiveQueryMixin:
         refuses those with ``hierarchy.open_descendants``; like
         ``archive_old_terminal_tasks``, the bulk path skips them rather than
         aborting the whole sweep — and reports only what it actually archived.
+
+        This is the explicit bulk command, not the hourly sweep, so it writes
+        no ``archive_refusal`` record: the report is about what the *automatic*
+        pass keeps failing to do.  Anything added here that does record must go
+        through ``_note_archive_refusal`` / ``_forget_archive_refusal``, never
+        the raw helpers — a failed bookkeeping write may not end the loop.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -255,6 +349,10 @@ class ArchiveQueryMixin:
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
+            except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
+                logger.warning(
+                    "archive_completed_tasks: skipping %s, %s", tid, _failure_signature(exc)
+                )
 
         return archived
 
@@ -271,6 +369,25 @@ class ArchiveQueryMixin:
         archive, not selected individually. Open grandchildren are caught
         by ``archive_task``'s own subtree check, which raises; those roots
         are logged and skipped.
+
+        **One bad root never stops the sweep.**  Before 2026-09-19 only
+        ``HierarchyError`` was caught here, so the first root an
+        ``IntegrityError`` escaped from aborted the whole hourly pass — on
+        the operator's install that happened 225 times in a row and nothing
+        was ever archived.  Every exception is now per root: recorded, logged,
+        and the loop continues.
+
+        **What it skipped is recorded where a reader can find it.**  Each
+        skipped root gets the refusal the sweep *actually* hit — code, a
+        one-line detail and a timestamp — in ``task_metadata`` under
+        ``archive_refusal``.  Nothing else derives those conditions a second
+        time: ``sealed`` and ``delivery_target_fixed`` come from deep inside
+        ``guard_integration_mutation`` and a report that re-implemented the
+        rules would keep missing them.  The record is written only when the
+        *code* changes, so an unarchivable root costs no write an hour, and it
+        never touches ``tasks.updated_at`` — that column is the eligibility
+        cutoff, and moving it would make a blocked root flicker in and out of
+        the sweep's own candidate set.
         """
         from src.database.queries.hierarchy_queries import HierarchyError
 
@@ -278,8 +395,127 @@ class ArchiveQueryMixin:
             return []
 
         cutoff = time.time() - older_than_seconds
+        async with self._engine.begin() as conn:
+            result = await conn.execute(self._eligible_archive_roots_stmt(statuses, cutoff))
+            task_ids = [r[0] for r in result.fetchall()]
+
+        archived: list[str] = []
+        # A whole sweep failing the same way is one fact, not N log lines.
+        unexpected: Counter[str] = Counter()
+        unexpected_ids: dict[str, list[str]] = {}
+        for tid in task_ids:
+            try:
+                await self.archive_task(tid)
+            except HierarchyError as exc:
+                await self._note_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
+                logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
+                continue
+            except Exception as exc:  # noqa: BLE001 — one bad root may not stop the rest
+                signature = _failure_signature(exc)
+                await self._note_archive_refusal(tid, "unexpected", signature)
+                unexpected[signature] += 1
+                unexpected_ids.setdefault(signature, []).append(tid)
+                continue
+            archived.append(tid)
+            # The archive took the task's metadata with it; clear explicitly
+            # so the record's lifetime does not depend on that coincidence.
+            await self._forget_archive_refusal(tid)
+
+        for signature, count in unexpected.most_common():
+            shown = unexpected_ids[signature][:5]
+            logger.warning(
+                "archive_old_terminal_tasks: skipped %d root(s) on %s: %s%s",
+                count,
+                signature,
+                ", ".join(shown),
+                "..." if count > len(shown) else "",
+            )
+        return archived
+
+    async def _note_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
+        """:meth:`_record_archive_refusal`, but it can never stop the sweep.
+
+        Bookkeeping about a skipped root is strictly less important than
+        archiving the roots that are fine.  An exception escaping here would
+        abandon every remaining root in the hourly pass — the very failure
+        mode this sweep exists to have removed, arriving through the code that
+        reports it.  One WARNING and carry on; the root's archive outcome was
+        decided above and is unaffected.
+        """
+        try:
+            await self._record_archive_refusal(task_id, code, detail)
+        except Exception as exc:  # noqa: BLE001 — reporting may not break the sweep
+            logger.warning(
+                "archive_old_terminal_tasks: could not record why %s was skipped, %s",
+                task_id,
+                _failure_signature(exc),
+            )
+
+    async def _forget_archive_refusal(self, task_id: str) -> None:
+        """:meth:`_clear_archive_refusal`, but it can never stop the sweep.
+
+        The task has already been archived when this runs; a failed tidy-up
+        leaves a stale record that the eligibility filter in
+        :meth:`list_archive_blocked_roots` hides anyway.
+        """
+        try:
+            await self._clear_archive_refusal(task_id)
+        except Exception as exc:  # noqa: BLE001 — reporting may not break the sweep
+            logger.warning(
+                "archive_old_terminal_tasks: could not clear the refusal record for %s, %s",
+                task_id,
+                _failure_signature(exc),
+            )
+
+    async def _record_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
+        """Remember why the sweep last refused *task_id*, if that has changed.
+
+        Writes only ``task_metadata`` — never ``tasks`` — so the eligibility
+        cutoff (``tasks.updated_at``) is untouched, and only when the *code*
+        differs from what is stored, so a permanently blocked root does not
+        generate an hourly write.
+        """
+        async with self._engine.begin() as conn:
+            stored = (
+                await conn.execute(
+                    select(task_metadata.c.value).where(
+                        and_(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key == ARCHIVE_REFUSAL_KEY,
+                        )
+                    )
+                )
+            ).scalar_one_or_none()
+            if stored is not None:
+                try:
+                    if json.loads(stored).get("code") == code:
+                        return
+                except (TypeError, ValueError):
+                    pass
+            await self._upsert_meta(
+                task_id,
+                ARCHIVE_REFUSAL_KEY,
+                {"code": code, "detail": detail, "at": time.time()},
+                conn=conn,
+            )
+
+    async def _clear_archive_refusal(self, task_id: str) -> None:
+        """Drop *task_id*'s refusal record — it is no longer refused."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    and_(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == ARCHIVE_REFUSAL_KEY,
+                    )
+                )
+            )
+
+    @staticmethod
+    def _eligible_archive_roots_stmt(statuses: list[str], cutoff: float):
+        """Terminal subtree roots older than *cutoff* — the sweep's candidates."""
         child = tasks.alias("child")
-        stmt = select(tasks.c.id).where(
+        return select(tasks.c.id).where(
             and_(
                 tasks.c.status.in_(statuses),
                 # Reusable project triage keeps one identity and its run history.
@@ -305,19 +541,62 @@ class ArchiveQueryMixin:
                 ),
             )
         )
+
+    async def list_archive_blocked_roots(
+        self,
+        statuses: list[str],
+        older_than_seconds: float,
+        limit: int = 50,
+    ) -> ArchiveBlockedRoots:
+        """Eligible roots the sweep could not archive, and why.  Read-only.
+
+        Reports what ``archive_old_terminal_tasks`` *recorded* — it does not
+        re-derive a single refusal condition.  That matters: ``sealed`` and
+        ``delivery_target_fixed`` are raised several layers down inside
+        ``guard_integration_mutation``, and the earlier version of this
+        method, which reimplemented the checks it knew about, silently
+        omitted both.  Now every code the archive path can raise shows up,
+        including ``unexpected``, with no second copy of the rules to drift.
+
+        Restricted to roots that are *still* eligible, so a record left on a
+        task that has since been reopened or edited is never reported.
+        ``total`` is the true count; ``roots`` is capped at *limit*.
+        """
+        if not statuses:
+            return ArchiveBlockedRoots(total=0, roots=[])
+        cutoff = time.time() - older_than_seconds
+        eligible = self._eligible_archive_roots_stmt(statuses, cutoff).subquery()
+        recorded = (
+            select(task_metadata.c.task_id, task_metadata.c.value)
+            .select_from(
+                task_metadata.join(eligible, task_metadata.c.task_id == eligible.c.id)
+            )
+            .where(task_metadata.c.key == ARCHIVE_REFUSAL_KEY)
+        )
         async with self._engine.begin() as conn:
-            result = await conn.execute(stmt)
-            task_ids = [r[0] for r in result.fetchall()]
-
-        archived: list[str] = []
-        for tid in task_ids:
+            total = (
+                await conn.execute(select(func.count()).select_from(recorded.subquery()))
+            ).scalar_one()
+            if not total:
+                return ArchiveBlockedRoots(total=0, roots=[])
+            rows = (
+                await conn.execute(recorded.order_by(task_metadata.c.task_id).limit(limit))
+            ).fetchall()
+        roots = []
+        for task_id, value in rows:
             try:
-                await self.archive_task(tid)
-                archived.append(tid)
-            except HierarchyError as exc:
-                logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
-
-        return archived
+                record = json.loads(value)
+            except (TypeError, ValueError):
+                record = {}
+            roots.append(
+                {
+                    "task_id": task_id,
+                    "reason": record.get("code") or "unexpected",
+                    "detail": record.get("detail") or "",
+                    "since": record.get("at") or 0.0,
+                }
+            )
+        return ArchiveBlockedRoots(total=int(total), roots=roots)
 
     async def list_archived_tasks(
         self,
@@ -366,6 +645,18 @@ class ArchiveQueryMixin:
                 delete(task_comments).where(
                     task_comments.c.task_id == task_id,
                     task_comments.c.project_id == archived_project_id,
+                    ~exists(
+                        select(tasks.c.id).where(
+                            tasks.c.id == task_id,
+                            tasks.c.project_id == archived_project_id,
+                        )
+                    ),
+                )
+            )
+            await conn.execute(
+                delete(task_subtasks).where(
+                    task_subtasks.c.task_id == task_id,
+                    task_subtasks.c.project_id == archived_project_id,
                     ~exists(
                         select(tasks.c.id).where(
                             tasks.c.id == task_id,

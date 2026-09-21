@@ -40,11 +40,14 @@ takes exactly one of three paths.
    `runtime_error` outcome fails the rule.
 2. Call `ensure_task` with `project_id` `agent-queue`, `dedup_key`
    `baseline.dedup_key`, `title` `baseline.title`, `description`
-   `baseline.description`, `priority` `5`, and `intelligence_class`
+   `baseline.description`, `priority` `5`, `intelligence_class`
    `deep-high`. Bind the resulting task as `repair`. The key is
    `ci-baseline:<signature>:<attempt>`, so a commit that leaves the same tests
    red reuses the in-flight repair and a different failure gets its own task.
-   A `created` or `reused` outcome ends the rule; a `rejected` or
+   The repair is created at the project root, never inside a container: its
+   whole job is to land on the default branch, and a parent that owns delivery
+   would hold its work off that branch until the parent itself settled. A
+   `created` or `reused` outcome ends the rule; a `rejected` or
    `runtime_error` outcome fails it.
 3. Call `escalation_create` with `project_id` `agent-queue`, source and
    incident keys `baseline.escalation_key`, `summary`

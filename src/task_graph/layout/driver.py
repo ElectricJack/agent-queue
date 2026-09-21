@@ -6,11 +6,13 @@ import asyncio
 import logging
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from typing import Literal
 
 from src.task_graph.layout.constants import (
     CARD_H,
     CARD_W,
+    DRAWN_TYPES,
     FINISHED_STATUSES,
     HEADER_H,
     PADDING,
@@ -46,8 +48,60 @@ class LayoutRelayDepthExceeded(ValueError):
     """
 
 
-def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set[str]]:
-    """Return (ids present in the variant, container ids rendered as stubs)."""
+def _edge_anchored(
+    snapshot: dict[str, SnapTask],
+    candidates: set[str],
+    edges: Iterable[tuple[str, str, str]],
+) -> set[str]:
+    """Which *candidates* unfinished work still has a drawn edge into.
+
+    An edge only anchors when exactly one of its endpoints is unfinished:
+    two finished endpoints are both leaving the variant together, and two
+    unfinished endpoints cannot lie inside a candidate (a candidate has no
+    unfinished descendant). The anchor is charged to the NEAREST candidate
+    enclosing the finished endpoint, so an edge into a child keeps that
+    child's own epic as the stub; ``_visible``'s ancestor closure then
+    restores the chain above it as real containers.
+    """
+    if not candidates:
+        return set()
+    anchored: set[str] = set()
+
+    def unfinished(tid: str) -> bool:
+        t = snapshot.get(tid)
+        return t is not None and t.status not in FINISHED_STATUSES
+
+    def mark(tid: str) -> None:
+        cur: str | None = tid
+        seen: set[str] = set()
+        while cur is not None and cur in snapshot and cur not in seen:
+            seen.add(cur)
+            if cur in candidates:
+                anchored.add(cur)
+                return
+            cur = snapshot[cur].parent_id
+
+    for dep, blocker, typ in edges:
+        if typ not in DRAWN_TYPES:
+            continue
+        if unfinished(dep) and not unfinished(blocker):
+            mark(blocker)
+        elif unfinished(blocker) and not unfinished(dep):
+            mark(dep)
+    return anchored
+
+
+def _visible(
+    snapshot: dict[str, SnapTask],
+    variant: str,
+    edges: Iterable[tuple[str, str, str]],
+) -> tuple[set[str], set[str]]:
+    """Return (ids present in the variant, container ids rendered as stubs).
+
+    *edges* is required, not defaulted: the ``active`` variant decides what to
+    drop partly from them, so a caller that forgot would silently drop a
+    finished container unfinished work still points at.
+    """
     if variant == "all":
         return set(snapshot), set()
     children_of: dict[str | None, list[str]] = defaultdict(list)
@@ -65,12 +119,32 @@ def _visible(snapshot: dict[str, SnapTask], variant: str) -> tuple[set[str], set
     for t in snapshot.values():
         if t.parent_id is None:
             count(t.id)
+    # A stub is context, nothing more: the spec keeps a finished epic in the
+    # `active` variant so it stays findable (§3.3, §4.8) and so a drawn edge
+    # from unfinished work still has a far endpoint to land on (`cap_stubs`
+    # drops an edge whose far end has no row here). A container that is
+    # ITSELF finished, holds no unfinished descendant and that nothing
+    # unfinished points at is context for nothing, so it leaves the variant
+    # rather than filling the canvas with completed work the viewer asked to
+    # hide. An UNFINISHED container whose descendants have all finished is
+    # still live work and keeps its stub.
+    dropped = {
+        t.id
+        for t in snapshot.values()
+        if t.is_container
+        and t.status in FINISHED_STATUSES
+        and children_of.get(t.id)
+        and active_desc.get(t.id, 0) == 0
+    }
+    dropped -= _edge_anchored(snapshot, dropped, edges)
     present: set[str] = set()
     stubs: set[str] = set()
     for t in snapshot.values():
         if t.is_container and active_desc.get(t.id, 0) == 0:
-            # finished container: stub if it has any descendants, else keep as
-            # empty container only if it is itself unfinished
+            if t.id in dropped:
+                # An anchored descendant can still pull it back in below, as
+                # a real container rather than a stub.
+                continue
             if children_of.get(t.id):
                 present.add(t.id)
                 stubs.add(t.id)
@@ -145,7 +219,7 @@ def build_full_write_set(
     barycenter placement only, skipping the tidy improvement loop — so the
     job still produces a complete, correct layout, just a less pretty one.
     """
-    present, stubs = _visible(snapshot, variant)
+    present, stubs = _visible(snapshot, variant, edges)
     children_of: dict[str | None, list[str]] = defaultdict(list)
     for tid in present:
         children_of[snapshot[tid].parent_id].append(tid)
@@ -194,6 +268,10 @@ def build_full_write_set(
             sibling_edges=rank_edges.get(container_id, []),
             child_sizes={k: sizes[k] for k in kids if k in sizes},
             stub_ids=frozenset(s for s in stubs if s in kids),
+            # ``aggs`` was computed above, before this first ``lay()``, so the
+            # tidy seed classes a container from THIS snapshot rather than
+            # from whatever the last published row happened to carry (§3.2).
+            child_aggregates={k: aggs[k] for k in kids if k in aggs},
         )
         res = layout_container(scope, mode=container_mode, seed=seed)
         rel_rows.update(res.rows)
@@ -259,14 +337,22 @@ class LayoutDriver:
         )
 
     async def reconcile(self, project_id: str) -> int:
-        """Compare the ``all`` variant's rows to the snapshot and mark drift dirty.
+        """Compare each variant's rows to the snapshot and mark drift dirty.
 
-        Detects tasks with no row, rows with no task, rows whose
+        Detects tasks with no row, rows with no task, rows present in a
+        variant that should not hold them (and vice versa), rows whose
         ``container_id`` differs from the task's parent, and rows whose
-        ``kind`` disagrees with the container flag. Each discrepancy writes
-        a dirty mark with reason ``reconcile``; ``reconciled_at`` is then
-        stamped on both variants' meta rows. Returns the number of marks
-        enqueued.
+        ``kind`` disagrees with what the variant expects. Each discrepancy
+        writes a dirty mark with reason ``reconcile``; ``reconciled_at`` is
+        then stamped on both variants' meta rows. Returns the number of
+        marks enqueued.
+
+        Covering ``active`` as well as ``all`` is also how a rules change in
+        ``_visible`` reaches an install that is already laid out: the sweep
+        notices that the published rows no longer match what the engine
+        would publish today and retires them, with no operator action and
+        no migration. (It deliberately does not chase *geometry* drift —
+        §4.6's finished-leaf fold leaves an empty slot behind on purpose.)
         """
         from sqlalchemy import update
 
@@ -275,20 +361,29 @@ class LayoutDriver:
         if await self.db.get_layout_meta(project_id, "all") is None:
             return 0
 
-        snapshot, _ = await self.db.load_project_snapshot(project_id)
-        all_rows = await self.db.load_subtree_rows(project_id, "all")
+        snapshot, edges = await self.db.load_project_snapshot(project_id)
         bad: set[str] = set()
-        for tid, t in snapshot.items():
-            r = all_rows.get(tid)
-            if (
-                r is None
-                or r.container_id != t.parent_id
-                or (r.kind == "container") != t.is_container
-            ):
-                bad.add(tid)
-        for tid in all_rows:
-            if tid not in snapshot:
-                bad.add(tid)
+        for variant in VARIANTS:
+            if await self.db.get_layout_meta(project_id, variant) is None:
+                continue
+            rows = await self.db.load_subtree_rows(project_id, variant)
+            present, stubs = _visible(snapshot, variant, edges)
+            for tid, t in snapshot.items():
+                r = rows.get(tid)
+                if tid not in present:
+                    if r is not None:
+                        bad.add(tid)
+                    continue
+                expect_container = t.is_container and tid not in stubs
+                if (
+                    r is None
+                    or r.container_id != t.parent_id
+                    or (r.kind == "container") != expect_container
+                ):
+                    bad.add(tid)
+            for tid in rows:
+                if tid not in snapshot:
+                    bad.add(tid)
         if bad:
             async with self.db._engine.begin() as conn:
                 await self.db.mark_layout_dirty(project_id, sorted(bad), "reconcile", conn=conn)
@@ -356,7 +451,7 @@ class _IncrementalBatch:
         self.variant = variant
         self.snapshot = snapshot
         self.marks = marks
-        self.present, self.stubs = _visible(snapshot, variant)
+        self.present, self.stubs = _visible(snapshot, variant, edges)
         self.parent_of: dict[str, str | None] = {t.id: t.parent_id for t in snapshot.values()}
 
         all_children_of: dict[str | None, list[str]] = defaultdict(list)

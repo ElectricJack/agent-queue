@@ -317,6 +317,449 @@ class TestValidationEnvelope:
         assert result["errors"][0]["rule"] == "missing_key"
 
 
+def _subtask_graph() -> dict:
+    return {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "nodes": [
+            {
+                "key": "a",
+                "title": "A",
+                "acceptance": ["x"],
+                "subtasks": [
+                    "first",
+                    {"title": "second", "context": "the brief for two"},
+                    "third",
+                ],
+            },
+            {"key": "b", "title": "B", "acceptance": ["x"]},
+        ],
+    }
+
+
+class TestNodeSubtasks:
+    """``subtasks:`` seeded by the graph creator, in write_plan's transaction."""
+
+    async def test_rows_are_created_ordinal_ordered_with_titles_and_contexts(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        assert "error" not in result
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        rows = await db.list_task_subtasks(node_id)
+        assert [(r["ordinal"], r["title"]) for r in rows] == [
+            (1, "first"),
+            (2, "second"),
+            (3, "third"),
+        ]
+        assert all(r["status"] == "pending" for r in rows)
+        assert (await db.get_task_subtask(node_id, 2))["context"] == "the brief for two"
+        other_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "b")
+        assert await db.list_task_subtasks(other_id) == []
+
+    async def test_report_counts_subtasks_per_node(self, setup):
+        handler, _db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        assert {n["key"]: n["subtasks"] for n in result["nodes"]} == {"a": 3, "b": 0}
+
+    async def test_dry_run_reports_the_count_and_writes_nothing(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "dry_run": True}
+        )
+        assert {n["key"]: n["subtasks"] for n in result["nodes"]} == {"a": 3, "b": 0}
+        assert await db.list_tasks(project_id="p1") == []
+        async with db._engine.connect() as conn:
+            from sqlalchemy import func, select
+
+            from src.database.tables import task_subtasks
+
+            assert await conn.scalar(select(func.count()).select_from(task_subtasks)) == 0
+
+    async def test_a_failed_insert_leaves_zero_subtask_rows(self, setup, monkeypatch):
+        """The single-transaction contract (§12) covers the checklist too."""
+        handler, db, _vault = setup
+        from src.task_graph import creator as creator_module
+
+        real_insert = creator_module._insert_task
+        calls = {"n": 0}
+
+        async def failing(conn, row):
+            calls["n"] += 1
+            if calls["n"] > 2:  # container + first node succeed
+                raise RuntimeError("boom")
+            await real_insert(conn, row)
+
+        monkeypatch.setattr(creator_module, "_insert_task", failing)
+        with pytest.raises(RuntimeError):
+            await handler._cmd_create_task_graph(
+                {"project_id": "p1", "graph": _subtask_graph()}
+            )
+        assert await db.list_tasks(project_id="p1") == []
+        async with db._engine.connect() as conn:
+            from sqlalchemy import func, select
+
+            from src.database.tables import task_subtasks
+
+            assert await conn.scalar(select(func.count()).select_from(task_subtasks)) == 0
+
+    async def test_provisional_ids_seed_the_reserved_id_not_the_placeholder(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "parent_id": "epic"}
+        )
+        assert result["provisional"] is True
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        assert node_id == "epic.1"
+        assert [r["title"] for r in await db.list_task_subtasks(node_id)] == [
+            "first",
+            "second",
+            "third",
+        ]
+        assert await db.list_task_subtasks("epic.?") == []
+
+    async def test_prime_renders_the_subtasks_block_for_a_graph_created_task(self, setup):
+        handler, db, _vault = setup
+        from src.prime.sections import build_task_subtasks_summary
+
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph()}
+        )
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        summary = await build_task_subtasks_summary(db, await db.get_task(node_id))
+        assert summary.startswith("## Subtasks")
+        assert "- [ ] 1. first" in summary
+        assert "- [ ] 3. third" in summary
+        assert "the brief for two" not in summary
+
+
+class TestSubtasksUnreportable:
+    """A profile whose policy cannot tick the checklist earns a warning, not a refusal."""
+
+    @staticmethod
+    def _graph() -> dict:
+        doc = _subtask_graph()
+        doc["nodes"][0]["profile"] = "coding"
+        return doc
+
+    async def test_warning_when_the_profile_cannot_update_subtasks(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_close"])
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph()}
+        )
+        assert "error" not in result
+        warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"]
+        assert len(warnings) == 1
+        assert warnings[0]["severity"] == "warning"
+        assert warnings[0]["node"] == "a"
+        assert "aq agent profile-reseed --profile-id coding --grants-only" in warnings[0]["detail"]
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "a")
+        assert len(await db.list_task_subtasks(node_id)) == 3
+
+    async def test_no_warning_when_the_profile_grants_the_command(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_subtask_update"])
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph()}
+        )
+        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+
+    async def test_no_warning_for_a_node_without_subtasks(self, setup):
+        handler, db, _vault = setup
+        await db.update_profile("coding", aq_commands=["task_close"])
+        doc = _simple_graph()
+        doc["nodes"][0]["profile"] = "coding"
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+
+
+def _phased_graph() -> dict:
+    return {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "phases": [
+            {"key": "schema", "title": "Phase 1 — schema", "label": "schema"},
+            {"key": "engine", "title": "Phase 2 — engine"},
+        ],
+        "nodes": [
+            {"key": "tables", "title": "Tables", "acceptance": ["x"], "phase": "schema"},
+            {"key": "queries", "title": "Queries", "acceptance": ["x"], "phase": "schema"},
+            {"key": "cascade", "title": "Cascade", "acceptance": ["x"], "phase": "engine"},
+            {"key": "docs", "title": "Docs", "acceptance": ["x"]},
+        ],
+    }
+
+
+class TestGraphPhases:
+    """``phases:`` — containers, metadata, flags and gate edges in one write."""
+
+    async def test_ids_are_two_level_for_phased_nodes_and_flat_for_the_rest(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph()}
+        )
+        assert "error" not in result, result
+        epic = result["parent_id"]
+        phases = {p["key"]: p["task_id"] for p in result["phases"]}
+        nodes = {n["key"]: n["task_id"] for n in result["nodes"]}
+
+        assert phases == {"schema": f"{epic}.1", "engine": f"{epic}.2"}
+        assert nodes == {
+            "tables": f"{epic}.1.1",
+            "queries": f"{epic}.1.2",
+            "cascade": f"{epic}.2.1",
+            # Unphased nodes are numbered after the phases.
+            "docs": f"{epic}.3",
+        }
+        assert (await db.get_task(nodes["tables"])).parent_task_id == phases["schema"]
+        assert (await db.get_task(nodes["docs"])).parent_task_id == epic
+        assert (await db.get_task(phases["schema"])).parent_task_id == epic
+
+    async def test_each_phase_is_a_flagged_container_carrying_its_metadata(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph()}
+        )
+        phases = {p["key"]: p["task_id"] for p in result["phases"]}
+
+        assert await db.get_task_meta(phases["schema"], "container") is True
+        assert await db.get_task_meta(phases["schema"], "phase") == {
+            "order": 1,
+            "label": "schema",
+        }
+        # No ``label:`` declared — the title stands in, as ``phase_create`` does.
+        assert await db.get_task_meta(phases["engine"], "phase") == {
+            "order": 2,
+            "label": "Phase 2 — engine",
+        }
+        assert [p["order"] for p in result["phases"]] == [1, 2]
+
+    async def test_a_phase_blocks_on_every_earlier_phase_not_just_the_previous(self, setup):
+        """Three phases: deleting an abandoned middle one must not release the last."""
+        handler, db, _vault = setup
+        doc = _phased_graph()
+        doc["phases"].append({"key": "docs-phase", "title": "Phase 3"})
+        doc["nodes"][3]["phase"] = "docs-phase"
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        phases = {p["key"]: p["task_id"] for p in result["phases"]}
+
+        assert await _blocks(db, phases["schema"]) == set()
+        assert await _blocks(db, phases["engine"]) == {phases["schema"]}
+        assert await _blocks(db, phases["docs-phase"]) == {
+            phases["schema"],
+            phases["engine"],
+        }
+
+    async def test_a_later_phase_is_projected_blocked(self, setup):
+        """``recompute_blocked`` has to cover the phases, or phase 2 is claimable."""
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph()}
+        )
+        phases = {p["key"]: p["task_id"] for p in result["phases"]}
+        assert (await db.get_task(phases["schema"])).is_blocked is False
+        assert (await db.get_task(phases["engine"])).is_blocked is True
+        assert (await db.get_task(phases["engine"])).status == TaskStatus.DEFINED
+
+    async def test_a_phase_with_no_nodes_is_still_a_flagged_container(self, setup):
+        """The step-6 loop runs for every phase, not only those that got children."""
+        handler, db, _vault = setup
+        doc = _phased_graph()
+        doc["phases"].append({"key": "empty", "title": "Phase 3 — empty"})
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        assert "error" not in result, result
+        assert {w["rule"] for w in result["warnings"]} == {"phase_without_nodes"}
+
+        empty = next(p["task_id"] for p in result["phases"] if p["key"] == "empty")
+        assert await db.get_task_meta(empty, "container") is True
+        assert await db.get_task_meta(empty, "phase") == {
+            "order": 3,
+            "label": "Phase 3 — empty",
+        }
+        # ...and therefore never claimable, even once something releases it.
+        await db.transition_task(empty, TaskStatus.READY, force=True)
+        assert empty not in await _frontier(db)
+
+    async def test_a_failed_insert_leaves_no_phase_no_task_and_no_edge(self, setup, monkeypatch):
+        handler, db, _vault = setup
+        from src.task_graph import creator as creator_module
+
+        real_insert = creator_module._insert_task
+        calls = {"n": 0}
+
+        async def failing(conn, row):
+            calls["n"] += 1
+            if calls["n"] > 4:  # container + two phases + first node succeed
+                raise RuntimeError("boom")
+            await real_insert(conn, row)
+
+        # The node that *does* get inserted declares a checklist, so the
+        # `task_subtasks` count below can actually fail: a writer that seeded
+        # a node's rows next to its own insert would leave them behind.
+        doc = _phased_graph()
+        doc["nodes"][0]["subtasks"] = ["first", "second"]
+
+        monkeypatch.setattr(creator_module, "_insert_task", failing)
+        with pytest.raises(RuntimeError):
+            await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+
+        assert await db.list_tasks(project_id="p1") == []
+        async with db._engine.connect() as conn:
+            from sqlalchemy import func, select
+
+            from src.database.tables import task_dependencies, task_metadata, task_subtasks
+
+            for table in (task_dependencies, task_metadata, task_subtasks):
+                assert await conn.scalar(select(func.count()).select_from(table)) == 0
+
+    async def test_phases_under_an_existing_parent_are_refused(self, setup):
+        handler, db, _vault = setup
+        await db.create_task(
+            Task(
+                id="epic",
+                project_id="p1",
+                title="e",
+                description="e",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph(), "parent_id": "epic"}
+        )
+        assert result["code"] == "graph.phases_need_root"
+        assert result["success"] is False
+        assert await db.list_tasks(project_id="p1") == [await db.get_task("epic")]
+
+    async def test_dry_run_reports_the_phases_and_writes_nothing(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph(), "dry_run": True}
+        )
+        epic = result["parent_id"]
+        assert [(p["key"], p["task_id"], p["order"]) for p in result["phases"]] == [
+            ("schema", f"{epic}.1", 1),
+            ("engine", f"{epic}.2", 2),
+        ]
+        assert await db.list_tasks(project_id="p1") == []
+
+    @pytest.mark.parametrize("mode", [None, "disabled", "observe"])
+    async def test_a_phased_graph_is_created_in_every_non_hierarchical_mode(self, setup, mode):
+        """§3.0's table is real: only hierarchy/train refuse."""
+        handler, db, _vault = setup
+        if mode is not None:
+            await db.update_project("p1", hierarchical_integration_mode=mode)
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph()}
+        )
+        assert "error" not in result, result
+        assert len(result["phases"]) == 2
+        assert len(result["task_ids"]) == 4
+
+    async def test_a_phased_node_may_also_carry_subtasks(self, setup):
+        handler, db, _vault = setup
+        doc = _phased_graph()
+        doc["nodes"][0]["subtasks"] = ["first", "second"]
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": doc})
+        node_id = next(n["task_id"] for n in result["nodes"] if n["key"] == "tables")
+        assert [r["title"] for r in await db.list_task_subtasks(node_id)] == ["first", "second"]
+        assert (await db.get_task(node_id)).parent_task_id.endswith(".1")
+
+
+class TestInvertedPhaseEdge:
+    """A gating chain into a later phase is refused at the graph door."""
+
+    @staticmethod
+    def _graph() -> dict:
+        return {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "phases": [
+                {"key": "schema", "title": "Phase 1"},
+                {"key": "engine", "title": "Phase 2"},
+            ],
+            "nodes": [
+                {
+                    "key": "tables",
+                    "title": "Tables",
+                    "acceptance": ["x"],
+                    "phase": "schema",
+                    "needs": [{"on": "helper"}],
+                },
+                # Unphased, and therefore not withheld by a phase — but its own
+                # gating edge still carries the deadlock into phase 2.
+                {
+                    "key": "helper",
+                    "title": "Helper",
+                    "acceptance": ["x"],
+                    "needs": [{"on": "cascade"}],
+                },
+                {"key": "cascade", "title": "Cascade", "acceptance": ["x"], "phase": "engine"},
+            ],
+        }
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_it_is_refused_and_nothing_is_created(self, setup, dry_run):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._graph(), "dry_run": dry_run}
+        )
+        assert "nothing was created" in result["error"]
+        assert [e["rule"] for e in result["errors"]] == ["inverted_phase_edge"]
+        assert await db.list_tasks(project_id="p1") == []
+
+
+class TestRefusalOrderAtBothDoors:
+    """F8: when the parent is unusable *and* the document declares phases,
+    both doors answer with the same refusal — the parent one."""
+
+    async def test_the_graph_door_reports_the_parent_refusal_first(self, setup):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _phased_graph(), "parent_id": "ghost"}
+        )
+        assert result["code"] == "hierarchy.not_found"
+        assert await db.list_tasks(project_id="p1") == []
+
+
+async def _blocks(db, task_id) -> set[str]:
+    from sqlalchemy import select
+
+    from src.database.tables import task_dependencies
+
+    async with db._engine.connect() as conn:
+        rows = await conn.execute(
+            select(task_dependencies.c.depends_on_task_id).where(
+                task_dependencies.c.task_id == task_id,
+                task_dependencies.c.dep_type == "blocks",
+            )
+        )
+    return set(rows.scalars().all())
+
+
+async def _frontier(db) -> set[str]:
+    from sqlalchemy import select
+
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.tables import tasks
+
+    async with db._engine.connect() as conn:
+        rows = await conn.execute(select(tasks.c.id).where(_frontier_where("p1", None)))
+    return set(rows.scalars().all())
+
+
 class TestDryRun:
     async def test_reports_ids_without_writing(self, setup):
         handler, db, _vault = setup

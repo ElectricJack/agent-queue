@@ -5,12 +5,23 @@ from __future__ import annotations
 import time
 from uuid import uuid4
 
-from sqlalchemy import exists, func, insert, literal, or_, select, update
+from sqlalchemy import and_, exists, func, insert, literal, or_, select, update
 
-from src.database.tables import agents, sessions, task_session_attempts
+from src.database.tables import agents, sessions, task_session_attempts, tasks
 
 LIVE_ATTEMPT_STATES = ("starting", "running", "draining")
 TERMINAL_SESSION_STATES = ("stopped", "quarantined", "sleeping")
+
+#: How long a running session may be silent before its attempt stops counting
+#: as live.  Mirrors ``src.database.queries.digest_queries.DEFAULT_STALE_AFTER``
+#: (the digest's default lease TTL); kept as its own constant here so this
+#: module never has to import back from the digest layer.
+DEFAULT_STALE_AFTER = 480.0
+
+#: Task statuses a live attempt's task must be in for its worker to dock on
+#: the task graph.  A finished or not-yet-started task never carries a
+#: marker even if a stray session row still points at it.
+LIVE_WORKER_TASK_STATUSES = ("ASSIGNED", "IN_PROGRESS")
 
 
 def open_attempts(session_id):
@@ -18,6 +29,29 @@ def open_attempts(session_id):
         task_session_attempts.c.session_id == session_id,
         task_session_attempts.c.ended_at.is_(None),
         task_session_attempts.c.state.in_(LIVE_ATTEMPT_STATES),
+    )
+
+
+def live_attempt_predicate(now: float, stale_after: float):
+    """The shared "this attempt is executing right now" clause.
+
+    Extracted from ``collect_digest_activity`` (implementation spec §8):
+    an open attempt in a live state, on a session that is actually
+    ``running`` and not yet ``ended_at``, whose session has spoken (or
+    started) within ``stale_after``.  Callers join ``task_session_attempts``
+    to ``sessions`` themselves and add any query-specific bounds (e.g. the
+    digest's ``started_at <= until``) at the call site.
+    """
+    return and_(
+        task_session_attempts.c.ended_at.is_(None),
+        task_session_attempts.c.state.in_(LIVE_ATTEMPT_STATES),
+        sessions.c.state == "running",
+        sessions.c.ended_at.is_(None),
+        or_(
+            sessions.c.last_activity.is_not(None)
+            & (sessions.c.last_activity >= now - stale_after),
+            sessions.c.started_at >= now - stale_after,
+        ),
     )
 
 
@@ -96,6 +130,90 @@ class TaskSessionQueryMixin:
         )
         result = await conn.execute(insert(task_session_attempts).from_select(columns, snapshot))
         return attempt_id if result.rowcount else None
+
+    async def list_live_task_workers(
+        self,
+        project_id: str,
+        *,
+        now: float | None = None,
+        stale_after: float = DEFAULT_STALE_AFTER,
+    ) -> list[dict]:
+        """Dock markers: one row per agent with a live attempt in this project.
+
+        Source of truth for the task graph's worker markers (docked at
+        ``current_task_id``) -- deliberately *not* ``agents.current_task_id``,
+        which is only cleared on the next claim/release and dangles on a
+        finished task in between.  Restricted to a task still ``ASSIGNED`` or
+        ``IN_PROGRESS`` so a live attempt on an already-completed task (a race
+        between the attempt closing and the task transitioning) never docks.
+        """
+        now = time.time() if now is None else now
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(
+                        task_session_attempts.c.agent_id,
+                        task_session_attempts.c.agent_name,
+                        task_session_attempts.c.task_id,
+                        task_session_attempts.c.started_at,
+                    )
+                    .select_from(
+                        task_session_attempts.join(
+                            sessions, sessions.c.id == task_session_attempts.c.session_id
+                        ).join(tasks, tasks.c.id == task_session_attempts.c.task_id)
+                    )
+                    .where(
+                        live_attempt_predicate(now, stale_after),
+                        tasks.c.project_id == project_id,
+                        tasks.c.status.in_(LIVE_WORKER_TASK_STATUSES),
+                        task_session_attempts.c.agent_id.is_not(None),
+                    )
+                    .order_by(task_session_attempts.c.started_at.desc())
+                )
+            ).all()
+        seen: set[tuple[str, str]] = set()
+        out: list[dict] = []
+        for row in rows:
+            key = (row.agent_id, row.task_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {"id": row.agent_id, "name": row.agent_name, "current_task_id": row.task_id}
+            )
+        return out
+
+    async def list_live_attempt_agent_ids(
+        self,
+        *,
+        now: float | None = None,
+        stale_after: float = DEFAULT_STALE_AFTER,
+    ) -> set[str]:
+        """Every agent id with a currently-live attempt, across all projects.
+
+        Used by the ``agents.dangling_current_task`` doctor check: unlike
+        ``list_live_task_workers`` this is not scoped to a project and does
+        not filter by task status, since "no live attempt" is exactly the
+        thing that check needs to test for an agent whose ``current_task_id``
+        already points at a task that is missing or not ASSIGNED/IN_PROGRESS.
+        """
+        now = time.time() if now is None else now
+        async with self._engine.connect() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_session_attempts.c.agent_id)
+                    .select_from(
+                        task_session_attempts.join(
+                            sessions, sessions.c.id == task_session_attempts.c.session_id
+                        )
+                    )
+                    .where(
+                        live_attempt_predicate(now, stale_after),
+                        task_session_attempts.c.agent_id.is_not(None),
+                    )
+                )
+            ).all()
+        return {row.agent_id for row in rows}
 
     async def get_task_session_attempt(self, attempt_id: str) -> dict | None:
         async with self._engine.connect() as conn:

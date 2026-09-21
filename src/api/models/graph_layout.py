@@ -51,11 +51,20 @@ class TilesRequest(BaseModel):
     max_depth: int | None = None
     q: str = ""
     status: str = ""
+    #: Compute the "active subgraph" expanded set server-side (design A3)
+    #: instead of using ``expanded``. Only takes effect when ``expanded``
+    #: is empty -- an explicit (even empty) expansion always wins.
+    auto_expand: bool = False
 
 
 class ListRequest(BaseModel):
     variant: str = "active"
     expanded: list[str] = []
+    #: The container the viewer has ENTERED. Same semantics as the tiles
+    #: request's ``root``: the container itself is open, its own child
+    #: containers stay collapsed, and only its scope is paged -- so a page
+    #: can never be short because rows from another scope used it up.
+    root: str | None = None
     q: str = ""
     status: str = ""
     cursor: str | None = None
@@ -65,14 +74,18 @@ class ListRequest(BaseModel):
 class LocateRequest(BaseModel):
     """Where the matches for a filter are, in the geometry the canvas draws.
 
-    Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-    collapsing a container reflows everything after it, so a match's position
-    depends on the viewer's expanded set and cannot be answered from the
-    persisted layout alone.
+    Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+    ``list`` are POSTs: collapsing a container reflows everything after it
+    and entering one re-packs its scope, so a match's position depends on
+    the viewer's own view state and cannot be answered from the persisted
+    layout alone.
     """
 
     variant: str = "active"
     expanded: list[str] = []
+    #: The container the viewer has entered, so hit boxes are resolved in
+    #: the same geometry the focused tiles request draws.
+    root: str | None = None
     q: str = ""
     status: str = ""
     limit: int = 200
@@ -113,6 +126,10 @@ class LayoutNode(GraphTaskNode):
     agg_running: int = 0
     agg_blocked: int = 0
     agg_active: int = 0
+    subtasks_total: int = 0
+    subtasks_settled: int = 0
+    phase_order: int | None = None
+    phase_label: str | None = None
 
 
 class LayoutEdge(BaseModel):
@@ -155,12 +172,24 @@ class TilesResponse(BaseModel):
     workers: list[LayoutWorker] = []
     gates: list[GraphGate] = []
     layout_version: int
+    #: The variant this response was actually served from, which is not
+    #: always the one asked for: entering a container the active layout
+    #: stubbed or dropped is served from ``all``. Clients cannot infer this
+    #: (the promoting condition is the layout's, not the task's status), so
+    #: it is reported.
+    variant_applied: str = "active"
+    #: The expanded set the server computed and applied for this response,
+    #: when ``auto_expand`` was honored (``expanded`` was empty). ``None``
+    #: when the request's own ``expanded`` was used instead.
+    expanded_applied: list[str] | None = None
 
 
 class ListResponse(BaseModel):
     nodes: list[LayoutNode] = []
     next_cursor: str | None = None
     layout_version: int
+    #: The variant this response was served from -- see ``TilesResponse``.
+    variant_applied: str = "active"
 
 
 class AncestorRef(BaseModel):

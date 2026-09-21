@@ -294,6 +294,12 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 )
 @click.option("--abandon-children", is_flag=True, help="Abandon open child tasks.")
 @click.option(
+    "--skip-open-subtasks",
+    "skip_open_subtasks",
+    is_flag=True,
+    help="Mark any open subtasks skipped instead of refusing the close.",
+)
+@click.option(
     "--claim-next",
     "claim_next",
     is_flag=True,
@@ -320,6 +326,7 @@ def task_close(
     commands,
     deliverable_unmet,
     abandon_children,
+    skip_open_subtasks,
     claim_next,
     wait,
     claim_epoch,
@@ -359,6 +366,8 @@ def task_close(
         args["deliverable_unmet"] = list(deliverable_unmet)
     if abandon_children:
         args["abandon_children"] = True
+    if skip_open_subtasks:
+        args["skip_open_subtasks"] = True
     if claim_next:
         args["claim_next"] = True
     if wait is not None:

@@ -48,6 +48,14 @@ HANDCRAFTED_COVERAGE = {
     "task_set",
     "task_comment",
     "task_comments",
+    # tasks.py — `aq task subtasks|subtask-add|subtask-show|subtask-done|
+    # subtask-start|subtask-skip`: optional positional TASK_ID falling back
+    # to $AQ_TASK_ID, and --claim-epoch fencing on the writes, same as the
+    # comment verbs above.
+    "task_subtask_add",
+    "task_subtasks",
+    "task_subtask_get",
+    "task_subtask_update",
     "task_handoff",
     "subagent_event",
     # messages.py — hand-crafted so every message command routes through

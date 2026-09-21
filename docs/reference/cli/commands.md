@@ -83,7 +83,7 @@ a *live* worker and reports the delivery status.
 | `aq agent message` | `agent_message` | hand | Send BODY to a live task, agent, or session. |
 | `aq agent profile-audit` | `profile_audit` | gen | Report which agent profiles still derive their capabilities from the legacy allowed_tools list rather than an explicit ## Capabilities block. |
 | `aq agent profile-drift` | `profile_drift` | gen | Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. |
-| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. |
+| `aq agent profile-reseed` | `profile_reseed` | gen | Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. Pass `--grants-only` to instead merge in just the missing `## Capabilities` grants, keeping every other edit. |
 | `aq agent show-effective-profile` | `show_effective_profile` | gen | Run the orchestrator's profile resolution cascade for a (project_id, agent_type) pair and return the merged profile the next task launch would use. |
 | `aq agent start-terminal` | `start_agent_terminal` | gen | Explicitly start or resume one agent's interactive terminal, without creating a task or sending a chat message. |
 
@@ -235,6 +235,16 @@ Server-side spatial layout for the task graph the dashboard draws. Both
 leaves are synchronous jobs: `layout-rebuild` recomputes a project's layout,
 `tidy` enqueues a tidy pass. The layout is published atomically and the
 dashboard reads it; nothing here changes tasks.
+
+The daemon also enqueues tidy jobs of its own, of kind `rules:<n>`, to bring a
+project laid out under older engine rules up to the current ones (one
+`(project, variant)` per 15-minute sweep). Two consequences for `aq graph
+tidy`: a job is de-duplicated per `(project, variant)` whatever its kind, so a
+Tidy asked for while a `rules:<n>` job is already queued for that pair is
+served by **that** job — the response shows `kind: rules:<n>`, and the rebuild
+is the same full layout you asked for; and because the job queue is FIFO, a
+Tidy may wait behind at most one rules rebuild (the daemon never queues a
+second while one is in flight).
 
 
 | Command | Daemon command | Kind | What it does |

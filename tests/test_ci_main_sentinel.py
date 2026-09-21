@@ -78,6 +78,11 @@ def test_artifact_observes_then_repairs_or_escalates() -> None:
     assert inputs["project_id"] == {"type": "literal", "value": "agent-queue"}
     assert inputs["intelligence_class"] == {"type": "literal", "value": "deep-high"}
     assert inputs["priority"] == {"type": "literal", "value": 5}
+    # The repair is created at the project root: a standing parent would own
+    # its children's delivery and hold the repair off the default branch,
+    # which is the one thing this playbook exists to fix (final review C1).
+    assert "parent_key" not in inputs
+    assert "parent_title" not in inputs
     for field in ("dedup_key", "title", "description"):
         assert inputs[field] == {"type": "binding_ref", "binding": "baseline", "path": field}
     assert repair.transitions == {

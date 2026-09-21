@@ -69,6 +69,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "add_dependency",
     "agent_message",
     "create_task",
+    "create_task_graph",
     "edit_task",
     "escalation_apply_reply",
     "escalation_create",
@@ -91,6 +92,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "message_reply",
     "message_send",
     "message_status",
+    "phase_create",
+    "phase_list",
     "pool_status",
     "prime",
     "project_ready",
@@ -112,7 +115,11 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "task_recover",
     "task_route",
     "task_set",
-    "task_show"
+    "task_show",
+    "task_subtask_add",
+    "task_subtask_get",
+    "task_subtask_update",
+    "task_subtasks"
   ],
   "plugin_tools": [
     "git_diff",
@@ -165,6 +172,19 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls
   for related work — the dependency structure is the point.
+- **Most epics have no phases.** Add one only when you can name what must
+  finish before the next stage may begin. A phase gates every task under it
+  at once and survives a task being added later, which `blocks` edges
+  between individual tasks do not — but work that could overlap is not a
+  stage, and a phase you cannot justify in one sentence is decoration. Stop
+  at five; more than that is a second epic.
+- **Most tasks have no subtasks.** Add them when the task is more than one
+  work session and a reader would otherwise have to read the agent's
+  transcript to know where it got to. A subtask is a checklist row inside
+  one task, worked in order by the one agent that holds it — never
+  scheduled, never its own agent, never its own branch. Use them to make
+  sequential work legible, never to create parallelism. Stop at fifteen; a
+  task wanting more than that is two tasks.
 - **Explain spawned work.** Every task created from another task must include a
   `reason` explaining why it was spawned. Describe the discovery or split, not
   merely the new task's subject; the reason is stored on the edge back to the

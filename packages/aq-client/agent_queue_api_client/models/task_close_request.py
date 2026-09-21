@@ -29,6 +29,8 @@ class TaskCloseRequest:
         summary (None | str | Unset): Summary of what happened, for the reviewer/dashboard/vault note. Required for
             tasks whose profile has needs_workspace: true (Dv2 Phase 2 §7 close contract).
         abandon_children (bool | Unset):  Default: False.
+        skip_open_subtasks (bool | Unset): Flip any still-open subtasks (pending/in_progress) to skipped (note 'skipped
+            at close') instead of refusing the close. Default: False.
         claim_epoch (int | None | Unset): Current claim epoch for a pool-session caller (optional — the CLI reads it
             from .aq/claim.json).
         claim_next (bool | None | Unset): After closing, immediately claim the next ready task matching this session's
@@ -50,6 +52,7 @@ class TaskCloseRequest:
     deliverable_unmet: list[Any] | None | Unset = UNSET
     summary: None | str | Unset = UNSET
     abandon_children: bool | Unset = False
+    skip_open_subtasks: bool | Unset = False
     claim_epoch: int | None | Unset = UNSET
     claim_next: bool | None | Unset = UNSET
     wait: int | None | Unset = UNSET
@@ -131,6 +134,8 @@ class TaskCloseRequest:
 
         abandon_children = self.abandon_children
 
+        skip_open_subtasks = self.skip_open_subtasks
+
         claim_epoch: int | None | Unset
         if isinstance(self.claim_epoch, Unset):
             claim_epoch = UNSET
@@ -179,6 +184,8 @@ class TaskCloseRequest:
             field_dict["summary"] = summary
         if abandon_children is not UNSET:
             field_dict["abandon_children"] = abandon_children
+        if skip_open_subtasks is not UNSET:
+            field_dict["skip_open_subtasks"] = skip_open_subtasks
         if claim_epoch is not UNSET:
             field_dict["claim_epoch"] = claim_epoch
         if claim_next is not UNSET:
@@ -311,6 +318,8 @@ class TaskCloseRequest:
 
         abandon_children = d.pop("abandon_children", UNSET)
 
+        skip_open_subtasks = d.pop("skip_open_subtasks", UNSET)
+
         def _parse_claim_epoch(data: object) -> int | None | Unset:
             if data is None:
                 return data
@@ -352,6 +361,7 @@ class TaskCloseRequest:
             deliverable_unmet=deliverable_unmet,
             summary=summary,
             abandon_children=abandon_children,
+            skip_open_subtasks=skip_open_subtasks,
             claim_epoch=claim_epoch,
             claim_next=claim_next,
             wait=wait,

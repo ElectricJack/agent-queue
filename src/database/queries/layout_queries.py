@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Iterable
@@ -36,6 +37,62 @@ def like_escape(needle: str) -> str:
     Always pair with ``.like(..., escape="\\")``.
     """
     return needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+#: Edges touching a set of ids whose two endpoints are *drawn* at different
+#: nodes (see :meth:`LayoutQueryMixin.load_edges_touching`).
+#:
+#: The shape of the ``WHERE`` clause is load-bearing and was got wrong once.
+#: ``task_dependencies`` is the preserved side of two outer joins, so a
+#: restriction expressed as ``a.task_id IS NOT NULL OR b.task_id IS NOT NULL``
+#: is a post-join predicate: it is not null-rejecting for either side, the
+#: planner cannot push it down, and with the CTE referenced twice it is
+#: materialised without indexes.  The result was a **sequential scan of the
+#: whole dependency table on every tiles request** — invisible on a
+#: single-project fixture and quadratic-feeling on a real install, since the
+#: table holds every project's edges and this read has no project column to
+#: filter on.  Measured on the §9 fixture plus one unrelated 560k-edge
+#: project: 232ms for the post-join form against 84ms for this one.
+#:
+#: So the base restriction is stated directly on ``d`` against the two
+#: indexes that exist (``idx_task_deps_task_type``,
+#: ``idx_task_deps_depson_type``, giving a ``BitmapOr``), and the joins are
+#: left to do nothing but look the owner up.  ``dep_type`` is restricted here
+#: too: only ``DRAWN_TYPES`` can become an arrow, and on an expanded view the
+#: ``parent-child`` rows the filter removes are the dominant class.
+#: ``view.remap_edges`` still applies both filters, as the backstop.
+CROSSING_EDGES_SQL = """
+WITH own AS (
+    SELECT * FROM unnest(:ids, :owners) AS o(task_id, owner_key)
+)
+SELECT d.task_id, d.depends_on_task_id, d.dep_type, d.description
+FROM task_dependencies d
+LEFT JOIN own a ON a.task_id = d.task_id
+LEFT JOIN own b ON b.task_id = d.depends_on_task_id
+WHERE (d.task_id = ANY(:ids) OR d.depends_on_task_id = ANY(:ids))
+  AND d.dep_type = ANY(:drawn)
+  AND COALESCE(a.owner_key, d.task_id)
+      IS DISTINCT FROM COALESCE(b.owner_key, d.depends_on_task_id)
+"""
+
+
+def crossing_edges_statement(ids: list[str], owners, *, explain: bool = False):
+    """:data:`CROSSING_EDGES_SQL` bound for ``ids`` under ``owners``.
+
+    Separate from the read, and with an ``explain`` seam, so the plan guard in
+    ``tests/perf/test_layout_api_statements.py`` explains the exact statement
+    the endpoint ships rather than a copy of it that can drift.
+    """
+    from sqlalchemy import ARRAY, Text, bindparam, text
+
+    from src.task_graph.layout.constants import DRAWN_TYPES
+
+    sql = ("EXPLAIN " + CROSSING_EDGES_SQL) if explain else CROSSING_EDGES_SQL
+    return text(sql).bindparams(
+        bindparam("ids", value=list(ids), type_=ARRAY(Text)),
+        bindparam("owners", value=[owners.get(t, t) for t in ids], type_=ARRAY(Text)),
+        bindparam("drawn", value=sorted(DRAWN_TYPES), type_=ARRAY(Text)),
+    )
 
 
 class LayoutQueryMixin:
@@ -249,6 +306,104 @@ class LayoutQueryMixin:
                 .values(status="failed" if error else "done", finished_at=time.time(), error=error)
             )
 
+    async def layout_job_ledger(self, kind: str) -> dict[tuple[str, str], dict]:
+        """Every ``(project, variant)`` this *kind* has a job for, in ONE statement.
+
+        ``layout_jobs`` rows are never trimmed, so jobs of kind
+        ``rules:<ENGINE_RULES_VERSION>`` are the engine-rules convergence
+        ledger (reorganisation design §3.3). Each entry carries:
+
+        - ``settled`` — a non-failed job exists (queued, running or done), so
+          the pair is converged or already scheduled. A ``failed`` row is
+          deliberately *not* convergence: the rebuild never happened.
+        - ``in_flight`` — a job of this kind is queued or running somewhere.
+        - ``failed`` — how many attempts failed, i.e. the pair's spent retry
+          budget.
+        - ``last_error`` — the most recently recorded failure, for the log.
+
+        Reading the rows rather than aggregating in SQL keeps ``last_error``
+        honest; a rules kind holds at most one settled row plus a capped
+        handful of failures per pair, so the scan is small and bounded.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(
+                            layout_jobs.c.project_id,
+                            layout_jobs.c.variant,
+                            layout_jobs.c.status,
+                            layout_jobs.c.error,
+                            layout_jobs.c.finished_at,
+                        ).where(layout_jobs.c.kind == kind)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        ledger: dict[tuple[str, str], dict] = {}
+        seen_at: dict[tuple[str, str], float] = {}
+        for row in rows:
+            key = (row["project_id"], row["variant"])
+            entry = ledger.setdefault(
+                key, {"settled": False, "in_flight": False, "failed": 0, "last_error": None}
+            )
+            if row["status"] == "failed":
+                entry["failed"] += 1
+                at = row["finished_at"] or 0.0
+                if at >= seen_at.get(key, -1.0):
+                    seen_at[key] = at
+                    entry["last_error"] = row["error"]
+            else:
+                entry["settled"] = True
+                if row["status"] in ("queued", "running"):
+                    entry["in_flight"] = True
+        return ledger
+
+    async def published_layout_variants(self) -> set[tuple[str, str]]:
+        """Every ``(project_id, variant)`` with a published layout, in one statement."""
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(project_layout_meta.c.project_id, project_layout_meta.c.variant)
+                )
+            ).all()
+        return {(r[0], r[1]) for r in rows}
+
+    async def reap_stale_layout_jobs(self, *, started_before: float, error: str) -> list[dict]:
+        """Fail every job stuck ``running`` since before *started_before*.
+
+        Nothing else ever resets a ``running`` row — ``next_layout_job``
+        claims only ``queued`` — so a daemon killed mid-rebuild (shutdown
+        waits 30 s while a tidy may run 60) would leave one forever. A stuck
+        row wedges the engine-rules stand-down fleet-wide *and* counts as
+        convergence for its pair, so it must not simply be ignored.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        update(layout_jobs)
+                        .where(
+                            layout_jobs.c.status == "running",
+                            layout_jobs.c.started_at.is_not(None),
+                            layout_jobs.c.started_at < started_before,
+                        )
+                        .values(status="failed", finished_at=time.time(), error=error)
+                        .returning(
+                            layout_jobs.c.id,
+                            layout_jobs.c.project_id,
+                            layout_jobs.c.variant,
+                            layout_jobs.c.kind,
+                            layout_jobs.c.started_at,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(r) for r in rows]
+
     async def get_layout_job(self, job_id: str) -> dict | None:
         async with self._engine.begin() as conn:
             row = (
@@ -274,7 +429,11 @@ class LayoutQueryMixin:
 
     # ── snapshot & rows ──────────────────────────────────────────────────
     async def load_project_snapshot(self, project_id: str):
-        from src.database.queries.hierarchy_queries import CONTAINER_KEY, CONTAINER_VALUE
+        from src.database.queries.hierarchy_queries import (
+            CONTAINER_KEY,
+            CONTAINER_VALUE,
+            PHASE_KEY,
+        )
         from src.database.tables import task_dependencies, task_metadata, tasks
         from src.task_graph.layout.model import SnapTask
 
@@ -291,20 +450,37 @@ class LayoutQueryMixin:
                 )
             ).fetchall()
             ids = [r[0] for r in trows]
-            containers = set()
+            # Container flags and phase orders come from ONE read: this
+            # snapshot is loaded on the 5-second dirty path as well as by
+            # ``full_layout``, so the metadata it needs is a single pass over
+            # both keys rather than a statement each.
+            containers: set[str] = set()
+            phase_orders: dict[str, int] = {}
             if ids:
-                containers = {
-                    r[0]
-                    for r in (
-                        await conn.execute(
-                            select(task_metadata.c.task_id).where(
-                                task_metadata.c.task_id.in_(ids),
-                                task_metadata.c.key == CONTAINER_KEY,
-                                task_metadata.c.value == CONTAINER_VALUE,
-                            )
+                for tid, key, raw in (
+                    await conn.execute(
+                        select(
+                            task_metadata.c.task_id,
+                            task_metadata.c.key,
+                            task_metadata.c.value,
+                        ).where(
+                            task_metadata.c.task_id.in_(ids),
+                            task_metadata.c.key.in_((CONTAINER_KEY, PHASE_KEY)),
                         )
-                    ).fetchall()
-                }
+                    )
+                ).fetchall():
+                    if key == CONTAINER_KEY:
+                        if raw == CONTAINER_VALUE:
+                            containers.add(tid)
+                        continue
+                    # PHASE_KEY: the tidy seed orders declared phases by
+                    # their order (§3.2).
+                    try:
+                        order = json.loads(raw).get("order")
+                    except (ValueError, AttributeError):
+                        continue
+                    if isinstance(order, int) and not isinstance(order, bool):
+                        phase_orders[tid] = order
             edges = []
             if ids:
                 edges = [
@@ -327,6 +503,7 @@ class LayoutQueryMixin:
                 status=r[2],
                 created_at=r[3],
                 title=r[4] or "",
+                phase_order=phase_orders.get(r[0]),
             )
             for r in trows
         }
@@ -781,6 +958,38 @@ class LayoutQueryMixin:
                     out[m["task_id"]] = (self._row_from_mapping(m), self._task_dict_from_mapping(m))
             return out
 
+    async def load_active_container_rows(self, project_id, variant) -> dict:
+        """Container candidates for `active_expansion` (design A3), one statement.
+
+        Every ``container``-kind row that could possibly be selected: any
+        with ``agg_running > 0``, or a root (``container_id IS NULL``) with
+        ``agg_active > 0``. Both `active_expansion` branches read from this
+        one set -- it is a superset of whichever branch actually applies,
+        never a per-branch query -- so `auto_expand` costs exactly one
+        statement. A finished container under ``variant="active"`` is a
+        ``"stub"`` row and is excluded by the ``kind`` filter, same as
+        `active_expansion` itself.
+        """
+        from sqlalchemy import and_, or_
+        from src.database.tables import task_layouts
+
+        async with self._engine.begin() as conn:
+            res = await conn.execute(
+                select(task_layouts).where(
+                    task_layouts.c.project_id == project_id,
+                    task_layouts.c.variant == variant,
+                    task_layouts.c.kind == "container",
+                    or_(
+                        task_layouts.c.agg_running > 0,
+                        and_(
+                            task_layouts.c.container_id.is_(None),
+                            task_layouts.c.agg_active > 0,
+                        ),
+                    ),
+                )
+            )
+            return {m["task_id"]: self._row_from_mapping(m) for m in res.mappings()}
+
     async def load_rows_for_containers(self, project_id, variant, container_ids):
         """Rows directly inside any of *container_ids*, joined to their tasks.
 
@@ -916,13 +1125,35 @@ class LayoutQueryMixin:
                 out.update({m["task_id"]: m["path"] for m in res.mappings()})
         return out
 
-    async def load_edges_touching(self, task_ids):
+    async def load_edges_touching(self, task_ids, *, owners=None):
+        """Dependency rows with an endpoint in ``task_ids``.
+
+        ``owners`` maps each id to the node an edge endpoint is *drawn* at —
+        itself for a visible node, its collapsed container for a node hidden
+        inside one (what ``view.owner_map`` returns).  When it is supplied the
+        database drops every row whose two endpoints share an owner, which is
+        exactly the ``f == t: continue`` arm of :func:`view.remap_edges`, and
+        restricts ``dep_type`` to ``DRAWN_TYPES`` the way that function's other
+        early ``continue`` does.  See :data:`CROSSING_EDGES_SQL`.
+
+        That filter is not an optimisation of the margins: a collapsed
+        container owns every edge *inside* its subtree, and those edges can
+        never be drawn.  A fully collapsed view of the §9 reference project
+        reads 9,970 rows this way and draws 50 of them — the other 99.5% are
+        intra-container edges that cross the wire only to be discarded in
+        Python.  With ``owners`` the same request reads 50 rows (67ms -> 11ms
+        measured), and it is one statement rather than one per id chunk,
+        because the owner map is passed as an array rather than the ids being
+        split across ``IN`` lists.
+        """
         from sqlalchemy import or_
         from src.database.tables import task_dependencies as td
 
         ids = list(task_ids)
         if not ids:
             return []
+        if owners is not None:
+            return await self._load_crossing_edges(ids, owners)
         # Chunking splits `ids` across separate IN-lists, so an edge whose
         # two endpoints land in different chunks would otherwise be
         # selected twice (once per chunk it matches) -- dedupe via a dict
@@ -939,6 +1170,22 @@ class LayoutQueryMixin:
                 for r in res.fetchall():
                     seen[tuple(r)] = None
         return sorted(seen, key=lambda r: (r[0], r[1], r[2]))
+
+    async def _load_crossing_edges(self, ids: list[str], owners) -> list[tuple]:
+        """Edges touching ``ids`` whose two endpoints are drawn at different nodes.
+
+        The owner map is handed to the database as a pair of arrays and
+        joined to both endpoints, so the comparison the endpoint would have
+        made in Python happens before the rows are sent.  An endpoint outside
+        ``ids`` has no owner row and stands for itself — the same fallback
+        ``view.remap_edges`` applies when it records an orphan — which is why
+        both joins are outer ones and the comparison coalesces.
+        """
+        stmt = crossing_edges_statement(ids, owners)
+        async with self._engine.begin() as conn:
+            res = await conn.execute(stmt)
+            rows = {tuple(r) for r in res.fetchall()}
+        return sorted(rows, key=lambda r: (r[0], r[1], r[2]))
 
     @staticmethod
     def _match_conditions(project_id, variant, *, q, status) -> list:

@@ -60,8 +60,10 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
 from src.git.manager import GitManager
 from src.models import AgentState, ProjectStatus, TaskStatus
+from src.orchestrator.agent_reconciler import reset_stale_busy_agent
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
 from src.pool_claims import is_live_pool_claim_task_status
+from src.profiles.catalog import worker_route
 
 OWNER = "swarm-work-model"
 
@@ -501,10 +503,18 @@ async def _check_pools_disabled(ctx: DoctorContext) -> CheckResult:
 async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
     """Expose push profiles that duplicate a durable pool execution route.
 
-    A task-lifecycle profile with the same harness and intelligence class as
-    a pool starts an unpooled session.  That session consumes a worktree slot
-    while pool supply remains zero, which is operationally misleading even
-    though both profile definitions parse and launch correctly.
+    A task-lifecycle *worker* profile with the same harness and intelligence
+    class as a pool starts an unpooled session.  That session consumes a
+    worktree slot while pool supply remains zero, which is operationally
+    misleading even though both profile definitions parse and launch
+    correctly.
+
+    Only worker routes are compared (:func:`src.profiles.catalog.worker_route`
+    — the same answer rung seeding uses).  The shipped stages run at some
+    class a pool also runs at on every fresh install — ``reviewer`` at
+    ``standard-high``, ``spec-ingest`` and the supervisor at ``deep-high``,
+    ``triage`` at ``fast-low`` — and a read-only or named profile cannot be
+    the generic worker at all, so none of those is a duplicate route.
     """
     if ctx.db is None:
         return _no_db_result("pools.task_lifecycle_shadow")
@@ -521,13 +531,17 @@ async def _check_task_lifecycle_shadow(ctx: DoctorContext) -> CheckResult:
     duplicates: list[dict] = []
     duplicate_ids: set[str] = set()
     for profile in profiles:
-        if getattr(profile, "lifecycle", "task") == "pool":
+        lifecycle = getattr(profile, "lifecycle", "task") or "task"
+        if lifecycle != "task":
             continue
-        route = (
-            str(getattr(profile, "harness", "") or "").strip(),
-            str(getattr(profile, "default_class", "") or "").strip(),
+        route = worker_route(
+            profile.id,
+            harness=getattr(profile, "harness", ""),
+            default_class=getattr(profile, "default_class", ""),
+            lifecycle=lifecycle,
+            read_only=bool(getattr(profile, "read_only", False)),
         )
-        matches = sorted(pool_routes.get(route, [])) if all(route) else []
+        matches = sorted(pool_routes.get(route, [])) if route is not None else []
         if matches:
             duplicate_ids.add(profile.id)
             duplicates.append(
@@ -1174,6 +1188,100 @@ async def _check_placement_starved(ctx: DoctorContext) -> CheckResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# agents.dangling_current_task
+# ---------------------------------------------------------------------------
+
+
+async def _find_dangling_current_task(ctx: DoctorContext):
+    """Every agent whose ``current_task_id`` no longer names live work.
+
+    Broader than the reconciler's own rescue rule on purpose: *any* agent
+    with a ``current_task_id`` set, not only ``BUSY`` ones, is a candidate --
+    the dashboard's agent markers read ``current_task_id`` regardless of
+    ``state``, so a stale pointer on an IDLE row still dangles a marker.  An
+    agent is flagged when its task is missing, or is not ``ASSIGNED``/
+    ``IN_PROGRESS``, *and* it has no live attempt (``live_attempt_predicate``,
+    B1) -- an agent still mid-write-up on a task that just transitioned to
+    COMPLETED is a race, not a dangling pointer.
+
+    Returns a list of ``(agent, task)`` pairs, ``task`` being ``None`` when
+    the row is missing entirely. ``agents.current_task_id`` carries
+    ``ON DELETE SET NULL`` (``fk_agents_current_task``), so a task's row
+    vanishing from ``tasks`` clears the pointer atomically in the same
+    transaction -- the ``task is None`` branch below is therefore
+    unreachable through any normal delete path today, but kept so the check
+    still reports honestly if that guarantee is ever relaxed or a row is
+    written around it.
+    """
+    live_agent_ids = await ctx.db.list_live_attempt_agent_ids()
+    bad: list[tuple] = []
+    for agent in await ctx.db.list_agents():
+        if not agent.current_task_id:
+            continue
+        if agent.id in live_agent_ids:
+            continue
+        task = await ctx.db.get_task(agent.current_task_id)
+        if task is not None and task.status in (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS):
+            continue
+        bad.append((agent, task))
+    return bad
+
+
+async def _check_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("agents.dangling_current_task")
+    bad = await _find_dangling_current_task(ctx)
+    if not bad:
+        return CheckResult(
+            id="agents.dangling_current_task",
+            severity=Severity.OK,
+            detail="no agent has a dangling current_task_id",
+        )
+    return CheckResult(
+        id="agents.dangling_current_task",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(bad)} agent(s) have a current_task_id naming a task that is missing or "
+            "not ASSIGNED/IN_PROGRESS, with no live attempt"
+        ),
+        data={
+            "count": len(bad),
+            "agents": [
+                {
+                    "agent_id": agent.id,
+                    "task_id": agent.current_task_id,
+                    "task_status": task.status.value if task is not None else None,
+                }
+                for agent, task in bad[:50]
+            ],
+        },
+    )
+
+
+async def _fix_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("agents.dangling_current_task")
+    bad = await _find_dangling_current_task(ctx)
+    bus = getattr(getattr(ctx.handler, "orchestrator", None), "bus", None)
+    for agent, _task in bad:
+        # The check is deliberately broader than the reconciler's rescue rule
+        # (any state, not just BUSY), so the repair has to be narrower than
+        # the reconciler's reset: only a BUSY agent is meant to land IDLE.
+        # ERROR and RETIRED are set *without* clearing ``current_task_id``
+        # upstream, and RETIRED gates workspace reclaim -- rewriting either to
+        # IDLE would un-retire an agent as a side effect of tidying a pointer.
+        await reset_stale_busy_agent(
+            ctx.db, agent, bus=bus, reset_state=agent.state == AgentState.BUSY
+        )
+    return CheckResult(
+        id="agents.dangling_current_task",
+        severity=Severity.OK,
+        detail=f"cleared {len(bad)} dangling current_task_id pointer(s)",
+        data={"cleared": [agent.id for agent, _task in bad[:50]]},
+    )
+
+
 def pool_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -1232,6 +1340,15 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: every repair (free a workspace, raise a project cap,
         # fix the harness behind a quarantine) is outside doctor's reach.
         DoctorCheck(id="pools.placement_starved", run=_check_placement_starved, owner=OWNER),
+        # Fixable: the reset is the same safe rescue the reconciler performs
+        # on its own rescue rule, just broader (any agent with a
+        # ``current_task_id``, not only ``BUSY``) and offline-triggerable.
+        DoctorCheck(
+            id="agents.dangling_current_task",
+            run=_check_agents_dangling_current_task,
+            fix=_fix_agents_dangling_current_task,
+            owner=OWNER,
+        ),
     ]
 
 

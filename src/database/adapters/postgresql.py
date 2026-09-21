@@ -65,6 +65,7 @@ from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_recovery_queries import TaskRecoveryQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
 from src.database.queries.task_session_queries import TaskSessionQueryMixin
+from src.database.queries.task_subtask_queries import TaskSubtaskQueriesMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.transcript_queries import TranscriptQueryMixin
@@ -92,6 +93,7 @@ class PostgreSQLDatabaseAdapter(
     TaskQueryMixin,
     TaskRecoveryQueryMixin,
     TaskCommentQueriesMixin,
+    TaskSubtaskQueriesMixin,
     DependencyQueryMixin,
     BlockedStateMixin,
     GateQueriesMixin,

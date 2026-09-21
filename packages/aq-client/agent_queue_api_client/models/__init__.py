@@ -32,9 +32,9 @@ from .append_note_response_422 import AppendNoteResponse422
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
+from .archive_settings_response_blocked_item import ArchiveSettingsResponseBlockedItem
 from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
-from .archive_task_response_422 import ArchiveTaskResponse422
 from .artifact_ref_dto import ArtifactRefDTO
 from .assignment_route_detail import AssignmentRouteDetail
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
@@ -152,7 +152,6 @@ from .delete_project_response import DeleteProjectResponse
 from .delete_project_response_422 import DeleteProjectResponse422
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
-from .delete_task_response_422 import DeleteTaskResponse422
 from .deleted_branch import DeletedBranch
 from .digest_escalation_settings import DigestEscalationSettings
 from .digest_preview_request import DigestPreviewRequest
@@ -469,6 +468,7 @@ from .grep_request import GrepRequest
 from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
+from .hierarchy_refusal_response import HierarchyRefusalResponse
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
 from .import_portable_config_request import ImportPortableConfigRequest
@@ -647,6 +647,14 @@ from .pending_event_dto_event import PendingEventDTOEvent
 from .pending_event_dto_reason import PendingEventDTOReason
 from .pending_event_replay_dto import PendingEventReplayDTO
 from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
+from .phase_create_request import PhaseCreateRequest
+from .phase_create_response import PhaseCreateResponse
+from .phase_create_response_422 import PhaseCreateResponse422
+from .phase_list_request import PhaseListRequest
+from .phase_list_response import PhaseListResponse
+from .phase_list_response_422 import PhaseListResponse422
+from .phase_ref import PhaseRef
+from .phase_summary import PhaseSummary
 from .playbook_activate_request import PlaybookActivateRequest
 from .playbook_activate_response_422 import PlaybookActivateResponse422
 from .playbook_activation_health_request import PlaybookActivationHealthRequest
@@ -817,6 +825,7 @@ from .profile_drift_row import ProfileDriftRow
 from .profile_reseed_request import ProfileReseedRequest
 from .profile_reseed_response import ProfileReseedResponse
 from .profile_reseed_response_422 import ProfileReseedResponse422
+from .profile_reseed_response_added_type_0 import ProfileReseedResponseAddedType0
 from .profile_subagent_rollup import ProfileSubagentRollup
 from .profile_summary import ProfileSummary
 from .project_graph_response import ProjectGraphResponse
@@ -1141,6 +1150,20 @@ from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
 from .task_status_summary_ready_to_work_item import TaskStatusSummaryReadyToWorkItem
+from .task_subtask import TaskSubtask
+from .task_subtask_add_request import TaskSubtaskAddRequest
+from .task_subtask_add_response import TaskSubtaskAddResponse
+from .task_subtask_add_response_422 import TaskSubtaskAddResponse422
+from .task_subtask_get_request import TaskSubtaskGetRequest
+from .task_subtask_get_response import TaskSubtaskGetResponse
+from .task_subtask_get_response_422 import TaskSubtaskGetResponse422
+from .task_subtask_update_request import TaskSubtaskUpdateRequest
+from .task_subtask_update_response import TaskSubtaskUpdateResponse
+from .task_subtask_update_response_422 import TaskSubtaskUpdateResponse422
+from .task_subtask_with_context import TaskSubtaskWithContext
+from .task_subtasks_request import TaskSubtasksRequest
+from .task_subtasks_response import TaskSubtasksResponse
+from .task_subtasks_response_422 import TaskSubtasksResponse422
 from .throughput_metrics import ThroughputMetrics
 from .tidy_request import TidyRequest
 from .tidy_response import TidyResponse
@@ -1220,9 +1243,9 @@ __all__ = (
     "ArchiveSettingsRequest",
     "ArchiveSettingsResponse",
     "ArchiveSettingsResponse422",
+    "ArchiveSettingsResponseBlockedItem",
     "ArchiveTaskRequest",
     "ArchiveTaskResponse",
-    "ArchiveTaskResponse422",
     "ArtifactRefDTO",
     "AssignmentRouteDetail",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
@@ -1341,7 +1364,6 @@ __all__ = (
     "DeleteProjectResponse422",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
-    "DeleteTaskResponse422",
     "DigestEscalationSettings",
     "DigestPreviewRequest",
     "DigestPreviewResponse",
@@ -1651,6 +1673,7 @@ __all__ = (
     "GrepResponse",
     "GrepResponse422",
     "GridPositionDTO",
+    "HierarchyRefusalResponse",
     "HTTPValidationError",
     "IdempotencyDTO",
     "ImportPortableConfigRequest",
@@ -1827,6 +1850,14 @@ __all__ = (
     "PendingEventDTOReason",
     "PendingEventReplayDTO",
     "PendingEventReplayDTOPolicy",
+    "PhaseCreateRequest",
+    "PhaseCreateResponse",
+    "PhaseCreateResponse422",
+    "PhaseListRequest",
+    "PhaseListResponse",
+    "PhaseListResponse422",
+    "PhaseRef",
+    "PhaseSummary",
     "PlaybookActivateRequest",
     "PlaybookActivateResponse422",
     "PlaybookActivationHealthRequest",
@@ -1995,6 +2026,7 @@ __all__ = (
     "ProfileReseedRequest",
     "ProfileReseedResponse",
     "ProfileReseedResponse422",
+    "ProfileReseedResponseAddedType0",
     "ProfileSubagentRollup",
     "ProfileSummary",
     "ProjectGraphResponse",
@@ -2317,6 +2349,20 @@ __all__ = (
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",
     "TaskStatusSummaryReadyToWorkItem",
+    "TaskSubtask",
+    "TaskSubtaskAddRequest",
+    "TaskSubtaskAddResponse",
+    "TaskSubtaskAddResponse422",
+    "TaskSubtaskGetRequest",
+    "TaskSubtaskGetResponse",
+    "TaskSubtaskGetResponse422",
+    "TaskSubtasksRequest",
+    "TaskSubtasksResponse",
+    "TaskSubtasksResponse422",
+    "TaskSubtaskUpdateRequest",
+    "TaskSubtaskUpdateResponse",
+    "TaskSubtaskUpdateResponse422",
+    "TaskSubtaskWithContext",
     "ThroughputMetrics",
     "TidyRequest",
     "TidyResponse",

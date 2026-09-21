@@ -14,6 +14,7 @@ import pytest
 from scripts.seed_layout_perf import seed_project
 from src.models import Task
 from src.task_graph.layout.driver import LayoutDriver
+from src.task_graph.layout.flow import row_target
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
 DSN = ensure_worker_postgres_dsn()
@@ -113,4 +114,40 @@ async def test_root_band_crossing_publish_under_1s(perf_strict, pg):
     await drv.process_dirty("perf", min_age_seconds=0)
     elapsed = time.perf_counter() - t0
     print(f"\nROOT_BAND_CROSSING_SECONDS={elapsed:.4f}")
+    assert elapsed < 1.0
+
+
+async def test_row_target_band_crossing_publish_under_1s(perf_strict, pg):
+    """The aspect-balanced row target re-wraps a scope when it crosses a
+    row-target band (reorganisation design §3.1). Because the ladder IS the
+    growth ladder, that is the same O(log n) event the root band crossing
+    above already prices — this pins the publish cost of the row-target
+    half at the same seed scale.
+    """
+    drv = LayoutDriver(pg)
+    await drv.full_layout("perf", "all")
+    await drv.full_layout("perf", "active")
+    await _drain(pg, drv)
+
+    async def scope_target(container):
+        rows = await pg.load_subtree_rows("perf", "all")
+        kids = {k: (r.w, r.h) for k, r in rows.items() if r.container_id == container}
+        return row_target(kids, is_root=False)
+
+    # epic1-pkg0 holds 10 unit cards, a row target of 5.8. Fifteen more carry
+    # it to the next rung (11.8): the package re-wraps, its allocated box
+    # widens, and every later sibling subtree in epic1 — and at the root — is
+    # translated and republished.
+    before = await scope_target("epic1-pkg0")
+    for t in range(15):
+        tid = f"epic1-pkg0-row{t}"
+        await pg.create_task(Task(id=tid, project_id="perf", title=tid, description=""))
+        async with pg._engine.begin() as conn:
+            await pg.set_parent(tid, "epic1-pkg0", conn=conn)
+    t0 = time.perf_counter()
+    await drv.process_dirty("perf", min_age_seconds=0)
+    elapsed = time.perf_counter() - t0
+    print(f"\nROW_TARGET_BAND_CROSSING_SECONDS={elapsed:.4f}")
+    # The scope really did cross a rung — otherwise this would time a no-op.
+    assert await scope_target("epic1-pkg0") > before
     assert elapsed < 1.0

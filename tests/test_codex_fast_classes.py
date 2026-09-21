@@ -69,7 +69,7 @@ def test_agent_model_pin_still_wins_while_codex_class_controls_effort(tmp_path, 
 def test_other_openai_harnesses_keep_api_mapping(tmp_path, hid, command):
     specs = builder(tmp_path)
     harness = Harness(id=hid, command=command, model_flag="-m")
-    harness = SimpleNamespace(**vars(harness), provider="openai", env_map={})
+    harness = SimpleNamespace(**{**vars(harness), "provider": "openai"}, env_map={})
     cfg = specs._resolve_class_config(profile("low"), harness, None)
     assert cfg == {"model": "gpt-5.6-luna", "reasoning_effort": "low"}
     assert specs._resolve_model(profile("low"), harness, None) == "gpt-5.6-luna"
@@ -156,6 +156,6 @@ def test_codex_cli_with_custom_provider_keeps_that_provider_mapping(tmp_path, co
     specs = builder(tmp_path)
     custom = {"model": "local-model", "reasoning_effort": "medium"}
     specs._intelligence_classes["fast-low"].mapping["local-provider"] = custom
-    harness = SimpleNamespace(**vars(codex), provider="local-provider", env_map=codex.env_map)
+    harness = SimpleNamespace(**{**vars(codex), "provider": "local-provider"}, env_map=codex.env_map)
     assert specs._resolve_class_config(profile(), harness, None) == custom
     assert specs._resolve_model(profile(), harness, None) == "local-model"

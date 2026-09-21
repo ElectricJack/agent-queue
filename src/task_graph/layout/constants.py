@@ -12,10 +12,29 @@ SIBLING_GAP = 0.15
 LINE_GAP = 0.22
 PADDING = 0.1
 HEADER_H = 0.35
+# The row-wrap targets are FLOORS, not constants: ``flow.row_target`` widens
+# them for a large scope so its aspect ratio stays landscape-ish instead of
+# degrading linearly with the child count (reorganisation design §3.1). A
+# scope whose ideal target is below its floor keeps today's geometry exactly.
 TARGET_ROW_WIDTH = 4.5
 TARGET_ROW_WIDTH_ROOT = 7.0
+ROW_ASPECT = 1.3
 GROWTH_BANDS = (1.5, 3.0, 6.0, 12.0, 24.0, 48.0)
 CELL_SIZE = 8.0
+
+ENGINE_RULES_VERSION = 1
+"""The generation of the engine's *geometry and ordering* rules.
+
+Bump this by hand in any change to ``flow.py``, to ordinal assignment in
+``engine.py``, or to the geometry constants above. Bumping it is the **only**
+action a developer takes to roll the change out: geometry is persisted per
+project and ``LayoutDriver.reconcile`` deliberately chases presence rather than
+geometry, so an install already laid out would otherwise keep the old rules
+forever. The orchestrator's sweep re-tidies every ``(project, variant)`` whose
+convergence ledger — a ``layout_jobs`` row of kind ``f"rules:{...}"`` — does not
+name this version (reorganisation design §3.3).
+"""
+
 
 W_CROSS = 10.0
 W_SPAN = 1.0
@@ -36,6 +55,10 @@ TIDY_JOB_SECONDS = 60.0
 FINISHED_STATUSES = frozenset({"COMPLETED", "CANCELED", "CANCELLED", "SKIPPED"})
 RUNNING_STATUSES = frozenset({"ASSIGNED", "IN_PROGRESS"})
 RANKING_DEP_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks"})
+#: Dependency types the canvas actually draws an arrow for. Re-exported by
+#: ``view.py`` (its historical home); the driver needs it too, to tell whether
+#: a finished container is still somebody's edge endpoint.
+DRAWN_TYPES = frozenset({"blocks", "waits-for", "conditional-blocks", "discovered-from"})
 VARIANTS = ("all", "active")
 ROOT = "__root__"
 

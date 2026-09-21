@@ -134,6 +134,9 @@ class CreateTaskResponse(BaseModel):
     gate_id: str | None = None
     status: str | None = None
     reason: str | None = None
+    # The container the task was filed under: an explicit ``parent_id``, or
+    # the standing parent a ``parent_key`` resolved (graph-visibility A2).
+    parent_id: str | None = None
     depends_on: list[dict[str, Any]] = []
 
 
@@ -195,6 +198,88 @@ class TaskCommentDeleteResponse(BaseModel):
     task_id: str
 
 
+class TaskSubtask(BaseModel):
+    """One durable checklist row under a task (``task_subtasks`` table)."""
+
+    id: str
+    task_id: str
+    project_id: str
+    ordinal: int
+    title: str
+    status: str
+    note: str | None = None
+    created_at: float
+    updated_at: float
+
+
+class TaskSubtaskWithContext(TaskSubtask):
+    context: str = ""
+
+
+class TaskSubtaskAddResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    subtasks: list[TaskSubtaskWithContext] = []
+
+
+class TaskSubtasksResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    subtasks: list[TaskSubtask] = []
+    total: int
+    settled: int
+
+
+class TaskSubtaskGetResponse(BaseModel):
+    success: bool = True
+    subtask: TaskSubtaskWithContext
+
+
+class TaskSubtaskUpdateResponse(BaseModel):
+    success: bool = True
+    subtask: TaskSubtaskWithContext
+    total: int
+    settled: int
+
+
+class PhaseRef(BaseModel):
+    """The phase ``phase_create`` just wrote."""
+
+    id: str
+    order: int
+    label: str
+    parent_id: str | None = None
+    #: The immediate previous sibling phase, whatever its status — what a
+    #: surface shows as "this comes after".
+    blocked_by: str | None = None
+    #: Every earlier sibling phase this one actually carries a ``blocks`` edge
+    #: onto: all of them that have not COMPLETED, in order. One edge per phase
+    #: would leave the successor ungated the moment an abandoned middle phase
+    #: is deleted.
+    blocked_by_all: list[str] = []
+
+
+class PhaseCreateResponse(BaseModel):
+    phase: PhaseRef
+
+
+class PhaseSummary(BaseModel):
+    """One phase as ``phase_list`` reports it."""
+
+    id: str
+    title: str
+    label: str
+    order: int
+    status: str
+    is_blocked: bool = False
+    total: int = 0
+    done: int = 0
+
+
+class PhaseListResponse(BaseModel):
+    phases: list[PhaseSummary] = []
+
+
 class EditTaskResponse(BaseModel):
     updated: str
     fields: list[str]
@@ -208,6 +293,26 @@ class DeletedBranch(BaseModel):
     task_id: str
     branch: str
     base_sha: str
+
+
+class HierarchyRefusalResponse(BaseModel):
+    """The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.
+
+    These refusals are contracts, not prose: a surface branches on ``code``
+    and renders the detail keys. ``branch_discard_required`` names the
+    ``branches`` it wants a choice about, and ``integration_owned`` names the
+    audit ``references`` that make the task permanent. ``extra: allow`` keeps
+    the rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and
+    ``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic
+    envelope from discarding all of them.
+    """
+
+    model_config = {"extra": "allow"}
+
+    success: bool = False
+    #: Namespaced refusal code, e.g. ``hierarchy.integration_owned``.
+    code: str | None = None
+    error: str
 
 
 class DeleteTaskResponse(BaseModel):
@@ -280,6 +385,10 @@ class ArchiveSettingsResponse(BaseModel):
     statuses: list[str] = []
     archived_count: int = 0
     eligible_count: int = 0
+    #: Eligible roots the sweep cannot archive, with the reason each is held
+    #: back (``integration_owned`` / ``open_descendants`` / ``live_descendants``).
+    blocked_count: int = 0
+    blocked: list[dict] = []
 
 
 class SetTaskStatusResponse(BaseModel):
@@ -523,6 +632,7 @@ class EnsureTaskResponse(BaseModel):
     restarted: bool = False
     skipped: bool = False
     reason: str | None = None
+    parent_id: str | None = None
 
 
 class DownstreamTask(BaseModel):
@@ -833,6 +943,12 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "task_comments": TaskCommentsResponse,
     "task_comment_edit": TaskCommentResponse,
     "task_comment_delete": TaskCommentDeleteResponse,
+    "task_subtask_add": TaskSubtaskAddResponse,
+    "task_subtasks": TaskSubtasksResponse,
+    "task_subtask_get": TaskSubtaskGetResponse,
+    "task_subtask_update": TaskSubtaskUpdateResponse,
+    "phase_create": PhaseCreateResponse,
+    "phase_list": PhaseListResponse,
     "edit_task": EditTaskResponse,
     "delete_task": DeleteTaskResponse,
     "stop_task": StopTaskResponse,

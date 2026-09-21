@@ -15,14 +15,16 @@ T = TypeVar("T", bound="LocateRequest")
 class LocateRequest:
     """Where the matches for a filter are, in the geometry the canvas draws.
 
-    Carries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:
-    collapsing a container reflows everything after it, so a match's position
-    depends on the viewer's expanded set and cannot be answered from the
-    persisted layout alone.
+    Carries ``expanded`` and ``root`` for the same reason ``tiles`` and
+    ``list`` are POSTs: collapsing a container reflows everything after it
+    and entering one re-packs its scope, so a match's position depends on
+    the viewer's own view state and cannot be answered from the persisted
+    layout alone.
 
         Attributes:
             variant (str | Unset):  Default: 'active'.
             expanded (list[str] | Unset):
+            root (None | str | Unset):
             q (str | Unset):  Default: ''.
             status (str | Unset):  Default: ''.
             limit (int | Unset):  Default: 200.
@@ -30,6 +32,7 @@ class LocateRequest:
 
     variant: str | Unset = "active"
     expanded: list[str] | Unset = UNSET
+    root: None | str | Unset = UNSET
     q: str | Unset = ""
     status: str | Unset = ""
     limit: int | Unset = 200
@@ -41,6 +44,12 @@ class LocateRequest:
         expanded: list[str] | Unset = UNSET
         if not isinstance(self.expanded, Unset):
             expanded = self.expanded
+
+        root: None | str | Unset
+        if isinstance(self.root, Unset):
+            root = UNSET
+        else:
+            root = self.root
 
         q = self.q
 
@@ -55,6 +64,8 @@ class LocateRequest:
             field_dict["variant"] = variant
         if expanded is not UNSET:
             field_dict["expanded"] = expanded
+        if root is not UNSET:
+            field_dict["root"] = root
         if q is not UNSET:
             field_dict["q"] = q
         if status is not UNSET:
@@ -71,6 +82,15 @@ class LocateRequest:
 
         expanded = cast(list[str], d.pop("expanded", UNSET))
 
+        def _parse_root(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        root = _parse_root(d.pop("root", UNSET))
+
         q = d.pop("q", UNSET)
 
         status = d.pop("status", UNSET)
@@ -80,6 +100,7 @@ class LocateRequest:
         locate_request = cls(
             variant=variant,
             expanded=expanded,
+            root=root,
             q=q,
             status=status,
             limit=limit,

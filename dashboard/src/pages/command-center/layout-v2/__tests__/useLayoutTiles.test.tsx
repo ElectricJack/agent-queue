@@ -1,4 +1,3 @@
-import { useMemo, useState } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -101,13 +100,12 @@ describe("useLayoutTiles", () => {
     }
   });
 
-  it("treats a root response as the whole graph: one fetch, no budget step-down", async () => {
+  it("treats a root response as the whole graph: one fetch, no rect refetches", async () => {
     const many = Array.from({ length: 401 }, (_, i) => node(`n${i}`, i % 20, Math.floor(i / 20)));
     fetchTiles.mockResolvedValue(ok(many));
-    const onBudgetExceeded = vi.fn();
-    const rootParams = { ...params, root: "r1", maxDepth: 2 };
+    const rootParams = { ...params, root: "r1" };
     const { result, rerender } = renderHook(
-      ({ rect }) => useLayoutTiles("p1", rootParams, rect, { onBudgetExceeded }),
+      ({ rect }) => useLayoutTiles("p1", rootParams, rect),
       { initialProps: { rect: { x0: 0, y0: 0, x1: 4, y1: 4 } } },
     );
     await waitFor(() => expect(result.current.store.nodes.size).toBe(401));
@@ -115,28 +113,6 @@ describe("useLayoutTiles", () => {
     rerender({ rect: { x0: 100, y0: 100, x1: 120, y1: 120 } });
     await waitFor(() => expect(result.current.store.whole).toBe(true));
     expect(fetchTiles).toHaveBeenCalledTimes(1);
-    expect(onBudgetExceeded).not.toHaveBeenCalled();
-  });
-
-  it("asks the caller to step max_depth down when a response blows the node budget", async () => {
-    // All 401 inside cell 0:0, so eviction cannot shrink the merged store.
-    const many = Array.from({ length: 401 }, (_, i) => node(`n${i}`, (i % 20) * 0.35, Math.floor(i / 20) * 0.3));
-    fetchTiles.mockResolvedValueOnce(ok(many));
-    fetchTiles.mockResolvedValue(ok([node("a", 1, 1)]));
-    function Harness() {
-      const [maxDepth, setMaxDepth] = useState<number>(2);
-      const p = useMemo(() => ({ ...params, maxDepth }), [maxDepth]);
-      const tiles = useLayoutTiles("p1", p, { x0: 0, y0: 0, x1: 4, y1: 4 },
-        { onBudgetExceeded: () => setMaxDepth((d) => Math.max(0, d - 1)) });
-      return { ...tiles, maxDepth };
-    }
-    const { result } = renderHook(() => Harness());
-    await waitFor(() => expect(result.current.maxDepth).toBe(1));
-    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(2));
-    const first = fetchTiles.mock.calls[0]![2] as { maxDepth: number };
-    const second = fetchTiles.mock.calls[1]![2] as { maxDepth: number };
-    expect(first.maxDepth).toBe(2);
-    expect(second.maxDepth).toBe(1);
   });
 
 
@@ -156,5 +132,14 @@ describe("useLayoutTiles", () => {
     expect(fetchTiles).toHaveBeenCalledTimes(2);
     const [, rect] = fetchTiles.mock.calls[1]!;
     expect((rect as { x0: number }).x0).toBeGreaterThanOrEqual(64);
+  });
+});
+
+describe("useLayoutTiles never asks for an expansion", () => {
+  it("sends the caller's params through untouched, with no auto_expand of its own", async () => {
+    fetchTiles.mockResolvedValue(ok([node("a", 1, 1)]));
+    renderHook(() => useLayoutTiles("p1", params, { x0: 0, y0: 0, x1: 4, y1: 4 }));
+    await waitFor(() => expect(fetchTiles).toHaveBeenCalledTimes(1));
+    expect(fetchTiles.mock.calls[0]![2]).toBe(params);
   });
 });

@@ -116,6 +116,39 @@ Rules the daemon enforces:
   `--deliverable-unmet 'id: reason'` (repeatable) — a pass with an
   undeclared gap is refused and keeps the task claimed.
 
+## Subtasks
+
+A subtask is a durable checklist row local to the task you hold — never
+scheduled, claimed or assigned on its own, unlike a hierarchy child. When
+your task carries subtasks, prime shows them in a `## Subtasks` block
+(`[x]` done, `[-]` skipped, `[~]` in progress, `[ ]` pending) with titles
+only; fetch one's full context on demand:
+
+```bash
+aq task subtasks [<task_id>]                       # list, ordinal-ordered
+aq task subtask-add [<task_id>] --title "..." [--context "..."]  # repeatable --title
+aq task subtask-show <ordinal> [--task <task_id>]   # title, status, note, context
+aq task subtask-start <ordinal> [--task <task_id>]  # -> in_progress
+aq task subtask-done <ordinal> [--task <task_id>]   # -> done
+aq task subtask-skip <ordinal> [--task <task_id>] --note "..."  # -> skipped, note required
+```
+
+Most tasks have no subtasks. Add them with `subtask-add` when the task is
+more than one work session and a reader would otherwise have to read your
+transcript to know where you got to; stop at fifteen. If the task arrived
+with a checklist, work that one — do not re-decompose it — and add rows for
+steps you discover as you go, settling each as you finish it.
+
+A subtask is not a place to put work that belongs to someone else. Something
+outside this task's scope is still emergent work: file it as a task instead
+of a checklist row, passing `--reason` (see "Creating tasks" below).
+
+**The close rule:** `aq task close --outcome pass` is refused with
+`subtasks.open` while any subtask is still `pending`/`in_progress`. Settle
+each with `subtask-done` / `subtask-skip --note ...` as you go, or pass
+`--skip-open-subtasks` to flip the remainder to `skipped` (note "skipped at
+close") and proceed. `--outcome fail` is never gated on subtasks.
+
 ## The pool worker loop (swarm-work-model §10)
 
 A `lifecycle: pool` session never gets a task pushed to it — it pulls work
@@ -298,6 +331,86 @@ Failures come back as `hierarchy.<code>`. The full list (also in `aq schema`'s
 | `live_descendants` | abandon/cascade refused: a descendant has a live session |
 | `manually_paused_descendants` | abandon refused: resume hand-paused descendants first |
 | `cycle_check_skipped` | internal: the bulk graph-creation path was handed a task that is not a fresh leaf |
+| `parent_conflict` | `parent_key` was combined with `parent_id` or `root` — pass exactly one |
+| `parent_key_not_for_sessions` | `parent_key` is for automated creators; a worker files under the task it holds |
+| `parent_key_busy` | another creator holds the standing-parent lock for that key — retry |
+| `parent_key_unavailable` | the standing container could not be created (the underlying refusal is returned when there is one) |
+| `parent_key_unsupported_mode` | the project delivers hierarchically, where a standing parent would own its children's delivery — use `parent_id` or the root |
+| `parent_key_invalid` | `parent_key` must be 1–64 characters matching `[a-z0-9][a-z0-9_-]*` |
+| `reserved_dedup_key` | a `dedup_key` starting `parent:` belongs to the standing-parent mechanism — pass `parent_key` instead |
+
+## Phases (planner)
+
+Most projects and most epics have no phases. Create one only when you can
+name what must finish before the next stage may begin: phase *N+1* stays
+blocked until every task in phase *N* is COMPLETED. That is the whole
+semantic — a phase is a container with a `blocks` edge onto every earlier
+open sibling phase, and a blocked container withholds its children, so one
+edge gates a whole stage. Stop at five per level. If two groups could
+overlap, they are not phases; use `needs`/`blocks` edges between the
+individual tasks. Phases are refused outright in a project whose integration
+mode is `hierarchy` or `train` — there a phase container would own its
+children's delivery branch — with one code,
+`hierarchy.phases_unsupported_mode`, from `phase_create` and from a graph
+alike.
+
+**Prefer declaring them in the graph.** One `aq-graph` document can carry
+its phases, so the containers, their metadata, the gate edges, the tasks and
+their subtasks are created in a single transaction that a `--dry-run`
+reviews first:
+
+```yaml
+phases:
+  - key: schema
+    title: "Phase 1 — schema"
+    label: schema
+  - key: engine
+    title: "Phase 2 — engine"
+nodes:
+  - key: tables
+    phase: schema
+    title: "Add the messages table"
+```
+
+That creates `<epic>.1`/`<epic>.2` for the phases and `<epic>.1.1…` for
+their work; a node that names no phase stays a direct child of the epic.
+Never make a node depend on work in a *later* phase — that deadlocks (the
+later phase waits for this one to finish, and this one waits for that task),
+and it is refused as `inverted_phase_edge` — whatever the `dep_type`,
+`waits-for` included. That includes reaching it through an unphased node: a node with no `phase` is not held back by any
+phase, but it is still held back by its own `needs`, so it passes the
+deadlock along. If the work really runs in that order, the two are in the
+wrong phases.
+Because epic → phase → task is the whole depth budget, such a document must
+be created at the project root — `phases:` with `--parent` is refused with
+`graph.phases_need_root`. Filing phases one `phase-create` call at a time is
+still available and is what you use to add a phase to an epic that already
+exists.
+
+A phase is an ordered container that gates implicitly: phase *N+1* stays
+blocked until every child of phase *N* is COMPLETED, with no extra edges to
+manage per task. Available if your profile lists `phase_create`/`phase_list`
+(planner, supervisor, operator — not a plain worker):
+
+```bash
+aq task phase-create --project-id <pid> --title "..." [--label "..."] [--parent-id <id>]
+aq task phase-list --project-id <pid> [--parent-id <id>]
+```
+
+File tasks into a phase with `aq task create --parent <phase-id>` — from the
+loopback CLI or a supervisor session. A **worker or planner session cannot**:
+a non-elevated filing's parent must be the task it holds, one of that task's
+descendants, or that task's own parent, and a root-level phase is none of
+those (`hierarchy.parent_out_of_scope`). Such a session has no in-scope way
+to populate a phase: file the work under the task you hold as usual, and ask
+the supervisor to place it (`aq message send --to session:supervisor-<pid>
+--body "..."`) — never attempt `--graph`/`--from-spec`, which are
+elevated/supervisor-only.
+A phase settles like any container — all children COMPLETED — so a failed
+child holds the gate on purpose. A childless phase is never claimable and is
+held open (never auto-settled); if it turns out to be unneeded, delete it
+(`aq task delete --task-id <phase-id>`) rather than leaving it empty — that
+releases the next phase.
 
 ## Dependencies
 

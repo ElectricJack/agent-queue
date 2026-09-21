@@ -12,6 +12,7 @@ from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.models import AgentProfile, DepType, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
+from src.tools import _ALL_TOOL_DEFINITIONS
 from tests.db_fixtures import lease_dsn
 
 PROJECT_ID = "proj"
@@ -545,3 +546,114 @@ class TestDeleteBranchPolicy:
         assert res["success"] is False
         assert res["code"] == "invalid_branches"
         assert await db.get_task("bad-choice") is not None
+
+
+class TestHierarchyRefusalsOverHTTP:
+    """The refusals a dashboard has to act on must survive the typed route.
+
+    ``src/api/codegen.py`` answers a command error with a bare
+    ``{"error": ...}`` 422 unless the command is on its allowlist, which
+    strips the very ``code``/``branches``/``references`` keys the delete
+    dialog branches on. These tests pin the wire body, not the handler
+    result — the handler-level tests above cannot see that boundary.
+    """
+
+    @pytest.fixture
+    async def typed_routes(self, handler):
+        """A client serving the generated ``delete_task``/``archive_task`` routes.
+
+        ``ASGITransport``, never ``TestClient``: the latter drives the app on
+        an event loop of its own, and the handler's asyncpg connections belong
+        to this test's loop — every database call would fail with "another
+        operation is in progress" and the route would answer a 422 carrying
+        that error instead of the refusal under test.
+        """
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from src.api.codegen import _make_input_model, _make_route_handler
+        from src.api.dependencies import get_command_handler
+
+        app = FastAPI()
+        app.dependency_overrides[get_command_handler] = lambda: handler
+        for cmd, path in (
+            ("delete_task", "/api/task/delete"),
+            ("archive_task", "/api/task/archive"),
+        ):
+            schema = next(
+                tool["input_schema"]
+                for tool in _ALL_TOOL_DEFINITIONS
+                if tool["name"] == cmd
+            )
+            route = _make_route_handler(cmd, _make_input_model(cmd, schema))
+            app.add_api_route(path, route, methods=["POST"])
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://t"
+        ) as client:
+            yield client
+
+    async def _integration_owned_task(self, db, task_id: str) -> None:
+        """A COMPLETED task an append-only integration audit row still names."""
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_parent_episodes
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await mktask(db, task_id, status=TaskStatus.COMPLETED)
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    id="ep",
+                    parent_task_id=task_id,
+                    repository_id="repo",
+                    generation=0,
+                    pre_collection_checkpoint_sha="a" * 40,
+                    created_at=1.0,
+                )
+            )
+
+    async def test_delete_refused_by_integration_history_keeps_its_code_on_the_wire(
+        self, db, typed_routes
+    ):
+        await self._integration_owned_task(db, "owned")
+
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "owned"})
+
+        assert response.status_code == 422, response.text
+        body = response.json()
+        assert body["code"] == "hierarchy.integration_owned"
+        assert body["success"] is False
+        assert body["error"].startswith("hierarchy.integration_owned:")
+        assert [r["table"] for r in body["references"]] == ["integration_parent_episodes"]
+        assert await db.get_task("owned") is not None
+
+    async def test_archive_refused_by_integration_history_keeps_its_code_on_the_wire(
+        self, db, typed_routes
+    ):
+        await self._integration_owned_task(db, "owned")
+
+        response = await typed_routes.post("/api/task/archive", json={"task_id": "owned"})
+
+        assert response.status_code == 422, response.text
+        body = response.json()
+        assert body["code"] == "hierarchy.integration_owned"
+        assert body["error"].startswith("hierarchy.integration_owned:")
+
+    async def test_branch_discard_refusal_keeps_its_branch_list_on_the_wire(
+        self, db, typed_routes
+    ):
+        """What ``BranchDiscardPrompt`` renders has to reach the browser."""
+        await TestDeleteBranchPolicy()._hierarchical_task_with_a_branch(db, "has-branch")
+
+        response = await typed_routes.post("/api/task/delete", json={"task_id": "has-branch"})
+
+        assert response.status_code == 422, response.text
+        body = response.json()
+        assert body["code"] == "hierarchy.branch_discard_required"
+        assert body["branches"] == [
+            {"task_id": "has-branch", "branch": "aq/has-branch", "base_sha": "a" * 40}
+        ]
+        assert await db.get_task("has-branch") is not None

@@ -19,6 +19,7 @@ acceptance criteria are about the *run*, not about any one function:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -400,9 +401,9 @@ def test_a_rerun_still_reports_where_data_lives_and_which_url_to_open(tmp_path):
     assert action[STEP_CHECK] == "revalidate"
     assert action[STEP_DASHBOARD] == "revalidate"
     assert step(second, STEP_CHECK).detail["revalidated"] is True
-    assert daemon.commands == [
-        ("/usr/bin/aq", "start", "--no-dashboard")
-    ], "a rerun must not restart the daemon"
+    assert daemon.commands == [("/usr/bin/aq", "start", "--no-dashboard")], (
+        "a rerun must not restart the daemon"
+    )
 
     before, after = summarize(first), summarize(second)
     assert after.locations == before.locations != ()
@@ -439,7 +440,11 @@ def test_a_rerun_reports_the_configuration_as_it_now_stands(tmp_path):
 def test_the_reported_database_location_carries_no_password(tmp_path):
     locations = data_locations(
         tmp_path,
-        {"database": {"url": "postgresql+asyncpg://agent_queue:hunter2@localhost:5432/agent_queue"}},
+        {
+            "database": {
+                "url": "postgresql+asyncpg://agent_queue:hunter2@localhost:5432/agent_queue"
+            }
+        },
     )
     database = next(entry for entry in locations if entry.label == "Database")
     assert "hunter2" not in database.path
@@ -558,9 +563,14 @@ def test_a_daemon_that_does_not_come_up_names_the_log_and_the_doctor(tmp_path):
     assert "aq doctor" in (failure.remediation or "")
 
 
-def test_a_missing_aq_executable_is_reported_rather_than_guessed(tmp_path):
+def test_a_missing_aq_executable_is_reported_rather_than_guessed(tmp_path, monkeypatch):
     home = configured(tmp_path)
     daemon = FakeDaemon()
+    # The step also accepts the console script beside the running interpreter, so
+    # "no aq anywhere" has to include that: on a machine where AQ is installed
+    # next to the interpreter running the tests -- CI, a venv -- an injected
+    # `which` returning None is not by itself an absent `aq`.
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "no-such-venv" / "bin" / "python3"))
 
     result = run(
         registry_for(home, daemon, which=lambda name: None),
@@ -991,9 +1001,7 @@ def test_an_injected_probe_never_reads_uptime_over_the_network(tmp_path, monkeyp
         lambda url, timeout=2.0: (_ for _ in ()).throw(AssertionError("network read")),
     )
     home = configured(tmp_path)
-    step = onboarding.daemon_step(
-        environ={"HOME": str(home)}, home=home, probe=lambda url: 200
-    )
+    step = onboarding.daemon_step(environ={"HOME": str(home)}, home=home, probe=lambda url: 200)
 
     assert step.verify(None) is True
 
@@ -1012,3 +1020,43 @@ def test_uptime_is_read_from_a_degraded_daemon_too(monkeypatch):
     monkeypatch.setattr(onboarding.urllib.request, "urlopen", degraded)
 
     assert onboarding.daemon_uptime("http://127.0.0.1:8081/health") == 42.5
+
+
+def test_the_daemon_is_started_with_the_aq_this_installer_is_running_as(tmp_path):
+    """ "the `aq` command is not on PATH" -- while the installer was that command.
+
+    An operator who runs ``~/.local/bin/aq install`` from a shell whose profile
+    has not been re-read, or a virtualenv nobody activated, has no ``aq`` on
+    PATH; the console script beside the running interpreter is the same
+    installation and is what the step now uses.
+    """
+    from src.install.onboarding import aq_aware_which
+
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python3"
+    python.write_text("", encoding="utf-8")
+    aq = bin_dir / "aq"
+    aq.write_text("#!/bin/sh\n", encoding="utf-8")
+    aq.chmod(0o755)
+
+    which = aq_aware_which(lambda command: None, interpreter=str(python))
+
+    assert which("aq") == str(aq)
+    assert which("agent-queue") is None, "only a console script that exists is offered"
+    assert which("tmux") is None, "the fallback is about aq, not about PATH in general"
+
+
+def test_an_aq_on_path_still_wins(tmp_path):
+    from src.install.onboarding import aq_aware_which
+
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "aq").write_text("#!/bin/sh\n", encoding="utf-8")
+    (bin_dir / "aq").chmod(0o755)
+
+    which = aq_aware_which(
+        lambda command: "/usr/local/bin/aq", interpreter=str(bin_dir / "python3")
+    )
+
+    assert which("aq") == "/usr/local/bin/aq"

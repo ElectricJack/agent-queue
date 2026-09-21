@@ -22,11 +22,13 @@ class ListResponse:
         layout_version (int):
         nodes (list[LayoutNode] | Unset):
         next_cursor (None | str | Unset):
+        variant_applied (str | Unset):  Default: 'active'.
     """
 
     layout_version: int
     nodes: list[LayoutNode] | Unset = UNSET
     next_cursor: None | str | Unset = UNSET
+    variant_applied: str | Unset = "active"
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,6 +47,8 @@ class ListResponse:
         else:
             next_cursor = self.next_cursor
 
+        variant_applied = self.variant_applied
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -56,6 +60,8 @@ class ListResponse:
             field_dict["nodes"] = nodes
         if next_cursor is not UNSET:
             field_dict["next_cursor"] = next_cursor
+        if variant_applied is not UNSET:
+            field_dict["variant_applied"] = variant_applied
 
         return field_dict
 
@@ -84,10 +90,13 @@ class ListResponse:
 
         next_cursor = _parse_next_cursor(d.pop("next_cursor", UNSET))
 
+        variant_applied = d.pop("variant_applied", UNSET)
+
         list_response = cls(
             layout_version=layout_version,
             nodes=nodes,
             next_cursor=next_cursor,
+            variant_applied=variant_applied,
         )
 
         list_response.additional_properties = d

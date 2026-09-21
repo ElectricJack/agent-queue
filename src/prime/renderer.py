@@ -109,6 +109,12 @@ class PrimeRenderer:
         allow_emergent_work = await _sections.profile_allows_create_task(
             self.db, effective_profile_id
         )
+        # An install upgraded from before the subtask grants existed keeps its
+        # write-if-absent vault profiles, so the "report progress" line would
+        # name a command the session's own policy denies.
+        allow_subtask_updates = await _sections.profile_allows_command(
+            self.db, effective_profile_id, _sections.SUBTASK_UPDATE_COMMAND
+        )
 
         section_tuple = (
             await _sections.build_role_section(self.config, effective_profile_id),
@@ -120,6 +126,9 @@ class PrimeRenderer:
                 review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
                 integration_delivery=await _sections.build_integration_delivery_summary(
                     self.db, task
+                ),
+                subtasks_block=await _sections.build_task_subtasks_summary(
+                    self.db, task, allow_updates=allow_subtask_updates
                 ),
             ),
             await _sections.build_task_context_section(self.db, self.config, task),

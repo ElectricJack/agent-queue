@@ -24,6 +24,11 @@ from src.task_graph import (
     substitute_vars,
     validate_graph,
 )
+from src.database.queries.task_subtask_queries import (
+    MAX_SUBTASK_CONTEXT,
+    MAX_SUBTASK_TITLE,
+    MAX_SUBTASKS_PER_CALL,
+)
 from src.task_graph.creator import build_plan, write_plan
 from src.task_graph.models import TaskGraph
 from tests.db_fixtures import lease_dsn
@@ -179,6 +184,622 @@ class TestParseGraph:
         assert rules == {"bad_field_type", "bad_need"}
 
 
+class TestSubtaskBoundsLiveWithTheTable:
+    """The three per-row/per-call bounds are leaf constants, not command ones.
+
+    ``src/task_graph/parser.py`` must be able to state the same numbers
+    ``task_subtask_add`` enforces without importing ``src.commands`` — that
+    package builds the whole ``CommandHandler`` at import, and the handler
+    imports ``src.task_graph`` right back.
+    """
+
+    def test_the_bounds_are_reachable_without_importing_the_commands_package(self):
+        """Module import plus the three constants, with ``src.commands`` unloaded.
+
+        Scoped deliberately to the *bounds*: ``_parse_node`` still lazily
+        imports ``normalize_deliverables`` from ``src.commands.task_commands``
+        for the ``deliverables`` field, which is pre-existing and out of scope
+        here — so this probe reads the constants rather than parsing.
+        """
+        import subprocess
+        import sys
+
+        probe = (
+            "import sys;"
+            "import src.task_graph.parser as p;"
+            "assert 'src.commands' not in sys.modules, sorted("
+            "m for m in sys.modules if m.startswith('src.commands'));"
+            "assert not hasattr(p, '_subtask_bounds');"
+            "print(p.MAX_SUBTASKS_PER_CALL, p.MAX_SUBTASK_TITLE, p.MAX_SUBTASK_CONTEXT)"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == [
+            str(MAX_SUBTASKS_PER_CALL),
+            str(MAX_SUBTASK_TITLE),
+            str(MAX_SUBTASK_CONTEXT),
+        ]
+
+    def test_the_commands_module_still_re_exports_them(self):
+        """Their original home stays importable — callers and tests use it."""
+        from src.commands import task_subtask_commands as cmds
+
+        assert (
+            cmds.MAX_SUBTASKS_PER_CALL,
+            cmds.MAX_SUBTASK_TITLE,
+            cmds.MAX_SUBTASK_CONTEXT,
+        ) == (MAX_SUBTASKS_PER_CALL, MAX_SUBTASK_TITLE, MAX_SUBTASK_CONTEXT)
+
+    def test_importing_the_commands_package_first_still_works(self):
+        """The reverse import order must not deadlock on a partial module."""
+        import subprocess
+        import sys
+
+        done = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import src.commands.task_subtask_commands;"
+                "import src.task_graph.parser as p;"
+                "print(p.MAX_SUBTASK_TITLE)",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.strip() == str(MAX_SUBTASK_TITLE)
+
+
+class TestParseSubtasks:
+    """``subtasks:`` on a node — the planning-emits-subtasks grammar (§7.2)."""
+
+    @staticmethod
+    def _doc(subtasks) -> dict:
+        return {
+            "version": 1,
+            "nodes": [{"key": "a", "title": "A", "subtasks": subtasks}],
+        }
+
+    def test_three_string_entries_become_three_subtasks(self):
+        graph = parse_graph(self._doc(["one", "two", "three"]))
+        node = graph.nodes[0]
+        assert [s.title for s in node.subtasks] == ["one", "two", "three"]
+        assert [s.context for s in node.subtasks] == ["", "", ""]
+
+    def test_mixed_string_and_object_entries_parse(self):
+        graph = parse_graph(
+            self._doc(["bare", {"title": "rich", "context": "why it matters"}])
+        )
+        node = graph.nodes[0]
+        assert [(s.title, s.context) for s in node.subtasks] == [
+            ("bare", ""),
+            ("rich", "why it matters"),
+        ]
+
+    def test_subtasks_round_trip_through_to_dict(self):
+        graph = parse_graph(self._doc([{"title": "t", "context": "c"}]))
+        assert graph.to_dict()["nodes"][0]["subtasks"] == [{"title": "t", "context": "c"}]
+
+    def test_a_bare_string_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc("just one"))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_a_bare_object_is_coerced_to_one_entry(self):
+        graph = parse_graph(self._doc({"title": "just one"}))
+        assert [s.title for s in graph.nodes[0].subtasks] == ["just one"]
+
+    def test_an_over_long_title_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["x" * (MAX_SUBTASK_TITLE + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert exc.value.errors[0].node == "a"
+
+    def test_an_empty_title_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["   "]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_an_over_long_context_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": "x" * (MAX_SUBTASK_CONTEXT + 1)}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    @pytest.mark.parametrize("context", [0, False, [], {}, 5, ["a"], {"k": "v"}])
+    def test_a_non_string_context_is_one_bad_subtask(self, context):
+        """A *falsy* non-string is as wrong as a truthy one.
+
+        ``raw.get("context", "") or ""`` accepted ``0``/``False``/``[]`` as an
+        empty context while rejecting ``5``, which is the author's mistake
+        being silently swallowed for half the type errors.
+        """
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "t", "context": context}]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert "context" in exc.value.errors[0].detail
+
+    @pytest.mark.parametrize("doc_context", [None, ...])
+    def test_absent_or_null_context_is_the_empty_string(self, doc_context):
+        """Only ``None`` and an omitted key mean "no context"."""
+        entry = {"title": "t"} if doc_context is ... else {"title": "t", "context": None}
+        graph = parse_graph(self._doc([entry]))
+        assert graph.nodes[0].subtasks[0].context == ""
+
+    def test_a_non_string_entry_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([17]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_a_non_list_value_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(17))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+
+    def test_over_the_per_node_cap_is_one_bad_subtask(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL + 1)]))
+        assert [e.rule for e in exc.value.errors] == ["bad_subtask"]
+        assert str(MAX_SUBTASKS_PER_CALL) in exc.value.errors[0].detail
+
+    def test_exactly_the_per_node_cap_parses(self):
+        graph = parse_graph(self._doc([f"item {i}" for i in range(MAX_SUBTASKS_PER_CALL)]))
+        assert len(graph.nodes[0].subtasks) == MAX_SUBTASKS_PER_CALL
+
+    def test_defaults_supply_subtasks_when_a_node_omits_them(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "defaults": {"subtasks": ["shared"]},
+                "nodes": [{"key": "a", "title": "A"}, {"key": "b", "title": "B"}],
+            }
+        )
+        assert [s.title for s in graph.nodes[0].subtasks] == ["shared"]
+        assert [s.title for s in graph.nodes[1].subtasks] == ["shared"]
+
+    def test_a_document_without_subtasks_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert all(node.subtasks == [] for node in graph.nodes)
+        assert all(n["subtasks"] == [] for n in graph.to_dict()["nodes"])
+
+
+class TestParsePhases:
+    """``phases:`` at the top level and ``phase:`` on a node (§7.3)."""
+
+    @staticmethod
+    def _doc(phases, node_phase=None) -> dict:
+        node = {"key": "a", "title": "A"}
+        if node_phase is not None:
+            node["phase"] = node_phase
+        return {"version": 1, "phases": phases, "nodes": [node]}
+
+    def test_phases_parse_in_document_order(self):
+        graph = parse_graph(
+            self._doc(
+                [
+                    {"key": "schema", "title": "Phase 1", "label": "schema"},
+                    {"key": "engine", "title": "Phase 2"},
+                ]
+            )
+        )
+        assert [(p.key, p.title, p.label) for p in graph.phases] == [
+            ("schema", "Phase 1", "schema"),
+            ("engine", "Phase 2", None),
+        ]
+
+    def test_a_node_names_its_phase(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1"}], node_phase="schema")
+        )
+        assert graph.nodes[0].phase == "schema"
+
+    def test_phases_round_trip_through_to_dict(self):
+        graph = parse_graph(
+            self._doc([{"key": "schema", "title": "Phase 1", "label": "s"}], node_phase="schema")
+        )
+        payload = graph.to_dict()
+        assert payload["phases"] == [{"key": "schema", "title": "Phase 1", "label": "s"}]
+        assert payload["nodes"][0]["phase"] == "schema"
+        assert parse_graph(payload).phases[0].key == "schema"
+
+    def test_a_non_list_phases_value_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc({"key": "schema"}))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_non_object_entry_is_one_bad_phase(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["schema"]))
+        assert [e.rule for e in exc.value.errors] == ["bad_phase"]
+
+    def test_a_phase_without_a_key_is_one_missing_phase_key(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"title": "Phase 1"}]))
+        assert [e.rule for e in exc.value.errors] == ["missing_phase_key"]
+
+    def test_a_non_string_node_phase_is_one_bad_field_type(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc([{"key": "schema", "title": "P"}], node_phase=7))
+        assert [e.rule for e in exc.value.errors] == ["bad_field_type"]
+
+    def test_a_document_without_phases_still_reports_an_empty_list(self):
+        """The key is additive: today's documents keep parsing unchanged."""
+        graph = _load_graph("valid.json")
+        assert graph.phases == []
+        assert graph.to_dict()["phases"] == []
+        assert all(n["phase"] is None for n in graph.to_dict()["nodes"])
+
+
+class TestPhaseValidation:
+    """The §7.3 finding table: two errors and two warnings."""
+
+    @staticmethod
+    async def _findings(doc, vault):
+        graph = parse_graph(doc)
+        return await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
+
+    async def test_a_duplicate_phase_key_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "one", "title": "Again"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "duplicate_phase_key"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+
+    async def test_a_node_naming_an_undeclared_phase_is_an_error(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "two"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "unknown_phase"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+
+    async def test_a_phase_with_no_nodes_is_a_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "phase_without_nodes"]
+        assert len(matched) == 1
+        assert matched[0].severity == "warning"
+        assert "two" in matched[0].detail
+
+    async def test_an_edge_onto_an_earlier_phase_is_a_redundant_warning(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "redundant_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].severity, matched[0].node) == ("warning", "b")
+
+    async def test_an_edge_onto_a_later_phase_is_an_error(self, vault):
+        """A phase-inverted need is a permanent deadlock no cycle check sees."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+        # Nothing else fires: the cycle check cannot see this at all.
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    @pytest.mark.parametrize(
+        "dep_type", ["blocks", "conditional-blocks", "parent-child", "waits-for"]
+    )
+    async def test_every_gating_dep_type_inverts(self, vault, dep_type):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": dep_type}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_non_blocking_edge_across_phases_is_neither(self, vault):
+        """``related`` does not gate, so it can neither deadlock nor be redundant."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "related"}],
+                    },
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "a", "dep_type": "related"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
+    async def test_a_farther_reach_never_masks_a_nearer_inversion(self, vault):
+        """Regression (F9): ``a`` inverts onto both phase two and phase three.
+
+        While ``waits-for`` was a *soft* class, the farther soft reach won the
+        ranking and the whole node was reported as a warning — so the hard
+        ``a -> b`` deadlock went unreported and the graph was created.  Every
+        gating type is an error now, so the ranking can only pick between
+        errors.
+        """
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [
+                    {"key": "one", "title": "One"},
+                    {"key": "two", "title": "Two"},
+                    {"key": "three", "title": "Three"},
+                ],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [
+                            {"on": "b", "dep_type": "blocks"},
+                            {"on": "c", "dep_type": "waits-for"},
+                        ],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {"key": "c", "title": "C", "acceptance": ["x"], "phase": "three"},
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].is_error is True
+        assert [f.rule for f in findings if f.is_error] == ["inverted_phase_edge"]
+
+    async def test_a_waits_for_target_can_be_given_children_by_the_document(self, vault):
+        """Regression (F10): the 'a document cannot give a node children'
+        premise was false — a node may declare a ``parent-child`` need, the
+        creator writes that row, and ``_waits_for_unsat`` counts it.  So this
+        is a real deadlock and must be an error."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "b", "dep_type": "waits-for"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                    {
+                        "key": "c",
+                        "title": "C",
+                        "acceptance": ["x"],
+                        "phase": "two",
+                        "needs": [{"on": "b", "dep_type": "parent-child"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [(f.node, f.is_error) for f in matched] == [("a", True)]
+
+    async def test_a_very_long_gating_chain_does_not_blow_the_stack(self, vault):
+        """Regression (F11): the traversal was recursive, and the 2,000,000
+        character document cap leaves room for a chain far past Python's
+        recursion limit."""
+        size = 5000
+        nodes = [
+            {
+                "key": f"n{i}",
+                "title": f"N{i}",
+                "acceptance": ["x"],
+                "needs": [{"on": f"n{i + 1}"}],
+            }
+            for i in range(size - 1)
+        ]
+        nodes.append({"key": f"n{size - 1}", "title": "last", "acceptance": ["x"]})
+        nodes[0]["phase"] = "one"
+        nodes[-1]["phase"] = "two"
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": nodes,
+            },
+            vault,
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert matched[0].node == "n0"
+        # The route is folded rather than printed in full: 5,000 keys is not a
+        # message a human reads.
+        assert len(matched[0].detail) < 500
+        assert f"n{size - 1}" in matched[0].detail
+
+    @staticmethod
+    def _chain(*hops: tuple[str, str | None]) -> dict:
+        """A document whose nodes form one ``needs`` chain, first needs second.
+
+        Each hop is ``(key, phase or None)``.
+        """
+        nodes = []
+        for index, (key, phase) in enumerate(hops):
+            node: dict = {"key": key, "title": key.upper(), "acceptance": ["x"]}
+            if phase is not None:
+                node["phase"] = phase
+            if index + 1 < len(hops):
+                node["needs"] = [{"on": hops[index + 1][0]}]
+            nodes.append(node)
+        # Only the phases the chain actually uses, so an unrelated
+        # ``phase_without_nodes`` warning never muddies an assertion.
+        used = [p for p in ("one", "two") if any(h[1] == p for h in hops)]
+        return {
+            "version": 1,
+            "phases": [{"key": key, "title": key.title()} for key in used],
+            "nodes": nodes,
+        }
+
+    async def test_a_later_phase_reached_through_one_unphased_hop_is_an_error(self, vault):
+        """The unsound case: an unphased node is not withheld by any phase, but
+        it is still gated by its OWN edges, so it carries the deadlock."""
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "two")), vault)
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert (matched[0].is_error, matched[0].node) == (True, "a")
+        assert "a -> u -> b" in matched[0].detail
+        assert "'one'" in matched[0].detail and "'two'" in matched[0].detail
+
+    async def test_a_later_phase_reached_through_two_unphased_hops_is_an_error(self, vault):
+        findings = await self._findings(
+            self._chain(("a", "one"), ("u", None), ("v", None), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert len(matched) == 1
+        assert "a -> u -> v -> b" in matched[0].detail
+
+    async def test_a_chain_back_into_the_same_phase_is_not_an_error(self, vault):
+        findings = await self._findings(self._chain(("a", "one"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_a_chain_from_a_later_phase_to_an_earlier_one_is_not_an_error(self, vault):
+        """Phase 2 waiting on phase-1 work through an unphased hop is the
+        ordinary direction: phase 1 finishes first anyway."""
+        findings = await self._findings(self._chain(("a", "two"), ("u", None), ("b", "one")), vault)
+        assert [f.rule for f in findings] == []
+
+    async def test_an_unphased_node_needing_a_later_phase_is_not_itself_reported(self, vault):
+        """Nothing gates an unphased node's *start*, so on its own it is fine;
+        only a phased node that reaches through it deadlocks."""
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}, {"key": "two", "title": "Two"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "u",
+                        "title": "U",
+                        "acceptance": ["x"],
+                        "needs": [{"on": "b"}],
+                    },
+                    {"key": "b", "title": "B", "acceptance": ["x"], "phase": "two"},
+                ],
+            },
+            vault,
+        )
+        assert [f.rule for f in findings] == []
+
+    async def test_a_phased_intermediate_is_reported_by_its_own_edge_only_once(self, vault):
+        """``a`` (phase one) -> ``m`` (phase one) -> ``b`` (phase two): the
+        violation belongs to ``m``, and ``a`` is not reported for reaching
+        through it — propagation stops at a phased node."""
+        findings = await self._findings(
+            self._chain(("a", "one"), ("m", "one"), ("b", "two")), vault
+        )
+        matched = [f for f in findings if f.rule == "inverted_phase_edge"]
+        assert [f.node for f in matched] == ["m"]
+
+    async def test_an_edge_within_one_phase_is_not_redundant(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [
+                    {"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"},
+                    {
+                        "key": "b",
+                        "title": "B",
+                        "acceptance": ["x"],
+                        "phase": "one",
+                        "needs": [{"on": "a"}],
+                    },
+                ],
+            },
+            vault,
+        )
+        assert [f for f in findings if f.rule == "redundant_phase_edge"] == []
+
+    async def test_a_phased_graph_with_no_findings_validates_clean(self, vault):
+        findings = await self._findings(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "One"}],
+                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"], "phase": "one"}],
+            },
+            vault,
+        )
+        assert findings == []
+
+
 class TestExtractFromSpec:
     def test_extracts_the_fenced_block(self):
         markdown = (FIXTURES / "valid_spec.md").read_text(encoding="utf-8")
@@ -278,6 +899,59 @@ class TestSubstituteVars:
         assert graph.parent.profile == "coding"
         assert unknown == set()
         assert "p" in used
+
+    def test_subtask_titles_and_contexts_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"branch": "feat/x"},
+                "nodes": [
+                    {
+                        "key": "a",
+                        "title": "A",
+                        "subtasks": [{"title": "Rebase {branch}", "context": "onto {branch}"}],
+                    }
+                ],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"branch"}, set())
+        subtask = graph.nodes[0].subtasks[0]
+        assert (subtask.title, subtask.context) == ("Rebase feat/x", "onto feat/x")
+
+    def test_an_undeclared_var_in_a_subtask_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "nodes": [{"key": "a", "title": "A", "subtasks": ["Rebase {nope}"]}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
+
+    def test_phase_titles_and_labels_are_expanded(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "vars": {"release": "24.1"},
+                "phases": [{"key": "one", "title": "Ship {release}", "label": "{release}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
+            }
+        )
+        used, unknown = substitute_vars(graph)
+        assert (used, unknown) == ({"release"}, set())
+        assert (graph.phases[0].title, graph.phases[0].label) == ("Ship 24.1", "24.1")
+
+    def test_an_undeclared_var_in_a_phase_title_is_reported(self):
+        graph = parse_graph(
+            {
+                "version": 1,
+                "phases": [{"key": "one", "title": "Ship {nope}"}],
+                "nodes": [{"key": "a", "title": "A", "phase": "one"}],
+            }
+        )
+        _used, unknown = substitute_vars(graph)
+        assert unknown == {"nope"}
 
     def test_context_type_is_expanded(self):
         graph = parse_graph(

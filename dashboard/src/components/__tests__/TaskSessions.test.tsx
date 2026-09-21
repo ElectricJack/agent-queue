@@ -22,6 +22,7 @@ vi.mock("../../api/hooks", () => ({
 }));
 vi.mock("../TaskActions", () => ({ default: () => null }));
 vi.mock("../TaskComments", () => ({ default: () => null }));
+vi.mock("../TaskSubtaskList", () => ({ default: () => null }));
 vi.mock("../../pages/task/TaskGraph", () => ({ default: () => null, TaskExplain: () => null }));
 vi.mock("../../panes/store", () => ({ useShellPaneStore: () => ({ open: vi.fn(), close: vi.fn() }) }));
 

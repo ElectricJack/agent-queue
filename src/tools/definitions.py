@@ -231,6 +231,12 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_comments": "task",
     "task_comment_edit": "task",
     "task_comment_delete": "task",
+    "task_subtask_add": "task",
+    "task_subtasks": "task",
+    "task_subtask_get": "task",
+    "task_subtask_update": "task",
+    "phase_create": "task",
+    "phase_list": "task",
     "task_close": "task",
     "task_heartbeat": "task",
     "task_claim": "task",
@@ -1259,6 +1265,23 @@ _ALL_TOOL_DEFINITIONS = [
                         "beside the held task. Mutually exclusive with parent_id."
                     ),
                 },
+                "parent_key": {
+                    "type": "string",
+                    "description": (
+                        "File under the standing container keyed by this name, creating it "
+                        "if none is open (e.g. 'maintenance'), so automated work does not "
+                        "accumulate in the project root. Mutually exclusive with parent_id "
+                        "and root, and refused for worker sessions, which already file "
+                        "under the task they hold."
+                    ),
+                },
+                "parent_title": {
+                    "type": "string",
+                    "description": (
+                        "Title for the standing container when parent_key has to create "
+                        "one. Defaults to the key, title-cased."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {
@@ -1352,6 +1375,22 @@ _ALL_TOOL_DEFINITIONS = [
                         "explicit class the task waits for the assignment "
                         "playbook to choose one. Both apply only when this "
                         "call creates the task."
+                    ),
+                },
+                "parent_key": {
+                    "type": "string",
+                    "description": (
+                        "File the task under the standing container keyed by this name, "
+                        "creating it if none is open (e.g. 'maintenance'). Applies only "
+                        "when this call creates the task; a dedup replay returns the "
+                        "existing task untouched."
+                    ),
+                },
+                "parent_title": {
+                    "type": "string",
+                    "description": (
+                        "Title for the standing container when parent_key has to create "
+                        "one. Defaults to the key, title-cased."
                     ),
                 },
             },
@@ -2949,8 +2988,10 @@ _ALL_TOOL_DEFINITIONS = [
             "an existing vault profile.md, so an old copy keeps old semantics: a "
             "stale read_only re-arms the require-a-PR close gate. Reports "
             "divergence on the semantic Config fields (read_only, harness, "
-            "lifecycle, needs_workspace) and missing/renamed sections. Read-only "
-            "— repair with profile_reseed."
+            "lifecycle, needs_workspace), missing/renamed sections, and "
+            "missing_grants — Capabilities grant names the shipped default has "
+            "that the vault copy lacks. Read-only — repair with profile_reseed "
+            "(grants_only=true when missing_grants is the only finding)."
         ),
         "input_schema": {
             "type": "object",
@@ -2973,7 +3014,11 @@ _ALL_TOOL_DEFINITIONS = [
             "src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. "
             "The explicit repair for profile_drift findings — startup seeding is "
             "write-if-absent and will never do this for you. Also clears any "
-            "delete-time retirement tombstone for the profile."
+            "delete-time retirement tombstone for the profile. Pass grants_only "
+            "to instead additively merge only the missing ## Capabilities grant "
+            "names into the vault copy, preserving operator edits such as "
+            "harness — use this when profile_drift's only finding is "
+            "missing_grants."
         ),
         "input_schema": {
             "type": "object",
@@ -2984,7 +3029,19 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "backup": {
                     "type": "boolean",
-                    "description": "Keep a .bak-<epoch> copy of the replaced file (default true)",
+                    "description": (
+                        "Full reseed only: keep a .bak-<epoch> copy of the replaced "
+                        "file (default true)"
+                    ),
+                },
+                "grants_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Additive repair instead of a full overwrite: merge only "
+                        "the missing ## Capabilities grant names into the vault "
+                        "copy, keeping every other edit (default false). Refuses "
+                        "if the vault copy has no ## Capabilities section."
+                    ),
                 },
             },
             "required": ["profile_id"],
@@ -4464,6 +4521,159 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "task_subtask_add",
+        "description": (
+            "Append one or more durable, non-schedulable checklist rows to a task. "
+            "Subtasks are pure bookkeeping local to whichever agent owns the parent "
+            "task -- they are never scheduled, claimed or assigned on their own."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Task id to add subtasks to. Omit to use the session's held task."
+                    ),
+                },
+                "subtasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 300,
+                                "description": "Subtask title (1..300 characters).",
+                            },
+                            "context": {
+                                "type": "string",
+                                "maxLength": 16000,
+                                "description": "Optional detail, shown only on a direct read.",
+                            },
+                        },
+                        "required": ["title"],
+                    },
+                    "description": "1 to 50 subtasks to append after the current max ordinal.",
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": "Current claim epoch; required for pool workers.",
+                },
+            },
+            "required": ["subtasks"],
+        },
+    },
+    {
+        "name": "task_subtasks",
+        "description": "List a task's subtasks in order, with total and settled counts.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": (
+                        "Task id to list subtasks for. Omit to use the session's held task."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "task_subtask_get",
+        "description": "Read one subtask by ordinal, including its context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task id the subtask belongs to. Omit to use the held task.",
+                },
+                "ordinal": {"type": "integer", "description": "1-based subtask ordinal."},
+            },
+            "required": ["ordinal"],
+        },
+    },
+    {
+        "name": "task_subtask_update",
+        "description": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task id the subtask belongs to. Omit to use the held task.",
+                },
+                "ordinal": {"type": "integer", "description": "1-based subtask ordinal."},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "done", "skipped"],
+                    "description": "New status.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note (e.g. why a subtask was skipped).",
+                },
+                "claim_epoch": {
+                    "type": "integer",
+                    "description": "Current claim epoch; required for pool workers.",
+                },
+            },
+            "required": ["ordinal"],
+        },
+    },
+    {
+        "name": "phase_create",
+        "description": (
+            "Create the next ordered phase in a project (or under an epic). A phase is a "
+            "container task: everything filed under phase N+1 waits until every child of "
+            "phase N has completed, with no per-task dependency edges. Work joins a phase "
+            "with 'aq task create --parent <phase-id>'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project to add the phase to."},
+                "title": {"type": "string", "description": "Phase title."},
+                "label": {
+                    "type": "string",
+                    "description": "Short display label; defaults to the title.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": (
+                        "Epic to nest the phase under. Omit for a phase at the project root."
+                    ),
+                },
+            },
+            "required": ["project_id", "title"],
+        },
+    },
+    {
+        "name": "phase_list",
+        "description": (
+            "List a project's phases in order, with each phase's status, blocked state and "
+            "child counts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project to list phases for."},
+                "parent_id": {
+                    "type": "string",
+                    "description": (
+                        "List the phases directly under this epic instead of the project root."
+                    ),
+                },
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
         "name": "task_set",
         "description": (
             "Write work-state fields on a task and return the updated task: "
@@ -4587,6 +4797,14 @@ _ALL_TOOL_DEFINITIONS = [
                     ),
                 },
                 "abandon_children": {"type": "boolean", "default": False},
+                "skip_open_subtasks": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Flip any still-open subtasks (pending/in_progress) to skipped "
+                        "(note 'skipped at close') instead of refusing the close."
+                    ),
+                },
                 "claim_epoch": {
                     "type": "integer",
                     "description": (

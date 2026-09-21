@@ -2518,8 +2518,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
-        "description": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace) and missing/renamed sections. Read-only \u2014 repair with profile_reseed.",
+        "summary": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and missing_grants \u2014 Capabilities grant names the shipped default has that the vault copy lacks. Read-only \u2014 repair with profile_reseed (grants_only=true when missing_grants is the only finding).",
+        "description": "Report which vault system profiles have drifted from the defaults shipped in src/profiles/defaults/. Startup seeding never overwrites an existing vault profile.md, so an old copy keeps old semantics: a stale read_only re-arms the require-a-PR close gate. Reports divergence on the semantic Config fields (read_only, harness, lifecycle, needs_workspace), missing/renamed sections, and missing_grants \u2014 Capabilities grant names the shipped default has that the vault copy lacks. Read-only \u2014 repair with profile_reseed (grants_only=true when missing_grants is the only finding).",
         "operationId": "profile_drift",
         "requestBody": {
           "content": {
@@ -2565,8 +2565,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
-        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile.",
+        "summary": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant names into the vault copy, preserving operator edits such as harness \u2014 use this when profile_drift's only finding is missing_grants.",
+        "description": "Overwrite one vault system profile with the version shipped in src/profiles/defaults/, keeping a .bak-<epoch> copy of the old file. The explicit repair for profile_drift findings \u2014 startup seeding is write-if-absent and will never do this for you. Also clears any delete-time retirement tombstone for the profile. Pass grants_only to instead additively merge only the missing ## Capabilities grant names into the vault copy, preserving operator edits such as harness \u2014 use this when profile_drift's only finding is missing_grants.",
         "operationId": "profile_reseed",
         "requestBody": {
           "content": {
@@ -11600,12 +11600,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
                 }
               }
             }
@@ -11739,12 +11734,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
                 }
               }
             }
@@ -12529,6 +12519,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskControlResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/phase-create": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Create the next ordered phase in a project (or under an epic). A phase is a container task: everything filed under phase N+1 waits until every child of phase N has completed, with no per-task dependency edges. Work joins a phase with 'aq task create --parent <phase-id>'.",
+        "description": "Create the next ordered phase in a project (or under an epic). A phase is a container task: everything filed under phase N+1 waits until every child of phase N has completed, with no per-task dependency edges. Work joins a phase with 'aq task create --parent <phase-id>'.",
+        "operationId": "phase_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseCreateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/phase-list": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List a project's phases in order, with each phase's status, blocked state and child counts.",
+        "description": "List a project's phases in order, with each phase's status, blocked state and child counts.",
+        "operationId": "phase_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhaseListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhaseListResponse"
                 }
               }
             }
@@ -13841,6 +13925,194 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtask-add": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Append one or more durable, non-schedulable checklist rows to a task. Subtasks are pure bookkeeping local to whichever agent owns the parent task -- they are never scheduled, claimed or assigned on their own.",
+        "description": "Append one or more durable, non-schedulable checklist rows to a task. Subtasks are pure bookkeeping local to whichever agent owns the parent task -- they are never scheduled, claimed or assigned on their own.",
+        "operationId": "task_subtask_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskAddResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtask-get": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Read one subtask by ordinal, including its context.",
+        "description": "Read one subtask by ordinal, including its context.",
+        "operationId": "task_subtask_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtask-update": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "description": "Set a subtask's status and/or note. Backs 'aq task subtask-done/start/skip'.",
+        "operationId": "task_subtask_update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtaskUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtaskUpdateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/subtasks": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "List a task's subtasks in order, with total and settled counts.",
+        "description": "List a task's subtasks in order, with total and settled counts.",
+        "operationId": "task_subtasks",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskSubtasksRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskSubtasksResponse"
                 }
               }
             }
@@ -15199,6 +15471,20 @@
             "type": "integer",
             "title": "Eligible Count",
             "default": 0
+          },
+          "blocked_count": {
+            "type": "integer",
+            "title": "Blocked Count",
+            "default": 0
+          },
+          "blocked": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Blocked",
+            "default": []
           }
         },
         "type": "object",
@@ -16431,6 +16717,11 @@
             "type": "object",
             "maxProperties": 5000,
             "title": "Manual Positions"
+          },
+          "expanded_initialised": {
+            "type": "boolean",
+            "title": "Expanded Initialised",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -17920,6 +18211,30 @@
             "description": "For worker-filed work, create at project root instead of defaulting beside the held task. Mutually exclusive with parent_id.",
             "default": false
           },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key",
+            "description": "File under the standing container keyed by this name, creating it if none is open (e.g. 'maintenance'), so automated work does not accumulate in the project root. Mutually exclusive with parent_id and root, and refused for worker sessions, which already file under the task they hold."
+          },
+          "parent_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Title",
+            "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
+          },
           "depends_on": {
             "anyOf": [
               {
@@ -18129,6 +18444,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
           },
           "depends_on": {
             "items": {
@@ -20776,6 +21102,30 @@
             ],
             "title": "Intelligence Class",
             "description": "Vault intelligence class for the task on create. A pinned profile is not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both apply only when this call creates the task."
+          },
+          "parent_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Key",
+            "description": "File the task under the standing container keyed by this name, creating it if none is open (e.g. 'maintenance'). Applies only when this call creates the task; a dedup replay returns the existing task untouched."
+          },
+          "parent_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Title",
+            "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
           }
         },
         "type": "object",
@@ -20828,6 +21178,17 @@
               }
             ],
             "title": "Reason"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
           }
         },
         "type": "object",
@@ -27101,6 +27462,37 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "HierarchyRefusalResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "HierarchyRefusalResponse",
+        "description": "The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and ``integration_owned`` names the\naudit ``references`` that make the task permanent. ``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
+      },
       "IdempotencyDTO": {
         "properties": {
           "supported": {
@@ -27807,6 +28199,38 @@
             "type": "integer",
             "title": "Agg Active",
             "default": 0
+          },
+          "subtasks_total": {
+            "type": "integer",
+            "title": "Subtasks Total",
+            "default": 0
+          },
+          "subtasks_settled": {
+            "type": "integer",
+            "title": "Subtasks Settled",
+            "default": 0
+          },
+          "phase_order": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Order"
+          },
+          "phase_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phase Label"
           }
         },
         "type": "object",
@@ -28769,6 +29193,17 @@
             "title": "Expanded",
             "default": []
           },
+          "root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root"
+          },
           "q": {
             "type": "string",
             "title": "Q",
@@ -28823,6 +29258,11 @@
           "layout_version": {
             "type": "integer",
             "title": "Layout Version"
+          },
+          "variant_applied": {
+            "type": "string",
+            "title": "Variant Applied",
+            "default": "active"
           }
         },
         "type": "object",
@@ -29099,6 +29539,17 @@
             "title": "Expanded",
             "default": []
           },
+          "root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Root"
+          },
           "q": {
             "type": "string",
             "title": "Q",
@@ -29117,7 +29568,7 @@
         },
         "type": "object",
         "title": "LocateRequest",
-        "description": "Where the matches for a filter are, in the geometry the canvas draws.\n\nCarries ``expanded`` for the same reason ``tiles`` and ``list`` are POSTs:\ncollapsing a container reflows everything after it, so a match's position\ndepends on the viewer's expanded set and cannot be answered from the\npersisted layout alone."
+        "description": "Where the matches for a filter are, in the geometry the canvas draws.\n\nCarries ``expanded`` and ``root`` for the same reason ``tiles`` and\n``list`` are POSTs: collapsing a container reflows everything after it\nand entering one re-packs its scope, so a match's position depends on\nthe viewer's own view state and cannot be answered from the persisted\nlayout alone."
       },
       "LocateResponse": {
         "properties": {
@@ -31703,6 +32154,205 @@
         "type": "object",
         "title": "PendingEventReplayDTO",
         "description": "What ``playbooks.v2_pending_event_replay_on_activation`` did here.\n\nAlways present on an activation response, including under the default\n``manual`` policy, so an empty backlog and a policy that never looked at\none are distinguishable without reading the daemon's config.\n``refused_reason`` is the fail-closed path: the policy is ``automatic``\nbut the activation was not a ready, enabled one \u2014 most importantly\n``question_required``, where an unreviewed playbook may not auto-consume\na backlog."
+      },
+      "PhaseCreateRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project to add the phase to."
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Phase title."
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label",
+            "description": "Short display label; defaults to the title."
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "Epic to nest the phase under. Omit for a phase at the project root."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "title"
+        ],
+        "title": "PhaseCreateRequest"
+      },
+      "PhaseCreateResponse": {
+        "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/PhaseRef"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase"
+        ],
+        "title": "PhaseCreateResponse"
+      },
+      "PhaseListRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": "Project to list phases for."
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id",
+            "description": "List the phases directly under this epic instead of the project root."
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "PhaseListRequest"
+      },
+      "PhaseListResponse": {
+        "properties": {
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseSummary"
+            },
+            "type": "array",
+            "title": "Phases",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "PhaseListResponse"
+      },
+      "PhaseRef": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "blocked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked By"
+          },
+          "blocked_by_all": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blocked By All",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "label"
+        ],
+        "title": "PhaseRef",
+        "description": "The phase ``phase_create`` just wrote."
+      },
+      "PhaseSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "is_blocked": {
+            "type": "boolean",
+            "title": "Is Blocked",
+            "default": false
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "label",
+          "order",
+          "status"
+        ],
+        "title": "PhaseSummary",
+        "description": "One phase as ``phase_list`` reports it."
       },
       "PlaybookActivateRequest": {
         "properties": {
@@ -35584,7 +36234,19 @@
               }
             ],
             "title": "Backup",
-            "description": "Keep a .bak-<epoch> copy of the replaced file (default true)"
+            "description": "Full reseed only: keep a .bak-<epoch> copy of the replaced file (default true)"
+          },
+          "grants_only": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grants Only",
+            "description": "Additive repair instead of a full overwrite: merge only the missing ## Capabilities grant names into the vault copy, keeping every other edit (default false). Refuses if the vault copy has no ## Capabilities section."
           }
         },
         "type": "object",
@@ -35624,6 +36286,45 @@
             "type": "boolean",
             "title": "Unretired",
             "default": false
+          },
+          "mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mode"
+          },
+          "added": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Added"
+          },
+          "changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed"
           },
           "warnings": {
             "anyOf": [
@@ -42551,6 +43252,12 @@
             "description": "",
             "default": false
           },
+          "skip_open_subtasks": {
+            "type": "boolean",
+            "title": "Skip Open Subtasks",
+            "description": "Flip any still-open subtasks (pending/in_progress) to skipped (note 'skipped at close') instead of refusing the close.",
+            "default": false
+          },
           "claim_epoch": {
             "anyOf": [
               {
@@ -44693,6 +45400,381 @@
         "type": "object",
         "title": "TaskStatusSummary"
       },
+      "TaskSubtask": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "project_id",
+          "ordinal",
+          "title",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskSubtask",
+        "description": "One durable checklist row under a task (``task_subtasks`` table)."
+      },
+      "TaskSubtaskAddRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id to add subtasks to. Omit to use the session's held task."
+          },
+          "subtasks": {
+            "items": {},
+            "type": "array",
+            "title": "Subtasks",
+            "description": "1 to 50 subtasks to append after the current max ordinal."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtasks"
+        ],
+        "title": "TaskSubtaskAddRequest"
+      },
+      "TaskSubtaskAddResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSubtaskWithContext"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "TaskSubtaskAddResponse"
+      },
+      "TaskSubtaskGetRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id the subtask belongs to. Omit to use the held task."
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal",
+            "description": "1-based subtask ordinal."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal"
+        ],
+        "title": "TaskSubtaskGetRequest"
+      },
+      "TaskSubtaskGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "subtask": {
+            "$ref": "#/components/schemas/TaskSubtaskWithContext"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtask"
+        ],
+        "title": "TaskSubtaskGetResponse"
+      },
+      "TaskSubtaskUpdateRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id the subtask belongs to. Omit to use the held task."
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal",
+            "description": "1-based subtask ordinal."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "New status."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "Optional note (e.g. why a subtask was skipped)."
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": "Current claim epoch; required for pool workers."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ordinal"
+        ],
+        "title": "TaskSubtaskUpdateRequest"
+      },
+      "TaskSubtaskUpdateResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "subtask": {
+            "$ref": "#/components/schemas/TaskSubtaskWithContext"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "settled": {
+            "type": "integer",
+            "title": "Settled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "subtask",
+          "total",
+          "settled"
+        ],
+        "title": "TaskSubtaskUpdateResponse"
+      },
+      "TaskSubtaskWithContext": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "title": "Ordinal"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "context": {
+            "type": "string",
+            "title": "Context",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "task_id",
+          "project_id",
+          "ordinal",
+          "title",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "TaskSubtaskWithContext"
+      },
+      "TaskSubtasksRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Task id to list subtasks for. Omit to use the session's held task."
+          }
+        },
+        "type": "object",
+        "title": "TaskSubtasksRequest"
+      },
+      "TaskSubtasksResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "subtasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSubtask"
+            },
+            "type": "array",
+            "title": "Subtasks",
+            "default": []
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "settled": {
+            "type": "integer",
+            "title": "Settled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "total",
+          "settled"
+        ],
+        "title": "TaskSubtasksResponse"
+      },
       "ThroughputMetrics": {
         "properties": {
           "completions_per_hour": {
@@ -44789,6 +45871,11 @@
             "type": "string",
             "title": "Status",
             "default": ""
+          },
+          "auto_expand": {
+            "type": "boolean",
+            "title": "Auto Expand",
+            "default": false
           }
         },
         "type": "object",
@@ -44850,6 +45937,25 @@
           "layout_version": {
             "type": "integer",
             "title": "Layout Version"
+          },
+          "variant_applied": {
+            "type": "string",
+            "title": "Variant Applied",
+            "default": "active"
+          },
+          "expanded_applied": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expanded Applied"
           }
         },
         "type": "object",
