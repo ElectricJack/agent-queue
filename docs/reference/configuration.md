@@ -85,6 +85,7 @@ aq system config schema
 | health_check, monitoring, logging, archive, auto_task | Health endpoint, task monitoring, logs, archival, and automatic task policy. | Operational settings; use the schema for bounds. |
 | security, api_auth, surface, state_machine, work_graph, integration | Security/auth, agent ergonomics, task-state enforcement, graph behavior, and delivery integration. | Current settings; not evidence that historical designs are active. |
 | swarm, resources, metrics, graph_layout | Pull pools, per-session limits/test slots, fleet metrics, and graph layout. | Resources defaults gate shared machine capacity. |
+| dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
 
 ## Reload and restart
@@ -103,7 +104,7 @@ aq system reload-config
 
 | Changes applied without daemon restart | Changes that require restart |
 |---|---|
-| agents_config, agent_profiles, archive, auto_task, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pause_retry, pricing, project_roots, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
+| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pause_retry, pricing, project_roots, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
 
 The dashboard/CLI editor reads raw YAML so ${NAME} references survive an edit. Its
 round-trip writer preserves comments, order, and quote style outside the changed section;

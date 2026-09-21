@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 348,
+    "leaf_commands": 349,
     "registration": {
       "generated": 245,
-      "handwritten": 103
+      "handwritten": 104
     },
     "ownership": {
-      "core": 309,
+      "core": 310,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 347
+      "supported": 348
     },
     "evidence_level": {
       "behavioral": 10,
       "dispatch": 245,
-      "registration": 93
+      "registration": 94
     },
     "acceptance_status": {
       "working": 55,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 292
+      "untested": 293
     }
   },
   "commands": [
@@ -854,6 +854,36 @@
           "--project",
           "--since",
           "--group-by",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq dashboard serve",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_serve",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--host",
+          "--port",
           "--json",
           "--brief",
           "--api-url"

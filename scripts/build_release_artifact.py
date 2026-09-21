@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -21,8 +22,36 @@ def project_version(project_root: Path) -> str:
     return version
 
 
-def stage_dashboard(source: Path, destination: Path, *, version: str) -> dict[str, object]:
-    """Copy a built Vite tree and write the exact release file manifest."""
+#: The URL path the dashboard is built for: the dashboard server serves it at
+#: the root, as the Vite dev server does (docs/specs/dashboard-server.md §4).
+DASHBOARD_BASE = "/"
+
+#: Build-time escape hatches that point a dashboard at a fixed daemon.  The
+#: released page talks only to its own origin (spec §3.1), so they are pinned
+#: empty: Vite never lets an ``.env*`` file override a variable that is already
+#: set, and every consumer treats an empty value as unset.
+DASHBOARD_URL_ESCAPE_HATCHES = ("VITE_API_URL", "VITE_WS_URL", "VITE_TERMINAL_WS_URL")
+
+
+def build_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the release dashboard is built with: no ``VITE_*_URL`` override."""
+    environment = {
+        name: value
+        for name, value in environ.items()
+        if not (name.startswith("VITE_") and name.endswith("_URL"))
+    }
+    environment.update(dict.fromkeys(DASHBOARD_URL_ESCAPE_HATCHES, ""))
+    return environment
+
+
+def stage_dashboard(
+    source: Path, destination: Path, *, version: str, base: str = DASHBOARD_BASE
+) -> dict[str, object]:
+    """Copy a built Vite tree and write the exact release file manifest.
+
+    ``base`` records the Vite base the tree was built for; the dashboard
+    server refuses a bundle whose manifest does not declare ``"/"``.
+    """
     index = source / "index.html"
     if not index.is_file():
         raise ValueError(f"dashboard build is missing {index}")
@@ -34,7 +63,12 @@ def stage_dashboard(source: Path, destination: Path, *, version: str) -> dict[st
         relative = path.relative_to(destination).as_posix()
         if relative != "aq-dashboard-manifest.json":
             files[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    manifest: dict[str, object] = {"schema_version": 1, "version": version, "files": files}
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "version": version,
+        "base": base,
+        "files": files,
+    }
     (destination / "aq-dashboard-manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -51,8 +85,12 @@ def main() -> int:
     root = args.project_root.resolve()
     source = args.source.resolve() if args.source else root / "dashboard" / "dist"
     if not (args.skip_build or args.source):
-        environment = {**os.environ, "AQ_DASHBOARD_EMBEDDED": "1"}
-        subprocess.run(["npm", "-w", "dashboard", "run", "build"], cwd=root, env=environment, check=True)
+        subprocess.run(
+            ["npm", "-w", "dashboard", "run", "build"],
+            cwd=root,
+            env=build_environment(os.environ),
+            check=True,
+        )
     manifest = stage_dashboard(
         source,
         root / "src" / "dashboard_assets" / "dist",
