@@ -85,7 +85,7 @@ delegate released, and it carries **no** foreign key to `tasks` or to
 | `disposition` | `cancelled` (operation was cancelled) \| `superseded` (it completed without this delegate) |
 | `previous_status` | what the ticket was before the release |
 | `reason` | the sentence shown to operators |
-| `released_by` | `integration_service` \| `integration_abort` \| `doctor` |
+| `released_by` | `integration_service` \| `integration_abort` \| `integration_cancel_preserving` \| `integration_release_delegates` \| `doctor` |
 | `released_at` | clock |
 | `cleanup` | what the delegate still holds (`{"state": …, "blockers": […]}`) |
 
@@ -112,8 +112,9 @@ left in place; it is a subset and costs one indexed lookup.
 
 ## 5. The release
 
-`src/integration/delegate_release.py` owns one implementation, used by all three
-callers.
+`src/integration/delegate_release.py` owns one implementation, used by every
+caller: the reconciliation tick, `integration_abort`, `cancel_preserving`, the
+scoped operator command and the doctor fix.
 
 ```
 release_delegates(db, *, now, operation_ids=None, released_by, limit=100) -> list[Release]
@@ -139,7 +140,9 @@ branch owners and workspace locks. A retained owner or lock is **reported** as a
 named cleanup blocker, never released here — `aq task explain` re-reads it live.
 
 `RepairService.retire_terminal_delegates` becomes a thin call into this, so the
-orchestrator tick, the abort path and doctor cannot drift apart.
+orchestrator tick, the abort path, the operator command and doctor cannot drift
+apart. Three callers settling a delegate three slightly different ways is how an
+earlier version left tickets `PAUSED` that a later one had to roll forward.
 
 ### 5.1 Cancelling releases in the same transaction
 
@@ -148,7 +151,17 @@ releases that operation's delegates in the **same** transaction, `released_by =
 integration_abort`. Acceptance criterion: cancelling an operation leaves no
 integration-owned delegate behind — not "leaves one until the next tick".
 
-### 5.2 `aq doctor --check integration.stranded_delegates [--fix]`
+### 5.2 `aq integration release-delegates OPERATION_ID`
+
+The scoped operator control, LOCAL authority only
+(`IntegrationRecoveryControls.release_delegates`, contract
+`integration_release_delegates`). Outcomes: `released`, `nothing_to_release`,
+`invalid_state` (the operation is still running — stop it first), `not_found`.
+`aq integration retry-cleanup` is deliberately *not* overloaded for this: it
+requeues `integration_cleanup_items` for a batch, which is a different subject
+with a different identity.
+
+### 5.3 `aq doctor --check integration.stranded_delegates [--fix]`
 
 Reports delegate tasks of an ended operation that are still non-terminal and
 have no live writer — exactly the set `release_delegates` would settle. `--fix`
@@ -197,6 +210,9 @@ the crash is silent to re-introduce.
 - the audit row survives deleting the delegate task;
 - release is idempotent — a second pass returns nothing and rewrites nothing;
 - doctor reports, `--fix` releases, and re-running reports clean;
+- `aq integration release-delegates` refuses a running operation, settles one
+  ended operation without touching another, and then reports
+  `nothing_to_release`;
 - `resume_task` / `restart_task` / `delete_task` name the operation and the
   remedy;
 - deleting a task that has a session row succeeds and keeps the session with

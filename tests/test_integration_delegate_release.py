@@ -382,6 +382,51 @@ async def test_aborting_an_operation_leaves_no_owned_delegate_behind(db):
     await db.delete_task("delegate")
 
 
+# -- the scoped operator command ---------------------------------------------
+
+
+async def test_release_delegates_command_refuses_a_running_operation(db):
+    from src.integration.controls import IntegrationControlService
+
+    await _cancelled_operation_with_delegate(db, state="active")
+    result = await IntegrationControlService(db, clock=lambda: 700.0).release_delegates(
+        "operation"
+    )
+    assert result["outcome"] == "invalid_state"
+    assert (await db.get_task("delegate")).status == TaskStatus.BLOCKED
+
+
+async def test_release_delegates_command_settles_one_operation_then_reports_nothing(db):
+    from src.integration.controls import IntegrationControlService
+
+    await _cancelled_operation_with_delegate(db)
+    await _task(db, "other-delegate", TaskStatus.BLOCKED)
+    async with db.immediate() as conn:
+        await _operation(conn, operation_id="other", parent_task_id=None, batch_id="batch")
+        await _stage(conn, operation_id="other", repair_task_id="other-delegate")
+
+    controls = IntegrationControlService(db, clock=lambda: 700.0)
+    assert await controls.release_delegates("missing") == {
+        "outcome": "not_found",
+        "operation_id": "missing",
+    }
+
+    released = await controls.release_delegates("operation")
+    assert released["outcome"] == "released"
+    assert released["released_delegates"] == ["delegate"]
+    assert released["project_id"] == "p"
+    assert (await db.get_task("delegate")).status == TaskStatus.FAILED
+    # Scoped: the other ended operation's delegate is untouched.
+    assert (await db.get_task("other-delegate")).status == TaskStatus.BLOCKED
+
+    repeat = await controls.release_delegates("operation")
+    assert repeat["outcome"] == "nothing_to_release"
+    assert repeat["released_delegates"] == []
+    async with db._engine.connect() as conn:
+        rows = (await conn.execute(select(integration_delegate_releases))).mappings().all()
+    assert [row["released_by"] for row in rows] == ["integration_release_delegates"]
+
+
 # -- §5.2 doctor -------------------------------------------------------------
 
 

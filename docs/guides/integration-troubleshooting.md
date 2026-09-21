@@ -238,7 +238,8 @@ nothing waits on it, and nobody will ever close it.
 
 ```bash
 aq doctor --check integration.stranded_delegates          # who is stuck, and why
-aq doctor --check integration.stranded_delegates --fix    # settle them
+aq doctor --check integration.stranded_delegates --fix    # settle all of them
+aq integration release-delegates OPERATION_ID             # settle just one operation's
 ```
 
 The fix retires each ticket as a terminal **non-success** — never a
