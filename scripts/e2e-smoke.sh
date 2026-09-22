@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Tier 1 functional-test kit: eighteen scenarios, no LLM.
+# Tier 1 functional-test kit: nineteen scenarios, no LLM.
 #
 #   scripts/e2e-env.sh --reset
 #   scripts/e2e-daemon.sh start
-#   scripts/e2e-smoke.sh            # all eighteen
+#   scripts/e2e-smoke.sh            # all nineteen
 #   scripts/e2e-smoke.sh S2 S8      # just these
 #
 # Starts the daemon itself if one is not already up, and stops whatever it
@@ -12,7 +12,7 @@
 #
 # Refuses to run the scenarios at all unless the daemon can query its schema
 # (scripts/e2e/probe.py), so a broken environment fails as one clear error
-# rather than as eighteen scenarios that look like product regressions.
+# rather than as nineteen scenarios that look like product regressions.
 #
 # Exits non-zero if any scenario fails.  See docs/guides/e2e-swarm.md.
 set -uo pipefail

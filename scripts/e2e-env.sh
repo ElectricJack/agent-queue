@@ -381,6 +381,60 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 - On `session_exhausted` or `drain_requested`, run `aq session drain-ack`.
 MD
 
+# S19 exercises the scoped graph capability through a session token. The
+# production planner is task-lifecycle, while the fake-provider kit needs a
+# pullable session for its CLI runner to impersonate, so this fixture keeps
+# the planner's capability contract but gives it a tiny pool.
+mkdir -p "$E2E_VAULT/agent-types/planner"
+cat > "$E2E_VAULT/agent-types/planner/profile.md" <<'MD'
+---
+id: planner
+name: "E2E Planner"
+tags: [profile, agent-type, e2e]
+---
+
+# E2E Planner
+
+## Role
+Plan a graph only beneath the task currently held by this session.
+
+## Config
+```json
+{
+  "harness": "claude",
+  "lifecycle": "pool",
+  "default_class": "fast-high",
+  "min_active": 0,
+  "max_active": 1,
+  "max_claims_per_session": 1,
+  "needs_workspace": true,
+  "workspaces": ["project-repo"]
+}
+```
+
+## Capabilities
+```json
+{
+  "harness_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+  "aq_commands": [
+    "create_task_graph",
+    "prime",
+    "session_drain_ack",
+    "task_claim",
+    "task_children",
+    "task_close",
+    "task_heartbeat",
+    "task_show"
+  ],
+  "plugin_tools": []
+}
+```
+
+## Rules
+- A graph may only create direct children of the held planning task.
+- Supply a filing reason, use dry-run first, and never retry an ambiguous result.
+MD
+
 # `review-and-fix` names `reviewer` and `coding` as node profiles; graph
 # validation resolves both against the DB, so the vault must carry them.
 #

@@ -59,11 +59,13 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 18 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 19 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
 outage against two fake providers; `S17` cooks and works a phased graph; and
 `S18` proves the reviewed supervisor failure-triage playbook against a real
-terminal worker close.
+terminal worker close. `S19` uses a planner's authenticated session token to
+file a graph, prove root/cross-project/foreign-parent denials, race two graph
+batches at quota, and work a graph-seeded checklist through prime and close.
 Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
@@ -111,7 +113,7 @@ PASS S17 phased graph (...)
 PASS S18 supervisor failure triage (...)
      task.failed completed the reviewed playbook run and queued one durable supervisor notice
 
-18/18 scenarios passed
+19/19 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -135,7 +137,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 18 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 19 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -419,7 +421,7 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the eighteen scenarios then run against an empty database
+serving `/api/health`; the nineteen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
 eighteen product regressions rather than one broken environment.
 
