@@ -1,0 +1,2 @@
+# Config profile overlays, deep-merged when AGENT_QUEUE_PROFILE is set.
+# Contents are gitignored; only this file is tracked.

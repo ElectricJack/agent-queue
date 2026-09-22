@@ -77,11 +77,71 @@ write_files:
                 --secret="${database_url_secret}" \
                 --project="${project_id}")"
 
+      # --- forge credentials -------------------------------------------------
+      # Optional and independent: an unset secret id leaves the corresponding
+      # path disabled, and the daemon boots exactly as it would without it.
+      #
+      # These live on the persistent disk rather than in the image or the
+      # environment. The GitHub App private key has to be a file — AQ validates
+      # integration config before environment substitution precisely so key
+      # material cannot be inlined — so it is fetched here, written 0600, and
+      # mounted read-only into the container.
+      SECRETS_DIR="$DATA_MNT/secrets"
+      PROFILES_DIR="$DATA_MNT/profiles"
+      install -d -m 0700 -o 1000 -g 1000 "$SECRETS_DIR" "$PROFILES_DIR"
+
+      GITHUB_APP_SECRET="${github_app_secret}"
+      GH_TOKEN_SECRET="${gh_token_secret}"
+
+      if [ -n "$GITHUB_APP_SECRET" ]; then
+          echo "fetching GitHub App private key"
+          umask 077
+          gcloud secrets versions access latest \
+              --secret="$GITHUB_APP_SECRET" \
+              --project="${project_id}" > "$SECRETS_DIR/github-app.pem"
+          chown 1000:1000 "$SECRETS_DIR/github-app.pem"
+          chmod 0600 "$SECRETS_DIR/github-app.pem"
+          umask 022
+
+          # A config *profile overlay*, deep-merged over the baked template by
+          # load_config when AGENT_QUEUE_PROFILE is set. Writing it only when
+          # the App is configured is what keeps this strictly additive: no
+          # overlay, no behaviour change, and no missing-variable failure.
+          cat > "$PROFILES_DIR/gcp.yaml" <<PROFILEEOF
+      integration:
+        github_app:
+          app_id: "${github_app_id}"
+          client_id: "${github_app_client_id}"
+          installation_id: "${github_app_installation_id}"
+          private_key_path: /secrets/github-app.pem
+      PROFILEEOF
+          chown 1000:1000 "$PROFILES_DIR/gcp.yaml"
+          AQ_PROFILE_LINE="AGENT_QUEUE_PROFILE=gcp"
+      else
+          # Never point at a profile that does not exist: load_config raises
+          # FileNotFoundError and the daemon refuses to start.
+          rm -f "$PROFILES_DIR/gcp.yaml"
+          AQ_PROFILE_LINE="# AGENT_QUEUE_PROFILE unset: no GitHub App configured"
+      fi
+
+      GH_TOKEN_LINE="# GH_TOKEN unset: using the GitHub App, or no forge access"
+      if [ -n "$GH_TOKEN_SECRET" ]; then
+          echo "fetching GH_TOKEN"
+          GH_TOKEN_VALUE="$(gcloud secrets versions access latest \
+              --secret="$GH_TOKEN_SECRET" --project="${project_id}")"
+          GH_TOKEN_LINE="GH_TOKEN=$GH_TOKEN_VALUE"
+      fi
+
       umask 077
       cat > "$CHECKOUT/deploy/.env" <<ENVEOF
       AQ_DATABASE_URL=$DSN
       AQ_HARNESSES=${harnesses}
       AQ_DASHBOARD_PORT=${dashboard_port}
+      $AQ_PROFILE_LINE
+      $GH_TOKEN_LINE
+      # Bind mounts for the credential file and the config overlay above.
+      AQ_SECRETS_DIR=$SECRETS_DIR
+      AQ_PROFILES_DIR=$PROFILES_DIR
       ENVEOF
       umask 022
 

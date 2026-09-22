@@ -214,11 +214,12 @@ For a private repository this clone needs a credential on the VM — see
 
 #### What you still have to do by hand
 
-- **A GitHub App private key, or a `GH_TOKEN`, if you want forge access.**
-  cloud-init fetches only the database DSN from Secret Manager, so anything else
-  is placed on the box manually and the daemon restarted.
 - **Branch protection** on the default branch — the layer that actually
-  constrains what agents can publish.
+  constrains what agents can publish, and the only one that survives an agent
+  with a shell.
+
+Forge credentials are no longer manual: see
+[Wiring the App into a GCP deployment](#wiring-the-app-into-a-gcp-deployment).
 
 ### The decisions inside it
 
@@ -591,6 +592,48 @@ strips the `AQ_INTEGRATION_GITHUB_APP_*` prefix from every child environment,
 commented so that a worker-controlled harness "cannot opt them back in". That is
 the point, not a limitation: the daemon publishes, agents do not.
 
+#### Wiring the App into a GCP deployment
+
+Terraform never handles the key. You create the secret yourself, so the key
+material never enters Terraform state — which is plaintext, and already a
+reason to use a remote backend for the database password.
+
+```bash
+# 1. Upload the PEM you downloaded from GitHub
+gcloud secrets create agent-queue-github-app-key \
+  --data-file=./your-app.private-key.pem
+
+# 2. Point Terraform at it. App ID, client ID and installation ID are not
+#    secret; the installation ID is in the URL when you view the installation.
+cat >> terraform.tfvars <<'EOF'
+github_app_secret_id       = "agent-queue-github-app-key"
+github_app_id              = "123456"
+github_app_client_id       = "Iv1.abc123"
+github_app_installation_id = "87654321"
+EOF
+
+terraform apply
+```
+
+On the next boot cloud-init reads the secret with the VM's service account,
+writes it to the data disk at `0600`, and generates a **config profile
+overlay** — `profiles/gcp.yaml` carrying just the `integration.github_app`
+block — which `load_config` deep-merges over the baked template when
+`AGENT_QUEUE_PROFILE` is set. The compose stack mounts both read-only at
+`/secrets` and `/etc/agent-queue/profiles`.
+
+The overlay is what makes this safe to ship on by default: **with no App
+configured, no overlay is written, `AGENT_QUEUE_PROFILE` stays unset, and the
+daemon boots exactly as it would have.** `terraform plan` is unchanged at 22
+resources until you set `github_app_secret_id`.
+
+`gh_token_secret_id` follows the same shape for the PAT fallback, landing in
+`.env` as `GH_TOKEN`. Prefer the App.
+
+Locally, `deploy/secrets/` and `deploy/profiles/` are the same mount points —
+drop a key and an overlay there and set `AGENT_QUEUE_PROFILE` in `.env`.
+Contents are gitignored.
+
 #### Why not a personal access token
 
 `GH_TOKEN` / `GITHUB_TOKEN` sits in `HARNESS_CREDENTIAL_ALLOWLIST`, commented
@@ -729,11 +772,6 @@ docker compose -f docker-compose.prod.yml exec -T daemon cat -v /data/agent-queu
 - Embeddings default to a local Ollama, which is not in this stack — repoint at a
   hosted embedding API before enabling memory.
 - No automated backup of the data volume yet; the vault lives there.
-- **Secrets other than the database DSN are not delivered to the VM.**
-  `cloud-init.yaml` fetches `AQ_DATABASE_URL` from Secret Manager and nothing
-  else, so a GitHub App private key or a `GH_TOKEN` has to be placed on the box
-  by hand and the daemon restarted. Closing this means a second Secret Manager
-  entry and a few lines in the bootstrap.
 - **`terraform apply` has never been run.** `validate` passes and `plan`
   succeeds against a real project, but first boot is untested — cloud-init in
   particular.

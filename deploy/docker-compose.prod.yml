@@ -63,6 +63,14 @@ services:
       # gh for every PR and CI-gate operation, so losing this on rebuild would
       # break merges rather than just logins.
       - aq-gh:/home/aq/.gh
+      # Credential files and config overlays, both read-only. A GitHub App
+      # private key must be a file — AQ validates integration config *before*
+      # environment substitution so key material cannot be inlined — and the
+      # overlay is deep-merged over the baked config when AGENT_QUEUE_PROFILE
+      # is set. Both default to empty local directories, so a deployment that
+      # configures neither behaves exactly as before.
+      - ${AQ_SECRETS_DIR:-./secrets}:/secrets:ro
+      - ${AQ_PROFILES_DIR:-./profiles}:/etc/agent-queue/profiles:ro
     # No `ports:` — the API is reached through the dashboard container only.
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health || exit 1"]

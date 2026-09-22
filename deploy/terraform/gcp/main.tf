@@ -236,6 +236,25 @@ resource "google_project_iam_member" "vm_telemetry" {
   member  = "serviceAccount:${google_service_account.vm.email}"
 }
 
+# --- Forge credential access -------------------------------------------------
+#
+# These secrets are created out of band, so their contents never enter
+# Terraform state. All Terraform does is let the VM read them.
+
+resource "google_secret_manager_secret_iam_member" "vm_reads_github_app_key" {
+  count     = var.github_app_secret_id == "" ? 0 : 1
+  secret_id = var.github_app_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "vm_reads_gh_token" {
+  count     = var.gh_token_secret_id == "" ? 0 : 1
+  secret_id = var.gh_token_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm.email}"
+}
+
 # --- The data disk -----------------------------------------------------------
 #
 # Separate from the instance on purpose: it is the thing that must survive.
@@ -327,12 +346,23 @@ resource "google_compute_instance" "vm" {
       dashboard_port      = var.dashboard_port
       database_url_secret = google_secret_manager_secret.database_url.secret_id
       project_id          = var.project_id
+
+      # Empty disables each path; cloud-init writes the config overlay only
+      # when the App secret is set, so an unconfigured deployment boots with no
+      # overlay and no behaviour change.
+      github_app_secret          = var.github_app_secret_id
+      github_app_id              = var.github_app_id
+      github_app_client_id       = var.github_app_client_id
+      github_app_installation_id = var.github_app_installation_id
+      gh_token_secret            = var.gh_token_secret_id
     })
   }
 
   depends_on = [
     google_secret_manager_secret_version.database_url,
     google_secret_manager_secret_iam_member.vm_reads_dsn,
+    google_secret_manager_secret_iam_member.vm_reads_github_app_key,
+    google_secret_manager_secret_iam_member.vm_reads_gh_token,
     google_compute_router_nat.nat,
   ]
 }

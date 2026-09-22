@@ -69,3 +69,10 @@ deploy/terraform/**/*.tfplan
 deploy/terraform/**/terraform.tfvars
 deploy/terraform/**/*.auto.tfvars
 !deploy/terraform/**/terraform.tfvars.example
+
+# Credential files and generated config overlays mounted into the daemon.
+# Only the .gitkeep markers are tracked.
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+deploy/profiles/*
+!deploy/profiles/.gitkeep

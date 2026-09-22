@@ -143,6 +143,66 @@ variable "db_deletion_protection" {
   default     = true
 }
 
+# --- Forge credentials -------------------------------------------------------
+#
+# Terraform never handles the key material. You create the secret yourself, so
+# it is never written to Terraform state — which is plaintext and, for the
+# database password, already a reason to move to a remote backend:
+#
+#   gcloud secrets create agent-queue-github-app-key --data-file=private-key.pem
+#
+# Terraform only grants the VM permission to read it, and cloud-init writes it
+# to the data disk for the daemon to mount.
+
+variable "github_app_secret_id" {
+  description = <<-EOT
+    Secret Manager secret holding the GitHub App PEM private key. Empty
+    disables the App path entirely and the daemon boots exactly as it would
+    without one.
+
+    The key must be a file: `validate_github_app_raw_config` runs *before*
+    environment substitution specifically so key material cannot be inlined in
+    configuration, so the $${VAR} mechanism that carries the database DSN does
+    not work here.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "github_app_id" {
+  description = "GitHub App ID. Not secret. Required when github_app_secret_id is set."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_client_id" {
+  description = "GitHub App client ID. Not secret."
+  type        = string
+  default     = ""
+}
+
+variable "github_app_installation_id" {
+  description = <<-EOT
+    Installation ID — the App as installed on your repositories, which is what
+    scopes it. Visible in the URL when viewing the installation. Not secret.
+
+    One installation is expressible, so repositories spread across several
+    GitHub organisations are not.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "gh_token_secret_id" {
+  description = <<-EOT
+    Optional Secret Manager secret holding a GH_TOKEN, for the personal access
+    token fallback. Prefer the App: a token here is inherited by every agent
+    session on every project. See deploy/README.md.
+  EOT
+  type        = string
+  default     = ""
+}
+
 # --- Application -------------------------------------------------------------
 
 variable "repo_url" {
