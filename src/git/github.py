@@ -859,8 +859,7 @@ class GitHubClient:
         return oid
 
     async def exact_pull_request(self, *, number: int) -> dict[str, Any] | None:
-        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-            raise ValueError("pull request number must be positive")
+        number = _validated_pull_request_number(number)
         try:
             payload = await self.request_json(
                 "GET", f"/repositories/{self.repository.repository_id}/pulls/{number}"
@@ -870,26 +869,34 @@ class GitHubClient:
                 return None
             raise
         head = payload.get("head")
-        repo = head.get("repo") if isinstance(head, dict) else None
+        head_repository = head.get("repo") if isinstance(head, dict) else None
+        base = payload.get("base")
+        base_repository = base.get("repo") if isinstance(base, dict) else None
         sha = head.get("sha") if isinstance(head, dict) else None
+        expected_url = f"https://github.com/{self.repository.full_name}/pull/{number}"
         if (
-            not isinstance(repo, dict)
-            or _strict_positive_int(repo.get("id")) is None
-            or not isinstance(repo.get("full_name"), str)
+            not isinstance(head_repository, dict)
+            or _strict_positive_int(head_repository.get("id")) is None
+            or not isinstance(head_repository.get("full_name"), str)
+            or not isinstance(base_repository, dict)
+            or _strict_positive_int(base_repository.get("id")) != self.repository.repository_id
+            or base_repository.get("full_name") != self.repository.full_name
             or not isinstance(sha, str)
             or re.fullmatch(r"[0-9a-f]{40}", sha) is None
             or payload.get("number") != number
+            or payload.get("html_url") != expected_url
             or payload.get("state") not in {"open", "closed"}
         ):
             raise GitHubAccessError("conflict_or_invalid", "GitHub PR identity was malformed")
         return {
-            "repository_numeric_id": repo["id"],
-            "repository_full_name": repo["full_name"],
+            "repository_numeric_id": head_repository["id"],
+            "repository_full_name": head_repository["full_name"],
             "head_sha": sha,
             "state": payload["state"],
         }
 
     async def has_comment_marker(self, *, number: int, marker: str) -> bool:
+        number = _validated_pull_request_number(number)
         if not marker or "\n" in marker:
             raise ValueError("comment marker must be one non-empty line")
         path = (
@@ -901,6 +908,7 @@ class GitHubClient:
         return False
 
     async def comment_pull_request(self, *, number: int, marker: str, body: str) -> None:
+        number = _validated_pull_request_number(number)
         if marker not in body:
             raise ValueError("delivery comment must contain its stable marker")
         await self.request_json(
@@ -911,6 +919,7 @@ class GitHubClient:
         )
 
     async def close_pull_request(self, *, number: int) -> None:
+        number = _validated_pull_request_number(number)
         payload = await self.request_json(
             "PATCH",
             f"/repositories/{self.repository.repository_id}/pulls/{number}",
@@ -923,6 +932,7 @@ class GitHubClient:
         marker = self._audit_marker(idempotency_key)
         path = f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
         if branch is not None:
+            _validated_short_head(branch, label="audit PR branch")
             owner = self.repository.full_name.split("/", 1)[0]
             path += "&head=" + quote(f"{owner}:{branch}", safe="")
         pulls = await self.paged_list(path)
@@ -931,7 +941,12 @@ class GitHubClient:
             return None
         if len(matches) != 1:
             raise GitHubAccessError("conflict_or_invalid", "audit PR marker was not unique")
-        return self._audit_pull_request(matches[0], idempotency_key)
+        result = self._audit_pull_request(matches[0], idempotency_key)
+        if branch is not None and result.head_branch != branch:
+            raise GitHubAccessError(
+                "conflict_or_invalid", "GitHub audit PR branch identity did not match"
+            )
+        return result
 
     async def create_audit_pr(
         self,
@@ -952,13 +967,12 @@ class GitHubClient:
             or repository_full_name != self.repository.full_name
         ):
             raise GitHubAccessError("credentials", "candidate repository binding did not match")
-        if (
-            not branch
-            or branch.startswith("refs/")
-            or not base_branch
-            or base_branch.startswith("refs/")
-            or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None
-        ):
+        try:
+            _validated_short_head(branch, label="candidate audit branch")
+            _validated_short_head(base_branch, label="candidate audit base")
+        except ValueError as exc:
+            raise ValueError("candidate audit ref identity was malformed") from exc
+        if re.fullmatch(r"[0-9a-f]{40}", head_sha) is None:
             raise ValueError("candidate audit ref identity was malformed")
         marker = self._audit_marker(idempotency_key)
         pulls = await self.paged_list(
@@ -1022,8 +1036,14 @@ class GitHubClient:
             expected_statuses={201},
         )
         result = self._audit_pull_request(payload, idempotency_key)
-        if result.head_sha != head_sha:
-            raise GitHubAccessError("conflict_or_invalid", "audit PR head did not match candidate")
+        if (
+            result.head_sha != head_sha
+            or result.head_branch != branch
+            or result.base_branch != base_branch
+        ):
+            raise GitHubAccessError(
+                "conflict_or_invalid", "audit PR target did not match candidate"
+            )
         return result
 
     @staticmethod
@@ -1038,6 +1058,7 @@ class GitHubClient:
         head = payload.get("head")
         base = payload.get("base")
         repository = head.get("repo") if isinstance(head, dict) else None
+        base_repository = base.get("repo") if isinstance(base, dict) else None
         number = _strict_positive_int(payload.get("number"))
         expected_url = (
             f"https://github.com/{self.repository.full_name}/pull/{number}"
@@ -1052,6 +1073,15 @@ class GitHubClient:
             or not isinstance(repository, dict)
             or _strict_positive_int(repository.get("id")) != self.repository.repository_id
             or repository.get("full_name") != self.repository.full_name
+            or (
+                base_repository is not None
+                and (
+                    not isinstance(base_repository, dict)
+                    or _strict_positive_int(base_repository.get("id"))
+                    != self.repository.repository_id
+                    or base_repository.get("full_name") != self.repository.full_name
+                )
+            )
             or re.fullmatch(r"[0-9a-f]{40}", str(head.get("sha") or "")) is None
             or not isinstance(head.get("ref"), str)
             or not head["ref"]
@@ -1224,6 +1254,24 @@ def _command_error(returncode: int, diagnostic: str) -> GitHubAccessError:
 
 def _strict_positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def _validated_pull_request_number(value: Any) -> int:
+    number = _strict_positive_int(value)
+    if number is None:
+        raise ValueError("pull request number must be positive")
+    return number
+
+
+def _validated_short_head(value: Any, *, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.startswith("refs/")
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError(f"{label} must be a short head name")
+    return value
 
 
 __all__ = [
