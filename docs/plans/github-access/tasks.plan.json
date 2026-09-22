@@ -1,0 +1,1100 @@
+{
+  "version": 1,
+  "project": "agent-queue",
+  "issue": "https://github.com/ElectricJack/agent-queue/issues/615",
+  "spec": "projects/agent-queue/specs/github-access-615.md",
+  "epics": [
+    {
+      "key": "foundation",
+      "title": "Epic 1/5: GitHub access — shared credentials and gh runner",
+      "sections": "§§2–7",
+      "depends_on": [],
+      "outcome": "A reusable credential service and one bounded, isolated gh runner are composed and tested, with explicit repository/auth identity and no App-to-PAT fallback.",
+      "nodes": [
+        {
+          "key": "contracts",
+          "title": "Publish the GitHub access spec and define shared auth/binding contracts",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nPublish the approved-direction specification from the vault snapshot into docs/specs/github-access.md and its index if missing from the worker checkout. Inventory every production GitHub API/gh launcher and network-Git caller. Record ownership, final module layout, current gh version baseline and migration handoffs in docs/plans/github-access/implementation-notes.md. Introduce the small shared binding, safe-error and non-secret credential-identity contracts needed by the provider and runner without changing production auth selection. Include onboarding, gists, constructor fallbacks and integration auth_mode policy consumers.",
+          "acceptance": [
+            "The repository spec is available to subsequent worker checkouts and matches the vault execution snapshot; existing local edits are preserved.",
+            "The inventory covers both GitHub API calls and Git clone/fetch/push/delete consumers with a named migration owner.",
+            "Provider/runner/client contracts distinguish app versus existing_login independently of transport and have an acyclic dependency layout.",
+            "No new transport backend switch, credential persistence, schema migration, or worker credential injection is introduced."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "2. Decisions and scope"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "docs/specs/github-access.md"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "docs/plans/github-access/implementation-notes.md"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "credentials",
+          "title": "Extract App bootstrap and implement unified credential selection",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nImplement GitHubAuth and AppTokenProvider using the contracts from contracts. Preserve key ownership/mode validation and fixed permission set; restrict bootstrap HTTP to App identity and token mint endpoints. Implement repository-scoped cache keys, expiry refresh/coalescing and candidate credential handoff for later gh-based binding. Existing-login mode delegates PAT discovery to gh and never extracts the PAT. Keep compatibility adapters only while downstream consumers migrate.",
+          "acceptance": [
+            "Configured App mode overrides ambient credentials, and any mint/permission/binding failure prevents fallback.",
+            "Token mint responses are rejected on repository, identity, permission or expiry mismatch; secrets remain memory-only.",
+            "Concurrent requests coalesce refresh and cannot mix repository or installation credentials.",
+            "Stored gh login and environment token precedence remain intact in existing-login mode; no gh auth login/logout/token side effects."
+          ],
+          "needs": [
+            "contracts"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "3. Operator behavior and compatibility"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6. Credential lifecycle"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/github_auth.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/git/github_app.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "tests/test_github_auth.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_auth.py tests/test_github_app.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "runner",
+          "title": "Implement the single isolated gh subprocess runner",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nImplement GhRunner in src/git/github_cli.py from the shared contracts, using injected fake credentials until credentials is integrated. Own executable resolution, explicit repository/host targeting, controlled cwd, per-call environment, stdin, streaming output limits and deadlines. In App mode isolate gh configuration, override ambient tokens and disable debug/interactive behavior. Preserve PAT config/keychain discovery in existing-login mode. Handle cancellation and descendants; retain intact machine results but scrub all diagnostics.",
+          "acceptance": [
+            "All command construction uses argument arrays and sends JSON/PR bodies on stdin; secrets never appear in argv or logs.",
+            "Concurrent App operations use separate environments and leave parent/shared state unchanged.",
+            "Tests cover poisoned GH_REPO/host/Git overrides, no personal-login fallback, missing executable, output limits, timeouts and descendant cleanup.",
+            "The supported gh 2.45 baseline is retained; no dependency on newer slurp/PR fields is introduced."
+          ],
+          "needs": [
+            "contracts"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/github_cli.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_runner.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_runner.py tests/test_github_cli.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "binding",
+          "title": "Compose shared authentication and repository binding safely",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nCompose provider and runner into one reusable service construction path. Verify newly minted candidate credentials via gh api before exposing a ready repository binding, avoiding refresh-lock recursion. Resolve targets from trusted project/task context and canonical URL parsing. Add one safe authentication retry for reads using token-generation invalidation; expose status and auth identity without personal /user checks in App mode. Keep production consumer cutover for epic 2.",
+          "acceptance": [
+            "Binding rejects a foreign PR/repository/host and verifies numeric ID/full-name consistency.",
+            "Candidate verification uses the newly minted token and shared runner without a recursive provider call or deadlock.",
+            "Read retries refresh at most once and reuse an already refreshed generation; writes are never blindly replayed.",
+            "The composition exposes startup/restart-bound configuration and has tests for simultaneous repositories and available-but-unused PATs."
+          ],
+          "needs": [
+            "credentials",
+            "runner"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "3. Operator behavior and compatibility"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6. Credential lifecycle"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "tests/test_github_auth.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_runner.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_auth.py tests/test_github_runner.py tests/test_github_app.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        }
+      ]
+    },
+    {
+      "key": "repository",
+      "title": "Epic 2/5: GitHub access — shared repository client and integration",
+      "sections": "§§4–7, 9–10",
+      "depends_on": [
+        "foundation"
+      ],
+      "outcome": "Integration and ordinary callers can use one repository-bound client through gh api, preserving App-specific trust checks and exact repository authority.",
+      "nodes": [
+        {
+          "key": "client",
+          "title": "Implement shared repository API responses and bounded pagination",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nImplement GitHubClient in src/git/github.py using GhRunner. Move repository operations shared between GitHubAppClient and GitHubCLIClient into this client. Preserve endpoint containment, expected HTTP statuses and error categories. Decode gh api --include responses including empty 204 and bounded text logs. Validate each pagination link and enforce page/aggregate byte limits before further downloads; test redirect credential safety and gh version compatibility.",
+          "acceptance": [
+            "A single client implementation serves App and existing-login credentials with one parameterized operation suite.",
+            "Expected-status validation, empty responses, rate-limit headers, text logs and multi-page JSON retain their semantics.",
+            "Foreign hosts/namespaces, encoded path escapes and unsafe next links are rejected.",
+            "Pagination and output are bounded before unbounded resources are consumed, and raw diagnostics cannot disclose supplied credentials."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6.3 Failure and replay"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/github.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_client.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_client.py tests/test_github_runner.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "integration_ops",
+          "title": "Move integration repository operations onto the shared client",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nMigrate exact ref/PR reads, audit PR lookup/revision reconciliation, comments, close operations, checks and CI observation to GitHubClient. Keep markers, immutable SHA/repository checks and uncertain-write reconciliation as domain logic around shared primitives. Update factories/interfaces without adding parallel App-specific operations. Preserve temporary forwarding compatibility until core composition is switched by integration_wiring.",
+          "acceptance": [
+            "Audit PR creation/reuse/revision/close and comments preserve marker uniqueness and head/base/repository identity checks.",
+            "Integration API operations execute through the same runner and methods for both credential modes.",
+            "Uncertain writes are reconciled instead of replayed, including publication/check records.",
+            "Existing candidate, attestation and cleanup response contracts remain compatible."
+          ],
+          "needs": [
+            "client"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6.3 Failure and replay"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/github.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_client.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_client.py tests/test_integration_candidates.py tests/test_integration_attestation.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "integration_wiring",
+          "title": "Wire shared GitHub services and preserve credential-based trust policy",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nInject the shared auth/runner/client into the orchestrator and integration consumers. Replace integration-only factory/resolver names and audit all standalone constructor defaults. Replace auth_mode == gh and client.config.app_id assumptions with non-secret credential identity while retaining App trust-manifest/producer/hosted-variable checks and existing-login policy-derived trust. Ensure no live configuration change silently swaps a provider mid-operation.",
+          "acceptance": [
+            "App-over-gh continues to enforce every App trust/preflight check and never selects the existing-login trust branch merely because transport is gh.",
+            "The daemon composes one auth service and runner for all migrated consumers; independent default constructors cannot bypass App configuration.",
+            "All renamed factory/resolver consumers are migrated and existing integration behavior passes focused regression tests.",
+            "Credential-mode and key-reference changes have an explicit restart boundary; tokens are not persisted in evidence."
+          ],
+          "needs": [
+            "integration_ops"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "3. Operator behavior and compatibility"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/orchestrator/core.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/integration/preflight.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "src/integration/attestation.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_integration_attestation.py tests/test_integration_candidates.py tests/test_github_client.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        }
+      ]
+    },
+    {
+      "key": "surfaces",
+      "title": "Epic 3/5: GitHub access — PR, CI and account command migration",
+      "sections": "§§3–7, 9–10",
+      "depends_on": [
+        "repository"
+      ],
+      "outcome": "Ordinary PR/CI operations, onboarding and gists all use the shared runner; account-only capabilities and mutation outcomes are explicit.",
+      "nodes": [
+        {
+          "key": "pr_ci",
+          "title": "Migrate ordinary PR, polling and CI operations to the shared client",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nRoute GitManager async PR create/list/view/merge helpers, PR identity/base/check rollup/compare, commit heads/check-runs and Actions logs through GitHubClient. Update task/plugin/polling/CI command callers to supply an authorized repository rather than infer it from cwd. Preserve command response envelopes, existing CI and reserved-path policy, expected base and --match-head-commit. Keep network commit-fetch authentication for epic 4, with an explicit tested seam here.",
+          "acceptance": [
+            "No ordinary PR or CI API helper independently launches gh or takes credentials from shared process environment.",
+            "PR creation uses explicit already-pushed head/base/title/body and cannot implicitly fork or push.",
+            "PR merges retain expected-head/base and CI policy safeguards; a mismatched project/PR repository is rejected.",
+            "PR polling, CI baseline and failed-job logs share the selected App/PAT credential behavior."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/manager.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/commands/git_commands.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "src/commands/ci_commands.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_pr_merge_command.py tests/test_pr_merge_ci_gate.py tests/test_ci_baseline_status.py tests/test_git_manager_async.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "onboarding",
+          "title": "Unify onboarding, repository creation and GitHub capability reporting",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nConvert projects.github.GhClient into an onboarding adapter over shared services. Migrate explicit-repository access checks and existing-login search/owner/create flows. App mode must accept an explicit existing-repository URL without /user or gh auth status, and report account discovery/creation unsupported without trying a stored PAT. Update onboarding/API/dashboard capability presentation as needed; regenerate committed API clients if model contracts change. Network clone authentication follows in epic 4.",
+          "acceptance": [
+            "An App with no personal login can validate an existing repository URL; health distinguishes binary presence, auth mode and repository access.",
+            "Existing-login repository discovery, owner selection and create retain their behavior through the shared runner.",
+            "App account-only operations return a clear unsupported-capability result before consulting user credentials.",
+            "Onboarding response models/UI do not mislabel an App as logged out; any API changes include regenerated clients and contract checks."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "3. Operator behavior and compatibility"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/projects/github.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/projects/onboarding.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_project_github.py tests/test_project_onboarding_service.py tests/test_project_onboarding_contract.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "gists",
+          "title": "Route profile gist sharing through the common capability boundary",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nReplace direct gh gist subprocesses in profile export/import with shared account-operation methods. Reuse onboarding's capability/auth error representation. Preserve existing-login export/import, token redaction and response envelopes; App mode returns the documented unsupported result and never falls back to a user credential.",
+          "acceptance": [
+            "Profile commands contain no independent gh process-launch or auth-environment construction.",
+            "Existing-login gist create/read is covered through the shared runner, including timeout/cancellation/error redaction.",
+            "Configured App mode rejects account gist operations explicitly even when a valid personal credential is available."
+          ],
+          "needs": [
+            "onboarding"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "4. Contributor architecture"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/commands/profile_commands.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_profile_github.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_profile_github.py tests/test_github_runner.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "mutation_recovery",
+          "title": "Preserve PR mutation reconciliation and partial-merge outcomes",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nComplete operation-level recovery for ordinary PR creation/merge using the shared client. Distinguish authentication-rejected reads from ambiguous multi-request mutations. Reconcile existing PR identity before any create retry, and inspect merge state when gh fails after merge or during branch cleanup. Preserve expected SHA/base validation, command semantics and idempotent result/event recording.",
+          "acceptance": [
+            "Timeout/nonzero exit after a possibly successful create does not produce a duplicate PR.",
+            "A completed merge with failed cleanup is reported/reconciled separately from a merge that did not happen.",
+            "Credential refresh never blindly replays gh pr create/merge or bypasses head/base/CI checks.",
+            "Tests exercise confirmed rejection, uncertain write, partial success and subsequent reconciliation under both credential modes."
+          ],
+          "needs": [
+            "pr_ci"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6.3 Failure and replay"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "7. Shared `gh` execution contract"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "11. Verification and acceptance"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "tests/test_pr_merge_command.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_client.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_pr_merge_command.py tests/test_pr_merge_ci_gate.py tests/test_github_client.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        }
+      ]
+    },
+    {
+      "key": "delivery",
+      "title": "Epic 4/5: GitHub access — authenticated Git and worker delivery",
+      "sections": "§§5–8, 10–11",
+      "depends_on": [
+        "surfaces"
+      ],
+      "outcome": "The entire supported private-repository workflow transfers Git objects and publishes work with the selected credentials, while workers receive no App tokens.",
+      "nodes": [
+        {
+          "key": "acquisition",
+          "title": "Authenticate isolated clone, fetch and immutable PR validation",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nExtend isolated Git transfer using shared credential authority for initial clone, default-branch discovery, base/workspace fetches and _apr_delivery_diff exact-commit acquisition. Derive App HTTPS destinations from authorized repository identity, including SSH-shaped configured URLs, without changing operator remotes. Import objects into local credential-free checkouts and preserve locks, exact-OID verification and large-fetch deadlines. Do not forward tokens to arbitrary submodules or LFS endpoints.",
+          "acceptance": [
+            "A fresh private workspace and exact PR merge-validation fetch work without PAT, stored gh login or SSH credential in App mode.",
+            "Credential-bearing Git runs outside worker hooks/configuration and transfers only validated repository objects.",
+            "Existing-login HTTPS/SSH and local/non-GitHub workflows retain supported behavior.",
+            "Containment, exact-object identity, lock, timeout and cancellation tests cover acquisition paths."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6. Credential lifecycle"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "8. Git transfer and worker delivery"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/manager.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_git_app_auth.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_git_app_auth.py tests/test_git_manager_async.py tests/test_pr_merge_command.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "publication",
+          "title": "Unify authenticated branch push and deletion with exact leases",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nRoute normal, validated and expected-delivery pushes and remote ref deletion through the common credential-aware Git primitives. Resolve source once; preserve reserved-tree/diff inspection, normal fast-forward rules, explicit remote-old-OID leases, create-only zero OID semantics and authority deadlines. Observe/reconcile remote outcome before events; preserve the existing Git credential broker for App mode.",
+          "acceptance": [
+            "Inspected and pushed source is one immutable OID even if a local branch moves.",
+            "A normal push cannot become an unconditional force push; remote races and wrong expected tips fail closed.",
+            "App token stays out of worker environment, Git config, URLs, argv and hooks; PAT/helper behavior remains supported.",
+            "Branch deletion and push events are tied to confirmed exact remote outcomes, including uncertain transfers."
+          ],
+          "needs": [
+            "acquisition"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6.3 Failure and replay"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "8. Git transfer and worker delivery"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/git/manager.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_git_app_auth.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "tests/test_git_manager_async.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_git_app_auth.py tests/test_git_manager_async.py tests/test_git_events.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "recovery",
+          "title": "Migrate integration, recovery and cleanup transfer callers",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nAudit and migrate recovery/WIP saves, provider-failover checkpoints, failed-task close preservation, parent CI snapshots, candidate/main promotion, branch discard and delivered-branch cleanup to shared transfer/credential methods. Acquire credentials immediately before each transfer rather than retaining a token across long operations. Preserve owners, deadlines, lease checks and retained-work behavior on authentication failure.",
+          "acceptance": [
+            "Every documented recovery/promotion/cleanup network path uses selected credentials and has a named inventory entry.",
+            "Authentication failure preserves local work, claims and existing recovery semantics instead of reporting delivery success.",
+            "Long-lived operations obtain fresh credentials before later transfers and keep publication deadlines and exact leases.",
+            "Integration snapshots, promotion and remote branch cleanup regressions pass with both credential modes."
+          ],
+          "needs": [
+            "publication"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "6. Credential lifecycle"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "8. Git transfer and worker delivery"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/integration/main_promotion.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/integration/parent_ci.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "src/integration/cleanup.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_parent_ci_publication.py tests/test_integration_main_promotion.py tests/test_integration_cleanup.py tests/test_git_app_auth.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "worker_commands",
+          "title": "Expose scoped daemon-backed worker delivery and lease parameters",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nWire git_push/push_branch/git_create_pr commands to the task's authorized repository/workspace and validated delivery primitives. Add explicit expected remote OID support required by the existing squash/lease protocol. Preserve branch/main-publication authority and command envelopes; regenerate API/CLI clients and contract artifacts for any schema changes. Ensure App credentials are resolved only after command authorization.",
+          "acceptance": [
+            "Authorized workers can publish their own branch and create a requested PR without receiving a token.",
+            "Foreign workspace/repository/branch and ungranted publication attempts fail before credential use.",
+            "The documented expected-SHA lease workflow is expressible through the daemon command contract.",
+            "Any schema changes ship generated clients/OpenAPI together with focused scope/command tests."
+          ],
+          "needs": [
+            "recovery"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "5. Repository identity and authorization"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "8. Git transfer and worker delivery"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/plugins/internal/git.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_worker_git_scope.py"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "tests/test_git_command_handlers.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_worker_git_scope.py tests/test_git_command_handlers.py tests/test_git_manager_async.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "worker_guidance",
+          "title": "Update worker instructions and grants for credential-free delivery",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nUpdate completion protocol, delivery prompts and shipped AQ Git skills to use actual daemon-backed commands for network delivery in both modes. Cover initial push, squash/explicit lease, failed close and PR creation. Adjust only needed worker grants; use existing drift/reseed guidance for customized installed profiles rather than overwriting them. Verify the actual prime rendering and supported task roles.",
+          "acceptance": [
+            "Prime/skills no longer require raw shell git push or gh commands to complete the supported App-only workflow.",
+            "Workers get the needed command grants without integration-owner or main-publication privileges.",
+            "Customized vault profiles remain intact and missing grants yield actionable drift guidance.",
+            "Rendered worker instructions and roles are tested against the real command contract, including lease and recovery instructions."
+          ],
+          "needs": [
+            "worker_commands"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "8. Git transfer and worker delivery"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "11. Verification and acceptance"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "src/prime/templates/completion_protocol.md"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "src/skills/aq-workspaces-and-git/SKILL.md"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_prime_renderer.py tests/test_worker_git_scope.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        }
+      ]
+    },
+    {
+      "key": "acceptance",
+      "title": "Epic 5/5: GitHub access — remove legacy paths and verify App/PAT parity",
+      "sections": "§§10–11",
+      "depends_on": [
+        "delivery"
+      ],
+      "outcome": "Superseded transports and launchers are removed, operators have accurate migration docs, and automated plus disposable live evidence establishes the App-only workflow and PAT compatibility.",
+      "nodes": [
+        {
+          "key": "removal",
+          "title": "Remove legacy GitHub transports and enforce one execution path",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nDelete GitHubAppClient/GitHubCLIClient transport inheritance, repository HTTP methods, independent gh launchers, unused synchronous network methods and deprecated task PR helpers after confirming callers. Keep only fixed App bootstrap HTTP and isolated gh auth git-credential exceptions. Add a targeted architecture regression check that guards the actual execution boundaries without banning documentation/test mentions. Finish the migration inventory.",
+          "acceptance": [
+            "One repository operation implementation serves both credential sources; no selectable old backend remains.",
+            "Production gh/API launches are centralized except documented bootstrap and credential-helper exceptions.",
+            "All old names/callers are removed or thin forwarding aliases with no second execution path.",
+            "A focused architecture guard and affected regression tests demonstrate complete cutover."
+          ],
+          "needs": [],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "2. Decisions and scope"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "11. Verification and acceptance"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "docs/plans/github-access/implementation-notes.md"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "tests/test_github_access_architecture.py"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_access_architecture.py tests/test_github_client.py tests/test_github_runner.py tests/test_github_app.py"
+            }
+          ],
+          "task_type": "refactor",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "documentation",
+          "title": "Document unified GitHub setup, limitations and upgrade behavior",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nUpdate current integration/onboarding/configuration pages, relevant module catalogs, release notes and installation prerequisites. Explain gh dependency in both modes, unchanged stored PAT setup, per-call App override, no fallback, restart boundary, App-only delivery and account capability limitations. Update deployment docs only where feature/cloud-deploy is present; otherwise record the precise follow-up in release evidence without creating a conflicting deploy tree. Correct spec status only to the extent actually implemented and verified.",
+          "acceptance": [
+            "Operators can understand PAT-only and App-only setup without being told to provision both credentials.",
+            "Documentation distinguishes implemented behavior from remaining acceptance work and accurately describes account-operation limits.",
+            "Source/module links, gh dependency and credential-mode restart boundary are documented.",
+            "Documentation coverage/link checks are recorded, with pre-existing unrelated gaps identified rather than hidden."
+          ],
+          "needs": [
+            "removal"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "3. Operator behavior and compatibility"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "9. Capabilities and integration trust"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "docs/concepts/integration.md"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "docs/guides/project-onboarding.md"
+            },
+            {
+              "id": "file-3",
+              "kind": "file",
+              "target": "docs/reference/configuration.md"
+            },
+            {
+              "id": "file-4",
+              "kind": "file",
+              "target": "docs/release-notes.md"
+            }
+          ],
+          "task_type": "docs",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "workflow_tests",
+          "title": "Build automated private-repository workflow and credential parity tests",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nAdd a repeatable isolated workflow harness covering actual onboarding/worker commands/prime through push, PR create/poll, CI, immutable merge validation, merge and cleanup, plus integration and recovery variants. Use fake gh/Git endpoints for deterministic CI and provisioned disposable private GitHub fixtures for the separate live run. Exercise expiry, simultaneous repositories and an available PAT deliberately forbidden in App mode. Never use the operator database or live working repositories as test fixtures.",
+          "acceptance": [
+            "Automated coverage exercises the real AQ command and instruction path with no ambient credentials in App mode, rather than just direct helper mocks.",
+            "The same supported workflow passes existing-login mode with parameterized behavior and explicit auth identity assertions.",
+            "Denied App permissions never succeed via a poisoned/available ambient PAT, and token expiry/concurrent targets are exercised.",
+            "The live harness has explicit disposable fixture inputs, cleanup and evidence output; no secrets are logged."
+          ],
+          "needs": [
+            "removal"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "11. Verification and acceptance"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "tests/test_github_access_workflow.py"
+            },
+            {
+              "id": "file-2",
+              "kind": "file",
+              "target": "docs/plans/github-access/acceptance-runbook.md"
+            },
+            {
+              "id": "focused-tests",
+              "kind": "test",
+              "target": "aq test tests/test_github_access_workflow.py tests/test_github_access_architecture.py tests/test_worker_git_scope.py"
+            }
+          ],
+          "task_type": "test",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        },
+        {
+          "key": "live_acceptance",
+          "title": "Run disposable GitHub acceptance and record refactor completion evidence",
+          "description": "Implement GitHub issue #615 under docs/specs/github-access.md. The execution snapshot is projects/agent-queue/specs/github-access-615.md. One gh execution path; App and existing-login credentials share operations; configured App failures never fall back to PAT/SSH. Preserve AQ authorization, immutable delivery, CI and integration trust. Keep working intermediate commits compatible while the migration is staged; final removal belongs to epic 5. Re-read the referenced spec sections and current source. Use focused aq test runs, preserve user changes, and record evidence against the declared deliverables.\n\nScope and handoff\nRun the acceptance runbook after documentation and workflow tests land. Use an explicitly provisioned disposable private repository and App installation; remove usable personal token/login/SSH auth from the isolated test process. Execute normal PR delivery, integration publication, recovery/WIP and cleanup in their configured workflows, including refresh. Repeat with existing-login credentials and verify actor and exact remote revisions. Record supported gh version(s), commands, results and any remaining limits in docs/gates/github-access-615.md. If fixtures are unavailable, request the missing fixture details and keep live acceptance visibly unmet; do not claim mock-only evidence as live success or use production repositories.",
+          "acceptance": [
+            "Evidence demonstrates fresh workspace acquisition through validated merge/cleanup on a private repository using only the App.",
+            "Separate integration/recovery cases, refresh, exact revision and actor checks are recorded.",
+            "Existing-login parity and automatic no-fallback evidence are linked with the actual commands/results.",
+            "Issue #615 completion is recommended only when the supported workflow passes and legacy execution paths are absent; missing live evidence remains explicit."
+          ],
+          "needs": [
+            "documentation",
+            "workflow_tests"
+          ],
+          "context": [
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "10. Migration sequence and removal"
+            },
+            {
+              "type": "spec_ref",
+              "path": "projects/agent-queue/specs/github-access-615.md",
+              "section": "11. Verification and acceptance"
+            }
+          ],
+          "deliverables": [
+            {
+              "id": "file-1",
+              "kind": "file",
+              "target": "docs/gates/github-access-615.md"
+            }
+          ],
+          "task_type": "test",
+          "priority": 100,
+          "intelligence_class": "standard-high"
+        }
+      ]
+    }
+  ]
+}

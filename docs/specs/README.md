@@ -34,6 +34,7 @@ lands, the concept page takes over and the row moves out of this table.
 
 | Spec | Date | Epic | Decides |
 |---|---|---|---|
+| [Unified GitHub access](github-access.md) | 2026-09-22 | [Issue #615](https://github.com/ElectricJack/agent-queue/issues/615) | Proposed: one shared `gh` execution path, App/PAT credential selection, complete repository delivery, and removal of duplicated clients. |
 | [Provider failover](provider-failover.md) | 2026-09-20 | `bold-rapids` | Provider availability states and their evidence, provider intent on a task (`pinned` / `preferred` / `class_only`), the failover and hold policy, capacity protection, the return path, and every operator surface. |
 
 ## Reading a spec safely

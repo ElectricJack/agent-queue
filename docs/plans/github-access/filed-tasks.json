@@ -1,0 +1,474 @@
+{
+  "project_id": "agent-queue",
+  "issue": "https://github.com/ElectricJack/agent-queue/issues/615",
+  "filed_on": "2026-09-22",
+  "spec": "projects/agent-queue/specs/github-access-615.md",
+  "epic_dependencies": [
+    {
+      "task_id": "sharp-stone",
+      "depends_on": "smart-beacon",
+      "dep_type": "blocks"
+    },
+    {
+      "task_id": "brisk-horizon",
+      "depends_on": "sharp-stone",
+      "dep_type": "blocks"
+    },
+    {
+      "task_id": "clear-meadow",
+      "depends_on": "brisk-horizon",
+      "dep_type": "blocks"
+    },
+    {
+      "task_id": "fair-bridge",
+      "depends_on": "clear-meadow",
+      "dep_type": "blocks"
+    }
+  ],
+  "creation_reports": [
+    {
+      "parent_id": "smart-beacon",
+      "parent_title": "Epic 1/5: GitHub access — shared credentials and gh runner",
+      "provisional": false,
+      "task_ids": [
+        "smart-beacon.1",
+        "smart-beacon.2",
+        "smart-beacon.3",
+        "smart-beacon.4"
+      ],
+      "phases": [],
+      "nodes": [
+        {
+          "key": "contracts",
+          "task_id": "smart-beacon.1",
+          "title": "Publish the GitHub access spec and define shared auth/binding contracts",
+          "phase": null,
+          "subtasks": 0,
+          "needs": []
+        },
+        {
+          "key": "credentials",
+          "task_id": "smart-beacon.2",
+          "title": "Extract App bootstrap and implement unified credential selection",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "contracts",
+              "task_id": "smart-beacon.1",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "runner",
+          "task_id": "smart-beacon.3",
+          "title": "Implement the single isolated gh subprocess runner",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "contracts",
+              "task_id": "smart-beacon.1",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "binding",
+          "task_id": "smart-beacon.4",
+          "title": "Compose shared authentication and repository binding safely",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "credentials",
+              "task_id": "smart-beacon.2",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "runner",
+              "task_id": "smart-beacon.3",
+              "dep_type": "blocks"
+            }
+          ]
+        }
+      ],
+      "dependency_count": 4,
+      "context_count": 13,
+      "dry_run": false,
+      "created": true,
+      "project_id": "agent-queue",
+      "warnings": [],
+      "spec": "projects/agent-queue/specs/github-access-615.md"
+    },
+    {
+      "parent_id": "sharp-stone",
+      "parent_title": "Epic 2/5: GitHub access — shared repository client and integration",
+      "provisional": false,
+      "task_ids": [
+        "sharp-stone.1",
+        "sharp-stone.2",
+        "sharp-stone.3"
+      ],
+      "phases": [],
+      "nodes": [
+        {
+          "key": "client",
+          "task_id": "sharp-stone.1",
+          "title": "Implement shared repository API responses and bounded pagination",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "smart-beacon",
+              "task_id": "smart-beacon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "integration_ops",
+          "task_id": "sharp-stone.2",
+          "title": "Move integration repository operations onto the shared client",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "client",
+              "task_id": "sharp-stone.1",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "smart-beacon",
+              "task_id": "smart-beacon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "integration_wiring",
+          "task_id": "sharp-stone.3",
+          "title": "Wire shared GitHub services and preserve credential-based trust policy",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "integration_ops",
+              "task_id": "sharp-stone.2",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "smart-beacon",
+              "task_id": "smart-beacon",
+              "dep_type": "blocks"
+            }
+          ]
+        }
+      ],
+      "dependency_count": 5,
+      "context_count": 13,
+      "dry_run": false,
+      "created": true,
+      "project_id": "agent-queue",
+      "warnings": [],
+      "spec": "projects/agent-queue/specs/github-access-615.md"
+    },
+    {
+      "parent_id": "brisk-horizon",
+      "parent_title": "Epic 3/5: GitHub access — PR, CI and account command migration",
+      "provisional": false,
+      "task_ids": [
+        "brisk-horizon.1",
+        "brisk-horizon.2",
+        "brisk-horizon.3",
+        "brisk-horizon.4"
+      ],
+      "phases": [],
+      "nodes": [
+        {
+          "key": "pr_ci",
+          "task_id": "brisk-horizon.1",
+          "title": "Migrate ordinary PR, polling and CI operations to the shared client",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "sharp-stone",
+              "task_id": "sharp-stone",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "onboarding",
+          "task_id": "brisk-horizon.2",
+          "title": "Unify onboarding, repository creation and GitHub capability reporting",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "sharp-stone",
+              "task_id": "sharp-stone",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "gists",
+          "task_id": "brisk-horizon.3",
+          "title": "Route profile gist sharing through the common capability boundary",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "onboarding",
+              "task_id": "brisk-horizon.2",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "sharp-stone",
+              "task_id": "sharp-stone",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "mutation_recovery",
+          "task_id": "brisk-horizon.4",
+          "title": "Preserve PR mutation reconciliation and partial-merge outcomes",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "pr_ci",
+              "task_id": "brisk-horizon.1",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "sharp-stone",
+              "task_id": "sharp-stone",
+              "dep_type": "blocks"
+            }
+          ]
+        }
+      ],
+      "dependency_count": 6,
+      "context_count": 13,
+      "dry_run": false,
+      "created": true,
+      "project_id": "agent-queue",
+      "warnings": [],
+      "spec": "projects/agent-queue/specs/github-access-615.md"
+    },
+    {
+      "parent_id": "clear-meadow",
+      "parent_title": "Epic 4/5: GitHub access — authenticated Git and worker delivery",
+      "provisional": false,
+      "task_ids": [
+        "clear-meadow.1",
+        "clear-meadow.2",
+        "clear-meadow.3",
+        "clear-meadow.4",
+        "clear-meadow.5"
+      ],
+      "phases": [],
+      "nodes": [
+        {
+          "key": "acquisition",
+          "task_id": "clear-meadow.1",
+          "title": "Authenticate isolated clone, fetch and immutable PR validation",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "brisk-horizon",
+              "task_id": "brisk-horizon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "publication",
+          "task_id": "clear-meadow.2",
+          "title": "Unify authenticated branch push and deletion with exact leases",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "acquisition",
+              "task_id": "clear-meadow.1",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "brisk-horizon",
+              "task_id": "brisk-horizon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "recovery",
+          "task_id": "clear-meadow.3",
+          "title": "Migrate integration, recovery and cleanup transfer callers",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "publication",
+              "task_id": "clear-meadow.2",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "brisk-horizon",
+              "task_id": "brisk-horizon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "worker_commands",
+          "task_id": "clear-meadow.4",
+          "title": "Expose scoped daemon-backed worker delivery and lease parameters",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "recovery",
+              "task_id": "clear-meadow.3",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "brisk-horizon",
+              "task_id": "brisk-horizon",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "worker_guidance",
+          "task_id": "clear-meadow.5",
+          "title": "Update worker instructions and grants for credential-free delivery",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "worker_commands",
+              "task_id": "clear-meadow.4",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "brisk-horizon",
+              "task_id": "brisk-horizon",
+              "dep_type": "blocks"
+            }
+          ]
+        }
+      ],
+      "dependency_count": 9,
+      "context_count": 14,
+      "dry_run": false,
+      "created": true,
+      "project_id": "agent-queue",
+      "warnings": [],
+      "spec": "projects/agent-queue/specs/github-access-615.md"
+    },
+    {
+      "parent_id": "fair-bridge",
+      "parent_title": "Epic 5/5: GitHub access — remove legacy paths and verify App/PAT parity",
+      "provisional": false,
+      "task_ids": [
+        "fair-bridge.1",
+        "fair-bridge.2",
+        "fair-bridge.3",
+        "fair-bridge.4"
+      ],
+      "phases": [],
+      "nodes": [
+        {
+          "key": "removal",
+          "task_id": "fair-bridge.1",
+          "title": "Remove legacy GitHub transports and enforce one execution path",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "clear-meadow",
+              "task_id": "clear-meadow",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "documentation",
+          "task_id": "fair-bridge.2",
+          "title": "Document unified GitHub setup, limitations and upgrade behavior",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "removal",
+              "task_id": "fair-bridge.1",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "clear-meadow",
+              "task_id": "clear-meadow",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "workflow_tests",
+          "task_id": "fair-bridge.3",
+          "title": "Build automated private-repository workflow and credential parity tests",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "removal",
+              "task_id": "fair-bridge.1",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "clear-meadow",
+              "task_id": "clear-meadow",
+              "dep_type": "blocks"
+            }
+          ]
+        },
+        {
+          "key": "live_acceptance",
+          "task_id": "fair-bridge.4",
+          "title": "Run disposable GitHub acceptance and record refactor completion evidence",
+          "phase": null,
+          "subtasks": 0,
+          "needs": [
+            {
+              "on": "documentation",
+              "task_id": "fair-bridge.2",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "workflow_tests",
+              "task_id": "fair-bridge.3",
+              "dep_type": "blocks"
+            },
+            {
+              "on": "clear-meadow",
+              "task_id": "clear-meadow",
+              "dep_type": "blocks"
+            }
+          ]
+        }
+      ],
+      "dependency_count": 8,
+      "context_count": 9,
+      "dry_run": false,
+      "created": true,
+      "project_id": "agent-queue",
+      "warnings": [],
+      "spec": "projects/agent-queue/specs/github-access-615.md"
+    }
+  ]
+}
