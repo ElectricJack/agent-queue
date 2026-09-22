@@ -71,6 +71,55 @@ async def test_full_layout_places_top_level_dependents_below_blockers(db):
     assert rows["b"].rank == 1 and rows["b"].abs_y > rows["a"].abs_y
 
 
+async def test_late_phase_without_a_gate_has_a_rank_floor_in_both_variants(db):
+    """Completed predecessor phases do not gate a later phase, but layout
+    preserves their declared delivery order in both persisted variants.
+    """
+    await db.create_task(Task(id="p1", project_id="p1", title="Phase 1", description=""))
+    async with db._engine.begin() as conn:
+        await db.mark_container("p1", conn=conn)
+    await db.set_task_meta("p1", "phase", {"order": 1, "label": "Phase 1"})
+    await db.transition_task("p1", TaskStatus.COMPLETED, force=True)
+
+    # This is the late-creation case: p1 is already complete, so phase_create
+    # would attach no blocks edge to p2.
+    await db.create_task(
+        Task(id="p2", project_id="p1", title="Phase 2", description="", status=TaskStatus.DEFINED)
+    )
+    async with db._engine.begin() as conn:
+        await db.mark_container("p2", conn=conn)
+    await db.set_task_meta("p2", "phase", {"order": 2, "label": "Phase 2"})
+    await db.create_task(Task(id="work", project_id="p1", title="Work", description=""))
+    await db.add_dependency("work", "p2")
+    _, edges = await db.load_project_snapshot("p1")
+    assert edges == [("work", "p2", "blocks")]
+
+    driver = LayoutDriver(db)
+    first: dict[str, dict[str, tuple]] = {}
+    for variant in ("all", "active"):
+        await driver.full_layout("p1", variant)
+        rows = await db.load_layout_rows("p1", variant, ["p1", "p2", "work"])
+        assert rows["p2"].rank == 2
+        assert rows["work"].rank == 3  # ordinary dependency rank above the floor
+        if variant == "all":
+            assert rows["p1"].rank == 1
+        else:
+            assert "p1" not in rows
+        first[variant] = {
+            task_id: (row.ordinal, row.rel_x, row.rel_y, row.abs_x, row.abs_y)
+            for task_id, row in rows.items()
+        }
+
+    # A second full layout has the same phase ranks, ordinals, and geometry.
+    for variant in ("all", "active"):
+        await driver.full_layout("p1", variant)
+        rows = await db.load_layout_rows("p1", variant, ["p1", "p2", "work"])
+        assert {
+            task_id: (row.ordinal, row.rel_x, row.rel_y, row.abs_x, row.abs_y)
+            for task_id, row in rows.items()
+        } == first[variant]
+
+
 async def test_full_layout_ignores_discovered_from_for_ranking(db):
     """`discovered-from` is a provenance annotation, not a ranking edge
 

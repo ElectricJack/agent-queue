@@ -22,7 +22,7 @@ ROW_ASPECT = 1.3
 GROWTH_BANDS = (1.5, 3.0, 6.0, 12.0, 24.0, 48.0)
 CELL_SIZE = 8.0
 
-ENGINE_RULES_VERSION = 1
+ENGINE_RULES_VERSION = 2
 """The generation of the engine's *geometry and ordering* rules.
 
 Bump this by hand in any change to ``flow.py``, to ordinal assignment in
