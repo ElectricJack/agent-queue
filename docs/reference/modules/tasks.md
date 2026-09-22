@@ -1,12 +1,20 @@
 # Task modules
 
-This catalog covers the production modules owned by the [tasks concept page](../../concepts/tasks.md). Paths are source links; tests are focused entry points rather than an exhaustive test index.
+This catalog covers task lifecycle and graph modules from the
+[tasks concept page](../../concepts/tasks.md), plus the document-review service
+described in the [operator guide](../../guides/reviews.md). Paths are source links;
+tests are focused entry points rather than an exhaustive test index.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
 | [src/deliverables.py](../../../src/deliverables.py) | Normalizes declared deliverables and evaluates close-time local evidence. | [Tasks](../../concepts/tasks.md) | `tests/test_deliverables.py` |
 | [src/explain.py](../../../src/explain.py) | Produces structured capacity and readiness explanations for a task. | [Tasks](../../concepts/tasks.md) | `tests/test_explain.py` |
 | [src/review_keys.py](../../../src/review_keys.py) | Recognizes tasks whose work product is a review verdict. | [Tasks](../../concepts/tasks.md) | Task lifecycle support; see task command tests. |
+| [src/reviews/__init__.py](../../../src/reviews/__init__.py) | Marks the document-review service package. | [Document reviews](../../guides/reviews.md) | Package marker; behavior lives in the sibling modules. |
+| [src/reviews/diff.py](../../../src/reviews/diff.py) | Computes block-level Markdown diffs between document revisions. | [Document reviews](../../guides/reviews.md) | `tests/test_review_diff.py` |
+| [src/reviews/notifier.py](../../../src/reviews/notifier.py) | Delivers each submitted document-review revision through the durable notification outbox. | [Document reviews](../../guides/reviews.md) | `tests/test_review_notifier.py` |
+| [src/reviews/service.py](../../../src/reviews/service.py) | Implements document-review submission, revision, decisions, comments, delegation, withdrawal, and vault synchronization. | [Document reviews](../../guides/reviews.md) | `tests/test_review_service.py` |
+| [src/reviews/vault.py](../../../src/reviews/vault.py) | Renders, hashes, parses, and atomically writes document-review vault copies. | [Document reviews](../../guides/reviews.md) | `tests/test_review_vault.py` |
 | [src/state_machine.py](../../../src/state_machine.py) | Defines intended status transitions and validates blocking dependency cycles. | [Tasks](../../concepts/tasks.md) | `tests/test_state_machine.py` |
 | [src/task_names.py](../../../src/task_names.py) | Mints memorable root and dotted child task identifiers with depth limits. | [Tasks](../../concepts/tasks.md) | `tests/test_hierarchy_ids.py` |
 | [src/task_summary.py](../../../src/task_summary.py) | Renders and writes a completion summary note to the vault. | [Tasks](../../concepts/tasks.md) | Completion and archive tests cover its callers. |
