@@ -434,7 +434,7 @@ class WorkspaceMixin:
                 await self._ensure_control_files_excluded(workspace)
                 base_path = await self.git.aworktree_base_path(workspace)
                 if base_path and await self.git.ahas_remote(base_path):
-                    await self.git._arun(["fetch", "origin"], cwd=base_path)
+                    await self.git.afetch_origin(base_path, repository_url=repo_url)
             elif is_git_workspace:
                 # Workspace source types determine the git setup strategy:
                 #
@@ -492,7 +492,7 @@ class WorkspaceMixin:
                     # Fetch is automatically serialized by the GitManager
                     # lock provider for branch-isolated workspaces.
                     if await self.git.ahas_remote(workspace):
-                        await self.git._arun(["fetch", "origin"], cwd=workspace)
+                        await self.git.afetch_origin(workspace, repository_url=repo_url)
                     try:
                         await self.git._arun(["checkout", default_branch], cwd=workspace)
                     except GitError:
@@ -670,14 +670,13 @@ class WorkspaceMixin:
             role,
         )
 
-    async def _hierarchy_repair_start(self, workspace: str, origin: dict, fence: Fence) -> str:
+    async def _hierarchy_repair_start(
+        self, workspace: str, origin: dict, fence: Fence, *, repository_url: str
+    ) -> str:
         """Preserve the published repair tip, proving its frozen base ancestry."""
         branch = fence.target.branch.removeprefix("refs/heads/")
         tracking = f"refs/remotes/origin/{branch}"
-        await self.git._arun(
-            ["fetch", "--no-tags", "origin", f"+refs/heads/{branch}:{tracking}"],
-            cwd=workspace,
-        )
+        await self.git.afetch_origin(workspace, repository_url=repository_url)
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
         if not is_valid_git_oid(head) or await self.git.ais_ancestor(
             workspace, origin["base_sha"], head, strict=True
@@ -727,7 +726,9 @@ class WorkspaceMixin:
         ):
             if ws.is_slot:
                 if role == "repair":
-                    base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
+                    base_sha = await self._hierarchy_repair_start(
+                        workspace, origin, fence, repository_url=project.repo_url or ""
+                    )
                 await self._worktree_slots().reset_slot_for_task(
                     ws,
                     task,
@@ -755,9 +756,13 @@ class WorkspaceMixin:
             if await self.git.ahas_uncommitted_changes(workspace):
                 await self.git.aforce_clean_workspace(workspace)
             if await self.git.ahas_remote(workspace):
-                await self.git._arun(["fetch", "origin"], cwd=workspace)
+                await self.git.afetch_origin(
+                    workspace, repository_url=project.repo_url or ""
+                )
             if role == "repair":
-                base_sha = await self._hierarchy_repair_start(workspace, origin, fence)
+                base_sha = await self._hierarchy_repair_start(
+                    workspace, origin, fence, repository_url=project.repo_url or ""
+                )
             await self.git._arun(["checkout", "-B", branch, base_sha], cwd=workspace)
             actual_head = await self.git._arun(["rev-parse", "HEAD"], cwd=workspace)
             if actual_head != base_sha:

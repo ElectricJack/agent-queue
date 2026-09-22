@@ -1355,6 +1355,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
@@ -1368,10 +1369,11 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout.assert_called()
         # Should fetch origin, checkout default, and hard-reset
         calls = [str(c) for c in mock_git._arun.call_args_list]
-        fetch_called = any("fetch" in c and "origin" in c for c in calls)
         checkout_called = any("checkout" in c and "develop" in c for c in calls)
         reset_called = any("reset" in c and "origin/develop" in c for c in calls)
-        assert fetch_called, f"Expected fetch origin call, got: {calls}"
+        mock_git.afetch_origin.assert_awaited_once_with(
+            workspace, repository_url="https://github.com/org/myrepo.git"
+        )
         assert checkout_called, f"Expected checkout develop call, got: {calls}"
         assert reset_called, f"Expected reset --hard origin/develop call, got: {calls}"
 
@@ -1393,6 +1395,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         mock_git.aprepare_for_task = AsyncMock()
         mock_git.aswitch_to_branch = AsyncMock()
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)
@@ -1421,6 +1424,7 @@ class TestPrepareWorkspaceCleanDefault:
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
+        mock_git.afetch_origin = AsyncMock()
         mock_git._arun = AsyncMock(return_value="")
         mock_git.aget_git_path = AsyncMock(
             side_effect=lambda checkout, path: os.path.join(checkout, ".git", path)

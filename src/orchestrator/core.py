@@ -741,7 +741,9 @@ class Orchestrator(
         # Try to detect from the workspace if it exists and is valid
         if workspace and await self.git.avalidate_checkout(workspace):
             try:
-                return await self.git.aget_default_branch(workspace)
+                return await self.git.aget_default_branch(
+                    workspace, repository_url=project.repo_url if project else None
+                )
             except Exception:
                 pass  # Fall through to default
 

@@ -87,7 +87,7 @@ from src.git.askpass_broker import (
     zeroize,
 )
 from src.git.askpass_fd import answer_prompt
-from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubCredentialMode, GitHubRepositoryBinding
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -1664,8 +1664,237 @@ class GitManager:
     # ------------------------------------------------------------------
 
     async def acreate_checkout(self, repo_url: str, checkout_path: str) -> None:
+        if self._uses_existing_ssh(repo_url):
+            os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
+            await self._arun(["clone", repo_url, checkout_path])
+            return
+        binding = await self._abind_git_repository(repo_url)
+        if binding is not None and self.github_access is not None:
+            token = await self._atoken_for_repository(binding)
+            await self._aclone_with_auth_to_url(
+                repo_url,
+                checkout_path,
+                source_url=f"https://github.com/{binding.full_name}.git",
+                token=token,
+            )
+            return
         os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
         await self._arun(["clone", repo_url, checkout_path])
+
+    @staticmethod
+    def _is_github_ssh_url(repo_url: str) -> bool:
+        return repo_url.lower().startswith(("git@github.com:", "ssh://git@github.com"))
+
+    def _uses_existing_ssh(self, repo_url: str) -> bool:
+        selected = (
+            self.github_access is not None
+            and self.github_access.auth.mode is GitHubCredentialMode.EXISTING_LOGIN
+            and self._is_github_ssh_url(repo_url)
+        )
+        if selected:
+            from src.projects.github import GitHubError, parse_github_repository
+
+            try:
+                parse_github_repository(repo_url)
+            except GitHubError as exc:
+                raise GitError("invalid GitHub repository source") from exc
+        return selected
+
+    async def _abind_git_repository(self, repo_url: str) -> GitHubRepositoryBinding | None:
+        """Resolve an explicit GitHub source, never a repository guessed from cwd."""
+        if (
+            self.github_access is None
+            or repo_url.startswith(("/", "./", "../", "file://"))
+            or Path(repo_url).exists()
+        ):
+            return None
+        from src.projects.github import GitHubError, parse_github_repository
+
+        try:
+            parse_github_repository(repo_url)
+        except GitHubError as exc:
+            if "github.com" in repo_url.lower():
+                raise GitError("invalid GitHub repository source") from exc
+            return None
+        return await self.github_access.bind_repository(repo_url)
+
+    async def _atoken_for_repository(self, binding: GitHubRepositoryBinding) -> str | None:
+        assert self.github_access is not None
+        token = await self.github_access.installation_token(binding)
+        if self.github_access.auth.mode is GitHubCredentialMode.APP and not token:
+            raise GitError("GitHub App credential is unavailable")
+        return token
+
+    async def _aclone_with_auth_to_url(
+        self,
+        configured_url: str,
+        checkout_path: str,
+        *,
+        source_url: str,
+        token: str | None,
+    ) -> None:
+        """Clone in isolation and move a credential-free local clone into place."""
+        destination = Path(checkout_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and any(destination.iterdir()):
+            raise GitError("checkout destination is not empty")
+        deadline = asyncio.get_running_loop().time() + self._GIT_TIMEOUT
+        with tempfile.TemporaryDirectory(prefix="aq-app-clone-", dir=destination.parent) as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            imported = root / "source.git"
+            staged = root / "checkout"
+            await self._arun_authenticated_git(
+                ["clone", "--bare", "--no-local", "--template=", source_url, str(imported)],
+                home=home,
+                repository_url=source_url,
+                token=token,
+                deadline=deadline,
+            )
+            await self._run_isolated_import_git(
+                ["-c", "core.hooksPath=/dev/null", "clone", "--no-local", "--template=",
+                 str(imported), str(staged)],
+                home=home,
+                deadline=deadline,
+            )
+            await self._run_isolated_import_git(
+                ["-C", str(staged), "remote", "set-url", "origin", configured_url],
+                home=home,
+                deadline=deadline,
+            )
+            os.replace(staged, destination)
+
+    async def afetch_origin(
+        self,
+        checkout_path: str,
+        *,
+        repository_url: str,
+        lock_held: bool = False,
+    ) -> None:
+        """Fetch an explicitly authorized origin without credentials in the checkout."""
+        if self._uses_existing_ssh(repository_url):
+            from src.projects.github import GitHubError, parse_github_repository
+
+            configured_origin = await self._arun(
+                ["config", "--get", "remote.origin.url"], cwd=checkout_path
+            )
+            try:
+                matches = (
+                    parse_github_repository(configured_origin).full_name
+                    == parse_github_repository(repository_url).full_name
+                )
+            except GitHubError:
+                matches = False
+            if not matches:
+                raise GitError("GitHub repository reference did not match the authorized repository")
+            run = self._arun_unlocked if lock_held else self._arun
+            await run(["fetch", "origin"], cwd=checkout_path)
+            return
+        binding = await self._abind_git_repository(repository_url)
+        if binding is None:
+            if (
+                self.github_access is not None
+                and self.github_access.auth.mode is GitHubCredentialMode.APP
+            ):
+                configured_origin = await self._arun(
+                    ["config", "--get", "remote.origin.url"], cwd=checkout_path
+                )
+                if "github.com" in configured_origin.lower():
+                    raise GitError("authorized GitHub repository is required for App fetch")
+            run = self._arun_unlocked if lock_held else self._arun
+            await run(["fetch", "origin"], cwd=checkout_path)
+            return
+        assert self.github_access is not None
+        configured_origin = await self._arun(
+            ["config", "--get", "remote.origin.url"], cwd=checkout_path
+        )
+        self.github_access.validate_repository_reference(binding, configured_origin)
+        source_url = f"https://github.com/{binding.full_name}.git"
+
+        async def acquire() -> None:
+            token = await self._atoken_for_repository(binding)
+            await self._afetch_origin_with_auth_to_url(
+                checkout_path, source_url=source_url, token=token
+            )
+
+        if lock_held:
+            await acquire()
+        else:
+            async with self.arepository_transaction(checkout_path):
+                await acquire()
+
+    async def _afetch_origin_with_auth_to_url(
+        self,
+        checkout_path: str,
+        *,
+        source_url: str,
+        token: str | None,
+    ) -> None:
+        """Private file-URL seam for a staged branch/tag fetch and local import."""
+        deadline = asyncio.get_running_loop().time() + self._GIT_TIMEOUT
+        with tempfile.TemporaryDirectory(prefix="aq-app-origin-fetch-") as temporary:
+            root = Path(temporary)
+            root.chmod(0o700)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            imported = root / "source.git"
+            await self._run_isolated_import_git(
+                ["init", "--bare", "--template=", str(imported)],
+                home=home,
+                deadline=deadline,
+            )
+            await self._arun_authenticated_git(
+                [f"--git-dir={imported}", "fetch", "--no-tags", "--force", source_url,
+                 "+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"],
+                home=home,
+                repository_url=source_url,
+                token=token,
+                deadline=deadline,
+            )
+            destination_git_dir = await self._arun(
+                ["rev-parse", "--absolute-git-dir"], cwd=checkout_path
+            )
+            await self._run_isolated_import_git(
+                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force", "--prune",
+                 str(imported), "+refs/heads/*:refs/remotes/origin/*"],
+                home=home,
+                deadline=deadline,
+            )
+            await self._run_isolated_import_git(
+                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 f"--git-dir={destination_git_dir}", "fetch", "--no-tags", "--force",
+                 str(imported), "+refs/tags/*:refs/tags/*"],
+                home=home,
+                deadline=deadline,
+            )
+            imported_refs = await self._run_isolated_import_git(
+                [f"--git-dir={imported}", "for-each-ref", "--format=%(objectname) %(refname)",
+                 "refs/heads", "refs/tags"],
+                home=home, deadline=deadline,
+            )
+            destination_refs = await self._run_isolated_import_git(
+                [f"--git-dir={destination_git_dir}", "for-each-ref",
+                 "--format=%(objectname) %(refname)", "refs/remotes/origin", "refs/tags"],
+                home=home, deadline=deadline,
+            )
+            imported_map = dict(
+                (ref, oid) for oid, ref in
+                (line.split(" ", 1) for line in imported_refs.decode("ascii").splitlines())
+            )
+            destination_map = dict(
+                (ref, oid) for oid, ref in
+                (line.split(" ", 1) for line in destination_refs.decode("ascii").splitlines())
+            )
+            for ref, oid in imported_map.items():
+                destination_ref = (
+                    ref.replace("refs/heads/", "refs/remotes/origin/", 1)
+                    if ref.startswith("refs/heads/") else ref
+                )
+                if destination_map.get(destination_ref) != oid:
+                    raise GitError("authenticated Git fetch imported a different ref")
 
     async def avalidate_checkout(self, checkout_path: str) -> bool:
         if not os.path.isdir(checkout_path):
@@ -3021,10 +3250,9 @@ class GitManager:
         token: str | None,
         oid: str,
         destination_ref: str,
+        timeout_seconds: float | None = None,
     ) -> str:
-        """Private file-URL seam for credential-containment tests."""
-        if token is not None and (not isinstance(token, str) or not token):
-            raise GitError("invalid GitHub App credential")
+        """Fetch an exact commit in isolation, then import only that OID locally."""
         if _OID_RE.fullmatch(oid) is None:
             raise GitError("invalid exact fetch OID")
         if not destination_ref.startswith("refs/aq/"):
@@ -3036,151 +3264,46 @@ class GitManager:
             or destination_url.startswith("file://")
         ):
             raise GitError("invalid authenticated Git source")
-        remote_url = destination_url
-        uses_existing_auth = token is None
-        token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
-        with (
-            _zeroized_credential(token_buffer),
-            tempfile.TemporaryDirectory(prefix="aq-app-fetch-") as temporary,
-        ):
-            token = ""
+        fetch_timeout = timeout_seconds if timeout_seconds is not None else self._GIT_TIMEOUT
+        if not math.isfinite(fetch_timeout) or fetch_timeout <= 0:
+            raise GitError("invalid authenticated Git fetch deadline")
+        deadline = asyncio.get_running_loop().time() + fetch_timeout
+        with tempfile.TemporaryDirectory(prefix="aq-app-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
             home = root / "home"
             home.mkdir(mode=0o700)
             imported = root / "repository.git"
             await self._run_isolated_import_git(
-                ["init", "--bare", "--template=", str(imported)], home=home
+                ["init", "--bare", "--template=", str(imported)],
+                home=home, deadline=deadline,
             )
-            topology = None if uses_existing_auth else await self._app_git_credential_topology(home=home)
-            authority = "https://x-access-token@github.com"
-            prompt = f"Password for '{authority}': "
-            broker_channel = request_channel = None
-            broker_task = None
-            process = None
-            try:
-                request_fd: int | None = None
-                if not uses_existing_auth:
-                    broker_channel, request_channel = make_request_channel()
-                    request_fd = request_channel.fileno()
-                environment = (
-                    self._existing_git_auth_environment()
-                    if uses_existing_auth
-                    else self._app_git_environment(home)
-                )
-                if request_fd is not None:
-                    environment.update(
-                        {
-                            "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
-                            "GIT_ASKPASS_REQUIRE": "force",
-                            "AQ_GIT_APP_REQUEST_FD": str(request_fd),
-                            "AQ_GIT_APP_USERNAME": "x-access-token",
-                            "AQ_GIT_APP_AUTHORITY": authority,
-                            "AQ_GIT_APP_REPOSITORY": remote_url,
-                        }
-                    )
-                arguments = [
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "-c",
-                    "credential.helper=",
-                    "-c",
-                    "http.proxy=",
-                    "-c",
-                    "https.proxy=",
-                    "-c",
-                    "protocol.allow=never",
-                    "-c",
-                    "protocol.https.allow=always",
-                    "-c",
-                    "protocol.ext.allow=never",
-                ]
-                if uses_existing_auth:
-                    arguments.extend(["-c", "credential.helper=!gh auth git-credential"])
-                if remote_url.startswith("file://"):
-                    arguments.extend(["-c", "protocol.file.allow=always"])
-                arguments.extend(
-                    [
-                        f"--git-dir={imported}",
-                        "fetch",
-                        "--no-tags",
-                        "--force",
-                        remote_url,
-                        f"{oid}:refs/aq/exact",
-                    ]
-                )
-                process = await asyncio.create_subprocess_exec(
-                    self._APP_GIT_EXECUTABLE,
-                    *arguments,
-                    cwd=str(home),
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    env=environment,
-                    pass_fds=(request_fd,) if request_fd is not None else (),
-                    start_new_session=True,
-                )
-                if request_channel is not None:
-                    request_channel.close()
-                    request_channel = None
-                if broker_channel is not None and topology is not None:
-                    broker_task = asyncio.create_task(
-                        serve_one_credential(
-                            broker_channel,
-                            token_buffer,
-                            git_pid=process.pid,
-                            topology=topology,
-                            authority=authority,
-                            repository=remote_url,
-                            prompt=prompt,
-                            timeout=min(
-                                float(self._GIT_TIMEOUT), self._APP_CREDENTIAL_BROKER_TIMEOUT
-                            ),
-                        )
-                    )
-                    broker_channel = None
-                await asyncio.wait_for(process.wait(), timeout=self._GIT_TIMEOUT)
-                await self._kill_app_git_group(process)
-                if broker_task is not None:
-                    served = await self._settle_app_credential_broker(broker_task)
-                    broker_task = None
-                else:
-                    served = True
-            except BaseException as exc:
-                if process is not None:
-                    await self._kill_app_git_group(process)
-                if broker_task is not None:
-                    await self._settle_app_credential_broker(broker_task)
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
-                raise GitError("authenticated exact Git fetch failed") from exc
-            finally:
-                if request_channel is not None:
-                    request_channel.close()
-                if broker_channel is not None:
-                    broker_channel.close()
-            if process.returncode != 0 or (remote_url.startswith("https://") and not served):
-                raise GitError("authenticated exact Git fetch failed")
+            await self._arun_authenticated_git(
+                [f"--git-dir={imported}", "fetch", "--no-tags", "--force",
+                 destination_url, f"{oid}:refs/aq/exact"],
+                home=home,
+                repository_url=destination_url,
+                token=token,
+                deadline=deadline,
+            )
             verified = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"], home=home
+                [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
+                home=home, deadline=deadline,
             )
             if verified.decode("ascii", errors="replace") != oid:
                 raise GitError("authenticated exact Git fetch returned another object")
             await self._run_isolated_import_git(
-                [
-                    "-c",
-                    "protocol.allow=never",
-                    "-c",
-                    "protocol.file.allow=always",
-                    f"--git-dir={destination}",
-                    "fetch",
-                    "--no-tags",
-                    "--force",
-                    str(imported),
-                    f"{oid}:{destination_ref}",
-                ],
-                home=home,
+                ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+                 f"--git-dir={destination}", "fetch", "--no-tags", "--force",
+                 str(imported), f"{oid}:{destination_ref}"],
+                home=home, deadline=deadline,
             )
+            local = await self._run_isolated_import_git(
+                [f"--git-dir={destination}", "rev-parse", f"{destination_ref}^{{commit}}"],
+                home=home, deadline=deadline,
+            )
+            if local.decode("ascii", errors="replace") != oid:
+                raise GitError("authenticated exact Git import returned another object")
         return oid
 
     @staticmethod
@@ -3196,6 +3319,7 @@ class GitManager:
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_LFS_SKIP_SMUDGE": "1",
         }
 
     def _existing_git_auth_environment(self) -> dict[str, str]:
@@ -3207,7 +3331,139 @@ class GitManager:
             "GIT_NO_REPLACE_OBJECTS": "1",
             "GIT_TERMINAL_PROMPT": "0",
             "GIT_ASKPASS": "/bin/false",
+            "GIT_LFS_SKIP_SMUDGE": "1",
         }
+
+    async def _arun_authenticated_git(
+        self,
+        args: list[str],
+        *,
+        home: Path,
+        repository_url: str,
+        token: str | None,
+        deadline: float,
+    ) -> bytes:
+        """Run one contained network Git command against a pinned repository URL."""
+        if not (
+            repository_url.startswith("https://github.com/")
+            or repository_url.startswith("file://")  # private local test seam
+        ):
+            raise GitError("invalid authenticated Git source")
+        if token is not None and (not isinstance(token, str) or not token):
+            raise GitError("invalid GitHub App credential")
+        uses_existing_auth = token is None
+        token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
+        with _zeroized_credential(token_buffer):
+            topology = (
+                None
+                if uses_existing_auth
+                else await self._app_git_credential_topology(home=home, deadline=deadline)
+            )
+            authority = "https://x-access-token@github.com"
+            broker_channel = request_channel = None
+            broker_task: asyncio.Task[bool] | None = None
+            process: asyncio.subprocess.Process | None = None
+            try:
+                request_fd: int | None = None
+                if not uses_existing_auth:
+                    self._remaining_app_push_budget(deadline)
+                    broker_channel, request_channel = make_request_channel()
+                    request_fd = request_channel.fileno()
+                environment = (
+                    self._existing_git_auth_environment()
+                    if uses_existing_auth
+                    else self._app_git_environment(home)
+                )
+                if request_fd is not None:
+                    environment.update(
+                        {
+                            "GIT_ASKPASS": str(Path(answer_prompt.__code__.co_filename)),
+                            "GIT_ASKPASS_REQUIRE": "force",
+                            "AQ_GIT_APP_REQUEST_FD": str(request_fd),
+                            "AQ_GIT_APP_USERNAME": "x-access-token",
+                            "AQ_GIT_APP_AUTHORITY": authority,
+                            "AQ_GIT_APP_REPOSITORY": repository_url,
+                        }
+                    )
+                command = [
+                    "-c", "core.hooksPath=/dev/null",
+                    "-c", "credential.helper=",
+                    "-c", "http.proxy=",
+                    "-c", "https.proxy=",
+                    "-c", "http.followRedirects=false",
+                    "-c", "protocol.allow=never",
+                    "-c", "protocol.https.allow=always",
+                    "-c", "protocol.ext.allow=never",
+                ]
+                if uses_existing_auth:
+                    command.extend(["-c", "credential.helper=!gh auth git-credential"])
+                if repository_url.startswith("file://"):
+                    command.extend(["-c", "protocol.file.allow=always"])
+                # A username without a password makes Git request the broker
+                # credential before a public repository can answer anonymously.
+                # The token itself is never placed in a URL or argument.
+                git_url = (
+                    repository_url.replace("https://", "https://x-access-token@", 1)
+                    if not uses_existing_auth and repository_url.startswith("https://")
+                    else repository_url
+                )
+                command.extend(git_url if arg == repository_url else arg for arg in args)
+                async with asyncio.timeout_at(deadline):
+                    process = await asyncio.create_subprocess_exec(
+                        self._APP_GIT_EXECUTABLE,
+                        *command,
+                        cwd=str(home),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        env=environment,
+                        pass_fds=(request_fd,) if request_fd is not None else (),
+                        start_new_session=True,
+                    )
+                    if request_channel is not None:
+                        request_channel.close()
+                        request_channel = None
+                    if broker_channel is not None and topology is not None:
+                        broker_task = asyncio.create_task(
+                            serve_one_credential(
+                                broker_channel,
+                                token_buffer,
+                                git_pid=process.pid,
+                                topology=topology,
+                                authority=authority,
+                                repository=repository_url,
+                                prompt=f"Password for '{authority}': ",
+                                timeout=min(
+                                    self._remaining_app_push_budget(deadline),
+                                    self._APP_CREDENTIAL_BROKER_TIMEOUT,
+                                ),
+                            )
+                        )
+                        broker_channel = None
+                    output, _ = await process.communicate()
+                    await self._kill_app_git_group(process)
+                    served = (
+                        await self._settle_app_credential_broker(broker_task)
+                        if broker_task is not None
+                        else True
+                    )
+                    broker_task = None
+            except BaseException as exc:
+                if process is not None:
+                    await self._kill_app_git_group(process)
+                if broker_task is not None:
+                    await self._settle_app_credential_broker(broker_task)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise GitError("authenticated Git acquisition failed") from exc
+            finally:
+                if request_channel is not None:
+                    request_channel.close()
+                if broker_channel is not None:
+                    broker_channel.close()
+            if process.returncode != 0 or (repository_url.startswith("https://") and not served):
+                raise GitError("authenticated Git acquisition failed")
+            return output
 
     @staticmethod
     async def _kill_app_git_group(process: asyncio.subprocess.Process) -> None:
@@ -3708,8 +3964,7 @@ class GitManager:
         ``base_oid`` are fetched *by OID* — content-addressed, so the fetch
         either yields exactly those commits or fails — into a daemon-owned
         bare repository under ``cache_root`` (one per host and repository,
-        created on first use, blobs never fetched: ``--filter=blob:none``
-        and a name-only tree diff need none), and the diff is
+        created on first use), and the diff is
         ``git diff-tree --no-renames --name-only`` from
         ``merge-base(base_oid, head_oid)`` to ``head_oid`` — the same
         merge-base diff GitHub lists, with no 3000-entry cap and no reliance
@@ -3719,10 +3974,7 @@ class GitManager:
 
         ``cache_root`` is the directory ``pr_merge`` runs ``gh`` in; it is
         not a checkout, which is why the PR cannot simply be fetched into
-        ``origin``.  The fetch authenticates through ``gh auth
-        git-credential`` — the same login ``gh api`` already needs — so the
-        operator's own git credential helpers are neither required nor
-        consulted.  Every failure fails closed: an error from git here is an
+        ``origin``. Every failure fails closed: an error from git here is an
         unknown diff, never a clean one.
         """
         owner, repo = identity.repository.split("/")
@@ -3732,23 +3984,37 @@ class GitManager:
         try:
             async with self._pr_diff_cache_lock(cache):
                 await self._arun(["init", "--bare", "--quiet", cache])
-                await self._arun(
-                    [
-                        "-c",
-                        "credential.helper=",
-                        "-c",
-                        "credential.helper=!gh auth git-credential",
-                        "fetch",
-                        "--quiet",
-                        "--no-tags",
-                        "--filter=blob:none",
-                        identity.clone_url,
-                        identity.head_oid,
-                        identity.base_oid,
-                    ],
-                    cwd=cache,
-                    timeout=self._PR_DIFF_FETCH_TIMEOUT,
-                )
+                if self.github_access is not None:
+                    fetch_deadline = (
+                        asyncio.get_running_loop().time() + self._PR_DIFF_FETCH_TIMEOUT
+                    )
+                    binding = await self.github_access.bind_repository(identity.clone_url)
+                    for label, oid in (("head", identity.head_oid), ("base", identity.base_oid)):
+                        token = await self._atoken_for_repository(binding)
+                        remaining = fetch_deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            raise GitError("PR delivery diff fetch deadline expired")
+                        await self._afetch_exact_oid_with_app_auth_to_url(
+                            cache,
+                            destination_url=f"https://github.com/{binding.full_name}.git",
+                            token=token,
+                            oid=oid,
+                            destination_ref=f"refs/aq/pr/{label}",
+                            timeout_seconds=remaining,
+                        )
+                else:
+                    # Compatibility for local-only standalone managers while
+                    # the old entry point is removed in the final migration.
+                    await self._arun(
+                        [
+                            "-c", "credential.helper=",
+                            "-c", "credential.helper=!gh auth git-credential",
+                            "fetch", "--quiet", "--no-tags", "--filter=blob:none",
+                            identity.clone_url, identity.head_oid, identity.base_oid,
+                        ],
+                        cwd=cache,
+                        timeout=self._PR_DIFF_FETCH_TIMEOUT,
+                    )
                 # A fetch that returned without delivering the exact commits
                 # (not our ref, a stale cache, an interrupted pack) cannot be
                 # diffed; prove both objects are present before trusting it.
@@ -4498,7 +4764,30 @@ class GitManager:
         total_lines = insertions + deletions
         return files_changed >= min_files or total_lines >= min_lines
 
-    async def aget_default_branch(self, checkout_path: str) -> str:
+    async def aget_default_branch(
+        self, checkout_path: str, *, repository_url: str | None = None
+    ) -> str:
+        if repository_url is not None and not self._uses_existing_ssh(repository_url):
+            binding = await self._abind_git_repository(repository_url)
+            if binding is not None and self.github_access is not None:
+                configured_origin = await self._arun(
+                    ["config", "--get", "remote.origin.url"], cwd=checkout_path
+                )
+                self.github_access.validate_repository_reference(binding, configured_origin)
+                token = await self._atoken_for_repository(binding)
+                source_url = f"https://github.com/{binding.full_name}.git"
+                deadline = asyncio.get_running_loop().time() + self._GIT_TIMEOUT
+                with tempfile.TemporaryDirectory(prefix="aq-app-head-") as temporary:
+                    home = Path(temporary)
+                    home.chmod(0o700)
+                    output = await self._arun_authenticated_git(
+                        ["ls-remote", "--symref", source_url, "HEAD"],
+                        home=home, repository_url=source_url, token=token, deadline=deadline,
+                    )
+                for line in output.decode("ascii", errors="replace").splitlines():
+                    if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+                        return _validate_ref(line.removeprefix("ref: refs/heads/").split("\t", 1)[0])
+                raise GitError("authenticated default branch discovery failed")
         try:
             remote_head = await self._arun(
                 ["symbolic-ref", "refs/remotes/origin/HEAD"],

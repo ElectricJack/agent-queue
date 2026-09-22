@@ -452,7 +452,7 @@ class WorktreeSlotManager:
 
         base_path = base_ws.workspace_path
         target = slot_path(base_path, slot_index)
-        default_branch = await self._default_branch(base_path)
+        default_branch = await self._default_branch(base_path, project_id=base_ws.project_id)
 
         async with self._git_mutex(base_path):
             await self.ensure_git_exclude(base_path)
@@ -462,7 +462,7 @@ class WorktreeSlotManager:
                 logger.debug("worktree prune failed in %s: %s", base_path, e)
 
             start_ref = await self._fetch_and_resolve_start_ref(
-                base_path, default_branch, required=True
+                base_path, default_branch, required=True, project_id=base_ws.project_id
             )
 
             if target.exists() and any(target.iterdir()):
@@ -597,12 +597,13 @@ class WorktreeSlotManager:
             slot_ws, prev.task_id if prev else None, incoming_task_id=task.id
         )
 
-        default_branch = await self._default_branch(base_path)
+        default_branch = await self._default_branch(base_path, project_id=slot_ws.project_id)
         start_point = base_branch or default_branch
 
         async with self._git_mutex(base_path):
             start_ref = await self._fetch_and_resolve_start_ref(
-                base_path, start_point, required=False, cwd=str(slot_dir)
+                base_path, start_point, required=False, cwd=str(slot_dir),
+                project_id=slot_ws.project_id,
             )
 
             # Hard reset + clean.  The sentinel is exempted so a reset never
@@ -716,7 +717,9 @@ class WorktreeSlotManager:
                 )
                 branch = await self.git.aget_current_branch(str(slot_dir))
                 if not salvaged and branch.startswith(BRANCH_PREFIX):
-                    await self._detach_if_branch_is_pushed(slot_dir, base_path, branch)
+                    await self._detach_if_branch_is_pushed(
+                        slot_dir, base_path, branch, project_id=slot_ws.project_id
+                    )
             except GitError as e:
                 # Never fatal: the next reset_slot_for_task repeats this under
                 # its own error handling, and a slot that cannot be cleaned
@@ -725,7 +728,7 @@ class WorktreeSlotManager:
         return salvaged
 
     async def _detach_if_branch_is_pushed(
-        self, slot_dir: Path, base_path: str, branch: str
+        self, slot_dir: Path, base_path: str, branch: str, *, project_id: str
     ) -> None:
         """Detach a clean slot only when its task branch matches origin.
 
@@ -737,7 +740,9 @@ class WorktreeSlotManager:
         if not await self.git.ahas_remote(base_path):
             return
         try:
-            await self.git._arun_unlocked(["fetch", "origin"], cwd=base_path)
+            await self.git.afetch_origin(
+                base_path, repository_url=await self._repository_url(project_id), lock_held=True
+            )
             remote_branch = f"origin/{branch}"
             if not await self._ref_exists(str(slot_dir), remote_branch):
                 return
@@ -747,7 +752,7 @@ class WorktreeSlotManager:
             )
             if local.strip() != remote.strip():
                 return
-            default = await self._default_branch(base_path)
+            default = await self._default_branch(base_path, project_id=project_id)
             await self.git._arun_unlocked(
                 ["switch", "--detach", f"origin/{default}"], cwd=str(slot_dir)
             )
@@ -965,9 +970,20 @@ class WorktreeSlotManager:
         # the collision.
         return None
 
-    async def _default_branch(self, base_path: str) -> str:
+    async def _repository_url(self, project_id: str | None) -> str:
+        if not project_id:
+            return ""
+        reader = getattr(self.db, "get_project", None)
+        project = await reader(project_id) if reader is not None else None
+        if project is None:
+            return ""
+        return project.repo_url or ""
+
+    async def _default_branch(self, base_path: str, *, project_id: str | None = None) -> str:
         try:
-            return await self.git.aget_default_branch(base_path)
+            return await self.git.aget_default_branch(
+                base_path, repository_url=await self._repository_url(project_id) or None
+            )
         except Exception:
             return "main"
 
@@ -978,6 +994,7 @@ class WorktreeSlotManager:
         *,
         required: bool,
         cwd: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         """Fetch in the base and return the ref new work should start from.
 
@@ -989,7 +1006,11 @@ class WorktreeSlotManager:
         fetch_failed = False
         try:
             if await self.git.ahas_remote(base_path):
-                await self.git._arun_unlocked(["fetch", "origin"], cwd=base_path)
+                await self.git.afetch_origin(
+                    base_path,
+                    repository_url=await self._repository_url(project_id),
+                    lock_held=True,
+                )
         except GitError as e:
             fetch_failed = True
             logger.warning("fetch origin failed in %s: %s", base_path, e)

@@ -6,14 +6,24 @@ import signal
 import ssl
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import src.git.manager as manager_module
+from src.config import WorktreesConfig
 from src.git.askpass_fd import MAX_REQUEST_BYTES, answer_prompt
 from src.git.askpass_broker import make_request_channel, serve_one_credential
 from src.git.github_app import GitHubRepositoryBinding
-from src.git.manager import APP_AUTH_PUSH_TIMEOUT_SECONDS, GitError, GitManager
+from src.git.github_contracts import GitHubCredentialMode
+from src.git.manager import (
+    APP_AUTH_PUSH_TIMEOUT_SECONDS,
+    GitError,
+    GitManager,
+    PullRequestIdentity,
+)
+from src.orchestrator.worktree_manager import WorktreeSlotManager
 
 
 def _git(args: list[str], cwd: Path, *, env: dict[str, str] | None = None) -> str:
@@ -50,6 +60,326 @@ def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
     _git(["commit", "-am", "tip"], checkout)
     tip = _git(["rev-parse", "HEAD"], checkout)
     return checkout, target, trap, base, tip
+
+
+class _BoundAppAccess:
+    def __init__(
+        self,
+        *,
+        token: str | None = "app-token",
+        mode: GitHubCredentialMode = GitHubCredentialMode.APP,
+    ) -> None:
+        self.auth = type("Auth", (), {"mode": mode})()
+        self.token = token
+        self.requested: list[str] = []
+        self.token_requests: list[GitHubRepositoryBinding] = []
+
+    async def bind_repository(self, reference: str) -> GitHubRepositoryBinding:
+        self.requested.append(reference)
+        return GitHubRepositoryBinding(303, "acme/widgets")
+
+    async def installation_token(self, repository: GitHubRepositoryBinding) -> str | None:
+        self.token_requests.append(repository)
+        return self.token
+
+    def validate_repository_reference(
+        self, repository: GitHubRepositoryBinding, reference: str
+    ) -> None:
+        assert repository.full_name == "acme/widgets"
+        if reference not in {
+            "https://github.com/acme/widgets.git", "git@github.com:acme/widgets.git"
+        }:
+            raise GitError("GitHub repository reference did not match the authorized repository")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference", ["git@github.com:acme/widgets.git", "acme/widgets"]
+)
+async def test_app_clone_derives_https_from_verified_identity(tmp_path, monkeypatch, reference):
+    access = _BoundAppAccess()
+    manager = GitManager(github_access=access)
+    captured = {}
+
+    async def capture(configured_url, checkout_path, **kwargs):
+        captured.update(configured_url=configured_url, checkout_path=checkout_path, **kwargs)
+
+    monkeypatch.setattr(manager, "_aclone_with_auth_to_url", capture)
+    await manager.acreate_checkout(reference, str(tmp_path / "checkout"))
+
+    assert access.requested == [reference]
+    assert len(access.token_requests) == 1
+    assert captured["source_url"] == "https://github.com/acme/widgets.git"
+    assert captured["configured_url"] == reference
+    assert captured["token"] == "app-token"
+
+
+@pytest.mark.asyncio
+async def test_app_clone_never_falls_back_when_token_is_missing(tmp_path, monkeypatch):
+    manager = GitManager(github_access=_BoundAppAccess(token=None))
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("ambient Git was used after App credential failure")
+
+    monkeypatch.setattr(manager, "_arun", forbidden)
+    with pytest.raises(GitError, match="App credential is unavailable"):
+        await manager.acreate_checkout("git@github.com:acme/widgets.git", str(tmp_path / "checkout"))
+
+
+@pytest.mark.asyncio
+async def test_app_configuration_keeps_local_clone_local(tmp_path):
+    _checkout, source, _trap, base, _tip = _git_push_case(tmp_path)
+    access = _BoundAppAccess()
+    destination = tmp_path / "local-checkout"
+
+    await GitManager(github_access=access).acreate_checkout(str(source), str(destination))
+
+    assert access.requested == []
+    assert _git(["rev-parse", "HEAD"], destination) == base
+
+
+@pytest.mark.asyncio
+async def test_existing_login_keeps_operator_ssh_clone_without_gh_binding(tmp_path, monkeypatch):
+    access = _BoundAppAccess(token=None, mode=GitHubCredentialMode.EXISTING_LOGIN)
+    manager = GitManager(github_access=access)
+    commands = []
+
+    async def record(args, cwd=None, timeout=None):
+        commands.append(args)
+        return ""
+
+    monkeypatch.setattr(manager, "_arun", record)
+    await manager.acreate_checkout("git@github.com:acme/widgets.git", str(tmp_path / "checkout"))
+
+    assert access.requested == []
+    assert commands == [["clone", "git@github.com:acme/widgets.git", str(tmp_path / "checkout")]]
+
+
+@pytest.mark.asyncio
+async def test_isolated_clone_preserves_configured_remote_and_ignores_global_rewrite(
+    tmp_path, monkeypatch
+):
+    checkout, source, trap, _base, tip = _git_push_case(tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/main"], checkout)
+    global_config = tmp_path / "malicious-global"
+    global_config.write_text(
+        f'[url "{trap.as_uri()}"]\n\tinsteadOf = {source.as_uri()}\n'
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    destination = tmp_path / "new-checkout"
+    await GitManager()._aclone_with_auth_to_url(
+        "git@github.com:acme/widgets.git",
+        str(destination),
+        source_url=source.as_uri(),
+        token="local-test-token",
+    )
+
+    assert _git(["rev-parse", "HEAD"], destination) == tip
+    assert _git(["config", "--get", "remote.origin.url"], destination) == (
+        "git@github.com:acme/widgets.git"
+    )
+    assert not (destination / ".git" / "objects" / "info" / "alternates").exists()
+    assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_remote(tmp_path):
+    checkout, source, trap, base, tip = _git_push_case(tmp_path)
+    destination = tmp_path / "destination"
+    _git(["clone", str(source), str(destination)], tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    _git(["config", "remote.origin.url", str(trap)], destination)
+
+    await GitManager()._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+
+    assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    assert _git(["rev-parse", "HEAD"], destination) == base
+    assert _git(["config", "--get", "remote.origin.url"], destination) == str(trap)
+    assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
+
+
+@pytest.mark.asyncio
+async def test_pr_delivery_diff_imports_pinned_oids_with_fresh_app_credentials(
+    tmp_path, monkeypatch
+):
+    checkout, source, _trap, base, tip = _git_push_case(tmp_path)
+    _git(["push", str(source), f"{tip}:refs/heads/topic"], checkout)
+    access = _BoundAppAccess()
+    manager = GitManager(github_access=access)
+    real_fetch = manager._afetch_exact_oid_with_app_auth_to_url
+
+    async def file_source_fetch(destination_git_dir, **kwargs):
+        assert kwargs["destination_url"] == "https://github.com/acme/widgets.git"
+        return await real_fetch(
+            destination_git_dir, **(kwargs | {"destination_url": source.as_uri()})
+        )
+
+    monkeypatch.setattr(manager, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
+    identity = PullRequestIdentity("acme/widgets", 12, "main", base, "topic", tip, 1)
+
+    changed = await manager._apr_delivery_diff(str(tmp_path), identity)
+
+    assert changed == "file.txt\x00"
+    assert access.requested == ["https://github.com/acme/widgets.git"]
+    assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")] * 2
+
+
+@pytest.mark.asyncio
+async def test_app_fetch_rejects_origin_outside_authorized_repository_before_token_use(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(["init", "--initial-branch=main"], checkout)
+    _git(["remote", "add", "origin", "https://github.com/other/repository.git"], checkout)
+    access = _BoundAppAccess()
+    manager = GitManager(github_access=access)
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("network fetch ran for a foreign checkout remote")
+
+    monkeypatch.setattr(manager, "_afetch_origin_with_auth_to_url", forbidden)
+    with pytest.raises(GitError, match="did not match"):
+        await manager.afetch_origin(
+            str(checkout), repository_url="git@github.com:acme/widgets.git"
+        )
+    assert access.token_requests == []
+
+
+@pytest.mark.asyncio
+async def test_app_fetch_requires_explicit_authority_for_github_remote(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(["init", "--initial-branch=main"], checkout)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    access = _BoundAppAccess()
+
+    with pytest.raises(GitError, match="authorized GitHub repository is required"):
+        await GitManager(github_access=access).afetch_origin(
+            str(checkout), repository_url=""
+        )
+    assert access.requested == []
+    assert access.token_requests == []
+
+
+@pytest.mark.asyncio
+async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(["init", "--initial-branch=main"], checkout)
+    _git(["remote", "add", "origin", "git@github.com:acme/widgets.git"], checkout)
+    manager = GitManager(github_access=_BoundAppAccess())
+    captured = {}
+
+    async def ls_remote(args, **kwargs):
+        captured.update(args=args, **kwargs)
+        return b"ref: refs/heads/trunk\tHEAD\n1234567890abcdef1234567890abcdef12345678\tHEAD\n"
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", ls_remote)
+    assert await manager.aget_default_branch(
+        str(checkout), repository_url="git@github.com:acme/widgets.git"
+    ) == "trunk"
+    assert captured["repository_url"] == "https://github.com/acme/widgets.git"
+    assert captured["token"] == "app-token"
+
+
+@pytest.mark.asyncio
+async def test_authenticated_fetch_keeps_shared_repository_lock(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(["init", "--initial-branch=main"], checkout)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    manager = GitManager(github_access=_BoundAppAccess())
+    lock = asyncio.Lock()
+    manager.set_lock_provider(lambda _cwd: lock)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    runs = 0
+
+    async def held_fetch(*_args, **_kwargs):
+        nonlocal runs
+        runs += 1
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(manager, "_afetch_origin_with_auth_to_url", held_fetch)
+    first = asyncio.create_task(
+        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = asyncio.create_task(
+        manager.afetch_origin(str(checkout), repository_url="https://github.com/acme/widgets.git")
+    )
+    await asyncio.sleep(0.05)
+    assert runs == 1
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+    assert runs == 2
+
+
+@pytest.mark.asyncio
+async def test_worktree_base_fetch_passes_project_repository_to_authenticated_git(monkeypatch):
+    class DB:
+        async def get_project(self, project_id):
+            assert project_id == "project-1"
+            return SimpleNamespace(repo_url="git@github.com:acme/widgets.git")
+
+    git = SimpleNamespace(ahas_remote=AsyncMock(return_value=True), afetch_origin=AsyncMock())
+    slots = WorktreeSlotManager(DB(), git, None, WorktreesConfig(), lambda _path: asyncio.Lock())
+    monkeypatch.setattr(slots, "_ref_exists", AsyncMock(return_value=True))
+
+    assert await slots._fetch_and_resolve_start_ref(
+        "/checkout", "main", required=True, project_id="project-1"
+    ) == "origin/main"
+    git.afetch_origin.assert_awaited_once_with(
+        "/checkout", repository_url="git@github.com:acme/widgets.git", lock_held=True
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True], ids=["deadline", "cancellation"])
+async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_group(
+    tmp_path, cancel
+):
+    pids = tmp_path / "acquisition-pids"
+    hanging_git = tmp_path / "hanging-git"
+    hanging_git.write_text(
+        "#!/bin/sh\n"
+        "sleep 300 &\n"
+        "child=$!\n"
+        f'printf \'%s %s\' "$$" "$child" > {pids}\n'
+        'wait "$child"\n'
+    )
+    hanging_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(hanging_git)
+    home = tmp_path / "home"
+    home.mkdir()
+    deadline = asyncio.get_running_loop().time() + (1.0 if not cancel else 30.0)
+    task = asyncio.create_task(
+        manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token="test-token",
+            deadline=deadline,
+        )
+    )
+    recorded = await _wait_for_file(pids, fields=2)
+    leader, child = map(int, recorded.split())
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        with pytest.raises(GitError, match="acquisition failed"):
+            await task
+    assert not _process_group_exists(leader)
+    assert not Path(f"/proc/{child}").exists()
 
 
 @pytest.mark.asyncio

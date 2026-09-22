@@ -26,25 +26,28 @@ async def test_checkpoint_accepts_same_canonical_full_ref(prefix):
 
 
 @pytest.mark.parametrize('ancestor', [True, False])
-async def test_repair_retry_fetches_published_tip_with_exact_ref(ancestor):
+async def test_repair_retry_fetches_published_tip_from_authorized_repository(ancestor):
     head = 'b' * 40
     git = SimpleNamespace(
-        _arun=AsyncMock(side_effect=['', head]),
+        _arun=AsyncMock(return_value=head),
+        afetch_origin=AsyncMock(),
         ais_ancestor=AsyncMock(return_value=ancestor),
     )
     orch = SimpleNamespace(git=git)
     fence = Fence(target=BranchKey(repository_id='repo', branch='refs/heads/aq/integration/batch'), owner_id='repair', token=4)
     if ancestor:
         assert await WorkspaceMixin._hierarchy_repair_start(
-            orch, '/slot', {'base_sha': 'a' * 40}, fence
+            orch, '/slot', {'base_sha': 'a' * 40}, fence,
+            repository_url='git@github.com:acme/widgets.git',
         ) == head
     else:
         with pytest.raises(GitError, match='frozen starting commit'):
             await WorkspaceMixin._hierarchy_repair_start(
-                orch, '/slot', {'base_sha': 'a' * 40}, fence
+                orch, '/slot', {'base_sha': 'a' * 40}, fence,
+                repository_url='git@github.com:acme/widgets.git',
             )
-    assert git._arun.await_args_list[0].args[0][-1] == (
-        '+refs/heads/aq/integration/batch:refs/remotes/origin/aq/integration/batch'
+    git.afetch_origin.assert_awaited_once_with(
+        '/slot', repository_url='git@github.com:acme/widgets.git'
     )
 
 
