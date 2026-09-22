@@ -352,6 +352,13 @@ construction rather than by sampling — and costs at most
 nothing at all when the target is already the floor. The unit-card table above is
 unaffected: the clamp never fires there.
 
+Note the clamp itself is **ordering-dependent**: `clamp_row_target(ordered, sizes, …)`
+compares each rung's allocated area against the floor's area *for that same ordering*, so
+two orderings of the same children can settle on different rungs. That is deliberate and
+bounded: the ideal `row_target(sizes)` is sizing-only and is what the tidy sweep evaluates
+against (keeping its cost landscape continuous), while exactly one ordering — the one that
+is actually published — is clamped, and only the publishing flow pays for it.
+
 **The root is exempt, on purpose.** It is never banded — `allocated is content`
 (`flow.py:97-98`) — so there is no band to snap up and F1's failure mode does not exist
 for it, and it has no parent to push. Area is also the wrong measure for the root: trading
@@ -650,7 +657,9 @@ No schema change, no Alembic revision, no API change.
 **Files**
 
 - Modify `src/task_graph/layout/constants.py`: `ENGINE_RULES_VERSION = 1`.
-- Modify `src/database/queries/layout_queries.py`: add `layout_job_exists`.
+- Modify `src/database/queries/layout_queries.py`: add `layout_job_ledger` (the one-statement
+  read of the whole fleet's convergence state for a kind) and `reap_stale_layout_jobs`
+  (the reaper the sweep runs before it walks pairs).
 - Modify `src/orchestrator/layout_step.py`: the convergence step inside `sweep_due`.
 
 **Interfaces — produces**
@@ -662,27 +671,34 @@ ENGINE_RULES_VERSION: int = 1
 #: or to the geometry constants above. The job kind is f"rules:{ENGINE_RULES_VERSION}".
 
 # layout_queries.py (LayoutQueriesMixin)
-async def layout_job_exists(self, project_id: str, variant: str, kind: str) -> bool:
-    """True when a job of this (project, variant, kind) exists and did not fail."""
-    # SELECT 1 FROM layout_jobs
-    #  WHERE project_id=:p AND variant=:v AND kind=:k AND status != 'failed' LIMIT 1
+async def layout_job_ledger(self, kind: str) -> dict[tuple[str, str], dict]:
+    """Every (project, variant) this *kind* has a job for, in ONE statement.
+
+    Each entry: settled (a non-`failed` job exists — queued, running or done),
+    in_flight (a job of this kind is queued or running), failed (how many
+    attempts failed — the pair's spent retry budget), last_error.
+    """
+
+async def reap_stale_layout_jobs(self, *, started_before: float, error: str) -> list[dict]:
+    """Fail every job stuck `running` since before started_before (the reaper)."""
 ```
 
 ```python
-# layout_step.py, at the end of the existing `if sweep_due:` block,
-# inside the loop that already walks `await self.db.list_projects()`:
+# layout_step.py, `_converge_engine_rules`, called at the end of the
+# existing `if sweep_due:` block:
 kind = f"rules:{ENGINE_RULES_VERSION}"
-for project in projects:
-    for variant in ("active", "all"):            # active first: the default canvas
-        if await self.db.get_layout_meta(project.id, variant) is None:
-            continue                             # nothing published; its first layout
-                                                 # will already use the new rules
-        if await self.db.layout_job_exists(project.id, variant, kind):
-            continue
-        job = await self.db.enqueue_layout_job(project.id, variant, kind)
-        if job["kind"] != kind:
-            continue    # an unrelated tidy is in flight; retry on a later sweep
-        return          # at most ONE stale pair per sweep (review S2)
+# 1. Reap jobs stuck `running` (a daemon stopped mid-job) before reading the ledger.
+# 2. ledger = await self.db.layout_job_ledger(kind); if any entry is in_flight,
+#    return — the previous sweep's rebuild has not been consumed yet.
+# 3. published = await self.db.published_layout_variants();
+#    projects  = await self.db.list_projects(status=ACTIVE).
+#    Sort projects by id; per project, `variant in ("active", "all")`: skip an
+#    unpublished pair, skip a settled pair, collect never-attempted (fresh)
+#    first, then failed pairs with their budget not spent; give up a pair whose
+#    failed count reaches MAX_RULES_ATTEMPTS, logging its last error.
+# 4. Enqueue the FIRST pair in fresh + retry — at most ONE per sweep (review
+#    S2); if the returned job's kind is not ours, an unrelated tidy was in
+#    flight; leave the pair stale and retry on a later sweep.
 ```
 
 `enqueue_layout_job` already de-duplicates on `(project_id, variant, status in
@@ -704,12 +720,12 @@ label only.
   the pair; the sweep writes no `rules:1` row and the pair is still stale next sweep.
 - `test_a_project_with_no_meta_row_is_skipped`.
 - `test_the_sweep_is_bounded_when_nothing_is_stale` — with every pair converged, the
-  convergence step issues at most one `layout_job_exists` read per pair and enqueues
-  nothing.
+  convergence step reads the ledger once (a flat one-row-set scan for the kind, not a
+  per-pair query) and enqueues nothing.
 
 **Tests — `tests/task_graph/test_layout_queries.py`**
 
-- `test_layout_job_exists_ignores_failed_and_other_kinds`.
+- `test_the_ledger_ignores_failed_and_other_kinds`.
 - `test_a_rules_job_runs_a_full_layout` — `next_layout_job` returns the `rules:1` row and
   `full_layout` republishes the variant; assert `layout_version` advanced and the rows
   carry the new geometry.
