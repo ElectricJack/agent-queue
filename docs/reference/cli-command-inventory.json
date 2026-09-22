@@ -790,6 +790,7 @@
           "--agent-id"
         ],
         "optional": [
+          "--project-id",
           "--json",
           "--brief",
           "--api-url"

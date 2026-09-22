@@ -36,6 +36,15 @@ def test_committed_inventory_is_generated_from_the_live_tree():
     assert committed["counts"]["leaf_commands"] == len(committed["commands"])
 
 
+def test_start_terminal_has_the_documented_project_option():
+    from src.cli.app import cli
+
+    result = CliRunner().invoke(cli, ["agent", "start-terminal", "--help"])
+
+    assert result.exit_code == 0
+    assert "--project, --project-id TEXT" in result.output
+
+
 def test_inventory_labels_registration_ownership_aliases_and_deprecations():
     from src.cli.app import cli
 

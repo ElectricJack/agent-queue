@@ -9,12 +9,22 @@ import pytest
 
 from src.agents.terminals import TerminalStartError, start_agent_terminal
 from src.api.auth import SessionTokenStore
+from src.api.scope import check_command_scope
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DiscordConfig
 from src.database import Database
 from src.event_bus import EventBus
 from src.messages.session_lens import SessionLens
-from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent,
+    AgentProfile,
+    AgentState,
+    Project,
+    ProjectStatus,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.harness_parser import Harness, ResumeSpec
@@ -87,10 +97,13 @@ async def handler(tmp_path):
     await db.close()
 
 
-async def start(handler, agent_id="worker-a"):
+async def start(handler, agent_id="worker-a", project_id=None):
     command = getattr(handler, "_cmd_start_agent_terminal", None)
     assert command is not None, "an explicit agent terminal start command is required"
-    return await command({"agent_id": agent_id})
+    args = {"agent_id": agent_id}
+    if project_id is not None:
+        args["project_id"] = project_id
+    return await command(args)
 
 
 def provider(handler):
@@ -117,8 +130,84 @@ async def test_worker_starts_private_named_terminal_with_scoped_token(handler):
     assert scope.session_id == row.id and not scope.elevated
     assert scope.session_instance_token == row.instance_token
     assert scope.project_id is None and scope.task_id is None
+    assert check_command_scope("create_task", {}, scope) == (
+        "out of scope: this interactive agent has no assigned project"
+    )
     assert "aq task claim" not in spec.prompt and "aq inbox" not in spec.prompt
     assert await handler.db.list_projects() == [] and await handler.db.list_tasks() == []
+    assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
+
+
+async def test_worker_terminal_can_be_attached_to_one_active_project(handler):
+    await handler.db.create_project(Project(id="p", name="Project"))
+
+    result = await start(handler, project_id="p")
+
+    assert "error" not in result, result
+    row = await handler.db.get_session(result["session_id"])
+    spec = provider(handler).starts[0]
+    assert row.lifecycle == "named" and row.project_id == "p" and row.task_id is None
+    assert spec.env["AQ_PROJECT_ID"] == "p"
+    assert "attached to project 'p'" in spec.prompt
+    assert "create tasks and task graphs" in spec.prompt
+    scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.project_id == "p" and scope.task_id is None and not scope.elevated
+    allowed = {"project_id": "p", "graph": True}
+    assert check_command_scope("create_task", allowed, scope) is None
+    assert "project_id mismatch" in check_command_scope(
+        "create_task", {"project_id": "other", "graph": True}, scope
+    )
+    handler.config.swarm.enabled = True
+    handler._current_scope = {
+        "kind": "session", "session_id": row.id, "project_id": "p", "elevated": False,
+    }
+    claim = await handler._cmd_task_claim({"next": True})
+    assert claim["error"] == "not a claimable session"
+
+
+async def test_terminal_resume_is_scoped_to_its_project(handler):
+    await handler.db.create_project(Project(id="one", name="One"))
+    await handler.db.create_project(Project(id="two", name="Two"))
+    first = await start(handler, project_id="one")
+    old = await handler.db.get_session(first["session_id"])
+    await provider(handler).stop(SessionHandle(old.name, old.provider, old.instance_token))
+    await handler.db.update_session(old.id, state="stopped", desired_state="stopped")
+
+    result = await start(handler, project_id="two")
+
+    row = await handler.db.get_session(result["session_id"])
+    assert row.project_id == "two" and row.session_key != old.session_key
+    assert old.session_key not in provider(handler).starts[-1].command
+
+
+async def test_live_terminal_cannot_be_reused_for_another_project(handler):
+    await handler.db.create_project(Project(id="one", name="One"))
+    await handler.db.create_project(Project(id="two", name="Two"))
+    assert "error" not in await start(handler, project_id="one")
+
+    with pytest.raises(TerminalStartError, match="stop the running terminal first"):
+        await start_agent_terminal(handler.orchestrator, "worker-a", project_id="two")
+
+    assert len(provider(handler).starts) == 1
+
+
+@pytest.mark.parametrize(
+    ("project_id", "status", "message"),
+    [
+        ("missing", None, "not found"),
+        ("paused", ProjectStatus.PAUSED, "not active"),
+    ],
+)
+async def test_terminal_requires_an_active_project_before_reservation(
+    handler, project_id, status, message
+):
+    if status is not None:
+        await handler.db.create_project(Project(id=project_id, name="Paused", status=status))
+
+    with pytest.raises(TerminalStartError, match=message):
+        await start_agent_terminal(handler.orchestrator, "worker-a", project_id=project_id)
+
+    assert provider(handler).starts == []
     assert (await handler.db.get_agent("worker-a")).state == AgentState.IDLE
 
 
@@ -567,6 +656,7 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         if router.prefix == "/api/agent":
             app.include_router(router)
     app.dependency_overrides[get_command_handler] = lambda: handler
+    await handler.db.create_project(Project(id="p", name="Project"))
     scope = RequestScope(
         kind="session", session_id="project-supervisor", project_id="p", elevated=True
     )
@@ -583,11 +673,14 @@ async def test_typed_terminal_start_enforces_scope_and_returns_flock_summary(han
         assert denied.status_code == 403
         assert provider(handler).starts == []
         scope = LOCAL_SCOPE
-        started = await client.post("/api/agent/start-terminal", json={"agent_id": "worker-a"})
+        started = await client.post(
+            "/api/agent/start-terminal", json={"agent_id": "worker-a", "project_id": "p"}
+        )
         assert started.status_code == 200, started.text
         body = started.json()
         assert body["id"] == "worker-a" and body["session_id"]
         assert body["session_state"] == "running"
+        assert body["project_id"] == "p"
         assert body["settings"]["model"] == "my-model"
         assert len(provider(handler).starts) == 1
 

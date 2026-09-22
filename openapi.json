@@ -45181,6 +45181,18 @@
             "type": "string",
             "title": "Agent Id",
             "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Optional active project to attach to the terminal"
           }
         },
         "type": "object",
