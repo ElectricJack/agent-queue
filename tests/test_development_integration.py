@@ -264,6 +264,64 @@ async def test_deleted_delivered_branch_does_not_strand_later_batches(setup, sho
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
+async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(setup):
+    """Branch cleanup cannot turn a commits-less delivery into an unavailable dependency."""
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    await db.save_task_completion(TaskCompletion(
+        id="previous-close", task_id="previous", outcome="pass", commits=[], completed_at=time.time(),
+    ))
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    # The publisher binds its delivered receipt to the empty close.
+    delivery = next(
+        row
+        for row in await service.rows("p")
+        if row["state"] == "delivered" and row["target_ref"] == "refs/heads/main"
+    )
+    assert delivery["evidence"]["completion_sources"] == [
+        {"task_id": "previous", "completion_id": "previous-close", "reported_sha": None,
+         "source_sha": previous}
+    ]
+    # Existing receipts predate the binding. The manifest fallback must still
+    # rescue them after their source branch is cleaned up.
+    await service.change(
+        delivery["id"],
+        evidence={key: value for key, value in delivery["evidence"].items()
+                  if key != "completion_sources"},
+    )
+
+    git(source, "push", "origin", "--delete", "previous")
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+
+
+async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup, caplog):
+    """A parked source stays unavailable; only delivered receipts release a chain."""
+    import logging
+
+    db, service, source, _remote, _repo = setup
+    blocked = await feature(setup, "blocked")
+    await _park(service, "blocked-batch", [{"task_id": "blocked", "source_sha": blocked}])
+    git(source, "push", "origin", "--delete", "blocked")
+    await feature(setup, "dependent")
+    await db.add_dependency("dependent", "blocked")
+
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+
+    assert any(
+        "dependent" in record.getMessage() and "blocked" in record.getMessage()
+        for record in caplog.records
+    )
+    assert all(member["task_id"] != "dependent" for row in await service.rows("p")
+               for member in row["manifest"])
+
+
 @pytest.mark.parametrize("blocker", ["human_gate", "unfinished_dependency"])
 async def test_batch_keeps_non_delivery_blockers(setup, blocker):
     db, service, _source, remote, _repo = setup

@@ -24,6 +24,7 @@ and a ``run_check`` wrapper for tests and ad-hoc calls.
 
 from __future__ import annotations
 
+import json
 import time
 
 from src.database.queries.integration_state_queries import session_attached_clause
@@ -603,6 +604,200 @@ async def _fix_stranded_fences(ctx: DoctorContext) -> CheckResult:
     return result
 
 
+async def _find_stranded_dependents(ctx: DoctorContext) -> list[dict]:
+    """Find completed candidates held behind a cleaned-up commits-less delivery.
+
+    A delivered manifest normally makes its source durable enough to survive
+    branch cleanup. Older publisher builds consulted an empty completion first,
+    however, and silently marked that blocker unavailable. The cleanup receipt
+    is the durable proof that this is that specific failure mode; a merely
+    completed task with no commits is not enough to warrant an alarm.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        development_deliveries,
+        projects,
+        task_completion_records,
+        task_dependencies,
+        tasks,
+    )
+
+    async with ctx.db._engine.connect() as conn:
+        development = set(
+            (
+                await conn.execute(
+                    select(projects.c.id).where(
+                        projects.c.hierarchical_integration_mode == "development"
+                    )
+                )
+            ).scalars()
+        )
+        if not development:
+            return []
+        candidates = (
+            (
+                await conn.execute(
+                    select(tasks.c.id, tasks.c.project_id)
+                    .where(
+                        tasks.c.project_id.in_(development),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        candidate_projects = {row["id"]: row["project_id"] for row in candidates}
+        if not candidate_projects:
+            return []
+        links = (
+            (
+                await conn.execute(
+                    select(task_dependencies.c.task_id, task_dependencies.c.depends_on_task_id)
+                    .where(
+                        task_dependencies.c.task_id.in_(candidate_projects),
+                        task_dependencies.c.dep_type.in_(("blocks", "waits-for", "conditional-blocks")),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        blocker_ids = {link["depends_on_task_id"] for link in links}
+        if not blocker_ids:
+            return []
+        blockers = {
+            row["id"]: row
+            for row in (
+                (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.project_id, tasks.c.status)
+                        .where(tasks.c.id.in_(blocker_ids))
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        }
+        completions = {}
+        for row in (
+            (
+                await conn.execute(
+                    select(
+                        task_completion_records.c.task_id,
+                        task_completion_records.c.id,
+                        task_completion_records.c.commits,
+                    )
+                    .where(task_completion_records.c.task_id.in_(blocker_ids))
+                    .order_by(
+                        task_completion_records.c.task_id,
+                        task_completion_records.c.completed_at.desc(),
+                        task_completion_records.c.id.desc(),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        ):
+            completions.setdefault(row["task_id"], row)
+        rows = (
+            (
+                await conn.execute(
+                    select(development_deliveries)
+                    .where(
+                        development_deliveries.c.project_id.in_(development),
+                        development_deliveries.c.state.in_(("delivered", "adopted")),
+                    )
+                    .order_by(
+                        development_deliveries.c.created_at.desc(),
+                        development_deliveries.c.id.desc(),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    delivered_task_ids = {
+        member.get("task_id")
+        for row in rows
+        for member in row["manifest"] or []
+        if isinstance(member, dict) and member.get("task_id")
+    }
+    stranded = {}
+    for row in rows:
+        cleanup = (row["evidence"] or {}).get("branch_cleanup") or {}
+        deleted = cleanup.get("deleted") or []
+        if not deleted:
+            continue
+        for member in row["manifest"] or []:
+            blocker_id = member.get("task_id")
+            source_sha = member.get("source_sha")
+            blocker = blockers.get(blocker_id)
+            completion = completions.get(blocker_id)
+            if (
+                blocker is None
+                or blocker["project_id"] != row["project_id"]
+                or blocker["status"] != TaskStatus.COMPLETED.value
+                or completion is None
+                or json.loads(completion["commits"])
+                or not any(entry.get("sha") == source_sha for entry in deleted)
+            ):
+                continue
+            for link in links:
+                if link["depends_on_task_id"] != blocker_id:
+                    continue
+                dependent_id = link["task_id"]
+                if (
+                    candidate_projects.get(dependent_id) != row["project_id"]
+                    or dependent_id in delivered_task_ids
+                ):
+                    continue
+                key = (dependent_id, blocker_id)
+                stranded.setdefault(
+                    key,
+                    {
+                        "project_id": row["project_id"],
+                        "dependent_task_id": dependent_id,
+                        "blocker_task_id": blocker_id,
+                        "delivery_id": row["id"],
+                        "source_sha": source_sha,
+                    },
+                )
+    return sorted(stranded.values(), key=lambda item: (item["project_id"], item["dependent_task_id"]))
+
+
+async def _check_stranded_dependents(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stranded_dependents",
+            severity=Severity.INFO,
+            detail="database not initialised — development dependency state unknown",
+        )
+    findings = await _find_stranded_dependents(ctx)
+    if not findings:
+        return CheckResult(
+            id="integration.stranded_dependents",
+            severity=Severity.OK,
+            detail="no completed development candidate is stranded behind a cleaned-up delivery",
+            data={"count": 0, "dependents": []},
+        )
+    first = findings[0]
+    return CheckResult(
+        id="integration.stranded_dependents",
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(findings)} completed development candidate(s) are stranded behind a "
+            f"cleaned-up commits-less delivery — e.g. {first['dependent_task_id']} waits for "
+            f"{first['blocker_task_id']} ({first['source_sha']}). Restore the blocker's branch "
+            "at its delivered SHA, then let the development publisher sweep again"
+        ),
+        fixable=False,
+        data={"count": len(findings), "dependents": findings[:50]},
+    )
+
+
 async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
     """Two durable symptoms of a development publisher that stopped making progress.
 
@@ -994,6 +1189,16 @@ def integration_checks() -> list[DoctorCheck]:
             fix=_fix_stranded_fences,
             owner=OWNER,
             timeout_s=60.0,
+        ),
+        # Report-only. A historical publisher skipped completed work when a
+        # delivered blocker's branch had already been cleaned up and its close
+        # listed no commits. The delivery receipt names the exact SHA an
+        # operator can temporarily restore; doctor must not rewrite history or
+        # create that ref itself.
+        DoctorCheck(
+            id="integration.stranded_dependents",
+            run=_check_stranded_dependents,
+            owner=OWNER,
         ),
         # Report-only.  Both symptoms are durable publisher state, and the
         # repairs they call for — resolving a parked batch, cancelling one,

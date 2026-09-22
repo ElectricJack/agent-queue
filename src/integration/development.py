@@ -667,7 +667,19 @@ class DevelopmentIntegration:
                 if task["parent_task_id"] in blocked_parents:
                     unavailable.add(task["id"])
                     continue
-                if dependencies.get(task["id"], set()) & unavailable:
+                unavailable_dependencies = dependencies.get(task["id"], set()) & unavailable
+                if unavailable_dependencies:
+                    for dependency_id in sorted(unavailable_dependencies):
+                        logger.warning(
+                            "development publisher: skipping %s because dependency %s is unavailable",
+                            task["id"],
+                            dependency_id,
+                            extra={
+                                "candidate_task_id": task["id"],
+                                "dependency_task_id": dependency_id,
+                                "project": project_id,
+                            },
+                        )
                     unavailable.add(task["id"])
                     continue
                 source = source_heads.get(
@@ -678,12 +690,23 @@ class DevelopmentIntegration:
                     # batch. A durable completion plus default-branch ancestry
                     # proves delivery even after the source ref is deleted.
                     completion = await self.db.get_task_completion(task["id"])
-                    recorded_head = await self._completion_source(store, completion)
+                    recorded_head = await self._completion_source(
+                        store, completion, history=history
+                    )
                     if (
                         recorded_head and is_valid_git_oid(recorded_head)
                         and await self.git.ais_ancestor(str(store), recorded_head, base)
                     ):
                         source = recorded_head
+                if not source:
+                    # A delivered receipt is a source fact, independent of a
+                    # worker's completion payload. In particular, Codex and
+                    # OpenCode both legitimately close with ``commits: []``.
+                    # Prefer the newest delivered/adopted receipt whose exact
+                    # member is already on this sweep's pinned base.
+                    source = await self._delivered_source(
+                        store, history, task["id"], base, repository_id=repo.id, target_ref=target
+                    )
                 key = (task["id"], source)
                 if not source:
                     unavailable.add(task["id"])
@@ -835,6 +858,7 @@ class DevelopmentIntegration:
                 )
                 await self.reconcile_parked(repo, store, base)
                 return {"outcome": "parked", "head_sha": head, "evidence": evidence}
+            evidence = await self._bind_commitsless_completion_sources(evidence, manifest)
             result = await self.publish(
                 repo, store, target, head, base, manifest, evidence, "development batch",
                 arm_branch_cleanup=True,
@@ -904,20 +928,58 @@ class DevelopmentIntegration:
             await self._record_batch_diagnostic(row, diagnostics)
         await self.reconcile_completion_sources(repo, store, history)
 
-    async def _completion_source(self, store, completion):
-        if completion is None or not completion.commits:
+    async def _completion_source(self, store, completion, *, history=()):
+        """Resolve a worker-reported source or its durable delivery binding."""
+        if completion is None:
             return None
-        reported = completion.commits[-1]
-        if is_valid_git_oid(reported):
-            return reported
-        if not isinstance(reported, str) or not re.fullmatch(r"[0-9a-f]{7,39}", reported):
-            return None
-        try:
-            return await self.run_git(
-                store, "rev-parse", "--verify", "--end-of-options", reported + "^{commit}",
-            )
-        except GitError:
-            return None
+        if completion.commits:
+            reported = completion.commits[-1]
+            if is_valid_git_oid(reported):
+                return reported
+            if isinstance(reported, str) and re.fullmatch(r"[0-9a-f]{7,39}", reported):
+                try:
+                    return await self.run_git(
+                        store,
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        reported + "^{commit}",
+                    )
+                except GitError:
+                    pass
+        # A delivery receipt binds the exact completion record to the source
+        # the publisher actually delivered. It is essential for legitimate
+        # commits-less closes after branch cleanup has deleted the source ref.
+        for row in reversed(history):
+            if row["state"] not in {"delivered", "adopted"}:
+                continue
+            for proof in (row.get("evidence") or {}).get("completion_sources", []):
+                if (
+                    proof.get("task_id") == completion.task_id
+                    and proof.get("completion_id") == completion.id
+                    and is_valid_git_oid(proof.get("source_sha"))
+                ):
+                    return proof["source_sha"]
+        return None
+
+    async def _delivered_source(self, store, history, task_id, base, *, repository_id, target_ref):
+        """Return a delivered manifest source for *task_id* that reached *base*."""
+        for row in reversed(history):
+            if (
+                row["state"] not in {"delivered", "adopted"}
+                or row["repository_id"] != repository_id
+                or row["target_ref"] != target_ref
+            ):
+                continue
+            for member in reversed(_manifest_members(row["manifest"])):
+                source = member.get("source_sha")
+                if (
+                    member["task_id"] == task_id
+                    and is_valid_git_oid(source)
+                    and await self.git.ais_ancestor(str(store), source, base)
+                ):
+                    return source
+        return None
 
     @staticmethod
     def _completion_proof(task_id, completion_id, reported_sha, source_sha):
@@ -925,14 +987,34 @@ class DevelopmentIntegration:
         return {"task_id": task_id, "completion_id": completion_id,
                 "reported_sha": reported_sha, "source_sha": source_sha}
 
+    async def _bind_commitsless_completion_sources(self, evidence, manifest):
+        """Bind empty worker close payloads before their delivery is recorded.
+
+        The publisher, unlike an eventual branch cleanup, still holds the
+        exact manifest source at this point. Store that fact on the delivered
+        receipt rather than inventing commits in the worker's immutable close.
+        """
+        proofs = list(evidence.get("completion_sources", []))
+        for member in _manifest_members(manifest):
+            source = member.get("source_sha")
+            if not is_valid_git_oid(source):
+                continue
+            completion = await self.db.get_task_completion(member["task_id"])
+            if completion is None or completion.commits:
+                continue
+            proof = self._completion_proof(member["task_id"], completion.id, None, source)
+            if proof not in proofs:
+                proofs.append(proof)
+        return {**evidence, **({"completion_sources": proofs} if proofs else {})}
+
     async def reconcile_completion_sources(self, repo, store, history):
         """Bind completions to delivered revisions the manifest does not name.
 
-        Two cases: a unique abbreviated completion ID that Git resolves to the
-        member's source, and a completion that reports the row's own prepared
-        head, which is on the target ref. The second is what :meth:`adopt`
-        records for a task it closes; adopt binds it as it writes the row, and
-        this pass backfills rows journaled before it did.
+        Three cases: a unique abbreviated completion ID that Git resolves to
+        the member's source, a completion that reports the row's own prepared
+        head (which :meth:`adopt` writes), and a commits-less completion. The
+        latter is bound directly to the publisher's delivered member so a
+        later branch cleanup cannot make the close unresolvable.
 
         Keep the original completion evidence intact. Readiness consumes this
         publisher proof, never a SQL prefix match that could accept ambiguity.
@@ -949,19 +1031,24 @@ class DevelopmentIntegration:
                 identity = member["task_id"]
                 if identity not in completions:
                     completion = await self.db.get_task_completion(identity)
-                    canonical = await self._completion_source(store, completion)
+                    canonical = await self._completion_source(store, completion, history=history)
                     completions[identity] = completion, canonical
                 completion, canonical = completions[identity]
-                if completion is None or not completion.commits or canonical is None:
+                source = member.get("source_sha")
+                if completion is None or not is_valid_git_oid(source):
                     continue
-                reported = completion.commits[-1]
-                if canonical == member.get("source_sha"):
+                reported = completion.commits[-1] if completion.commits else None
+                if not completion.commits:
+                    # There is no worker-reported source to compare. The
+                    # delivered manifest is the authoritative binding.
+                    pass
+                elif canonical == source:
                     if canonical == reported:
                         continue  # The manifest itself names this close.
                 elif canonical != row["prepared_sha"]:
                     continue
                 proof = self._completion_proof(
-                    identity, completion.id, reported, member.get("source_sha")
+                    identity, completion.id, reported, source
                 )
                 if proof not in proofs:
                     proofs.append(proof)
