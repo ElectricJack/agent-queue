@@ -60,7 +60,37 @@ class GraphLayoutResponse(BaseModel):
     error: str | None = None
 
 
+class ReflowFailedScope(BaseModel):
+    """A single failed deferred reflow request, as reported by ``graph_reflow_status``."""
+
+    project_id: str
+    variant: str
+    scope_key: str
+    generation: int = 1
+    attempts: int = 0
+    last_error: str | None = None
+
+
+class GraphReflowStatus(BaseModel):
+    """Payload of a ``graph_reflow_status`` success response (operator diagnostics)."""
+
+    queued: int = 0
+    running: int = 0
+    failed: int = 0
+    failed_scopes: list[ReflowFailedScope] = []
+
+
+class GraphReflowStatusResponse(BaseModel):
+    """Response for ``graph_reflow_status`` (deferred active-layout reflow diagnostics)."""
+
+    success: bool
+    project_id: str | None = None
+    status: GraphReflowStatus | None = None
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "graph_layout_rebuild": GraphLayoutResponse,
     "graph_tidy": GraphLayoutResponse,
+    "graph_reflow_status": GraphReflowStatusResponse,
 }

@@ -5417,6 +5417,53 @@
         }
       }
     },
+    "/api/graph/reflow-status": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Read queued, running, and failed durable active-layout reflow requests. Does not enqueue, retry, or otherwise mutate work. Not available to agent sessions.",
+        "description": "Read queued, running, and failed durable active-layout reflow requests. Does not enqueue, retry, or otherwise mutate work. Not available to agent sessions.",
+        "operationId": "graph_reflow_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphReflowStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphReflowStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/graph/tidy": {
       "post": {
         "tags": [
@@ -28726,6 +28773,100 @@
         ],
         "title": "GraphNodeDTO"
       },
+      "GraphReflowStatus": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "title": "Queued",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "title": "Running",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "failed_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/ReflowFailedScope"
+            },
+            "type": "array",
+            "title": "Failed Scopes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "GraphReflowStatus",
+        "description": "Payload of a ``graph_reflow_status`` success response (operator diagnostics)."
+      },
+      "GraphReflowStatusRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Optional project id; omit for every project."
+          }
+        },
+        "type": "object",
+        "title": "GraphReflowStatusRequest"
+      },
+      "GraphReflowStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphReflowStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "GraphReflowStatusResponse",
+        "description": "Response for ``graph_reflow_status`` (deferred active-layout reflow diagnostics)."
+      },
       "GraphTaskNode": {
         "properties": {
           "id": {
@@ -41006,6 +41147,51 @@
           "policy"
         ],
         "title": "RedactionRowDTO"
+      },
+      "ReflowFailedScope": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "variant": {
+            "type": "string",
+            "title": "Variant"
+          },
+          "scope_key": {
+            "type": "string",
+            "title": "Scope Key"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation",
+            "default": 1
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "default": 0
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "variant",
+          "scope_key"
+        ],
+        "title": "ReflowFailedScope",
+        "description": "A single failed deferred reflow request, as reported by ``graph_reflow_status``."
       },
       "ReleaseProjectConstraintRequest": {
         "properties": {
