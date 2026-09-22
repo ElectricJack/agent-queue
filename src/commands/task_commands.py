@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -3371,6 +3372,82 @@ class TaskCommandsMixin:
             }, None
         return None, parent
 
+    async def _scoped_graph_filing(
+        self, args: dict, project_id: str
+    ) -> tuple[object | None, dict | None, Task | None]:
+        """Build trusted graph-filing facts for a non-elevated session.
+
+        The returned context is only a preflight snapshot.  ``write_plan``
+        locks the session and task rows, rechecks it, and reserves quota in
+        the same transaction as graph rows, so no command-layer read can
+        authorize a stale claim.
+        """
+        from src.task_graph.creator import GraphFilingContext
+
+        scope = self._current_scope or {}
+        if scope.get("kind") != "session" or scope.get("elevated"):
+            return None, None, None
+        session_id = scope.get("session_id") or ""
+        session = await self.db.get_session(session_id)
+        if session is None:
+            return None, {
+                "success": False,
+                "code": "stale_claim",
+                "error": "the graph filing session no longer exists",
+            }, None
+        if session.project_id != project_id:
+            return None, {
+                "success": False,
+                "error": "worker-filed graphs are pinned to the session's project",
+            }, None
+        if not session.task_id:
+            return None, {
+                "success": False,
+                "code": "idle_session_cannot_file",
+                "error": "idle sessions cannot file a graph; claim a task first",
+            }, None
+        held = await self.db.get_task(session.task_id)
+        if held is None:
+            return None, {
+                "success": False,
+                "code": "stale_claim",
+                "error": "the graph filing session's held task no longer exists",
+            }, None
+
+        parent_was_supplied = "parent_id" in args
+        requested_parent = args.get("parent_id")
+        if (
+            args.get("root")
+            or (parent_was_supplied and requested_parent is None)
+            or (requested_parent is not None and requested_parent != held.id)
+        ):
+            return None, {
+                "success": False,
+                "code": "hierarchy.parent_out_of_scope",
+                "error": (
+                    "a worker-filed graph may omit parent_id or repeat the task it holds; "
+                    "root and every other parent are out of scope"
+                ),
+            }, None
+        reason = str(args.get("reason") or "").strip()
+        if not reason:
+            return None, {
+                "success": False,
+                "code": "reason_required",
+                "error": "worker-filed graphs must include a nonempty filing reason",
+            }, None
+        context = GraphFilingContext(
+            session_id=session.id,
+            session_instance_token=scope.get("session_instance_token"),
+            held_task_id=held.id,
+            claim_epoch=held.claim_epoch,
+            reason=reason,
+            request_id=uuid.uuid4().hex,
+            max_filings=self.config.swarm.max_filings_per_task,
+            profile_id=session.profile_id,
+        )
+        return context, None, held
+
     @staticmethod
     def _phases_need_root_refusal(graph, parent_id: str | None) -> dict | None:
         """Refuse ``phases:`` combined with ``parent_id``, or ``None``.
@@ -3413,9 +3490,12 @@ class TaskCommandsMixin:
             split_findings,
             validate_graph,
         )
+        from src.task_graph.creator import GraphFilingError
         from src.task_graph.validator import resolve_spec_path_checked
 
-        project_id = args.get("project_id") or self._active_project_id
+        scope = self._current_scope or {}
+        scoped_session = scope.get("kind") == "session" and not scope.get("elevated")
+        project_id = args.get("project_id") or scope.get("project_id") or self._active_project_id
         if not project_id:
             return {"error": "project_id is required (no active project set)"}
         project = await self.db.get_project(project_id)
@@ -3429,7 +3509,11 @@ class TaskCommandsMixin:
 
         parent_id = args.get("parent_id")
         parent = None
-        if parent_id:
+        # A non-elevated session normalises to its held task after parsing so
+        # the pin refusal below retains its established precedence.  Its
+        # parent check cannot use the general supervisor helper: a held task
+        # is the only legal destination, not an arbitrary open container.
+        if parent_id and not scoped_session:
             parent_error, parent = await self._validate_graph_parent(project_id, parent_id)
             if parent_error is not None:
                 return parent_error
@@ -3463,17 +3547,39 @@ class TaskCommandsMixin:
         except OSError as exc:
             return {"error": f"Could not read spec '{spec_path}': {exc}"}
 
-        phases_refusal = self._phases_need_root_refusal(graph, parent_id)
-        if phases_refusal is not None:
-            return phases_refusal
+        if not scoped_session:
+            phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+            if phases_refusal is not None:
+                return phases_refusal
 
-        # An inline graph from a worker token may name profiles (preferences)
-        # but may not pin them (provider-failover D9); a vault spec is
-        # operator-owned, like a formula.
-        if any(node.pin for node in graph.nodes) and raw_graph:
+        # A session graph is authored by the held worker irrespective of
+        # whether its text arrived inline or through a vault spec.  It may
+        # name profile preferences but cannot pin a provider (D9).
+        if any(node.pin for node in graph.nodes) and (raw_graph or scoped_session):
             refusal = pin_not_permitted_refusal(self._current_scope, "pin")
             if refusal is not None:
                 return refusal
+
+        filing = None
+        if scoped_session:
+            filing, filing_error, held_parent = await self._scoped_graph_filing(args, project_id)
+            if filing_error is not None:
+                return filing_error
+            # The document-level ``parent:`` describes a new graph container
+            # on the supervisor path.  Under a held parent it would be
+            # ignored, which is unsafe and misleading, so fail before plan
+            # construction or any write.
+            if graph.parent is not None:
+                return {
+                    "success": False,
+                    "code": "hierarchy.parent_out_of_scope",
+                    "error": "a worker-filed graph cannot declare a document-level parent",
+                }
+            parent_id = held_parent.id
+            parent = held_parent
+            phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+            if phases_refusal is not None:
+                return phases_refusal
 
         for node in graph.nodes:
             if node.profile is None and args.get("profile_id"):
@@ -3546,8 +3652,19 @@ class TaskCommandsMixin:
         dry_run = bool(args.get("dry_run", False))
         try:
             report = await create_graph(
-                self, graph, project_id=project_id, dry_run=dry_run, parent_id=parent_id
+                self,
+                graph,
+                project_id=project_id,
+                dry_run=dry_run,
+                parent_id=parent_id,
+                filing=filing,
             )
+        except GraphFilingError as exc:
+            return {
+                "success": False,
+                "code": exc.code,
+                "error": f"{exc.code}: {exc.detail} — nothing was created",
+            }
         except HierarchyError as exc:
             # ``write_plan`` is one transaction, so nothing was created; a
             # dry run performs the same route check and fails the same way.

@@ -1107,11 +1107,26 @@ class ClaimQueryMixin:
         rows = (await conn.execute(stmt)).fetchall()
         return {r.id: r.parent_task_id for r in rows if r.id in ids}
 
-    async def reserve_filing(self, conn, task_id: str, *, max_filings: int) -> bool:
+    async def reserve_filing(
+        self, conn, task_id: str, *, max_filings: int, count: int = 1
+    ) -> bool:
+        """Atomically reserve ``count`` worker filings against one held task.
+
+        The guarded increment is deliberately one statement: graph filing
+        spends its whole node batch together, so two concurrent graphs at a
+        quota boundary cannot each observe room for part of the other.
+        """
+        if count <= 0:
+            raise ValueError("filing reservation count must be positive")
         res = await conn.execute(
             update(tasks)
-            .where(and_(tasks.c.id == task_id, tasks.c.filed_count < max_filings))
-            .values(filed_count=tasks.c.filed_count + 1)
+            .where(
+                and_(
+                    tasks.c.id == task_id,
+                    tasks.c.filed_count + count <= max_filings,
+                )
+            )
+            .values(filed_count=tasks.c.filed_count + count)
         )
         return res.rowcount == 1
 
