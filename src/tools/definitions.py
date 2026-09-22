@@ -5343,6 +5343,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
                 "parent_id": {"type": "string"},
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why this graph is being filed. Required for a non-elevated "
+                        "session; recorded on every discovered-from provenance edge."
+                    ),
+                },
             },
         },
     },

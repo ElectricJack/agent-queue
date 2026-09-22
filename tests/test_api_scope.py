@@ -37,6 +37,7 @@ EXPECTED_AGENT_COMMANDS = {
     "task_claim",
     "session_drain_ack",
     "create_task",
+    "create_task_graph",
     "project_ready",
     "formula_list",
     "formula_show",

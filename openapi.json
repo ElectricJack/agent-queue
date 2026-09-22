@@ -19303,6 +19303,18 @@
             ],
             "title": "Parent Id",
             "description": ""
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why this graph is being filed. Required for a non-elevated session; recorded on every discovered-from provenance edge."
           }
         },
         "type": "object",

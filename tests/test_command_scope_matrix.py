@@ -55,10 +55,11 @@ _ID_BEARING_FLOOR = {
     "message_send",
     "task_claim",
     "create_task",
+    "create_task_graph",
 }
 
 #: Registered commands deliberately *outside* the agent surface.
-_NOT_IN_SET = ["delete_task", "create_task_graph", "update_config"]
+_NOT_IN_SET = ["delete_task", "update_config"]
 
 
 def _definitions_by_name() -> dict[str, dict]:
