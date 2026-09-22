@@ -6,11 +6,12 @@ import { usePaletteState } from "./palette/paletteState";
 import { useShellPreferences } from "./useShellPreferences";
 import { useNavigationHistory } from "./navigationHistory";
 import { detectPlatform } from "./hotkeys/usePlatform";
+import type { ReactNode } from "react";
 
 const HISTORY_BUTTON =
   "rounded p-2 text-gray-400 hover:bg-gray-800 disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent";
 
-export default function TopBar() {
+export default function TopBar({ center }: { center?: ReactNode }) {
   const { kind, setKind } = useRightSurface();
   const pane = useShellPaneStore();
   const palette = usePaletteState();
@@ -44,11 +45,12 @@ export default function TopBar() {
   };
 
   return (
-    <header className="col-span-3 row-start-1 flex h-12 shrink-0 items-center justify-between border-b border-gray-800 bg-gray-950 px-4">
-      <div className="flex items-center gap-2">
+    <header className="col-span-3 row-start-1 flex h-12 shrink-0 items-center gap-2 border-b border-gray-800 bg-gray-950 px-4 sm:gap-3">
+      <div className="flex shrink-0 items-center gap-2">
         <span className="text-sm font-semibold">Agent Q</span>
       </div>
-      <div className="flex items-center gap-1">
+      <div className="min-w-0 flex-1 overflow-hidden">{center}</div>
+      <div className="flex shrink-0 items-center gap-1">
         {preferenceProblem && (
           <span role="status" title={preferenceProblem.detail}
             className="rounded px-2 py-1 text-[11px] text-amber-300">
