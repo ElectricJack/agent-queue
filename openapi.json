@@ -33688,6 +33688,18 @@
             ],
             "title": "Parent Id"
           },
+          "previous_phase_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Phase Id",
+            "description": "The immediate previous sibling phase, regardless of its current status."
+          },
           "blocked_by": {
             "anyOf": [
               {
@@ -33697,7 +33709,9 @@
                 "type": "null"
               }
             ],
-            "title": "Blocked By"
+            "title": "Blocked By",
+            "description": "Deprecated compatibility alias for previous_phase_id. It is phase history, not the current blocker; use blocked_by_all for the live gate set.",
+            "deprecated": true
           },
           "blocked_by_all": {
             "items": {
@@ -33705,7 +33719,7 @@
             },
             "type": "array",
             "title": "Blocked By All",
-            "default": []
+            "description": "Earlier sibling phases with a current blocks edge onto this phase, in order. Completed phases are omitted."
           }
         },
         "type": "object",

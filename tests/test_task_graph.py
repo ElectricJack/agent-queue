@@ -368,6 +368,28 @@ class TestParseSubtasks:
         assert all(n["subtasks"] == [] for n in graph.to_dict()["nodes"])
 
 
+class TestParentSubtasks:
+    """Container parents are not scheduled work and cannot own checklists."""
+
+    @staticmethod
+    def _doc(subtasks) -> dict:
+        return {
+            "version": 1,
+            "parent": {"title": "Epic", "subtasks": subtasks},
+            "nodes": [{"key": "a", "title": "A"}],
+        }
+
+    def test_nonempty_parent_subtasks_are_a_parse_finding(self):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(self._doc(["not scheduled work"]))
+        assert [error.rule for error in exc.value.errors] == ["parent_subtasks_unsupported"]
+
+    def test_an_empty_parent_subtasks_list_is_allowed_for_templates(self):
+        graph = parse_graph(self._doc([]))
+        assert graph.parent is not None
+        assert graph.parent.title == "Epic"
+
+
 class TestParsePhases:
     """``phases:`` at the top level and ``phase:`` on a node (§7.3)."""
 
@@ -823,6 +845,22 @@ class TestExtractFromSpec:
             "~~~aq-graph\nversion: 1\nnodes:\n  - key: a\n    title: A\n~~~\n", "s.md"
         )
         assert graph.node_keys() == ["a"]
+
+    def test_parent_subtasks_in_a_fenced_graph_are_rejected(self):
+        with pytest.raises(GraphParseError) as exc:
+            extract_graph_from_spec(
+                "```aq-graph\n"
+                "version: 1\n"
+                "parent:\n"
+                "  title: Epic\n"
+                "  subtasks: [not-scheduled]\n"
+                "nodes:\n"
+                "  - key: a\n"
+                "    title: A\n"
+                "```\n",
+                "parent-subtasks.md",
+            )
+        assert [error.rule for error in exc.value.errors] == ["parent_subtasks_unsupported"]
 
 
 # ---------------------------------------------------------------------------

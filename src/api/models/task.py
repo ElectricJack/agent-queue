@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import TaskRef
 
@@ -308,14 +308,25 @@ class PhaseRef(BaseModel):
     order: int
     label: str
     parent_id: str | None = None
-    #: The immediate previous sibling phase, whatever its status — what a
-    #: surface shows as "this comes after".
-    blocked_by: str | None = None
-    #: Every earlier sibling phase this one actually carries a ``blocks`` edge
-    #: onto: all of them that have not COMPLETED, in order. One edge per phase
-    #: would leave the successor ungated the moment an abandoned middle phase
-    #: is deleted.
-    blocked_by_all: list[str] = []
+    previous_phase_id: str | None = Field(
+        default=None,
+        description="The immediate previous sibling phase, regardless of its current status.",
+    )
+    blocked_by: str | None = Field(
+        default=None,
+        deprecated=True,
+        description=(
+            "Deprecated compatibility alias for previous_phase_id. It is phase history, not "
+            "the current blocker; use blocked_by_all for the live gate set."
+        ),
+    )
+    blocked_by_all: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Earlier sibling phases with a current blocks edge onto this phase, in order. "
+            "Completed phases are omitted."
+        ),
+    )
 
 
 class PhaseCreateResponse(BaseModel):

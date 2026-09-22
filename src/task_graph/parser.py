@@ -358,6 +358,14 @@ def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
     if not isinstance(raw, dict):
         return None, [_err("bad_parent", f"'parent' must be an object, got {type(raw).__name__}")]
     errors: list[GraphError] = []
+    if raw.get("subtasks"):
+        errors.append(
+            _err(
+                "parent_subtasks_unsupported",
+                "'parent.subtasks' is not supported: subtasks belong to scheduled graph nodes, "
+                "not the container parent",
+            )
+        )
     labels, errs = _as_str_list(raw.get("labels"), "parent.labels", None)
     errors.extend(errs)
     priority = raw.get("priority", 100)

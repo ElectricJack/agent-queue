@@ -270,6 +270,39 @@ class TestGraphSource:
         assert payload["section"] == "3. Schema"
         assert payload["path"].endswith("messages-table.md")
 
+    async def test_parent_subtasks_refuse_inline_and_fenced_graphs_without_writes(self, setup):
+        handler, db, vault = setup
+        inline = _simple_graph()
+        inline["parent"]["subtasks"] = ["not scheduled work"]
+
+        result = await handler._cmd_create_task_graph({"project_id": "p1", "graph": inline})
+
+        assert result["error"] == "graph document is invalid"
+        assert [error["rule"] for error in result["errors"]] == ["parent_subtasks_unsupported"]
+        assert await db.list_tasks(project_id="p1") == []
+
+        spec = Path(vault) / "projects" / "p1" / "specs" / "parent-subtasks.md"
+        spec.write_text(
+            "# Parent subtasks\n\n"
+            "```aq-graph\n"
+            "version: 1\n"
+            "parent:\n"
+            "  title: Epic\n"
+            "  subtasks: [not-scheduled]\n"
+            "nodes:\n"
+            "  - key: a\n"
+            "    title: A\n"
+            "```\n",
+            encoding="utf-8",
+        )
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "spec_path": "projects/p1/specs/parent-subtasks.md"}
+        )
+
+        assert result["error"] == "graph document is invalid"
+        assert [error["rule"] for error in result["errors"]] == ["parent_subtasks_unsupported"]
+        assert await db.list_tasks(project_id="p1") == []
+
 
 class TestValidationEnvelope:
     async def test_errors_block_creation(self, setup):
@@ -476,6 +509,34 @@ class TestSubtasksUnreportable:
             {"project_id": "p1", "graph": self._graph()}
         )
         assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
+
+    async def test_implicit_project_default_is_checked_in_dry_run_and_creation(self, setup):
+        handler, db, _vault = setup
+        await db.update_project("p1", default_profile_id="coding")
+        await db.update_profile("coding", aq_commands=["task_close"])
+        args = {"project_id": "p1", "graph": _subtask_graph()}
+
+        dry = await handler._cmd_create_task_graph({**args, "dry_run": True})
+        created = await handler._cmd_create_task_graph(args)
+
+        for result in (dry, created):
+            warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"]
+            assert len(warnings) == 1
+            assert warnings[0]["node"] == "a"
+            assert "profile 'coding'" in warnings[0]["detail"]
+
+    async def test_unresolvable_implicit_profile_is_reported(self, setup):
+        handler, db, _vault = setup
+        await db.create_profile(AgentProfile(id="missing", name="missing", enabled=False))
+        await db.update_project("p1", default_profile_id="missing")
+
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": _subtask_graph(), "dry_run": True}
+        )
+
+        warnings = [w for w in result["warnings"] if w["rule"] == "subtasks_routing_unresolved"]
+        assert len(warnings) == 1
+        assert warnings[0]["node"] == "a"
 
     async def test_no_warning_for_a_node_without_subtasks(self, setup):
         handler, db, _vault = setup
