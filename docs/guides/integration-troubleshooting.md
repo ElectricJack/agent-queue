@@ -236,42 +236,189 @@ has finished or been deleted and its slot was reused, see
 
 ## A finished task still owns its branch
 
-Branch cleanup keeps any branch an `integration_branch_owners` row still names
-unless that row is `released`. In the hierarchy modes a row is released when its
-task is deleted or archived; nothing in development mode releases one, and
-development claims create none. So a project that left `hierarchy`/`train` kept
-one row per task it had claimed — `reserved`, or `attached` when a stopped
-writer's slot was later reused — and every one of them pins that task's branch
-on the remote after it is delivered.
+A branch-owner row in `integration_branch_owners` with `handoff_state` of
+`attached` or `handoff_pending` fences its branch, pins the writer's claim and
+workspace lock, and keeps the branch off the deletion path even after the task
+is done. Several paths strand such a row: delegate retirement and
+`cancel_preserving` keep it by design, a failed ownership transfer leaves it
+`handoff_pending` forever, archive and delete drop the proof rows the exit-time
+confirmers need, and slot reuse makes the "no newer session" check impossible.
+The row stays `attached` and the branch stays held indefinitely.
 
-```bash
-aq doctor --check integration.finished_branch_owners          # what is held, and why
-aq doctor --check integration.finished_branch_owners --fix    # release what is safe
+**Spot it.** Either of these symptoms points here:
+
+```text
+# One task's claim fails on every attempt
+canonical branch is not reserved by this task
+
+# A delivered branch is still on the remote, held by an owner row
+integration owner … is reserved
 ```
 
-A row is released only when all of these hold:
+Diagnose it:
 
-- its owner is a task (`worker`/`repair`; a `collector` row belongs to an
-  operation and is never touched) that is `COMPLETED`/`FAILED`, archived, or
-  gone from both task tables;
-- no hierarchy/train project integrates the repository, as its mode or its
-  desired mode — there a finished child's branch is still its parent's to
-  transfer;
-- no live session names the task, no workspace is locked by it, no candidate ref
-  mutation is in flight on the branch and no running integration operation owns
-  the task;
-- for an `attached`/`handoff_pending` row, its writer session is stopped in both
-  `state` and `desired_state` and the session provider confirms, by a fresh
-  probe, that the process is gone — the proof `preserve_stopped_owners` takes.
-  Run the check through the daemon (the plain `aq doctor` does); without the
-  provider such a row is kept, naming why.
+```bash
+aq doctor --check integration.stranded_fences          # what is held, and by whom
+aq doctor --check integration.stranded_fences --fix    # run the guarded recovery on every row
+```
 
-Each row is re-proved under the project's hierarchy lock and its own row lock
-before the write, so anything that changed after the scan keeps the row. The fix
-changes the ownership row only — no checkout, workspace lock, session or task —
-gives a released writer's row a fresh fence, and records one
-`integration.branch_owner_released` event per row. It is safe to repeat. Once it
-has run, re-run whatever branch cleanup was keeping the branches.
+The `--fix` path runs the same guarded check that `aq integration release-owner`
+runs, under the principal `doctor`. It refuses the same refusals; it is not a
+bypass.
+
+There is also the broader doctor check that covers finished tasks only:
+
+```bash
+aq doctor --check integration.finished_branch_owners          # finished-task rows, report only
+aq doctor --check integration.finished_branch_owners --fix    # release finished-task rows
+```
+
+**What the recovery proves** (for each row, independently, in one transaction
+when it passes):
+
+1. *The writer is gone.* The row's session is `stopped` in both `state` and
+   `desired_state`, **and** the session provider confirms the process is no
+   longer running by a fresh probe. A tmux session that no longer exists counts
+   as gone. `writer_live` is returned if either check fails.
+2. *The branch is safe.* After `git fetch origin`, every worktree holding the
+   branch is inspected. Anything origin does not already carry — a dirty tree,
+   a commit the remote is missing — is first pushed, never forced, to
+   `aq/preserved/<owner-row-id>`. The worktree is then detached. A branch whose
+   origin ref was already deleted by branch-cleanup policy but whose tip is
+   reachable from `origin/main` is safe without preservation. `checkout_in_use`
+   is returned if a live session holds the worktree. `origin_unreachable` is
+   returned if `fetch` or the preservation push fails.
+3. *The release is atomic.* The row is re-read inside a `BEGIN … COMMIT` block
+   and compare-and-swapped on `(id, fence_token, handoff_state)`. If it moved
+   while the check was running — a new writer attached, the fence bumped —
+   `stale_fence` is returned and nothing is written.
+
+The row is the only thing touched: no checkout, workspace lock, session, or
+task status is modified. A fresh fence token is assigned so any in-flight
+confirmers holding the old token refuse rather than double-release.
+
+**What gets preserved.** Uncommitted work in a stranded worktree is snapshotted
+through a temporary index (the working tree and the live index are never
+touched), committed as a single commit on a temporary ref, and pushed to
+`aq/preserved/<owner-row-id>` on origin. The resulting outcome is
+`preserved_and_released`; the `evidence` JSON column records the preserved ref
+and its sha. The work can be pulled back from any clone:
+
+```bash
+git fetch origin refs/heads/aq/preserved/<owner-row-id>
+git branch recovered/<owner-row-id> FETCH_HEAD
+```
+
+**Example: dry-run then real run.**
+
+```bash
+# First, see what the check would do (no writes, no pushes, no audit row).
+# In a dry run the concrete push is planned but not performed, so the evidence
+# carries a "planned" list instead of a pushed sha:
+aq integration release-owner --task-id repair-repair-batch-…-1 --dry-run
+# => {
+#     "success": true,
+#     "outcome": "preserved_and_released",
+#     "outcomes": [{
+#         "owner_row_id": "o-a3f7…",
+#         "outcome": "preserved_and_released",
+#         "reason": null,
+#         "dry_run": true,
+#         "evidence": {
+#             "handoff_state": "attached",
+#             "fence_token": 3,
+#             "session_id": "4baaded6",
+#             "workspace_id": "slot-3",
+#             "planned": [{
+#                 "action": "push",
+#                 "ref": "aq/preserved/o-a3f7…",
+#                 "source": "snapshot of slot-3",
+#                 "sha": null
+#             }]
+#         }
+#     }]
+# }
+
+# Satisfied. Run it for real — this pushes the preserved ref and writes the
+# audit row in the same logical step as the release.
+aq integration release-owner --task-id repair-repair-batch-…-1
+# => same shape, dry_run: false, one row now in integration_owner_recoveries
+```
+
+You can also target a specific owner row directly instead of a task:
+
+```bash
+aq integration release-owner --owner-row-id o-a3f7…
+```
+
+**Refusal reasons and how to resolve them.**
+
+Every refusal is recorded in `integration_owner_recoveries` with the row's
+`evidence` field populated — the `evidence.detail` string has the same wording
+as the doctor check's report. Dry runs do not write an audit row.
+
+| Refusal | Meaning | Fix |
+|---|---|---|
+| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. |
+| `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
+| `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
+| `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
+| `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Look up the current row id: `aq doctor --check integration.stranded_fences`. |
+| `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
+
+**Automatic sweep.** Set `integration.owner_recovery_sweep: true` in
+`config.yaml` to have the daemon run this same guarded recovery every 300 s
+against every candidate row quiet for at least 600 s. It ships off by
+default because a live writer holding a row will be refused with
+`writer_live` on every sweep tick, and a failed push (origin unreachable) will
+refuse every sweep tick — both are noisy and unnecessary when no one has asked
+for a release. Once the writer is stopped and the branch is genuinely safe the
+sweep succeeds within one tick and the row appears in
+`integration_owner_recoveries` under principal `sweep`. Enable it alongside
+supervision: `doctor` and the manual command remain available regardless.
+
+```yaml
+# config.yaml
+integration:
+  owner_recovery_sweep: true
+```
+
+**Reading the audit trail.**
+
+Every non-dry recovery attempt — success or refusal — writes one row to
+`integration_owner_recoveries`. The `principal` field records who triggered it:
+
+| Principal | How it was triggered |
+|---|---|
+| `human:local-operator` | `aq integration release-owner …` from the CLI on the daemon's host |
+| `supervisor session:<id>` | An elevated named supervisor session called the command |
+| `sweep` | The automatic 300-s sweep |
+| `doctor` | `aq doctor --check integration.stranded_fences --fix` |
+| `delegate_retirement` | The retirement path inside an ending integration operation |
+| `cancel_preserving` | A `cancel_preserving` sweep |
+
+To read recent recoveries straight from the database, note that `created_at`
+is an integer Unix-epoch timestamp. Run it against the daemon's database with
+`psql`:
+
+```bash
+psql "$AQ_DATABASE_URL" \
+  -c "SELECT created_at, owner_row_id, ref, task_id, outcome, reason,
+            principal
+      FROM   integration_owner_recoveries
+      ORDER  BY created_at DESC
+      LIMIT  20;"
+```
+
+To translate the epoch and narrow to one owner row:
+
+```sql
+SELECT to_timestamp(created_at) AS when,
+       outcome, reason, principal, evidence
+FROM   integration_owner_recoveries
+WHERE  owner_row_id = 'o-a3f7…'
+ORDER  BY created_at DESC;
+```
 
 ## A task will not delete, archive, resume or restart
 
