@@ -1,7 +1,7 @@
 """Keep integration audit ids after task archive.
 
-Revision ID: a00000000016
-Revises: a00000000015
+Revision ID: a00000000017
+Revises: a00000000016
 
 Integration episode, verification, verifier, and candidate-resolution rows are
 append-only history.  Their task ids remain meaningful after the task moves to
@@ -18,8 +18,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000016"
-down_revision = "a00000000015"
+revision = "a00000000017"
+down_revision = "a00000000016"
 branch_labels = None
 depends_on = None
 
