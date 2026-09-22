@@ -54,6 +54,7 @@ SHIPPED_SOURCES: dict[str, str] = {
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
 }

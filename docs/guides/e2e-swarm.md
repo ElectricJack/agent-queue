@@ -15,7 +15,7 @@ It comes in two tiers.
 |---|---|---|
 | `sessions.provider` | `fake` | `tmux` |
 | Who is the worker | `scripts/e2e-smoke.sh` | a real `claude` process |
-| Playbooks / supervisor | off | on (a live agent needs them) |
+| Command-only playbooks / supervisor | on / off | on / on (a live agent needs the supervisor) |
 | Durable messages | local sink only | on |
 | Runtime | ~4 minutes | as long as the model takes |
 | Deterministic | yes | no |
@@ -59,9 +59,11 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 17 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 18 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
-outage against two fake providers; and `S17` cooks and works a phased graph.
+outage against two fake providers; `S17` cooks and works a phased graph; and
+`S18` proves the reviewed supervisor failure-triage playbook against a real
+terminal worker close.
 Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
@@ -106,7 +108,10 @@ PASS S16 provider failover (206.1s)
 PASS S17 phased graph (...)
      dry-run/cook phase graph; phase 2 withheld then released after phase 1 COMPLETED; prime rendered and close skipped 3 checklist rows
 
-17/17 scenarios passed
+PASS S18 supervisor failure triage (...)
+     task.failed completed the reviewed playbook run and queued one durable supervisor notice
+
+18/18 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -130,7 +135,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 17 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 18 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -307,7 +312,7 @@ nothing launches against it afterwards (counted from the provider's own
 `startup_dialog` evidence, because a startup death leaves no session row);
 that `aq provider held-tasks` and `aq task explain` name every hold
 (`provider_pinned`, `no_equivalent_rung`, and `failover_inactive` for the rest,
-because Tier 1 runs no playbooks); and that `aq provider reroute --dry-run`
+because Tier 1 does not activate the provider-failover policy); and that `aq provider reroute --dry-run`
 plans exactly what the live sweep then does. The live sweep is the command the
 `provider-failover` playbook calls. The sweep moves one task at a time into
 `provb`'s `max_active: 1` — the runner works it as the `provb` session, and
@@ -342,6 +347,16 @@ epic so it is re-runnable. *Regression it catches: a graph writer that loses
 phase/checklist data, a later phase escaping its parent gate, development
 delivery accidentally treating a phase container as a branch owner, or a
 checklist bypassing the close fence.*
+
+**S18 — supervisor failure triage.** Tier 1 enables only the deterministic
+command-bearing system playbooks; it still starts no model process or
+supervisor session. The scenario gives a disposable pool worker one explicit
+assignment, closes it with a hard failure, then verifies the resulting
+`task.failed` event completed the reviewed `supervisor-failure-triage` run for
+that task and created exactly one durable notice for `supervisor-e2e`. It
+deletes the terminal fixture afterward. *Regression it catches: a reviewed
+failure-triage bundle that is not activated, does not receive terminal worker
+events, calls the wrong command, or fails to persist its supervisor incident.*
 
 ### The fake provider kit
 
@@ -404,9 +419,9 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the seventeen scenarios then run against an empty database
+serving `/api/health`; the eighteen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
-seventeen product regressions rather than one broken environment.
+eighteen product regressions rather than one broken environment.
 
 ### Running two kits at once
 
@@ -486,14 +501,11 @@ export AQ_E2E_HOME=~/.agent-queue-e2e-live AQ_E2E_PORT=8098 \
 scripts/e2e-env.sh --reset && scripts/e2e-daemon.sh start
 ```
 
-That switch does more than change the provider. A live agent needs three
-subsystems Tier 1 deliberately runs without, and `e2e-env.sh` turns all
-three on when the provider is not `fake`:
+That switch does more than change the provider. Tier 1 already runs the
+deterministic command-only playbooks for S18, but a live agent needs the
+following additional subsystems, which `e2e-env.sh` turns on when the provider
+is not `fake`:
 
-- `playbooks.enabled` — the default pipeline's worker-filed triage is what
-  routes a task an agent files. Without it a filing sits DEFINED behind its
-  routing gate forever (which is exactly what S3 asserts, and exactly what
-  you do *not* want when watching a live run).
 - `messages.enabled` + `supervisor_agent.enabled` — the per-project
   supervisor sessions the dashboard's chat talks to.
 

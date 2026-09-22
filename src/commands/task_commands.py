@@ -22,7 +22,7 @@ from src.commands.helpers import (
     format_dependency_list,
 )
 from src.commands.principal import matches_session_instance
-from src.database.queries.hierarchy_queries import STANDING_PARENT_KEY, HierarchyError
+from src.database.queries.hierarchy_queries import PHASE_KEY, STANDING_PARENT_KEY, HierarchyError
 from src.database.queries.task_queries import (
     TERMINAL_BLOCKED_META_KEY,
     TaskProjectMoveError,
@@ -4446,12 +4446,17 @@ class TaskCommandsMixin:
         return result
 
     async def _cmd_task_recovery_notify(self, args: dict) -> dict:
-        """Wake the one durable recovery incident for a failed task.
+        """Compatibility alias for the retired blocked-task subscriber."""
+        return await self._cmd_task_failure_triage_notify(args)
 
-        The ``blocked-task-escalation`` playbook calls this on ``task.failed``;
-        the periodic recovery scan reaches the same record, so an event, its
-        replay and the scan never file a second incident or message.  Writes
-        nothing when the task has no actionable failure yet.
+    async def _cmd_task_failure_triage_notify(self, args: dict) -> dict:
+        """Wake the durable incident used by supervisor failure triage.
+
+        The reviewed ``supervisor-failure-triage`` playbook calls this for
+        every durable ``task.failed`` event.  The query layer deduplicates an
+        event replay, a concurrent delivery, and its periodic scan against
+        one incident generation, so this command only wakes a supervisor for
+        genuinely new actionable failure work.
         """
         disabled = self._messages_disabled_error()
         if disabled:
@@ -5316,6 +5321,61 @@ class TaskCommandsMixin:
             if lbl.startswith("hold:"):
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
+        # A phase is deliberately stricter than a normal container: a failed
+        # direct child never settles it, and every later phase stays closed.
+        # Keep this computed from the same child/status data settlement reads;
+        # a persisted "failed count" could drift while a retry/reopen races
+        # the dashboard.  Non-failure states have their own reason codes so a
+        # manual pause or an ordinary dependency block never reads as failure.
+        phase_hold = None
+        phase_meta = await self.db.get_task_meta(str(task_id), PHASE_KEY)
+        if isinstance(phase_meta, dict):
+            phase_state = (await self.db.get_phase_hold_details([str(task_id)])).get(str(task_id))
+            if phase_state is not None:
+                code = phase_state["reason_code"]
+                if code == "phase_failed_work":
+                    phase_hold = {key: value for key, value in phase_state.items() if key != "reason_code"}
+                    failed = phase_hold["failed_children"]
+                    rendered = ", ".join(
+                        f"{child['id']} ({child['status']})" for child in failed
+                    )
+                    remaining = phase_hold["failed_children_total"] - len(failed)
+                    if remaining:
+                        rendered += f", and {remaining} more"
+                    reasons.append(Reason(
+                        code=code,
+                        detail=(
+                            f"Waiting for failed work: {rendered}. This phase and later phases remain "
+                            "held until every child is COMPLETED; retry/reopen with feedback when the "
+                            "normal guards allow it, or delete only through the guarded operator path."
+                        ),
+                        ref=str(task_id),
+                    ))
+                elif code == "phase_empty":
+                    reasons.append(Reason(
+                        code=code,
+                        detail="phase has no child work yet and remains deliberately held open",
+                        ref=str(task_id),
+                    ))
+                elif code == "phase_manual_pause":
+                    reasons.append(Reason(
+                        code=code,
+                        detail="phase has manually paused child work; resume it through the normal task controls",
+                        ref=str(task_id),
+                    ))
+                elif code == "phase_child_blocked":
+                    reasons.append(Reason(
+                        code=code,
+                        detail="phase has child work blocked by an ordinary dependency or gate",
+                        ref=str(task_id),
+                    ))
+                else:
+                    reasons.append(Reason(
+                        code=code,
+                        detail="phase has active child work that must complete before the phase can settle",
+                        ref=str(task_id),
+                    ))
+
         # 2. Blocking dependencies (open gates + typed edges).
         try:
             blockers = await self.db.get_blocking_dependencies(str(task_id))
@@ -5433,6 +5493,7 @@ class TaskCommandsMixin:
             "reason_codes": [reason["code"] for reason in reasons],
             "assignment_route": assignment_route,
             "provider_hold": provider_hold,
+            "phase_hold": phase_hold,
         }
 
     async def _assignment_route_state(self, task):

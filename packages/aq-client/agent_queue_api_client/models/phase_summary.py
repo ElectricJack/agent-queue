@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.phase_hold_detail import PhaseHoldDetail
+
 
 T = TypeVar("T", bound="PhaseSummary")
 
@@ -24,6 +28,7 @@ class PhaseSummary:
         is_blocked (bool | Unset):  Default: False.
         total (int | Unset):  Default: 0.
         done (int | Unset):  Default: 0.
+        phase_hold (None | PhaseHoldDetail | Unset):
     """
 
     id: str
@@ -34,9 +39,12 @@ class PhaseSummary:
     is_blocked: bool | Unset = False
     total: int | Unset = 0
     done: int | Unset = 0
+    phase_hold: None | PhaseHoldDetail | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.phase_hold_detail import PhaseHoldDetail
+
         id = self.id
 
         title = self.title
@@ -52,6 +60,14 @@ class PhaseSummary:
         total = self.total
 
         done = self.done
+
+        phase_hold: dict[str, Any] | None | Unset
+        if isinstance(self.phase_hold, Unset):
+            phase_hold = UNSET
+        elif isinstance(self.phase_hold, PhaseHoldDetail):
+            phase_hold = self.phase_hold.to_dict()
+        else:
+            phase_hold = self.phase_hold
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -70,11 +86,15 @@ class PhaseSummary:
             field_dict["total"] = total
         if done is not UNSET:
             field_dict["done"] = done
+        if phase_hold is not UNSET:
+            field_dict["phase_hold"] = phase_hold
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.phase_hold_detail import PhaseHoldDetail
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -92,6 +112,23 @@ class PhaseSummary:
 
         done = d.pop("done", UNSET)
 
+        def _parse_phase_hold(data: object) -> None | PhaseHoldDetail | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                phase_hold_type_0 = PhaseHoldDetail.from_dict(data)
+
+                return phase_hold_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PhaseHoldDetail | Unset, data)
+
+        phase_hold = _parse_phase_hold(d.pop("phase_hold", UNSET))
+
         phase_summary = cls(
             id=id,
             title=title,
@@ -101,6 +138,7 @@ class PhaseSummary:
             is_blocked=is_blocked,
             total=total,
             done=done,
+            phase_hold=phase_hold,
         )
 
         phase_summary.additional_properties = d

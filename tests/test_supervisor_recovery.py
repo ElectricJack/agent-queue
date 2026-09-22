@@ -605,6 +605,32 @@ async def test_failure_event_and_scan_share_one_incident_with_visible_budget(env
     assert '"supervisor_recoveries": {"limit": 2, "remaining": 2, "used": 0}' in body
 
 
+async def test_failed_task_without_a_worker_attempt_gets_one_triage_incident(env):
+    """The unfiltered task.failed subscriber must also cover pre-claim failures."""
+    await env.db.transition_task("t", TaskStatus.FAILED, force=True, context="validation_failed")
+
+    first = await env.handler.execute(
+        "task_failure_triage_notify", {"task_id": "t", "project_id": "p"}
+    )
+    replay = await env.handler.execute(
+        "task_failure_triage_notify", {"task_id": "t", "project_id": "p"}
+    )
+    await env.db.queue_task_recovery_notifications()
+
+    assert first["outcome"] == "queued"
+    assert replay == {
+        "outcome": "existing",
+        "task_id": "t",
+        "incident_id": first["incident_id"],
+        "redelivered": False,
+    }
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert current["reason"] == "terminal_failed"
+    assert current["attempt_id"] is None
+    assert current["retry_allowed"] is False
+    assert len(await queued_messages(env)) == 1
+
+
 async def test_remaining_budget_counts_down_across_recoveries(env):
     current = await incident(env)
     assert "error" not in await decide(env, current)

@@ -33,6 +33,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S15 development delivery   local validation and exact Git publication
     S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
     S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
+    S18 failure triage         durable task.failed playbook dispatch and supervisor notice
 """
 
 from __future__ import annotations
@@ -2311,6 +2312,85 @@ def s17_phased_graph(state: dict) -> str:
     )
 
 
+def s18_supervisor_failure_triage(state: dict) -> str:
+    """Drive one real terminal failure through the reviewed playbook path."""
+    del state
+    worker = fresh_workers(1)[0]
+    started_at = time.time()
+    task_id = create_task("S18 supervisor failure triage", profile=POOL_PROFILE)
+
+    def ready_task() -> dict | None:
+        task = task_show(task_id)
+        return task if task["status"] == "READY" else None
+
+    wait_for(ready_task, what="the S18 task to reach the claim frontier")
+    claimed = worker.claim_next()
+    check(claimed.get("result") == "claimed", f"S18 claim: {claimed}")
+    check(worker.task_id == task_id, f"S18 claimed {worker.task_id}, expected {task_id}")
+
+    failed = worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "fail",
+        "--failure-class",
+        "hard",
+        "--work-outcome",
+        "abandoned",
+        "--summary",
+        "S18 deliberate terminal failure",
+        "--claim-epoch",
+        str(worker.claim_epoch),
+    )
+    check(failed.get("success") is not False, f"S18 fail close: {failed}")
+    check(task_show(task_id)["status"] == "BLOCKED", "hard failure did not reach terminal BLOCKED")
+    worker.drain_ack()
+
+    def triage_run() -> dict | None:
+        rows = collection_rows(
+            aq(
+                "playbook",
+                "list-runs",
+                "--playbook-id",
+                "supervisor-failure-triage",
+                "--limit",
+                "10",
+            ),
+            "runs",
+        )
+        for row in rows:
+            detail = aq("playbook", "inspect-run", "--run-id", row["run_id"])["run"]
+            if detail.get("event", {}).get("task_id") == task_id:
+                return detail
+        return None
+
+    run = wait_for(triage_run, what="the supervisor-failure-triage playbook run")
+    check(run["lifecycle"] == "completed", f"S18 triage run: {run}")
+
+    def supervisor_notice() -> dict | None:
+        rows = collection_rows(
+            aq(
+                "message",
+                "list",
+                "--to-kind",
+                "session",
+                "--to-id",
+                f"supervisor-{PROJECT}",
+                "--since",
+                str(started_at),
+            ),
+            "messages",
+        )
+        return next((row for row in rows if task_id in (row.get("body") or "")), None)
+
+    notice = wait_for(supervisor_notice, what="the S18 durable supervisor notice")
+    aq("task", "delete", "--task-id", task_id)
+    return (
+        f"task.failed completed triage run {run['run_id']} and queued one durable supervisor "
+        f"notice {notice['id']}"
+    )
+
+
 @dataclass
 class Scenario:
     key: str
@@ -2348,6 +2428,7 @@ SCENARIOS: list[Scenario] = [
         "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
     ),
     Scenario("S17", "phased graph", s17_phased_graph, ("task graph/phases/subtasks",)),
+    Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.
@@ -2382,11 +2463,6 @@ EXPLICIT_CAPABILITIES: tuple[tuple[str, str, str], ...] = (
         "plugin install/update/remove from remote git",
         "explicitly-untested",
         "would mutate the interpreter environment or require an external repository",
-    ),
-    (
-        "playbook activation/run",
-        "explicitly-untested",
-        "playbooks.enabled=false in deterministic Tier 1; formula mutation is covered by S4",
     ),
     (
         "database upgrade/daemon control",

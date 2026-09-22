@@ -14,6 +14,9 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
   const phaseText = isPhase
     ? `Phase ${node.phase_order}${node.phase_label ? ` · ${node.phase_label}` : ""}`
     : "";
+  const phaseHold = node.phase_hold;
+  const failedChildren = phaseHold?.failed_children ?? [];
+  const failedChildrenTotal = phaseHold?.failed_children_total ?? failedChildren.length;
   const hasBar = (node.agg_descendants ?? 0) > 0;
   return (
     <div data-container-id={node.id} className={`h-full w-full rounded-lg border border-white/15 bg-white/[0.03] ${selected ? "outline outline-2 outline-white" : ""} ${node.context_only ? "border-dashed" : ""}`}>
@@ -40,6 +43,32 @@ function ContainerNode({ data, selected }: ContainerNodeProps) {
           >
             {node.is_blocked && <LockClosedIcon aria-label="Phase gated" className="h-2.5 w-2.5 shrink-0" />}
             <span className="truncate">{phaseText}</span>
+          </span>
+        )}
+        {phaseHold && (
+          <span
+            title={`Waiting for failed work: ${failedChildrenTotal} child${failedChildrenTotal === 1 ? "" : "ren"}; ${phaseHold.descendant_blocker_count} incomplete descendant${phaseHold.descendant_blocker_count === 1 ? "" : "s"}`}
+            className="flex shrink-0 items-center gap-1 overflow-x-auto rounded bg-red-500/15 px-1 text-[9px] font-semibold text-red-200"
+          >
+            <span className="shrink-0">Waiting for failed work</span>
+            {failedChildren.map((child) => (
+              <button
+                key={child.id}
+                type="button"
+                aria-label={`Open failed work ${child.id} (${child.status})`}
+                title={`${child.id} · ${child.status}`}
+                className="nodrag nopan shrink-0 rounded bg-red-500/20 px-1 font-mono hover:bg-red-500/30 hover:underline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onOpenTask?.(child.id, { id: child.id });
+                }}
+              >
+                {child.id} · {child.status}
+              </button>
+            ))}
+            {failedChildrenTotal > failedChildren.length && (
+              <span className="shrink-0">+{failedChildrenTotal - failedChildren.length}</span>
+            )}
           </span>
         )}
         <button type="button" aria-label={`Open task ${node.title}`} data-task-id={node.id}

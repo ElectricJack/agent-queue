@@ -62,6 +62,14 @@ CONTAINER_VALUE = "true"  # json.dumps(True); matches set_task_meta's encoding
 #: Its presence, not its value, is what :func:`childless_held_open_container`
 #: keys off.
 PHASE_KEY = "phase"
+#: A phase header exposes at most this many failed children.  The full task
+#: tree remains available through the ordinary hierarchy reads; a single
+#: phase-list/tiles response must not grow without bound with an unhealthy
+#: phase.
+PHASE_HOLD_CHILD_LIMIT = 20
+#: These metadata rows distinguish a terminal failure in ``BLOCKED`` from an
+#: ordinary dependency-blocked child.  ``FAILED`` is terminal by status alone.
+_PHASE_FAILURE_META_KEYS = ("blocked_terminal", "needs_attention")
 #: ``task_metadata`` key a keyed standing parent carries (graph-visibility A2).
 #: Written by ``_resolve_standing_parent`` in the same transaction as the
 #: container flag; its presence is the second half of
@@ -659,6 +667,140 @@ class HierarchyQueryMixin:
         if not row or not row["total"]:
             return None
         return {k: int(row[k] or 0) for k in ("total", "done", "ready", "blocked", "in_progress")}
+
+    async def get_phase_hold_details(self, phase_ids: list[str]) -> dict[str, dict]:
+        """Return additive, bounded strict-hold detail for declared phases.
+
+        Settlement remains the source of truth: a phase releases only once
+        every child reaches ``COMPLETED``.  This read makes that strict rule
+        legible without persisting a second counter or mistaking an ordinary
+        dependency block for a failed worker attempt.  The caller supplies
+        known phase ids (from the authoritative ``phase`` metadata read), so
+        this helper deliberately does not infer phase membership from a title
+        or container flag.
+        """
+        ids = list(dict.fromkeys(task_id for task_id in phase_ids if task_id))
+        if not ids:
+            return {}
+
+        child = tasks.alias("phase_hold_child")
+        async with self._engine.connect() as conn:
+            children = (
+                await conn.execute(
+                    select(
+                        child.c.id,
+                        child.c.parent_task_id,
+                        child.c.status,
+                        child.c.resume_after,
+                    )
+                    .where(child.c.parent_task_id.in_(ids))
+                    .order_by(child.c.parent_task_id, child.c.id)
+                )
+            ).mappings().all()
+            # ``FAILED`` is terminal by status; only a ``BLOCKED`` child
+            # needs metadata to distinguish a terminal worker failure from a
+            # normal dependency block. Do not add a metadata read to healthy
+            # phase-list/tiles responses.
+            child_ids = [
+                row["id"] for row in children if row["status"] == TaskStatus.BLOCKED.value
+            ]
+            failure_meta_rows = []
+            if child_ids:
+                failure_meta_rows = (
+                    await conn.execute(
+                        select(task_metadata.c.task_id, task_metadata.c.key).where(
+                            task_metadata.c.task_id.in_(child_ids),
+                            task_metadata.c.key.in_(_PHASE_FAILURE_META_KEYS),
+                        )
+                    )
+                ).mappings().all()
+
+            # One recursive walk counts every not-yet-completed descendant of
+            # each phase.  A direct child is a descendant too, which makes the
+            # number an honest measure of work still preventing settlement.
+            seed = select(
+                child.c.id.label("id"),
+                child.c.parent_task_id.label("phase_id"),
+                child.c.status.label("status"),
+            ).where(child.c.parent_task_id.in_(ids))
+            descendants = seed.cte("phase_hold_descendants", recursive=True)
+            descendant = tasks.alias("phase_hold_descendant")
+            descendants = descendants.union_all(
+                select(
+                    descendant.c.id,
+                    descendants.c.phase_id,
+                    descendant.c.status,
+                ).where(descendant.c.parent_task_id == descendants.c.id)
+            )
+            counts = (
+                await conn.execute(
+                    select(
+                        descendants.c.phase_id,
+                        func.count().label("count"),
+                    )
+                    .where(descendants.c.status != TaskStatus.COMPLETED.value)
+                    .group_by(descendants.c.phase_id)
+                )
+            ).mappings().all()
+
+        failure_meta = {row["task_id"] for row in failure_meta_rows}
+        descendant_counts = {row["phase_id"]: int(row["count"] or 0) for row in counts}
+        by_phase: dict[str, list] = {phase_id: [] for phase_id in ids}
+        for row in children:
+            by_phase[row["parent_task_id"]].append(row)
+
+        details: dict[str, dict] = {}
+        for phase_id, phase_children in by_phase.items():
+            failed = [
+                row
+                for row in phase_children
+                if row["status"] == TaskStatus.FAILED.value
+                or (
+                    row["status"] == TaskStatus.BLOCKED.value
+                    and row["id"] in failure_meta
+                )
+            ]
+            if failed:
+                details[phase_id] = {
+                    "phase_id": phase_id,
+                    "failed_children": [
+                        {"id": row["id"], "status": row["status"]}
+                        for row in failed[:PHASE_HOLD_CHILD_LIMIT]
+                    ],
+                    "failed_children_total": len(failed),
+                    "descendant_blocker_count": descendant_counts.get(phase_id, 0),
+                    "remedies": [
+                        {
+                            "code": "retry_or_reopen",
+                            "detail": (
+                                "A supervisor may retry or reopen work with concrete feedback "
+                                "when the current recovery, claim, hold, and retry-budget guards allow it."
+                            ),
+                        },
+                        {
+                            "code": "delete",
+                            "detail": (
+                                "An operator may explicitly delete work only when hierarchy, integration, "
+                                "delivery-history, and ownership guards allow it."
+                            ),
+                        },
+                    ],
+                    "reason_code": "phase_failed_work",
+                }
+                continue
+
+            if not phase_children:
+                details[phase_id] = {"phase_id": phase_id, "reason_code": "phase_empty"}
+            elif any(
+                row["status"] == TaskStatus.PAUSED.value and row["resume_after"] is None
+                for row in phase_children
+            ):
+                details[phase_id] = {"phase_id": phase_id, "reason_code": "phase_manual_pause"}
+            elif any(row["status"] == TaskStatus.BLOCKED.value for row in phase_children):
+                details[phase_id] = {"phase_id": phase_id, "reason_code": "phase_child_blocked"}
+            else:
+                details[phase_id] = {"phase_id": phase_id, "reason_code": "phase_active_children"}
+        return details
 
     async def get_task_tree(self, root_task_id: str, *, max_depth: int = 4) -> dict | None:
         """Nested ``{"task", "children"}`` from one recursive CTE (spec §8)."""

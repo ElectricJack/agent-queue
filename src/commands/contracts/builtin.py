@@ -534,6 +534,14 @@ class TaskRecoveryNotifyValue(CommandValue):
     redelivered: bool | None = None
 
 
+class TaskFailureTriageNotifyArgs(TaskRecoveryNotifyArgs):
+    """``task_failure_triage_notify``: idempotently wake failure triage."""
+
+
+class TaskFailureTriageNotifyValue(TaskRecoveryNotifyValue):
+    """The durable incident receipt returned to the triage playbook."""
+
+
 class ProviderAvailabilityNotifyArgs(CommandArgs):
     """``provider_availability_notify`` as a playbook step (provider-failover D19).
 
@@ -670,7 +678,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         if raw.get("skipped"):
             return "skipped"
         return "created" if raw.get("was_created") else "reused"
-    if name == "task_recovery_notify":
+    if name in {"task_recovery_notify", "task_failure_triage_notify"}:
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _RECOVERY_NOTIFY_OUTCOMES else "rejected"
     if name == "provider_availability_notify":
@@ -768,7 +776,7 @@ _PROVIDER_REROUTE_OUTCOMES = frozenset({"rerouted", "held", "idle", "disabled"})
 _PROBE_OUTCOMES = frozenset(
     {"probed", "unparsed", "not_applicable", "unavailable", "disabled"}
 )
-#: Every ``task_recovery_notify`` success.  A task with no stopped attempt
+#: Every failure-triage notification success. A task with no stopped attempt
 #: yet, or a delegate its ended integration operation retired, is a fact
 #: about the failure, not a broken step; the scan records it later if needed.
 _RECOVERY_NOTIFY_OUTCOMES = frozenset({"queued", "existing", "not_actionable", "retired"})
@@ -1190,6 +1198,29 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={"message": "the supervisor's incident notice"},
     ),
+    "task_failure_triage_notify": CommandPresentation(
+        title="Wake supervisor failure triage",
+        summary=(
+            "Record or reuse the durable incident for a terminal task failure and queue its "
+            "single supervisor triage notice; replayed failures reuse the same incident."
+        ),
+        arg_labels={"task_id": "Task", "project_id": "Project"},
+        outcome_labels={
+            "queued": "Triage incident queued",
+            "existing": "Existing incident reused",
+            "not_actionable": "Nothing to triage yet",
+            "retired": "Delegate retired",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "task_id": "Task",
+            "incident_id": "Incident",
+            "operation_id": "Integration operation",
+            "detail": "Detail",
+            "redelivered": "Redelivered",
+        },
+        subject_labels={"message": "the supervisor's triage notice"},
+    ),
     "provider_reroute": CommandPresentation(
         title="Re-route work off an unavailable provider",
         summary=(
@@ -1562,6 +1593,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "task_recovery_notify",
             TaskRecoveryNotifyArgs,
             TaskRecoveryNotifyValue,
+            _outcomes("queued", "existing", "not_actionable", "retired"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.MESSAGE),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_failure_triage_notify",
+            TaskFailureTriageNotifyArgs,
+            TaskFailureTriageNotifyValue,
             _outcomes("queued", "existing", "not_actionable", "retired"),
             SideEffectClass.CREATE,
             (CreateClause(subject=EffectSubject.MESSAGE),),

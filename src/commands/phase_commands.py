@@ -269,8 +269,11 @@ class PhaseCommandsMixin:
             return refusal
 
         phases = []
-        for task in await self._phase_siblings(project_id, parent_id):
+        siblings = await self._phase_siblings(project_id, parent_id)
+        holds = await self.db.get_phase_hold_details([task.id for task in siblings])
+        for task in siblings:
             summary = await self.db.get_children_summary(task.id) or {}
+            hold = holds.get(task.id)
             phases.append({
                 "id": task.id,
                 "title": task.title,
@@ -280,5 +283,14 @@ class PhaseCommandsMixin:
                 "is_blocked": task.is_blocked,
                 "total": int(summary.get("total") or 0),
                 "done": int(summary.get("done") or 0),
+                # Non-failure reasons remain ordinary ExplainReason rows.  A
+                # structured hold exists only where failed work retains the
+                # phase, so clients cannot render an active or empty phase as
+                # a failure.
+                "phase_hold": (
+                    {key: value for key, value in hold.items() if key != "reason_code"}
+                    if hold and hold["reason_code"] == "phase_failed_work"
+                    else None
+                ),
             })
         return {"success": True, "phases": phases}

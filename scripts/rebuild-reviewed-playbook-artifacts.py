@@ -65,6 +65,7 @@ SHIPPED = {
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
+    "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
 }
@@ -269,6 +270,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _ci_main_sentinel_body(source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
+    if playbook_id == "supervisor-failure-triage":
+        return _supervisor_failure_triage_body(source)
     if playbook_id == "provider-failover":
         return _provider_failover_body(source)
     if playbook_id == "provider-usage-probe":
@@ -810,6 +813,59 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
                 "title": "notify_supervisor",
                 "source": index.step_ref(rule, 1),
                 "command": "task_recovery_notify",
+                "inputs": {
+                    "task_id": event("task_id"),
+                    "project_id": event("project_id"),
+                },
+                "save_result_as": "incident",
+                "transitions": {
+                    "queued": done,
+                    "existing": done,
+                    "not_actionable": done,
+                    "retired": done,
+                    "rejected": failed,
+                    "runtime_error": failed,
+                },
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _supervisor_failure_triage_body(source: PlaybookSource) -> dict[str, Any]:
+    """The reviewed strict-hold companion for every durable task failure.
+
+    Policy remains in the playbook prose. The one command obtains an
+    idempotent incident receipt; the query layer decides whether a terminal
+    failure is actionable, so a status filter cannot hide service failures.
+    """
+    index = ProseIndex(source, source.vault_path)
+    rule = "triage-failed-task"
+    notify = f"{rule}--notify_supervisor"
+    done = f"{rule}--done"
+    failed = f"{rule}--failed"
+
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    return {
+        "rules": [
+            {
+                "id": rule,
+                "name": rule,
+                "trigger": {"event_type": "task.failed"},
+                "entry_step": notify,
+                "source": index.rule_ref(rule),
+            }
+        ],
+        "steps": {
+            notify: {
+                "type": "command",
+                "rule": rule,
+                "title": "notify_supervisor",
+                "source": index.step_ref(rule, 1),
+                "command": "task_failure_triage_notify",
                 "inputs": {
                     "task_id": event("task_id"),
                     "project_id": event("project_id"),
