@@ -108,6 +108,114 @@ class GitHubAccess:
     def credential_identity(self) -> GitHubCredentialIdentity:
         return self.auth.credential_identity
 
+    def _require_account_gists(self) -> None:
+        if self.credential_identity.mode is GitHubCredentialMode.APP:
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Profile gists are unavailable with a configured GitHub App; "
+                "use YAML directly or configure an existing gh login and restart the daemon",
+            )
+
+    async def create_profile_gist(self, profile_id: str, name: str, yaml_text: str) -> str:
+        """Publish a public profile gist through the startup-owned credential authority."""
+        self._require_account_gists()
+        filename = re.sub(r"[^A-Za-z0-9._-]", "-", profile_id)[:80] or "profile"
+        payload = await self._account_gist_request(
+            "POST",
+            "gists",
+            json_body={
+                "description": f"Agent Profile: {name}",
+                "public": True,
+                "files": {f"agent-profile-{filename}.yaml": {"content": yaml_text}},
+            },
+            expected_status=201,
+        )
+        url = payload.get("html_url")
+        gist_id = payload.get("id")
+        if not isinstance(url, str) or not isinstance(gist_id, str):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist response was incomplete")
+        if _profile_gist_id(url) != gist_id:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist response identity differed")
+        return url
+
+    async def read_profile_gist(self, url: str) -> str:
+        """Read one YAML profile file from a validated GitHub gist URL."""
+        self._require_account_gists()
+        gist_id = _profile_gist_id(url)
+        payload = await self._account_gist_request(
+            "GET", f"gists/{gist_id}", expected_status=200
+        )
+        if payload.get("id") != gist_id:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist response identity differed")
+        files = payload.get("files")
+        if not isinstance(files, dict) or not files:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist contains no profile file")
+        candidates = [
+            value
+            for filename, value in files.items()
+            if isinstance(filename, str)
+            and filename.lower().endswith((".yaml", ".yml"))
+            and isinstance(value, dict)
+        ]
+        if len(candidates) != 1:
+            raise GitHubAccessError(
+                "conflict_or_invalid", "GitHub gist must contain exactly one YAML profile file"
+            )
+        file = candidates[0]
+        content = file.get("content")
+        if file.get("truncated") or not isinstance(content, str):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist profile file is incomplete")
+        return content
+
+    async def _account_gist_request(
+        self,
+        method: Literal["GET", "POST"],
+        endpoint: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        expected_status: int,
+    ) -> dict[str, Any]:
+        args = [
+            "api",
+            "--include",
+            "--method",
+            method,
+            "--header",
+            f"Accept: {_ACCEPT}",
+            "--header",
+            f"X-GitHub-Api-Version: {_API_VERSION}",
+            endpoint,
+        ]
+        stdin = None
+        if json_body is not None:
+            args.extend(("--input", "-"))
+            stdin = json.dumps(json_body, separators=(",", ":")).encode()
+        result = await self.runner.run(
+            args,
+            hostname="github.com",
+            stdin=stdin,
+            max_stdout_bytes=MAX_HEADER_BYTES + MAX_RESPONSE_BYTES,
+            check=False,
+        )
+        try:
+            response = _decode_included_response(
+                result.stdout,
+                max_header_bytes=MAX_HEADER_BYTES,
+                max_body_bytes=MAX_RESPONSE_BYTES,
+            )
+        except GitHubAccessError:
+            if result.returncode:
+                raise _command_error(result.returncode, result.stderr) from None
+            raise
+        if response.status != expected_status:
+            raise _http_error(response.status, response.headers, time.time())
+        if result.returncode:
+            raise _command_error(result.returncode, result.stderr)
+        payload = _decode_json(response.body)
+        if not isinstance(payload, dict):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub gist response was not an object")
+        return payload
+
     async def installation_token(
         self,
         repository: GitHubRepositoryBinding,
@@ -1229,6 +1337,27 @@ def _decode_json(body: bytes) -> Any:
         raise GitHubAccessError(
             "conflict_or_invalid", "GitHub response was not valid JSON"
         ) from exc
+
+
+def _profile_gist_id(url: str) -> str:
+    if not isinstance(url, str):
+        raise GitHubAccessError("conflict_or_invalid", "A GitHub gist URL is required")
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise GitHubAccessError("conflict_or_invalid", "A valid GitHub gist URL is required") from exc
+    path = parsed.path.strip("/").split("/")
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "gist.github.com"
+        or parsed.query
+        or len(path) not in {1, 2}
+        or re.fullmatch(r"[0-9A-Fa-f]{5,64}", path[-1]) is None
+    ):
+        raise GitHubAccessError(
+            "conflict_or_invalid", "A valid https://gist.github.com profile gist URL is required"
+        )
+    return path[-1]
 
 
 def _next_link(value: str | None) -> str | None:
