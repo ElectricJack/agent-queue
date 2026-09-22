@@ -17,6 +17,21 @@ const PROVIDER_LABEL: Record<string, string> = {
 };
 
 /**
+ * The account-wide, week-to-reset series each usage source emits today.
+ *
+ * These are deliberately provider-specific: Claude names the window ``week``
+ * while Codex preserves the CLI's ``primary`` name (its source payload reports
+ * that window as 10,080 minutes).  Treating every farthest reset as weekly
+ * would silently invent semantics for a new provider.
+ */
+const WEEKLY_WINDOW_BY_PROVIDER: Record<string, string> = {
+  claude: "week",
+  codex: "primary",
+};
+
+const ACCOUNT_WIDE_SCOPES = new Set(["", "all models"]);
+
+/**
  * How a provider names its own window, title-cased and nothing more.
  *
  * Deliberately not a semantic rename: Codex calls its windows ``primary`` and
@@ -102,4 +117,33 @@ export function sortSnapshots(rows: ProviderUsageSnapshot[]): ProviderUsageSnaps
       a.window.localeCompare(b.window) ||
       (a.scope ?? "").localeCompare(b.scope ?? ""),
   );
+}
+
+/**
+ * Exactly one account-wide week-to-reset reading per known provider.
+ *
+ * Claude can report model-scoped week rows alongside ``all models``; those are
+ * useful on the Metrics page but are not the total the shell promises.  In
+ * the unlikely event that both account-wide spellings are present, keep the
+ * most recently confirmed reading, then the fuller percentage as a stable
+ * tie-breaker.
+ */
+export function selectWeeklySnapshots(rows: ProviderUsageSnapshot[]): ProviderUsageSnapshot[] {
+  const selected = new Map<string, ProviderUsageSnapshot>();
+  for (const row of rows) {
+    const weeklyWindow = WEEKLY_WINDOW_BY_PROVIDER[row.provider];
+    const scope = (row.scope ?? "").trim().toLowerCase();
+    if (weeklyWindow == null || row.window !== weeklyWindow || !ACCOUNT_WIDE_SCOPES.has(scope)) {
+      continue;
+    }
+    const current = selected.get(row.provider);
+    if (
+      current == null ||
+      row.last_seen_at > current.last_seen_at ||
+      (row.last_seen_at === current.last_seen_at && row.used_percent > current.used_percent)
+    ) {
+      selected.set(row.provider, row);
+    }
+  }
+  return sortSnapshots([...selected.values()]);
 }

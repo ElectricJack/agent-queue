@@ -10,6 +10,7 @@ import ProviderUsage from "../ProviderUsage";
 import {
   formatAge,
   formatReset,
+  selectWeeklySnapshots,
   seriesLabel,
   sortSnapshots,
   toneFor,
@@ -158,6 +159,19 @@ describe("pure formatters", () => {
     expect(sortSnapshots(rows).map((r) => r.id)).toEqual([1, 2, 3]);
     // Sorting does not mutate the response array.
     expect(rows.map((r) => r.id)).toEqual([3, 2, 1]);
+  });
+
+  it("selects one account-wide weekly reading per known provider", () => {
+    const rows = [
+      snap({ id: 1, provider: "claude", window: "session", used_percent: 9 }),
+      snap({ id: 2, provider: "claude", window: "week", scope: "all models", used_percent: 61 }),
+      snap({ id: 3, provider: "claude", window: "week", scope: "Fable", used_percent: 87 }),
+      snap({ id: 4, provider: "codex", window: "secondary", used_percent: 22 }),
+      snap({ id: 5, provider: "codex", window: "primary", used_percent: 73 }),
+      snap({ id: 6, provider: "gemini", window: "week", used_percent: 99 }),
+    ];
+
+    expect(selectWeeklySnapshots(rows).map((row) => row.id)).toEqual([2, 5]);
   });
 });
 

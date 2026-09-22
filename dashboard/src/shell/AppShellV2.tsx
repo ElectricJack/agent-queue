@@ -16,6 +16,7 @@ import { useAgentPushBridge } from "../panes/agentPush";
 import { useNavigate } from "react-router-dom";
 import { NavigationHistoryProvider } from "./navigationHistory";
 import ReviewToasts from "./ReviewToasts";
+import ProviderUsageBars from "./ProviderUsageBars";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -182,7 +183,7 @@ function ShellBody() {
       {/* The outage banner rides in the header row so it spans every page
           without shifting the rail/main/surface grid beneath it. */}
       <div className="col-span-3 row-start-1 flex min-w-0 flex-col">
-        <TopBar />
+        <TopBar center={<ProviderUsageBars />} />
         <ProviderAvailabilityBanner />
       </div>
       <LeftRail />
