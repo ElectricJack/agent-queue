@@ -867,6 +867,20 @@ class TestSessionCloseCompletion:
         result = await orch.complete_session_task(task, outcome="pass", notes="done")
         assert result["status"] == TaskStatus.BLOCKED.value
 
+    async def test_pass_forwards_checklist_skip_to_the_terminal_transition(self, orch):
+        """The real session pipeline, not only its command stub, owns the skip."""
+        task = _pr_task("t-close-skip", status=TaskStatus.IN_PROGRESS)
+        await orch.db.create_task(task)
+        await orch.db.add_task_subtasks(task.id, task.project_id, [{"title": "remaining"}])
+        orch._run_completion_pipeline = AsyncMock(return_value=(None, True))
+
+        result = await orch.complete_session_task(
+            task, outcome="pass", notes="done", skip_open_subtasks=True
+        )
+
+        assert result["status"] == TaskStatus.COMPLETED.value
+        assert [row["status"] for row in await orch.db.list_task_subtasks(task.id)] == ["skipped"]
+
 
 class TestResolveIntegrationMode:
     """The pure policy chain: parent → task → project → config default."""

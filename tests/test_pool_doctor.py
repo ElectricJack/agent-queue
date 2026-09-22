@@ -14,14 +14,13 @@ from __future__ import annotations
 import json
 import sys
 import time
-from uuid import uuid4
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import insert
 
 import src.doctor  # noqa: F401 -- side effect: populates sys.modules
-from src.doctor.models import Severity
-from src.database.tables import task_session_attempts
+from src.doctor.models import DoctorContext, Severity
 from src.models import (
     Agent,
     AgentProfile,
@@ -33,7 +32,7 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn
+from tests.db_fixtures import lease_dsn, seed_task_session_attempt
 
 # ``src/doctor/__init__.py`` does ``from src.doctor.pool_checks import
 # pool_checks`` (the factory function) to build ``default_registry()`` --
@@ -790,49 +789,6 @@ def test_placement_starved_has_no_fix():
 # ---------------------------------------------------------------------------
 
 
-async def _live_session_and_attempt(db, agent_id, task_id, *, now):
-    await db.create_session(
-        SessionRecord(
-            id=f"s-{agent_id}",
-            project_id=PROJECT_ID,
-            profile_id="worker",
-            harness="claude",
-            provider="tmux",
-            name=f"s-{agent_id}",
-            lifecycle="pool",
-            work_dir="/w",
-            epoch="e",
-            instance_token=agent_id,
-            started_at=now - 60,
-            task_id=task_id,
-            state="running",
-            last_activity=now - 10,
-        )
-    )
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            insert(task_session_attempts).values(
-                id=uuid4().hex,
-                session_id=f"s-{agent_id}",
-                task_id=task_id,
-                project_id=PROJECT_ID,
-                agent_id=agent_id,
-                agent_name=agent_id,
-                profile_id="worker",
-                name="worker",
-                lifecycle="pool",
-                model="claude-opus-5",
-                harness="claude",
-                provider="tmux",
-                state="running",
-                work_dir="/w",
-                started_at=now - 60,
-                session_started_at=now - 60,
-                ended_at=None,
-            )
-        )
-
-
 async def test_dangling_current_task_ok_when_clean(db):
     await db.create_task(
         Task(
@@ -863,6 +819,33 @@ async def test_dangling_current_task_warns_on_completed_task(db):
     ]
 
 
+async def test_dangling_current_task_reports_a_missing_task_from_a_stubbed_database():
+    """The missing-row branch is normally hidden by the database FK.
+
+    Keep its diagnostic contract tested anyway: a legacy/manual write may
+    produce it before the check runs, and the check promises an honest
+    ``null`` status rather than raising while formatting the finding.
+    """
+    fake_db = SimpleNamespace(
+        list_live_attempt_agent_ids=AsyncMock(return_value=set()),
+        list_agents=AsyncMock(
+            return_value=[SimpleNamespace(id="a-missing", current_task_id="gone")]
+        ),
+        get_task=AsyncMock(return_value=None),
+    )
+
+    finding = await pool_checks._check_agents_dangling_current_task(
+        DoctorContext(config=None, db=fake_db)
+    )
+
+    assert finding.severity is Severity.WARN
+    assert finding.data == {
+        "count": 1,
+        "agents": [{"agent_id": "a-missing", "task_id": "gone", "task_status": None}],
+    }
+    fake_db.get_task.assert_awaited_once_with("gone")
+
+
 async def test_dangling_current_task_skipped_with_a_live_attempt(db):
     """A BUSY agent whose task went COMPLETED but is still finishing its
     write-up (a live attempt) is not dangling -- only the state-transition
@@ -875,7 +858,16 @@ async def test_dangling_current_task_skipped_with_a_live_attempt(db):
         )
     )
     await _stale_agent(db, "a1", state=AgentState.BUSY, current_task_id="t1")
-    await _live_session_and_attempt(db, "a1", "t1", now=now)
+    await seed_task_session_attempt(
+        db,
+        task_id="t1",
+        project_id=PROJECT_ID,
+        agent_id="a1",
+        agent_name="a1",
+        now=now,
+        heartbeat_age=10,
+        create_task=False,
+    )
 
     finding = await pool_checks.run_check(db, "agents.dangling_current_task", config=None)
     assert finding.severity is Severity.OK

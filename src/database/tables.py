@@ -456,6 +456,16 @@ layout_jobs = Table(
     Column("finished_at", Float, nullable=True),
     Column("error", Text, nullable=True),
     Index("idx_layout_jobs_project_status", "project_id", "status"),
+    # ``layout_job_ledger(kind)`` retains every historical job of one rules
+    # revision.  Lead with that selective label, then keep its per-variant
+    # state together for the ledger's one-pass scan.
+    Index(
+        "idx_layout_jobs_kind_project_variant_status",
+        "kind",
+        "project_id",
+        "variant",
+        "status",
+    ),
 )
 
 task_context = Table(

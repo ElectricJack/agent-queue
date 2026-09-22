@@ -9,13 +9,14 @@ These tests pin that the claim frontier needs no phase-specific clause.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.queries.claim_queries import _frontier_where
-from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+from src.database.queries.hierarchy_queries import HierarchyError, ProjectIntegrationMode
 from src.database.tables import task_branch_origins, task_dependencies, tasks
 from src.models import (
     Agent,
@@ -166,6 +167,36 @@ async def claimable(db):
 
 
 class TestPhaseGating:
+    async def test_concurrent_phase_creation_allocates_distinct_orders(self, handler):
+        """The hierarchy lock covers sibling order allocation and metadata write."""
+        first, second = await asyncio.gather(
+            handler._cmd_phase_create({"project_id": PROJECT_ID, "title": "Phase 1"}),
+            handler._cmd_phase_create({"project_id": PROJECT_ID, "title": "Phase 2"}),
+        )
+
+        assert first["success"] is True, first
+        assert second["success"] is True, second
+        assert sorted((first["phase"]["order"], second["phase"]["order"])) == [1, 2]
+
+    async def test_gate_write_failure_removes_the_created_phase(self, handler, orch, monkeypatch):
+        await phase(handler, "Phase 1")
+
+        async def fail_last_gate(*_args, **_kwargs):
+            raise HierarchyError("cycle", "injected final phase gate failure")
+
+        monkeypatch.setattr(orch.db, "add_dependency", fail_last_gate)
+        result = await handler._cmd_phase_create({"project_id": PROJECT_ID, "title": "Phase 2"})
+
+        assert result == {
+            "success": False,
+            "code": "hierarchy.cycle",
+            "error": (
+                "hierarchy.cycle: injected final phase gate failure; "
+                "phase creation was rolled back"
+            ),
+        }
+        assert [task.title for task in await orch.db.list_tasks(project_id=PROJECT_ID)] == ["Phase 1"]
+
     async def test_phase_two_work_is_withheld_until_phase_one_completes(self, handler, orch):
         db = orch.db
         first = await phase(handler, "Phase 1")
@@ -258,6 +289,24 @@ class TestPhaseGating:
         assert [(p["total"], p["done"]) for p in listed["phases"]] == [(2, 1), (1, 0)]
         assert listed["phases"][0]["status"] == "IN_PROGRESS"
         assert listed["phases"][1]["is_blocked"] is True
+
+    async def test_phase_list_uses_the_scoped_join_not_per_task_metadata_reads(
+        self, handler, orch, monkeypatch
+    ):
+        first = await phase(handler, "Phase 1")
+        await phase(handler, "Phase 2")
+
+        async def unexpected(*_args, **_kwargs):
+            raise AssertionError("phase list must use its scoped task/metadata join")
+
+        monkeypatch.setattr(orch.db, "list_tasks", unexpected)
+        monkeypatch.setattr(orch.db, "get_task_meta", unexpected)
+        listed = await handler._cmd_phase_list({"project_id": PROJECT_ID})
+
+        assert [row["id"] for row in listed["phases"]] == [
+            first["phase"]["id"],
+            listed["phases"][1]["id"],
+        ]
 
     async def test_adding_work_to_a_completed_phase_is_refused(self, handler, orch):
         db = orch.db

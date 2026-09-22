@@ -1,6 +1,7 @@
 import time
 
 import pytest
+from sqlalchemy import inspect
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -41,6 +42,23 @@ async def test_jobs_lifecycle(db):
     await db.finish_layout_job(job["id"], error=None)
     assert await db.next_layout_job() is None
     assert (await db.get_layout_job(job["id"]))["status"] == "done"
+
+
+async def test_layout_job_ledger_index_starts_with_the_kind_filter(db):
+    """The persistent rules ledger must not scan every historic job."""
+    async with db._engine.connect() as conn:
+        indexes = await conn.run_sync(
+            lambda sync: {
+                index["name"]: index["column_names"]
+                for index in inspect(sync).get_indexes("layout_jobs")
+            }
+        )
+    assert indexes["idx_layout_jobs_kind_project_variant_status"] == [
+        "kind",
+        "project_id",
+        "variant",
+        "status",
+    ]
 
 
 async def test_meta_absent_until_published(db):

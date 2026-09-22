@@ -2,22 +2,19 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event, insert, update
+from sqlalchemy import event, update
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.graph_layout import build_graph_layout_router
 from src.database import Database
 from src.database.queries.hierarchy_queries import PHASE_KEY
-from src.database.tables import task_session_attempts
 from src.database.tables import tasks as tasks_table
-from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import Agent, AgentState, Project, Task, TaskStatus
 from src.task_graph.layout.driver import LayoutDriver
-from tests.db_fixtures import lease_dsn
+from tests.db_fixtures import lease_dsn, seed_task_session_attempt
 
 
 @pytest.fixture
@@ -37,56 +34,6 @@ def client_factory(db):
         return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
 
     return _make
-
-
-async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot"):
-    """A running session + open attempt, the thing that now docks a marker.
-
-    ``agents.current_task_id`` is no longer read for markers, so a test that
-    wants a worker to dock has to create the live attempt directly.
-    """
-    now = time.time()
-    session_id = f"sess-{agent_id}"
-    await db.create_session(
-        SessionRecord(
-            id=session_id,
-            project_id=project_id,
-            profile_id="p",
-            harness="claude",
-            provider="tmux",
-            name=session_id,
-            lifecycle="pool",
-            work_dir="/w",
-            epoch="e",
-            instance_token=session_id,
-            started_at=now - 60,
-            task_id=task_id,
-            state="running",
-            last_activity=now - 5,
-        )
-    )
-    async with db._engine.begin() as conn:
-        await conn.execute(
-            insert(task_session_attempts).values(
-                id=f"attempt-{agent_id}",
-                session_id=session_id,
-                task_id=task_id,
-                project_id=project_id,
-                agent_id=agent_id,
-                agent_name=name,
-                profile_id="p",
-                name=session_id,
-                lifecycle="pool",
-                model="claude-opus-5",
-                harness="claude",
-                provider="tmux",
-                state="running",
-                work_dir="/w",
-                started_at=now - 60,
-                session_started_at=now - 60,
-                ended_at=None,
-            )
-        )
 
 
 async def seed(db):
@@ -113,9 +60,12 @@ async def seed(db):
         await mk(f"d{i}")
         await db.add_dependency(f"d{i}", "hub")
     await db.create_agent(
-        Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY, current_task_id="g0")
+        Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY)
     )
-    await dock_live_worker(db, "a1", "g0", name="bot")
+    await seed_task_session_attempt(
+        db, task_id="g0", project_id="p1", agent_id="a1", agent_name="bot", profile_id="p",
+        create_task=False, heartbeat_age=5,
+    )
     drv = LayoutDriver(db)
     await drv.full_layout("p1", "all")
     await drv.full_layout("p1", "active")
@@ -334,13 +284,16 @@ async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
     """The pre-cull owner map must not dock a worker at an absent node."""
     await seed(db)
     await db.create_agent(
-        Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY, current_task_id="c0")
+        Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY)
     )
     async with db._engine.begin() as conn:
         await conn.execute(
             update(tasks_table).where(tasks_table.c.id == "c0").values(status="IN_PROGRESS")
         )
-    await dock_live_worker(db, "a2", "c0", name="bot2")
+    await seed_task_session_attempt(
+        db, task_id="c0", project_id="p1", agent_id="a2", agent_name="bot2", profile_id="p",
+        create_task=False, heartbeat_age=5,
+    )
     async with client_factory() as ac:
         first = (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).json()["nodes"]
         z = next(n for n in first if n["id"] == "z")
@@ -369,6 +322,30 @@ async def test_tiles_a_finished_task_with_no_live_attempt_docks_no_marker(db, cl
     async with client_factory() as ac:
         r = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
     assert r.json()["workers"] == []
+
+
+async def test_tiles_a_stopped_attempt_docks_no_marker_even_with_a_task_pointer(db, client_factory):
+    """The durable attempt, not the agent pointer, decides marker liveness."""
+    await seed_task_session_attempt(
+        db,
+        task_id="only",
+        project_id="p1",
+        agent_id="a1",
+        agent_name="bot",
+        profile_id="p",
+        attempt_state="stopped",
+        session_state="stopped",
+    )
+    await db.create_agent(
+        Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY, current_task_id="only")
+    )
+    await LayoutDriver(db).full_layout("p1", "all")
+
+    async with client_factory() as client:
+        response = await client.post("/api/projects/p1/graph/tiles", json=ALL)
+
+    assert response.status_code == 200
+    assert response.json()["workers"] == []
 
 
 async def test_tiles_a_live_attempt_on_a_visible_task_docks_one_worker(db, client_factory):
@@ -458,6 +435,53 @@ async def test_tiles_root_focus_of_a_finished_container_promotes_to_all(db, clie
         )
     assert r.status_code == 200
     assert {n["id"] for n in r.json()["nodes"]} == {"fe", "fc"}
+
+
+async def test_tiles_root_focus_of_finished_container_with_live_descendant_stays_active(
+    db, client_factory
+):
+    """A finished ancestor remains a real active-layout container for live work.
+
+    Promotion is driven by the published row's kind, not the root task's
+    status.  A completed container with an unfinished descendant is a real
+    ``container`` in ``active`` and entering it must not reveal finished work
+    from ``all``.
+    """
+    for tid, parent in (("finished-parent", None), ("live-child", "finished-parent")):
+        await db.create_task(
+            Task(id=tid, project_id="p1", title=tid, description="", status=TaskStatus.DEFINED)
+        )
+        if parent:
+            async with db._engine.begin() as conn:
+                await db.set_parent(tid, parent, conn=conn)
+    # Completion follows hierarchy setup; normal child creation correctly
+    # refuses a terminal parent.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table)
+            .where(tasks_table.c.id == "finished-parent")
+            .values(status=TaskStatus.COMPLETED.value)
+        )
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+
+    async with client_factory() as client:
+        response = await client.post(
+            "/api/projects/p1/graph/tiles",
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "finished-parent",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["variant_applied"] == "active"
+    assert {node["id"] for node in body["nodes"]} == {"finished-parent", "live-child"}
+    assert next(node for node in body["nodes"] if node["id"] == "finished-parent")["kind"] == "container"
 
 
 async def test_tiles_focus_leaves_child_containers_collapsed(db, client_factory):

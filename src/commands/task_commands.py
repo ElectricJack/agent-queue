@@ -1490,6 +1490,7 @@ class TaskCommandsMixin:
         repair_filing_binding: dict | None = None,
         repair_commit_proof: dict | None = None,
         filed_by_profile_id: str | None = None,
+        after_create_on: Callable | None = None,
     ) -> tuple[str, str | None, str | None, bool, str | None]:
         """Write a worker-filed task + its edges in one ``immediate()`` txn.
 
@@ -1785,6 +1786,8 @@ class TaskCommandsMixin:
                 await self.db._upsert_meta(
                     task.id, FILED_BY_PROFILE_META_KEY, filed_by_profile_id, conn=conn
                 )
+            if after_create_on is not None:
+                await after_create_on(conn, task.id, task.parent_task_id)
         await self.db.log_blocked_flips(flipped)
         return task.id, gate_id, origin, depth_cap_fallback, parent_id
 
@@ -2224,6 +2227,14 @@ class TaskCommandsMixin:
             }
 
     async def _create_task(self, args: dict) -> dict:
+        # Internal command composition can add durable rows that must commit
+        # with the task itself (phases are the current user).  This hook is
+        # never part of a public command schema: only an in-process command
+        # can supply a callable, and a non-callable value is refused rather
+        # than silently changing a task creation's atomicity.
+        after_create_on = args.pop("_after_create_on", None)
+        if after_create_on is not None and not callable(after_create_on):
+            return {"success": False, "error": "_after_create_on is internal-only"}
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
         # choice as CLI ``--root``.  Presence, rather than truthiness, is
@@ -2987,6 +2998,7 @@ class TaskCommandsMixin:
                     repair_filing_binding=repair_filing_binding,
                     repair_commit_proof=repair_commit_proof,
                     filed_by_profile_id=filed_by_profile_id,
+                    after_create_on=after_create_on,
                 )
                 hierarchy_created = hierarchy_enabled
             except _FilingScope as exc:
@@ -3015,21 +3027,68 @@ class TaskCommandsMixin:
                 }
         elif parent_id:
             try:
-                task_id, depth_cap_fallback = await self.db.create_task_under(
-                    task,
-                    parent_id,
-                    description=spawn_reason,
-                    **({"routing_policy": routing_policy} if routing_policy is not None else {}),
-                )
+                if after_create_on is None:
+                    task_id, depth_cap_fallback = await self.db.create_task_under(
+                        task,
+                        parent_id,
+                        description=spawn_reason,
+                        **({"routing_policy": routing_policy} if routing_policy is not None else {}),
+                    )
+                else:
+                    # Keep an internal post-create writer in the same
+                    # transaction as the task, its parent edge and any
+                    # routing gate.  ``create_task_under`` otherwise owns
+                    # that transaction, which is ideal for ordinary calls
+                    # but would expose a phase between its filing and gates.
+                    async with self.db.immediate() as conn:
+                        await self.db.lock_hierarchy_project(conn, task.project_id)
+                        task_id, depth_cap_fallback = await child_task_id(conn, parent_id)
+                        task.id = task_id
+                        task.parent_task_id = None
+                        await self.db.create_task(
+                            task,
+                            conn=conn,
+                            **({"routing_policy": routing_policy} if routing_policy is not None else {}),
+                        )
+                        if depth_cap_fallback:
+                            await self.db.add_dependency(
+                                task_id,
+                                parent_id,
+                                DepType.DISCOVERED_FROM.value,
+                                description=spawn_reason,
+                                conn=conn,
+                            )
+                            parent_id = None
+                        else:
+                            await self.db.set_parent(
+                                task_id, parent_id, conn=conn, description=spawn_reason
+                            )
+                        task.parent_task_id = parent_id
+                        await after_create_on(conn, task_id, parent_id)
             except HierarchyError as exc:
                 return {
                     "error": f"hierarchy.{exc.code}: {exc.detail}",
                     "code": f"hierarchy.{exc.code}",
                 }
         else:
-            task_id = await generate_task_id(self.db)
-            task.id = task_id
-            await self.db.create_task(task, **({"routing_policy": routing_policy} if routing_policy is not None else {}))
+            if after_create_on is None:
+                task_id = await generate_task_id(self.db)
+                task.id = task_id
+                await self.db.create_task(
+                    task,
+                    **({"routing_policy": routing_policy} if routing_policy is not None else {}),
+                )
+            else:
+                async with self.db.immediate() as conn:
+                    await self.db.lock_hierarchy_project(conn, task.project_id)
+                    task_id = await fresh_root_id(conn)
+                    task.id = task_id
+                    await self.db.create_task(
+                        task,
+                        conn=conn,
+                        **({"routing_policy": routing_policy} if routing_policy is not None else {}),
+                    )
+                    await after_create_on(conn, task_id, None)
 
         # Persist requires_kinds rows now that the FK target exists.
         if normalized_requirements and not hierarchy_created:

@@ -48,10 +48,12 @@ from contextlib import asynccontextmanager, contextmanager
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event
+from sqlalchemy import event, select
+from sqlalchemy.dialects import postgresql
 
 from scripts.seed_layout_perf import seed_project
 from src.api.graph_layout import build_graph_layout_router
+from src.database.tables import layout_jobs
 from src.database.queries.layout_queries import crossing_edges_statement
 from src.task_graph.layout.driver import LayoutDriver
 from src.task_graph.layout.view import owner_map, remap_edges, resolve_visible
@@ -151,9 +153,9 @@ RECT_MEDIAN_SLACK = 8.0
 RECT_TAIL_SLACK = 12.0
 #: Absolute wall-clock ceiling per node the rect request actually draws (see
 #: that test's docstring for the ruling this encodes).  Measured 0.61ms/node;
-#: ~3x headroom, so the 185ms-at-109-nodes regression this budget was written
-#: after would fail it while an honestly denser window would not.
-RECT_MS_PER_NODE = 2.0
+#: ~2x headroom, so the 185ms-at-109-nodes regression this budget was written
+#: after (1.70ms/node) fails while an honestly denser window does not.
+RECT_MS_PER_NODE = 1.5
 FOCUS_MEDIAN_SLACK = 6.0
 FOCUS_TAIL_SLACK = 9.0
 
@@ -167,6 +169,63 @@ async def _seed(
     drv = LayoutDriver(db)
     await drv.full_layout(project, "all")
     await drv.full_layout(project, "active")
+
+
+async def test_layout_job_ledger_uses_the_kind_leading_index_at_history_scale(pg_small):
+    """The convergence ledger is append-only, so its rules-kind sweep must index.
+
+    This is deliberately a plan test rather than a timing threshold: the
+    production reader's actual predicate is observed first, then the same
+    projection is explained after a multi-version history has been bulk
+    loaded and analysed.  A small table makes a sequential scan a valid
+    planner choice and would not guard the 900-second fleet sweep.
+    """
+    target_kind = "rules:37"
+    history_kinds = 80
+    rows_per_kind = 250
+    async with pg_small._engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "INSERT INTO layout_jobs "
+            "(id, project_id, variant, kind, status, requested_at, finished_at, error) "
+            "SELECT 'ledger-' || k || '-' || n, "
+            "       'ledger-project-' || (n % 25), "
+            "       CASE WHEN n % 2 = 0 THEN 'all' ELSE 'active' END, "
+            "       'rules:' || k, "
+            "       CASE WHEN n % 7 = 0 THEN 'failed' ELSE 'done' END, "
+            "       n, n + 1, NULL "
+            f"FROM generate_series(0, {history_kinds - 1}) AS k "
+            f"CROSS JOIN generate_series(1, {rows_per_kind}) AS n"
+        )
+        await conn.exec_driver_sql("ANALYZE layout_jobs")
+
+    statements: list[str] = []
+
+    def record_statement(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(pg_small._engine.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        await pg_small.layout_job_ledger(target_kind)
+    finally:
+        event.remove(pg_small._engine.sync_engine, "before_cursor_execute", record_statement)
+    actual = next(statement for statement in statements if "FROM layout_jobs" in statement)
+    assert "layout_jobs.kind" in actual
+
+    projection = select(
+        layout_jobs.c.project_id,
+        layout_jobs.c.variant,
+        layout_jobs.c.status,
+        layout_jobs.c.error,
+        layout_jobs.c.finished_at,
+    ).where(layout_jobs.c.kind == target_kind)
+    compiled = projection.compile(
+        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+    )
+    async with pg_small._engine.begin() as conn:
+        result = await conn.exec_driver_sql(f"EXPLAIN (ANALYZE, BUFFERS) {compiled}")
+    plan = "\n".join(row[0] for row in result)
+    assert "idx_layout_jobs_kind_project_variant_status" in plan
+    assert "Seq Scan on layout_jobs" not in plan
 
 
 @pytest.fixture
@@ -381,6 +440,8 @@ async def _assert_within_reference(
     """
     subject_nodes = len((await ac.post(payload[0], json=payload[1])).json()["nodes"])
     reference_nodes = len((await ac.post(reference[0], json=reference[1])).json()["nodes"])
+    assert subject_nodes > 0, f"{label}: subject fixture drew no nodes"
+    assert reference_nodes > 0, f"{label}: reference fixture drew no nodes"
     before = statistics.median(await _times(ac, reference, REFERENCE_SAMPLES))
     times = await _times(ac, payload, SAMPLES)
     after = statistics.median(await _times(ac, reference, REFERENCE_SAMPLES))
@@ -401,8 +462,8 @@ async def _assert_within_reference(
         f"max {times[-1] * 1000:.1f}ms over {SAMPLES} samples; "
         f"reference {floor * 1000:.1f}ms ({before * 1000:.1f} then {after * 1000:.1f}); "
         f"nodes {subject_nodes} vs {reference_nodes}, "
-        f"{median * 1000 / max(subject_nodes, 1):.3f}ms/node vs "
-        f"{floor * 1000 / max(reference_nodes, 1):.3f}ms/node"
+        f"{median * 1000 / subject_nodes:.3f}ms/node vs "
+        f"{floor * 1000 / reference_nodes:.3f}ms/node"
     )
     assert median < median_slack * floor, (
         f"{label}: median {median * 1000:.1f}ms is {median / floor:.2f}x the "
