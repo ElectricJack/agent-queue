@@ -925,6 +925,29 @@ class TestAsyncPushBranch:
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
 
     @pytest.mark.asyncio
+    async def test_force_with_lease_rejects_a_remote_move_since_tracking(
+        self, clone, bare_repo, mgr, tmp_path
+    ):
+        await mgr.aprepare_for_task(clone, "task/fwl-race")
+        _commit_file(clone, "first.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/fwl-race")
+
+        competing = str(tmp_path / "competing-force-lease")
+        subprocess.run(["git", "clone", bare_repo, competing], check=True, capture_output=True)
+        _git(["config", "user.name", "Competitor"], cwd=competing)
+        _git(["config", "user.email", "competitor@example.test"], cwd=competing)
+        _git(["switch", "-c", "task/fwl-race", "origin/task/fwl-race"], cwd=competing)
+        competing_tip = _commit_file(competing, "other.txt", "other", "other")
+        _git(["push", "origin", "task/fwl-race"], cwd=competing)
+
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        _commit_file(clone, "replacement.txt", "replacement", "replacement")
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_branch(clone, "task/fwl-race", force_with_lease=True)
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/fwl-race"], cwd=clone).split()[0] == competing_tip
+
+    @pytest.mark.asyncio
     async def test_normal_push_rejects_non_fast_forward_even_with_an_exact_lease(self, clone, mgr):
         await mgr.aprepare_for_task(clone, "task/non-ff")
         first = _commit_file(clone, "first.txt", "first", "first")

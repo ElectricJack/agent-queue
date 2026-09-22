@@ -2910,6 +2910,8 @@ class GitManager:
         if not _OID_RE.fullmatch(tip.lower()):
             raise GitError("invalid immutable push tip")
         branch = _validate_ref(branch)
+        if force_with_lease and expected_old_oid is None:
+            expected_old_oid = await self._alocal_tracking_oid(checkout_path, remote, branch)
         deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
         destination_url, token = await self._apush_destination(checkout_path, remote)
         observed = await self._aobserved_remote_head(
@@ -2941,6 +2943,20 @@ class GitManager:
             deadline=deadline, lock_held=lock_held,
         )
         return observed
+
+    async def _alocal_tracking_oid(self, checkout_path: str, remote: str, branch: str) -> str:
+        """Preserve the caller's known tip for a requested branch rewrite."""
+        remote = _validate_ref(remote, field="remote")
+        try:
+            oid = await self._arun(
+                ["rev-parse", "--verify", f"refs/remotes/{remote}/{branch}"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return _ZERO_OID
+        if _OID_RE.fullmatch(oid) is None:
+            raise GitError("invalid remote-tracking tip for force-with-lease")
+        return oid
 
     async def _apush_destination(
         self, checkout_path: str, remote: str
