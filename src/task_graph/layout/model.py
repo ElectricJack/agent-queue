@@ -81,3 +81,8 @@ class WriteSet:
     # Allocated size of each re-laid container (task_id or ROOT) so the driver
     # can propagate to the parent scope.
     sizes: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # Active scopes whose finished-leaf removal left the normal incremental
+    # pass intentionally aggregate-only.  ``publish_layout`` upserts these
+    # into the separate deferred-reflow ledger in the same transaction as the
+    # leaf deletion, so neither result can survive without the other.
+    reflow_scopes: set[str] = field(default_factory=set)

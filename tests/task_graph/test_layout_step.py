@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.models import Project, ProjectStatus, Task
+from src.task_graph.layout.constants import ROOT
 from src.task_graph.layout.driver import LayoutDriver, LayoutRelayDepthExceeded
 
 
@@ -194,6 +195,55 @@ async def test_layout_step_reconcile_sweep_is_interval_gated(orchestrator_factor
     o._layout_last_reconcile_check -= o.config.graph_layout.reconcile_interval_seconds + 1
     await o._run_layout_step()
     assert sweeps == 4
+
+
+async def test_queued_reflow_does_not_load_a_snapshot_before_the_sweep(orchestrator_factory):
+    o = await orchestrator_factory()
+    o.config.graph_layout.enabled = True
+    o.config.graph_layout.incremental_debounce_ms = 0
+    await o.db.create_project(Project(id="p1", name="P1"))
+    await o.db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    driver = LayoutDriver(o.db)
+    for variant in ("all", "active"):
+        await driver.full_layout("p1", variant)
+    await driver.process_dirty("p1", min_age_seconds=0)
+    await o.db.enqueue_layout_reflows("p1", "active", [ROOT])
+
+    # Reflow rows are not dirty marks.  An idle five-second cycle leaves the
+    # queue alone and therefore cannot pay for a project snapshot.
+    o._layout_last_reconcile_check = time.monotonic()
+    real = o.db.load_project_snapshot
+    calls = 0
+
+    async def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await real(*args, **kwargs)
+
+    o.db.load_project_snapshot = counted
+    await o._run_layout_step()
+    assert calls == 0
+    assert (await o.db.layout_reflow_status())["queued"] == 1
+
+
+async def test_layout_sweep_claims_and_acknowledges_one_reflow_group(orchestrator_factory):
+    o = await orchestrator_factory()
+    o.config.graph_layout.enabled = True
+    o.config.graph_layout.incremental_debounce_ms = 0
+    await o.db.create_project(Project(id="p1", name="P1"))
+    await o.db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    driver = LayoutDriver(o.db)
+    for variant in ("all", "active"):
+        await driver.full_layout("p1", variant)
+    await driver.process_dirty("p1", min_age_seconds=0)
+    before = (await o.db.get_layout_meta("p1", "active"))["layout_version"]
+    await o.db.enqueue_layout_reflows("p1", "active", [ROOT])
+
+    o._layout_last_reconcile_check = None  # force the periodic sweep
+    await o._run_layout_step()
+
+    assert (await o.db.layout_reflow_status())["queued"] == 0
+    assert (await o.db.get_layout_meta("p1", "active"))["layout_version"] == before + 1
 
 
 async def test_schedule_layout_step_runs_in_the_background_and_does_not_overlap(orchestrator_factory):

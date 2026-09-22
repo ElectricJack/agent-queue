@@ -440,6 +440,38 @@ layout_dirty = Table(
     Index("idx_layout_dirty_project", "project_id", "seq"),
 )
 
+# Deferred compaction of an ``active`` scope after a finished leaf leaves a
+# hole.  This must not share ``layout_dirty``: the five-second incremental
+# drain clears that table by sequence number and would otherwise consume a
+# deferred request before the slower sweep could claim it.
+layout_reflow_requests = Table(
+    "layout_reflow_requests",
+    metadata,
+    Column("project_id", Text, nullable=False, primary_key=True),
+    Column("variant", Text, nullable=False, primary_key=True),
+    # A task id, or the layout ROOT sentinel.  Deliberately no task FK: a
+    # scope can disappear while a durable request waits for the sweep.
+    Column("scope_key", Text, nullable=False, primary_key=True),
+    Column("generation", Integer, nullable=False, server_default="1"),
+    Column("state", Text, nullable=False),  # queued | running | failed
+    Column("requested_at", Float, nullable=False),
+    Column("retry_after", Float, nullable=False),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("last_error", Text, nullable=True),
+    Column("claimed_generation", Integer, nullable=True),
+    Column("lease_token", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Index(
+        "idx_layout_reflow_requests_due",
+        "state",
+        "retry_after",
+        "requested_at",
+        "project_id",
+        "variant",
+        "scope_key",
+    ),
+)
+
 layout_jobs = Table(
     "layout_jobs",
     metadata,
