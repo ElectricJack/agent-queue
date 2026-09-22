@@ -462,20 +462,27 @@ class TestAsyncReservedDeliveryDiff:
 @pytest.mark.asyncio
 async def test_validated_push_uses_the_resolved_oid_not_a_mutable_local_ref(mgr, monkeypatch):
     """A post-merge hook cannot substitute content between validation and push."""
-    pushed: list[list[str]] = []
+    pushed: list[tuple] = []
     tip = "d" * 40
 
     async def fake_arun(args, cwd=None, **_kwargs):
         if args[:2] == ["rev-parse", "--verify"]:
             return tip
-        pushed.append(args)
         return ""
 
     monkeypatch.setattr(mgr, "_arun", fake_arun)
+    monkeypatch.setattr(mgr, "_apush_destination", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(mgr, "_aobserved_remote_head", AsyncMock(side_effect=[None, tip]))
+
+    async def capture(*args, **kwargs):
+        pushed.append((args, kwargs))
+
+    monkeypatch.setattr(mgr, "_atransfer_exact_ref", capture)
 
     await mgr.apush_validated_ref("/repo", "HEAD", "main")
 
-    assert pushed == [["push", "origin", f"{tip}:refs/heads/main"]]
+    assert len(pushed) == 1
+    assert pushed[0][0][:4] == ("/repo", tip, "main", "0" * 40)
 
 
 @pytest.mark.asyncio
@@ -485,17 +492,23 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     """A hook moving HEAD after diff inspection cannot replace the delivered commit."""
     clean_tip = "d" * 40
     unsafe_tip = "e" * 40
-    pushed: list[list[str]] = []
+    pushed: list[tuple] = []
     resolved_sources: list[str] = []
 
     async def fake_arun(args, cwd=None, **_kwargs):
         if args[:2] == ["rev-parse", "--verify"]:
             resolved_sources.append(args[-1])
             return clean_tip if len(resolved_sources) == 1 else unsafe_tip
-        pushed.append(args)
         return ""
 
     monkeypatch.setattr(mgr, "_arun", fake_arun)
+    monkeypatch.setattr(mgr, "_apush_destination", AsyncMock(return_value=(None, None)))
+    monkeypatch.setattr(mgr, "_aobserved_remote_head", AsyncMock(side_effect=[None, clean_tip]))
+
+    async def capture(*args, **kwargs):
+        pushed.append((args, kwargs))
+
+    monkeypatch.setattr(mgr, "_atransfer_exact_ref", capture)
     inspect = AsyncMock(return_value=[])
     monkeypatch.setattr(mgr, "areserved_paths_in_diff", inspect)
 
@@ -504,7 +517,8 @@ async def test_delivery_push_checks_and_pushes_one_immutable_tip_despite_head_mu
     inspect.assert_awaited_once_with("/repo", "origin/main", clean_tip)
     # The source is resolved exactly once; the push consults no ref again.
     assert resolved_sources == ["HEAD"]
-    assert pushed == [["push", "origin", f"{clean_tip}:refs/heads/main"]]
+    assert len(pushed) == 1
+    assert pushed[0][0][:4] == ("/repo", clean_tip, "main", "0" * 40)
 
 
 @pytest.mark.asyncio
@@ -519,6 +533,19 @@ async def test_expected_delivery_push_moves_only_the_validated_tip(clone, mgr):
     assert pushed == tip
     assert _git(["rev-parse", "refs/heads/delivery/immutable"], cwd=clone) == tip
     assert _git(["ls-remote", "--heads", "origin", "refs/heads/main"], cwd=clone).split()[0] == tip
+
+
+@pytest.mark.asyncio
+async def test_expected_delivery_zero_oid_creates_only_once(clone, mgr):
+    base = _git(["rev-parse", "main"], cwd=clone)
+    _git(["switch", "-c", "delivery/new"], cwd=clone)
+    tip = _commit_file(clone, "new.txt", "candidate", "candidate")
+
+    await mgr.apush_expected_delivery(clone, base, tip, "delivery/new", "0" * 40)
+    with pytest.raises(GitError, match="expected target"):
+        await mgr.apush_expected_delivery(clone, base, tip, "delivery/new", "0" * 40)
+
+    assert _git(["ls-remote", "--heads", "origin", "refs/heads/delivery/new"], cwd=clone).split()[0] == tip
 
 
 @pytest.mark.asyncio
@@ -537,7 +564,7 @@ async def test_expected_delivery_push_preserves_a_remote_move_after_validation(
     competing_tip = _commit_file(competing, "competing.txt", "other\n", "competing")
     _git(["push", "origin", "main"], cwd=competing)
 
-    with pytest.raises(GitError, match="force-with-lease"):
+    with pytest.raises(GitError, match="expected target"):
         await mgr.apush_expected_delivery(clone, base, tip, "main", base)
 
     assert _git(["rev-parse", "refs/heads/delivery/candidate"], cwd=clone) == tip
@@ -898,6 +925,61 @@ class TestAsyncPushBranch:
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
 
     @pytest.mark.asyncio
+    async def test_normal_push_rejects_non_fast_forward_even_with_an_exact_lease(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/non-ff")
+        first = _commit_file(clone, "first.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/non-ff")
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        replacement = _commit_file(clone, "replacement.txt", "other", "replacement")
+
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_branch(clone, "task/non-ff")
+
+        assert replacement != first
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/non-ff"], cwd=clone).split()[0] == first
+
+    @pytest.mark.asyncio
+    async def test_normal_push_ignores_local_replace_graph(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/replace-graph")
+        old = _commit_file(clone, "old.txt", "old", "old")
+        await mgr.apush_branch(clone, "task/replace-graph")
+        _git(["reset", "--hard", "HEAD~1"], cwd=clone)
+        tip = _commit_file(clone, "new.txt", "new", "new")
+        _git(["replace", "--graft", tip, old], cwd=clone)
+
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_branch(clone, "task/replace-graph")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/replace-graph"], cwd=clone).split()[0] == old
+
+    @pytest.mark.asyncio
+    async def test_lost_push_response_is_observed_before_event(self, clone, mgr, monkeypatch):
+        from src.event_bus import EventBus
+
+        bus = EventBus()
+        received = []
+        bus.subscribe("git.push", lambda event: received.append(event))
+        await mgr.aprepare_for_task(clone, "task/lost-response")
+        tip = _commit_file(clone, "lost.txt", "saved", "saved")
+        original = mgr._arun
+        pushes = 0
+
+        async def lose_response(args, cwd=None, timeout=None):
+            nonlocal pushes
+            result = await original(args, cwd=cwd, timeout=timeout)
+            if args and args[0] == "push":
+                pushes += 1
+                raise GitError("response lost after remote accepted push")
+            return result
+
+        monkeypatch.setattr(mgr, "_arun", lose_response)
+        await mgr.apush_branch(clone, "task/lost-response", event_bus=bus)
+
+        assert pushes == 1
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/lost-response"], cwd=clone).split()[0] == tip
+        assert [event["commit_range"] for event in received] == [tip]
+
+    @pytest.mark.asyncio
     async def test_emits_git_push_event(self, clone, mgr):
         """Successful push emits git.push on the EventBus."""
         from src.event_bus import EventBus
@@ -1067,6 +1149,42 @@ class TestAsyncDeleteBranch:
         branches = await mgr.alist_branches(clone)
         names = [b.lstrip("* ") for b in branches]
         assert "task/delete-me" not in names
+
+    @pytest.mark.asyncio
+    async def test_deletes_remote_under_exact_old_tip(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/delete-remote")
+        _commit_file(clone, "delete.txt", "data", "delete")
+        await mgr.apush_branch(clone, "task/delete-remote")
+        _git(["checkout", "main"], cwd=clone)
+
+        await mgr.adelete_branch(clone, "task/delete-remote")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-remote"], cwd=clone) == ""
+        assert await mgr.abranch_exists(clone, "task/delete-remote") is False
+
+    @pytest.mark.asyncio
+    async def test_remote_delete_refuses_a_moved_head(self, clone, mgr, monkeypatch):
+        await mgr.aprepare_for_task(clone, "task/delete-race")
+        _commit_file(clone, "initial.txt", "data", "initial")
+        await mgr.apush_branch(clone, "task/delete-race")
+        _git(["checkout", "main"], cwd=clone)
+        original = mgr._atransfer_exact_ref
+        competing_tip = None
+
+        async def move_before_delete(*args, **kwargs):
+            nonlocal competing_tip
+            _git(["checkout", "task/delete-race"], cwd=clone)
+            competing_tip = _commit_file(clone, "competing.txt", "new", "competing")
+            _git(["push", "origin", "task/delete-race"], cwd=clone)
+            _git(["checkout", "main"], cwd=clone)
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(mgr, "_atransfer_exact_ref", move_before_delete)
+        with pytest.raises(GitError, match="force-with-lease"):
+            await mgr.adelete_branch(clone, "task/delete-race")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-race"], cwd=clone).split()[0] == competing_tip
+        assert await mgr.abranch_exists(clone, "task/delete-race") is True
 
 
 class TestAsyncHasRemote:
