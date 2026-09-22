@@ -59,9 +59,10 @@ scripts/e2e-daemon.sh logs 200
 scripts/e2e-daemon.sh stop
 ```
 
-The default run executes all 16 scenarios. `S1`–`S8` cover swarm composition;
+The default run executes all 17 scenarios. `S1`–`S8` cover swarm composition;
 `S9`–`S15` cover the wider stateful CLI surface; `S16` runs a whole provider
-outage against two fake providers. Every CLI subprocess is
+outage against two fake providers; and `S17` cooks and works a phased graph.
+Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
@@ -102,8 +103,10 @@ PASS S15 development integration (...)
      local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication
 PASS S16 provider failover (206.1s)
      prova tripped in 2 launch(es); moved …,… to provb within max_active=1 (batch prb-prova-2); pin/solo held; recheck→probation→available; undo returned …; all-down held everything, claim=drain_requested, critical escalation
+PASS S17 phased graph (...)
+     dry-run/cook phase graph; phase 2 withheld then released after phase 1 COMPLETED; prime rendered and close skipped 3 checklist rows
 
-16/16 scenarios passed
+17/17 scenarios passed
 ```
 
 The runner exits non-zero if any scenario fails. It then prints a capability
@@ -127,7 +130,7 @@ class and model constraints.
 | `scripts/e2e-daemon.sh` | `start` / `stop` / `status` / `logs` for the isolated daemon |
 | `scripts/e2e-clean.sh` | validates path ownership and the isolated tmux socket before any side effect, then stops the disposable daemon, drops only its database, and removes only its data directory |
 | `scripts/e2e-smoke.sh` | the Tier 1 runner (thin wrapper) |
-| `scripts/e2e/smoke.py` | the 16 scenarios and capability report |
+| `scripts/e2e/smoke.py` | the 17 scenarios and capability report |
 | `scripts/e2e/aq.py` | runs *this worktree's* `aq` — see below |
 | `scripts/e2e/register.py` | creates the `e2e` / `other` projects + their workspaces (needs the daemon) |
 | `scripts/e2e/dbsetup.py` | creates/drops `agent_queue_e2e` via asyncpg (no `psql` needed) |
@@ -323,6 +326,23 @@ every provider whatever happened. *Regression it catches: a provider outage
 that keeps launching, work that moves past a pool's bound or across a class, a
 pin that moves, a hold with no reason, or a recovery that never completes.*
 
+**S17 — phased graph.** A disposable development-mode project is onboarded
+through the real CLI, then a vault spec with two declared phases, three nodes,
+and a graph-seeded three-row checklist is cooked through
+`aq task create --from-spec`. Its dry run reports both phases and all three
+checklist rows without persistence. The runner verifies phase 2 and its node
+are withheld, claims both phase-1 nodes as pool workers, and reads the
+checklist from the real `aq prime` output. A close without
+`--skip-open-subtasks` must refuse with `subtasks.open`; the override then
+closes the task and leaves every row `skipped` with the `skipped at close`
+note. Once the branchless phase-1 container settles `COMPLETED`, phase 2
+unblocks and a replacement worker can claim it — no development publication
+sweep occurs between those observations. The scenario closes and deletes the
+epic so it is re-runnable. *Regression it catches: a graph writer that loses
+phase/checklist data, a later phase escaping its parent gate, development
+delivery accidentally treating a phase container as a branch owner, or a
+checklist bypassing the close fence.*
+
 ### The fake provider kit
 
 `tests/fixtures/provider_failover/` holds everything S16 needs, and
@@ -384,9 +404,9 @@ The kit gates on `/ready`, through `scripts/e2e/probe.py`:
 
 This exists because the failure it catches is invisible otherwise. A daemon
 whose schema setup died, or whose database was dropped out from under it, keeps
-serving `/api/health`; the sixteen scenarios then run against an empty database
+serving `/api/health`; the seventeen scenarios then run against an empty database
 and every one fails with `relation "projects" does not exist`, which reads like
-sixteen product regressions rather than one broken environment.
+seventeen product regressions rather than one broken environment.
 
 ### Running two kits at once
 
