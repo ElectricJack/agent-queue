@@ -8,6 +8,7 @@ import time
 from sqlalchemy import delete, insert, select, update
 
 from src.database.tables import (
+    archived_tasks,
     chat_analyzer_suggestions,
     task_comments,
     events,
@@ -161,6 +162,13 @@ class ProjectQueryMixin:
 
     async def delete_project(self, project_id: str) -> None:
         """Delete a project and all associated data (cascading)."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.database.queries.task_references import (
+            describe_integration_references,
+            find_integration_repository_references,
+            find_integration_task_references,
+        )
+
         async with self._engine.begin() as conn:
             # Block concurrent task FK insertion before collecting identities.
             # SQLite needs an actual write to acquire its database write lock.
@@ -171,9 +179,34 @@ class ProjectQueryMixin:
                 )
                 .with_for_update()
             )
-            # Get all task IDs for this project
+            # History may resolve to either a live task or its archived
+            # snapshot. Deleting the project must not turn that evidence into
+            # an orphan just because the task FKs were intentionally removed.
             result = await conn.execute(select(tasks.c.id).where(tasks.c.project_id == project_id))
             task_ids = [r[0] for r in result.fetchall()]
+            archived_ids = list(
+                (
+                    await conn.execute(
+                        select(archived_tasks.c.id).where(archived_tasks.c.project_id == project_id)
+                    )
+                ).scalars()
+            )
+            found = await find_integration_task_references(conn, [*task_ids, *archived_ids])
+            repo_ids = list(
+                (await conn.execute(select(repos.c.id).where(repos.c.project_id == project_id))).scalars()
+            )
+            repository_found = await find_integration_repository_references(conn, repo_ids)
+            if found or repository_found:
+                references = [*found, *repository_found]
+                first = references[0]
+                subject = first.get("task_id") or first["repository_id"]
+                raise HierarchyError(
+                    "integration_history_retained",
+                    f"delete is refused: {len(references)} integration audit record(s) name "
+                    f"{subject} ({describe_integration_references(references)}) and audit "
+                    "history is append-only.",
+                    {"references": references},
+                )
 
             for tid in sorted(task_ids):
                 await self._assert_pause_cleanup_complete(tid, conn=conn)

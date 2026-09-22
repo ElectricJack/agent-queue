@@ -55,15 +55,17 @@ def _assert_parent_schema(connection) -> None:
         "fk_task_delivery_receipts_parent_operation",
         "fk_task_delivery_receipts_parent_episode",
         "fk_integration_repair_operations_parent_episode",
-        "fk_integration_repair_operations_verifier_task",
-        "fk_integration_parent_episodes_parent_task",
         "fk_integration_parent_episodes_repository",
         "fk_integration_parent_verifications_operation",
-        "fk_integration_parent_verifications_parent_task",
         "fk_integration_parent_verifications_episode",
         "fk_parent_operation_completions_operation",
         "fk_parent_operation_completions_verification",
     } <= foreign_keys
+    assert {
+        "fk_integration_repair_operations_verifier_task",
+        "fk_integration_parent_episodes_parent_task",
+        "fk_integration_parent_verifications_parent_task",
+    }.isdisjoint(foreign_keys)
     assert {
         "verifier_task_id",
         "route_playbook_id",
@@ -82,6 +84,9 @@ def _assert_parent_schema(connection) -> None:
     )
     assert operation_index["unique"]
     assert operation_index["column_names"] == ["parent_task_id", "episode_id"]
+    assert "idx_integration_repair_operations_verifier_task" in {
+        index["name"] for index in schema.get_indexes("integration_repair_operations")
+    }
 
 
 async def test_baseline_parent_collection_schema():

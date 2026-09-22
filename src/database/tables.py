@@ -3068,9 +3068,6 @@ integration_candidate_resolutions = Table(
         ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(
-        ["repair_task_id"], ["tasks.id"], name="fk_integration_candidate_resolutions_task"
-    ),
-    ForeignKeyConstraint(
         ["repair_session_id"],
         ["sessions.id"],
         name="fk_integration_candidate_resolutions_session",
@@ -3093,6 +3090,10 @@ Index(
     postgresql_where=integration_candidate_resolutions.c.state.in_(
         ("reserved", "pushed", "accepted")
     ),
+)
+Index(
+    "idx_integration_candidate_resolutions_repair_task",
+    integration_candidate_resolutions.c.repair_task_id,
 )
 
 integration_candidate_ref_mutations = Table(
@@ -3314,11 +3315,10 @@ integration_repair_operations = Table(
         name="fk_integration_repair_operations_parent_episode",
         ondelete="RESTRICT",
     ),
-    ForeignKeyConstraint(
-        ["verifier_task_id"],
-        ["tasks.id"],
-        name="fk_integration_repair_operations_verifier_task",
-        ondelete="RESTRICT",
+    Index(
+        "idx_integration_repair_operations_verifier_task",
+        "verifier_task_id",
+        postgresql_where=text("verifier_task_id IS NOT NULL"),
     ),
 )
 
@@ -3333,12 +3333,6 @@ integration_parent_episodes = Table(
     Column("created_at", Float, nullable=False),
     UniqueConstraint("parent_task_id", "id", name="uq_integration_parent_episodes_parent_id"),
     CheckConstraint("generation >= 0", name="ck_integration_parent_episodes_generation"),
-    ForeignKeyConstraint(
-        ["parent_task_id"],
-        ["tasks.id"],
-        name="fk_integration_parent_episodes_parent_task",
-        ondelete="RESTRICT",
-    ),
     ForeignKeyConstraint(
         ["repository_id"],
         ["repos.id"],
@@ -3417,6 +3411,12 @@ integration_repair_stages = Table(
         "'expired', 'cancelled')",
         name="ck_integration_repair_stages_state",
     ),
+)
+
+Index(
+    "idx_integration_repair_stages_repair_task",
+    integration_repair_stages.c.repair_task_id,
+    postgresql_where=text("repair_task_id IS NOT NULL"),
 )
 
 #: One row per delegate released because its integration operation ended.
@@ -3753,12 +3753,6 @@ integration_parent_verifications = Table(
         ["operation_id"],
         ["integration_repair_operations.id"],
         name="fk_integration_parent_verifications_operation",
-        ondelete="RESTRICT",
-    ),
-    ForeignKeyConstraint(
-        ["parent_task_id"],
-        ["tasks.id"],
-        name="fk_integration_parent_verifications_parent_task",
         ondelete="RESTRICT",
     ),
     ForeignKeyConstraint(

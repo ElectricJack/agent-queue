@@ -152,7 +152,6 @@ from .delete_profile_response import DeleteProfileResponse
 from .delete_profile_response_422 import DeleteProfileResponse422
 from .delete_project_request import DeleteProjectRequest
 from .delete_project_response import DeleteProjectResponse
-from .delete_project_response_422 import DeleteProjectResponse422
 from .delete_task_request import DeleteTaskRequest
 from .delete_task_response import DeleteTaskResponse
 from .deleted_branch import DeletedBranch
@@ -1439,7 +1438,6 @@ __all__ = (
     "DeleteProfileResponse422",
     "DeleteProjectRequest",
     "DeleteProjectResponse",
-    "DeleteProjectResponse422",
     "DeleteTaskRequest",
     "DeleteTaskResponse",
     "DigestEscalationSettings",

@@ -768,7 +768,7 @@ async def _find_stranded_delegates(ctx: DoctorContext) -> list[dict]:
     and refuses to archive.
 
     Narrow on purpose: a task is *not* listed merely because integration
-    history still names it — that is ``assert_no_integration_task_references``'s
+    history still names it — that is the integration-history removal guard's
     question, and listing every historical verifier would bury the ones that
     are genuinely stuck.  A delegate with a live writer is also excluded — its
     authority is not doctor's to take.

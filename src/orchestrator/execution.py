@@ -1522,8 +1522,23 @@ class ExecutionMixin:
                     )
                     completed_ok = result not in (PhaseResult.STOP, PhaseResult.ERROR)
                     parent = await self.db.get_task(verifier_operation["parent_task_id"])
+                    parent_completed = bool(
+                        parent is not None and parent.status is TaskStatus.COMPLETED
+                    )
+                    if parent is None:
+                        from src.database.queries.task_identity import resolve_task_identity_on
+
+                        async with self.db._engine.connect() as conn:
+                            identity = await resolve_task_identity_on(
+                                conn, verifier_operation["parent_task_id"]
+                            )
+                        parent_completed = bool(
+                            identity is not None
+                            and identity.archived
+                            and identity.status == TaskStatus.COMPLETED.value
+                        )
                     if completed_ok and (
-                        parent is None or parent.status is not TaskStatus.COMPLETED
+                        not parent_completed
                     ):
                         ctx.verification_retry_in_session = True
                         ctx.verification_issues = [

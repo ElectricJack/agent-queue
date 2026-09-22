@@ -760,9 +760,13 @@ class IntegrationRecoveryControls:
                 integration_batches.c.id == operation["batch_id"]
             )
         else:
-            statement = select(tasks.c.project_id).where(
-                tasks.c.id == operation["parent_task_id"]
-            )
+            from src.database.queries.task_identity import resolve_task_identity_on
+
+            identity = await resolve_task_identity_on(conn, operation["parent_task_id"])
+            project_id = identity.project_id if identity is not None else None
+            if project_id is not None:
+                return str(project_id)
+            statement = select(tasks.c.project_id).where(tasks.c.id == operation["parent_task_id"])
         project_id = (await conn.execute(statement)).scalar_one_or_none()
         if project_id is None:
             raise ValueError("operation target has no owning project")

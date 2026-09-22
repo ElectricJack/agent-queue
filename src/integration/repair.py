@@ -1001,13 +1001,33 @@ class RepairService:
                 repair_task_id=repair_task_id,
                 writer_kind="repair_delegate",
             )
-        if owner["owner_id"] == repair_task_id and owner["owner_role"] == "repair":
+        if (
+            owner["owner_id"] == repair_task_id
+            and owner["owner_role"] == "repair"
+            and owner["handoff_state"] in {"reserved", "attached"}
+        ):
             fence = Fence(
                 target=target,
                 owner_id=repair_task_id,
                 token=int(owner["fence_token"]),
             )
             replay = True
+        elif owner["handoff_state"] == "released":
+            # ``_archive_one`` releases detached reservations along with the
+            # task. A legacy archive can still be restored for an active
+            # repair stage, but its old fence must be explicitly reclaimed
+            # before the restored task becomes dispatchable again.
+            try:
+                fence = await self._ownership.acquire(target, repair_task_id, "repair")
+            except (BranchBusy, StaleFence):
+                return self._dispatch_value(
+                    "busy",
+                    operation_id,
+                    stage,
+                    repair_task_id=repair_task_id,
+                    writer_kind="repair_delegate",
+                )
+            replay = False
         else:
             retained_primary = stage == 1 and await self._is_primary_writer(
                 owner, operation_id
@@ -2974,14 +2994,17 @@ class RepairService:
             "state": "active",
         }
         await conn.execute(insert(integration_repair_stages).values(**debug))
-        await conn.execute(
+        escalated = await conn.execute(
             update(integration_repair_operations)
             .where(
                 integration_repair_operations.c.id == operation["id"],
                 integration_repair_operations.c.active_stage == 0,
+                integration_repair_operations.c.state == "active",
             )
             .values(active_stage=1, state="escalated", updated_at=now)
         )
+        if escalated.rowcount != 1:
+            raise _RepairInvariant("repair operation changed before debug escalation")
         project_id = await self._operation_project_id_on(conn, operation)
         await enqueue_integration_event(
             conn,
@@ -3019,14 +3042,17 @@ class RepairService:
                 completed_at=now,
             )
         )
-        await conn.execute(
+        human_blocked = await conn.execute(
             update(integration_repair_operations)
             .where(
                 integration_repair_operations.c.id == operation["id"],
                 integration_repair_operations.c.active_stage == stage["ordinal"],
+                integration_repair_operations.c.state.in_(("active", "escalated")),
             )
             .values(state="human_required", updated_at=now)
         )
+        if human_blocked.rowcount != 1:
+            raise _RepairInvariant("repair operation changed before human escalation")
         transition = None
         if operation["target_kind"] == "parent":
             transition = await self.db._apply_transition(
@@ -3058,13 +3084,10 @@ class RepairService:
     @staticmethod
     async def _operation_project_id_on(conn, operation: dict[str, Any]) -> str:
         if operation["target_kind"] == "parent":
-            project_id = (
-                await conn.execute(
-                    select(tasks.c.project_id).where(
-                        tasks.c.id == operation["parent_task_id"]
-                    )
-                )
-            ).scalar_one_or_none()
+            from src.database.queries.task_identity import resolve_task_identity_on
+
+            identity = await resolve_task_identity_on(conn, operation["parent_task_id"])
+            project_id = identity.project_id if identity is not None else None
         else:
             project_id = (
                 await conn.execute(

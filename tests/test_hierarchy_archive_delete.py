@@ -205,10 +205,11 @@ class TestTaskReferenceDispositions:
         declared = set(TASK_REFERENCE_DISPOSITIONS)
         assert found - declared == set(), (
             "new foreign key(s) onto tasks with no declared disposition — either teach "
-            "_delete_one to clean them up or declare them 'refused' in "
+            "_delete_one to clean them up or classify them in "
             "src/database/queries/task_references.py"
         )
-        assert declared - found == set(), "TASK_REFERENCE_DISPOSITIONS names a dead foreign key"
+        history = {key for key, value in TASK_REFERENCE_DISPOSITIONS.items() if value == "history"}
+        assert declared - found == history, "only durable history may lack a task foreign key"
 
     def test_dispositions_agree_with_the_constraints_they_describe(self):
         from src.database.queries.task_references import TASK_REFERENCE_DISPOSITIONS
@@ -243,21 +244,29 @@ class TestTaskReferenceDispositions:
                 continue  # the database itself disposes of it
             disposition = TASK_REFERENCE_DISPOSITIONS[key]
             assert disposition != "db_cascade", f"{key} blocks the DELETE; it does not cascade"
-            if disposition in ("refused", "subtree"):
+            if disposition in ("history", "subtree"):
                 continue
             needle = indirect.get(key, key[0])
             assert needle in source, (
                 f"{key} is declared {disposition!r}, but _delete_one never mentions "
-                f"{needle!r} — either clean it up there or declare it 'refused'"
+                f"{needle!r} — either clean it up there or classify it as history"
             )
 
-    def test_refused_dispositions_are_the_ones_the_guard_checks(self):
+    def test_history_dispositions_have_no_foreign_key(self):
+        from src.database.queries.task_references import TASK_REFERENCE_DISPOSITIONS
+
+        found = set(self._task_foreign_keys())
+        history = {key for key, value in TASK_REFERENCE_DISPOSITIONS.items() if value == "history"}
+        assert history
+        assert history.isdisjoint(found)
+
+    def test_history_dispositions_are_the_ones_the_guard_checks(self):
         from src.database.queries.task_references import (
             INTEGRATION_TASK_REFERENCES,
             TASK_REFERENCE_DISPOSITIONS,
         )
 
-        refused = {k for k, v in TASK_REFERENCE_DISPOSITIONS.items() if v == "refused"}
+        refused = {k for k, v in TASK_REFERENCE_DISPOSITIONS.items() if v == "history"}
         checked = {(ref.table, ref.column) for ref in INTEGRATION_TASK_REFERENCES}
         assert refused == checked
 
@@ -270,25 +279,21 @@ class TestTaskReferenceDispositions:
             "integration_candidate_resolutions",
         ],
     )
-    async def test_archive_and_delete_refuse_each_referencing_table(self, db, table):
-        """Not just the episode table — every ``refused`` reference refuses."""
+    async def test_archive_retains_and_delete_refuses_each_history_table(self, db, table):
+        """Archive preserves every history id; hard delete never orphans one."""
         await _seed_integration_reference(db, table, "t-ref")
 
-        # Built lazily: a failed assertion inside the loop must not leave the
-        # next call's coroutine created and never awaited.
-        for make_call in (
-            lambda: db.archive_task("t-ref"),
-            lambda: db.delete_task("t-ref", branch_policy="keep"),
-        ):
-            with pytest.raises(HierarchyError) as exc:
-                await make_call()
-            assert exc.value.code == "integration_owned"
-            assert table in str(exc.value)
-        assert await db.get_task("t-ref") is not None
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_task("t-ref", branch_policy="keep")
+        assert exc.value.code == "integration_history_retained"
+        assert table in str(exc.value)
+        assert await db.archive_task("t-ref") is True
+        assert await db.get_task("t-ref") is None
+        assert await db.get_archived_task("t-ref") is not None
 
 
 class TestDeleteIntegrationReferenceScope:
-    """Which tasks the delete's ``integration_owned`` refusal reads: the subtree.
+    """Which tasks the delete's history refusal reads: the subtree.
 
     The refusal is read over the task and every descendant before anything is
     written, so a held descendant pins its whole subtree while a held task
@@ -307,7 +312,7 @@ class TestDeleteIntegrationReferenceScope:
 
         with pytest.raises(HierarchyError) as exc:
             await db.delete_task("p", cascade=True, branch_policy="keep")
-        assert exc.value.code == "integration_owned"
+        assert exc.value.code == "integration_history_retained"
         assert "integration_parent_episodes(c)" in str(exc.value)
 
         assert await db.get_task("p") is not None
@@ -324,7 +329,7 @@ class TestDeleteIntegrationReferenceScope:
 
         with pytest.raises(HierarchyError) as exc:
             await db.delete_task("p", branch_policy="keep")
-        assert exc.value.code == "integration_owned"
+        assert exc.value.code == "integration_history_retained"
         assert await db.get_task("p") is not None
 
     async def test_a_hold_on_an_unrelated_task_does_not_refuse(self, db):
@@ -583,3 +588,95 @@ async def _seed_candidate_resolution(conn, repair_task_id: str) -> None:
             updated_at=1.0,
         )
     )
+
+
+class TestProjectDeleteIntegrationHistory:
+    """Project deletion is also a removal path for durable history (S3)."""
+
+    async def test_refuses_history_on_a_live_task_with_a_typed_error(self, db):
+        await _seed_integration_reference(db, "integration_parent_episodes", "live-history")
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_project(PROJECT_ID)
+
+        assert exc.value.code == "integration_history_retained"
+        assert exc.value.context["references"] == [
+            {
+                "task_id": "live-history",
+                "table": "integration_parent_episodes",
+                "column": "parent_task_id",
+            },
+            {
+                "repository_id": "repo",
+                "table": "integration_parent_episodes",
+                "column": "repository_id",
+            },
+        ]
+        assert await db.get_project(PROJECT_ID) is not None
+
+    async def test_refuses_history_on_an_archived_task_with_a_typed_error(self, db):
+        await _seed_integration_reference(db, "integration_parent_episodes", "archived-history")
+        assert await db.archive_task("archived-history") is True
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_project(PROJECT_ID)
+
+        assert exc.value.code == "integration_history_retained"
+        assert {
+            "task_id": "archived-history",
+            "table": "integration_parent_episodes",
+            "column": "parent_task_id",
+        } in exc.value.context["references"]
+        assert await db.get_project(PROJECT_ID) is not None
+
+    async def test_refuses_repository_history_owned_by_another_project(self, db):
+        """A foreign task can still leave append-only evidence on this repo."""
+        from sqlalchemy import insert
+
+        from src.database.tables import integration_parent_episodes
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK)
+        )
+        await db.create_project(Project(id="foreign", name="foreign"))
+        await db.create_task(
+            Task(
+                id="foreign-history",
+                project_id="foreign",
+                title="foreign history",
+                description="foreign history",
+                status=TaskStatus.COMPLETED,
+            )
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                insert(integration_parent_episodes).values(
+                    id="foreign-episode",
+                    parent_task_id="foreign-history",
+                    repository_id="repo",
+                    generation=0,
+                    pre_collection_checkpoint_sha="a" * 40,
+                    created_at=1.0,
+                )
+            )
+
+        with pytest.raises(HierarchyError) as exc:
+            await db.delete_project(PROJECT_ID)
+
+        assert exc.value.code == "integration_history_retained"
+        assert exc.value.context["references"] == [
+            {
+                "repository_id": "repo",
+                "table": "integration_parent_episodes",
+                "column": "repository_id",
+            }
+        ]
+        assert await db.get_project(PROJECT_ID) is not None
+
+    async def test_deletes_a_project_without_integration_history(self, db):
+        await mktask(db, "ordinary", status=TaskStatus.COMPLETED)
+
+        await db.delete_project(PROJECT_ID)
+
+        assert await db.get_project(PROJECT_ID) is None

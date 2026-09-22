@@ -22,7 +22,7 @@ import {
   type GateSummary,
 } from "../../api/hooks";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
-import { integrationHistoryRefusal } from "../../api/deleteRefusals";
+import { integrationRemovalRefusal } from "../../api/deleteRefusals";
 import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
@@ -111,7 +111,7 @@ export default function TaskDetailPane({
 
   // A subtree append-only integration audit rows still name can never be
   // deleted; the dialog explains that instead of inviting another attempt.
-  const historyRefusal = deleteTask.isError ? integrationHistoryRefusal(deleteTask.error) : null;
+  const historyRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
 
@@ -503,7 +503,7 @@ export default function TaskDetailPane({
           <p className="text-sm text-gray-300">
             Delete <strong>{task?.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {branchPrompt && !historyRefusal && (
+          {branchPrompt && (
             <BranchDiscardPrompt
               branches={branchPrompt}
               choice={branchChoice}

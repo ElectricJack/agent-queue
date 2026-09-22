@@ -127,15 +127,33 @@ class PromotionService:
         return remote.oid
 
     async def prepare(self, request: PromotionInput) -> PromotionValue:
-        route = await self._validated_route(request)
         domain_key = self._domain_key(request)
         intent_id = f"intent-{uuid.uuid5(_IDENTITY_NAMESPACE, domain_key)}"
         receipt_id = f"receipt-{uuid.uuid5(_IDENTITY_NAMESPACE, 'receipt:' + domain_key)}"
         existing = await self.db.get_integration_promotion_intent(intent_id)
+        # A committed intent is the durable answer to an idempotent retry.
+        # Its source task may have archived in the interval since commit, so
+        # validate the request against the frozen row instead of looking for
+        # a live parent route first.
+        if existing is not None:
+            value = self._value(existing)
+            if existing["state"] == "committed":
+                self._assert_existing_request(
+                    existing,
+                    request,
+                    {
+                        "project_id": existing["project_id"],
+                        "target_task_id": existing["target_task_id"],
+                    },
+                    domain_key,
+                    receipt_id,
+                )
+                return value
+
+        route = await self._validated_route(request)
         if existing is not None:
             self._assert_existing_request(existing, request, route, domain_key, receipt_id)
-            value = self._value(existing)
-            if existing["state"] == "committed" or existing["prepared_sha"] is not None:
+            if existing["prepared_sha"] is not None:
                 return value
             if existing["state"] == "conflict":
                 raise PromotionConflict(value, existing.get("conflict_diagnostics") or {})

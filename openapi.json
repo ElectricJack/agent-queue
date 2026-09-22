@@ -8666,12 +8666,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/HierarchyRefusalResponse"
                 }
               }
             }
@@ -16535,6 +16530,24 @@
             ],
             "title": "Include Failed",
             "description": "When bulk-archiving by project_id, also archive FAILED and BLOCKED tasks. Default false."
+          },
+          "abandon_undelivered": {
+            "type": "boolean",
+            "title": "Abandon Undelivered",
+            "description": "Single-task archive only: explicitly abandon completed work that has not reached the default branch. Requires reason and an elevated/operator caller.",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Required reason when abandon_undelivered is true."
           }
         },
         "type": "object",
@@ -28874,7 +28887,7 @@
           "error"
         ],
         "title": "HierarchyRefusalResponse",
-        "description": "The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and ``integration_owned`` names the\naudit ``references`` that make the task permanent. ``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
+        "description": "The 422 body a task/project removal answers a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and integration removal refusals\nname their owner, cleanup blockers, undelivered work, or retained history.\n``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
       },
       "IdempotencyDTO": {
         "properties": {

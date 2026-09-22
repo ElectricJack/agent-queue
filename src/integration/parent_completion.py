@@ -12,6 +12,7 @@ from sqlalchemy import insert, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    archived_tasks,
     integration_operation_artifact_pins,
     integration_episode_receipt_acceptances,
     integration_check_evidence,
@@ -1178,6 +1179,16 @@ class ParentCompletion:
         parent = (
             await conn.execute(select(tasks).where(tasks.c.id == task_id))
         ).mappings().one_or_none()
+        archived_parent = False
+        if parent is None:
+            # A verifier can replay its close after the completed parent has
+            # legitimately archived.  Preserve the historical identity just
+            # long enough to confirm that exact completed operation below;
+            # no active hierarchy mutation may proceed against this row.
+            parent = (
+                await conn.execute(select(archived_tasks).where(archived_tasks.c.id == task_id))
+            ).mappings().one_or_none()
+            archived_parent = parent is not None
         if parent is None:
             raise HierarchyError("invariant_error", "parent task does not exist")
         project = (
@@ -1207,4 +1218,8 @@ class ParentCompletion:
         ).mappings().one_or_none()
         if operation is None:
             raise HierarchyError("invariant_error", "parent episode operation is missing")
-        return dict(parent), dict(project), dict(checkpoint), dict(operation)
+        if archived_parent and operation["state"] != "completed":
+            raise HierarchyError("invariant_error", "archived parent has a live integration operation")
+        result_parent = dict(parent)
+        result_parent["_archived"] = archived_parent
+        return result_parent, dict(project), dict(checkpoint), dict(operation)

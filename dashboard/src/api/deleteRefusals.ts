@@ -10,12 +10,14 @@
  */
 
 const INTEGRATION_OWNED = "hierarchy.integration_owned";
+const INTEGRATION_CLEANUP_BLOCKED = "hierarchy.integration_cleanup_blocked";
+const INTEGRATION_UNDELIVERED = "hierarchy.integration_undelivered";
+const INTEGRATION_HISTORY_RETAINED = "hierarchy.integration_history_retained";
 
 /** What the operator is told when integration history holds a task back. */
 export const INTEGRATION_HISTORY_MESSAGE =
   "This task is part of the integration history Agent Queue keeps as a permanent " +
-  "record, so it cannot be deleted. It will leave the graph on its own once " +
-  "archiving tasks with integration history is supported.";
+  "record, so it cannot be deleted. Archive it instead to remove it from the active graph.";
 
 /**
  * The explanation for a delete or archive the daemon refused because
@@ -30,8 +32,24 @@ export function integrationHistoryRefusal(error: unknown): string | null {
   const payload = (error as { payload?: unknown } | null)?.payload;
   if (typeof payload !== "object" || payload === null) return null;
   const body = payload as { code?: unknown; error?: unknown };
-  if (body.code === INTEGRATION_OWNED) return INTEGRATION_HISTORY_MESSAGE;
-  return typeof body.error === "string" && body.error.startsWith(`${INTEGRATION_OWNED}:`)
+  if (body.code === INTEGRATION_HISTORY_RETAINED) return INTEGRATION_HISTORY_MESSAGE;
+  return typeof body.error === "string" && body.error.startsWith(`${INTEGRATION_HISTORY_RETAINED}:`)
     ? INTEGRATION_HISTORY_MESSAGE
     : null;
+}
+
+/** Render an actionable integration removal refusal from the daemon contract. */
+export function integrationRemovalRefusal(error: unknown): string | null {
+  const payload = (error as { payload?: unknown } | null)?.payload;
+  if (typeof payload !== "object" || payload === null) return null;
+  const body = payload as { code?: unknown; error?: unknown };
+  if (
+    body.code !== INTEGRATION_OWNED &&
+    body.code !== INTEGRATION_CLEANUP_BLOCKED &&
+    body.code !== INTEGRATION_UNDELIVERED &&
+    body.code !== INTEGRATION_HISTORY_RETAINED
+  ) {
+    return null;
+  }
+  return typeof body.error === "string" ? body.error.replace(/^[^:]+:\s*/, "") : null;
 }

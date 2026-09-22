@@ -10538,6 +10538,8 @@
           "--task-id",
           "--project-id",
           "--include-failed",
+          "--abandon-undelivered",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"
@@ -11012,6 +11014,7 @@
           "--from-spec",
           "--dry-run",
           "--parent",
+          "--after-review",
           "--root",
           "--reason",
           "--deliverable",
