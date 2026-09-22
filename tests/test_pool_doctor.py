@@ -75,9 +75,120 @@ def test_check_names():
         "pools.global_bounds_migration",
         "pools.floor_exceeds_max",
         "pools.placement_starved",
+        "pools.session_awaiting_input",
         "agents.dangling_current_task",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
+
+
+async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db):
+    """Claimed workers and a pane that is still changing are not findings."""
+    from src.sessions.harness_parser import Harness
+    from src.sessions.harness_registry import HarnessRegistry
+    from src.sessions.input_prompts import InputPromptSignature
+    from src.sessions.provider import Cap
+
+    now = time.time()
+    await db.create_task(
+        Task(
+            id="ready", project_id=PROJECT_ID, title="ready", description="",
+            status=TaskStatus.READY, profile_id="worker",
+        )
+    )
+    await db.create_task(
+        Task(
+            id="claimed", project_id=PROJECT_ID, title="claimed", description="",
+            status=TaskStatus.IN_PROGRESS, profile_id="worker",
+        )
+    )
+    for session_id, task_id, last_activity in (
+        ("blocked", None, now - 600),
+        ("changing", None, now - 10),
+        ("working", "claimed", now - 600),
+    ):
+        await db.create_session(
+            SessionRecord(
+                id=session_id,
+                project_id=PROJECT_ID,
+                profile_id="worker",
+                harness="codex",
+                provider="fake",
+                name=f"p-worker--proj--{session_id}",
+                lifecycle="pool",
+                work_dir=f"/tmp/{session_id}",
+                epoch="test",
+                instance_token=f"token-{session_id}",
+                started_at=now - 1_000,
+                last_activity=last_activity,
+                state="running",
+                task_id=task_id,
+            )
+        )
+
+    harnesses = HarnessRegistry()
+    harnesses.upsert(
+        Harness(
+            id="codex",
+            command="codex",
+            input_prompts=(
+                InputPromptSignature(
+                    name="model-upgrade-menu",
+                    pattern="Try new model.*Use existing model",
+                    is_regex=True,
+                ),
+            ),
+        )
+    )
+    provider = SimpleNamespace(
+        supports=lambda capability: capability is Cap.PEEK,
+        peek=AsyncMock(return_value="Try new model\nUse existing model\n"),
+    )
+    config = SimpleNamespace(
+        swarm=SimpleNamespace(prepare_timeout=60, claim_wait_max=60)
+    )
+    handler = SimpleNamespace(
+        orchestrator=SimpleNamespace(
+            harness_registry=harnesses,
+            session_providers=SimpleNamespace(create=lambda *_args: provider),
+        )
+    )
+
+    finding = await pool_checks.run_check(
+        db,
+        "pools.session_awaiting_input",
+        config=config,
+        handler=handler,
+    )
+
+    assert finding.severity is Severity.WARN
+    assert finding.data == {
+        "count": 1,
+        "sessions": [
+            {
+                "session_id": "blocked",
+                "name": "p-worker--proj--blocked",
+                "project_id": PROJECT_ID,
+                "profile_id": "worker",
+                "harness": "codex",
+                "signature": "model-upgrade-menu",
+                "unchanged_seconds": pytest.approx(600, abs=2),
+                "ready_tasks": 1,
+            }
+        ],
+    }
+    assert "unchanged 600s, 1 READY" in finding.detail
+    provider.peek.assert_awaited_once()
+
+
+async def test_session_awaiting_input_is_info_without_live_pane_runtime(db):
+    finding = await pool_checks.run_check(
+        db,
+        "pools.session_awaiting_input",
+        config=SimpleNamespace(swarm=SimpleNamespace()),
+    )
+
+    assert finding.severity is Severity.INFO
+    assert "panes not inspected" in finding.detail
 
 
 async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks(db):

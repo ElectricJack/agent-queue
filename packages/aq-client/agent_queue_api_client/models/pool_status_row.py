@@ -39,6 +39,7 @@ class PoolStatusRow:
             enabled (bool | Unset):  Default: True.
             max_active (int | None | Unset):
             min_per_project (int | Unset):  Default: 0.
+            blocked_on_input (int | Unset):  Default: 0.
             projects (list[PoolProjectStatus] | Unset):
             instances (list[PoolInstanceStatus] | Unset):
             outside_pools (list[OutsidePoolSessionStatus] | Unset):
@@ -56,6 +57,7 @@ class PoolStatusRow:
     enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
     min_per_project: int | Unset = 0
+    blocked_on_input: int | Unset = 0
     projects: list[PoolProjectStatus] | Unset = UNSET
     instances: list[PoolInstanceStatus] | Unset = UNSET
     outside_pools: list[OutsidePoolSessionStatus] | Unset = UNSET
@@ -90,6 +92,8 @@ class PoolStatusRow:
             max_active = self.max_active
 
         min_per_project = self.min_per_project
+
+        blocked_on_input = self.blocked_on_input
 
         projects: list[dict[str, Any]] | Unset = UNSET
         if not isinstance(self.projects, Unset):
@@ -140,6 +144,8 @@ class PoolStatusRow:
             field_dict["max_active"] = max_active
         if min_per_project is not UNSET:
             field_dict["min_per_project"] = min_per_project
+        if blocked_on_input is not UNSET:
+            field_dict["blocked_on_input"] = blocked_on_input
         if projects is not UNSET:
             field_dict["projects"] = projects
         if instances is not UNSET:
@@ -187,6 +193,8 @@ class PoolStatusRow:
         max_active = _parse_max_active(d.pop("max_active", UNSET))
 
         min_per_project = d.pop("min_per_project", UNSET)
+
+        blocked_on_input = d.pop("blocked_on_input", UNSET)
 
         _projects = d.pop("projects", UNSET)
         projects: list[PoolProjectStatus] | Unset = UNSET
@@ -244,6 +252,7 @@ class PoolStatusRow:
             enabled=enabled,
             max_active=max_active,
             min_per_project=min_per_project,
+            blocked_on_input=blocked_on_input,
             projects=projects,
             instances=instances,
             outside_pools=outside_pools,

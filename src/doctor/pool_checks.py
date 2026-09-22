@@ -62,8 +62,9 @@ from src.git.manager import GitManager
 from src.models import AgentState, ProjectStatus, TaskStatus
 from src.orchestrator.agent_reconciler import reset_stale_busy_agent
 from src.orchestrator.worktree_manager import BRANCH_PREFIX
-from src.pool_claims import is_live_pool_claim_task_status
+from src.pool_claims import is_live_pool_claim_task_status, pool_claim_loop_stall_seconds
 from src.profiles.catalog import worker_route
+from src.sessions.input_prompts import find_awaiting_input_sessions
 
 OWNER = "swarm-work-model"
 
@@ -1189,6 +1190,97 @@ async def _check_placement_starved(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# pools.session_awaiting_input
+# ---------------------------------------------------------------------------
+
+
+def _input_prompt_runtime(ctx: DoctorContext):
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    harnesses = getattr(orchestrator, "harness_registry", None)
+    providers = getattr(orchestrator, "session_providers", None)
+    swarm = getattr(ctx.config, "swarm", None)
+    if harnesses is None or providers is None or swarm is None:
+        return None
+    return harnesses, providers, swarm
+
+
+async def _find_sessions_awaiting_input(ctx: DoctorContext, *, now: float | None = None):
+    runtime = _input_prompt_runtime(ctx)
+    if runtime is None:
+        return []
+    harnesses, providers, swarm = runtime
+    return await find_awaiting_input_sessions(
+        await ctx.db.list_sessions(lifecycle="pool", state="running"),
+        now=time.time() if now is None else now,
+        stall_seconds=pool_claim_loop_stall_seconds(swarm),
+        harness_registry=harnesses,
+        providers=providers,
+        config=ctx.config,
+    )
+
+
+async def _check_session_awaiting_input(ctx: DoctorContext) -> CheckResult:
+    check_id = "pools.session_awaiting_input"
+    if ctx.db is None:
+        return _no_db_result(check_id)
+    if _input_prompt_runtime(ctx) is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="live session providers or harness registry unavailable — panes not inspected",
+        )
+
+    findings = await _find_sessions_awaiting_input(ctx)
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="no idle pool session is awaiting interactive input",
+        )
+
+    counts_by_project: dict[str, dict[str | None, int]] = {}
+    projects: dict[str, object] = {}
+    rows: list[dict] = []
+    for finding in findings:
+        session = finding.session
+        project_id = session.project_id or ""
+        if project_id not in counts_by_project:
+            counts_by_project[project_id] = (
+                await ctx.db.count_ready_by_profile(project_id) if project_id else {}
+            )
+            projects[project_id] = await ctx.db.get_project(project_id) if project_id else None
+        counts = counts_by_project[project_id]
+        ready = counts.get(session.profile_id, 0)
+        project = projects[project_id]
+        if project is not None and project.default_profile_id == session.profile_id:
+            ready += counts.get(None, 0)
+        rows.append(
+            {
+                "session_id": session.id,
+                "name": session.name,
+                "project_id": session.project_id,
+                "profile_id": session.profile_id,
+                "harness": session.harness,
+                "signature": finding.signature.name,
+                "unchanged_seconds": round(finding.unchanged_seconds, 1),
+                "ready_tasks": ready,
+            }
+        )
+
+    examples = "; ".join(
+        f"{row['name']} ({row['profile_id']}, {row['signature']}, "
+        f"unchanged {row['unchanged_seconds']:.0f}s, {row['ready_tasks']} READY)"
+        for row in rows[:3]
+    )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=f"{len(rows)} idle pool session(s) blocked on input: {examples}",
+        data={"count": len(rows), "sessions": rows},
+    )
+
+
+# ---------------------------------------------------------------------------
 # agents.dangling_current_task
 # ---------------------------------------------------------------------------
 
@@ -1340,6 +1432,14 @@ def pool_checks() -> list[DoctorCheck]:
         # Report-only: every repair (free a workspace, raise a project cap,
         # fix the harness behind a quarantine) is outside doctor's reach.
         DoctorCheck(id="pools.placement_starved", run=_check_placement_starved, owner=OWNER),
+        # Report-only: model selection, login and trust/permission prompts
+        # require a human or supervisor decision. Doctor never sends keys.
+        DoctorCheck(
+            id="pools.session_awaiting_input",
+            run=_check_session_awaiting_input,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
         # Fixable: the reset is the same safe rescue the reconciler performs
         # on its own rescue rule, just broader (any agent with a
         # ``current_task_id``, not only ``BUSY``) and offline-triggerable.
