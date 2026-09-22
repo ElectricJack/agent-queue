@@ -2292,7 +2292,7 @@ async def test_resolve_conflict_command_is_session_only_and_replays_exact_identi
     handler = await command_handler_factory()
     args, principal = await _seed_conflict_resolution_writer(handler)
     handler.orchestrator.promotion_service = PromotionService(
-        handler.db, data_dir=handler.config.data_dir
+        handler.db, data_dir=handler.config.data_dir, git_manager=GitManager()
     )
 
     from unittest.mock import AsyncMock

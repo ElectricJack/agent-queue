@@ -31,6 +31,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.git.manager import GitManager
 from src.integration.models import (
     ArtifactSnapshot,
     HierarchicalIntegrationPolicy,
@@ -2042,9 +2043,12 @@ async def test_expired_project_lease_cannot_advance_candidate(db, tmp_path):
     await db.update_repo("repo", url=str(origin))
     await _seed_batch(db, members=members[:1], base_sha=base)
 
-    result = await CandidateService(db, data_dir=tmp_path / "data", clock=lambda: 1001.0).build(
-        "batch"
-    )
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=GitManager(),
+        clock=lambda: 1001.0,
+    ).build("batch")
 
     assert result.outcome == "wait"
     async with db._engine.connect() as conn:
@@ -2087,7 +2091,7 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         CandidateService,
     )
 
-    service = CandidateService(db, data_dir=tmp_path / "data")
+    service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
     caller_claim = CandidateRepairLineage(
         batch_id="batch",
         revision=0,
@@ -2906,9 +2910,12 @@ async def test_nonempty_build_requires_authenticated_repository_dependencies(db,
     await db.update_repo("repo", url=str(origin))
     await _seed_batch(db, members=members[:1], base_sha=base)
 
-    result = await CandidateService(db, data_dir=tmp_path / "data", clock=lambda: 100.0).build(
-        "batch"
-    )
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=GitManager(),
+        clock=lambda: 100.0,
+    ).build("batch")
 
     assert result.outcome == "configuration_blocked"
     async with db._engine.connect() as conn:
@@ -3513,7 +3520,7 @@ async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_
         resolved_head_sha=resolved,
         repair_commit_shas=(resolved,),
     )
-    service = CandidateService(db, data_dir=tmp_path / "data")
+    service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
 
     assert await service._repair_lineage_failure(store, lineage) is None
     assert await service._valid_repair_lineage(store, lineage)
@@ -3564,7 +3571,7 @@ async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_p
     _git(work, "commit", "-am", "repair reviewed second change")
     complete_repair = _git(work, "rev-parse", "HEAD")
 
-    service = CandidateService(db, data_dir=tmp_path / "data")
+    service = CandidateService(db, data_dir=tmp_path / "data", git_manager=GitManager())
     complete = CandidateRepairLineage(
         batch_id="batch", revision=0, member_ordinal=0, operation_id="repair-batch-batch",
         operation_stage=0, partial_head_sha=partial, source_base_sha=source_base,

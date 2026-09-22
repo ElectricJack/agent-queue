@@ -18,6 +18,7 @@ import pytest
 from src.commands.contracts.models import CommandResult
 from src.commands.contracts.registry import CommandRegistration, ContractRegistry
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, TRUSTED_LOCAL
+from src.git.manager import GitManager
 from src.profiles.capabilities import DENY_ALL
 from src.playbooks.definition import CommandStep
 from src.playbooks.executors import executor_for
@@ -270,7 +271,7 @@ class TestLiveInvocationContext:
                     "artifact_snapshot": ref.as_dict(),
                 }
 
-        service = PromotionService(ProvenanceDB(), data_dir=".")
+        service = PromotionService(ProvenanceDB(), data_dir=".", git_manager=GitManager())
         observed = {}
 
         async def invoke(args, principal):
@@ -337,7 +338,7 @@ class TestLiveInvocationContext:
                     "artifact_snapshot": ref,
                 }
 
-        service = PromotionService(ProvenanceDB(), data_dir=".")
+        service = PromotionService(ProvenanceDB(), data_dir=".", git_manager=GitManager())
 
         async def invoke(args, principal):
             await service._provenance(

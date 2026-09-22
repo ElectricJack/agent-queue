@@ -78,6 +78,7 @@ from src.config import AppConfig, ConfigWatcher
 from src.database import create_database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.event_bus import EventBus
+from src.git.github import GitHubAccess, GitHubClient
 from src.git.manager import GitManager
 from src.llm_logger import LLMLogger
 from src.messaging.types import (
@@ -237,7 +238,13 @@ class Orchestrator(
             validate_events=config.validate_events,
         )
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
-        self.git = GitManager()
+        # GitHub credential mode is a startup boundary.  Config reloads may
+        # replace ``self.config`` later, but every live GitHub consumer keeps
+        # these exact auth/runner objects until the daemon restarts.
+        self.github_access = GitHubAccess.from_config(config.integration.github_app)
+        self.github_auth = self.github_access.auth
+        self.github_runner = self.github_access.runner
+        self.git = GitManager(github_access=self.github_access)
         self.git.set_lock_provider(self._resolve_git_lock)
         self._runtimes = runtimes
         # Lazy-creates agent rows when work needs them; runs at the top of
@@ -558,8 +565,8 @@ class Orchestrator(
         self._development_completion_unsub = None
         self.integration_attestation_service = None
         self.integration_attestation_resolver = None
-        self.integration_app_client_factory = None
-        self.integration_repository_binding_resolver = None
+        self.github_client_factory = None
+        self.github_repository_binding_resolver = None
         self.branch_discard_service = None
         self.branch_materialization_service = None
         self.integration_release_service = None
@@ -1679,8 +1686,6 @@ class Orchestrator(
         # One durable reconciliation loop owns integration scheduling and
         # outbox dispatch. Later Task 10 phases attach their narrow handlers
         # without adding another timer or orchestration authority.
-        from src.git.github_app import GitHubAppClient, OwnerFilePrivateKeyProvider
-        from src.git.github_cli import GitHubCLIClient
         from src.integration.attestation import IntegrationAttestationService
         from src.integration.branch_discard import BranchDiscardService
         from src.integration.branch_materialization import BranchMaterializationService
@@ -1708,26 +1713,17 @@ class Orchestrator(
 
         self.integration_scheduler = IntegrationScheduler(self.db)
         self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
-        github_app_config = self.config.integration.github_app
-        integration_app_clients = {}
+        github_clients = {}
 
-        def integration_app_client(binding):
-            cached = integration_app_clients.get(binding)
+        def github_client(binding):
+            cached = github_clients.get(binding)
             if cached is not None:
                 return cached
-            client = (
-                GitHubCLIClient(binding)
-                if github_app_config is None
-                else GitHubAppClient(
-                    github_app_config,
-                    binding,
-                    key_provider=OwnerFilePrivateKeyProvider(),
-                )
-            )
-            integration_app_clients[binding] = client
+            client = GitHubClient(binding, access=self.github_access)
+            github_clients[binding] = client
             return client
 
-        async def resolve_integration_repository(repository):
+        async def resolve_github_repository(repository):
             from urllib.parse import urlparse
 
             parsed = urlparse(repository.url)
@@ -1744,27 +1740,22 @@ class Orchestrator(
             ):
                 return None
             full_name = parsed.path.removeprefix("/").removesuffix(".git")
-            if github_app_config is None:
-                client = await GitHubCLIClient.bind_repository(full_name)
-            else:
-                client = await GitHubAppClient.bind_repository(
-                    github_app_config,
-                    full_name,
-                    key_provider=OwnerFilePrivateKeyProvider(),
+            binding = await self.github_access.bind_repository(full_name)
+            if binding not in github_clients:
+                github_clients[binding] = GitHubClient(
+                    binding,
+                    access=self.github_access,
                 )
-            integration_app_clients[client.repository] = client
-            return client.repository
+            return binding
 
-        # Historical attribute name retained for service compatibility. An App
-        # is optional: ordinary installations use the daemon user's gh login.
-        self.integration_app_client_factory = integration_app_client
-        self.integration_repository_binding_resolver = resolve_integration_repository
+        self.github_client_factory = github_client
+        self.github_repository_binding_resolver = resolve_github_repository
 
         self.integration_attestation_service = IntegrationAttestationService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
-            app_client_factory=self.integration_app_client_factory,
+            github_client_factory=self.github_client_factory,
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
         self.integration_release_service = IntegrationReleaseService(self.db)
@@ -1772,13 +1763,13 @@ class Orchestrator(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
-            app_client_factory=self.integration_app_client_factory,
+            github_client_factory=self.github_client_factory,
         )
         self.root_promotion_service = RootPromotionService(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
-            app_client_factory=self.integration_app_client_factory,
+            github_client_factory=self.github_client_factory,
             attestation_resolver=self.integration_attestation_resolver,
         )
         self.promotion_service = PromotionService(
@@ -1796,8 +1787,8 @@ class Orchestrator(
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.git,
-            app_client_factory=self.integration_app_client_factory,
-            repository_binding_resolver=self.integration_repository_binding_resolver,
+            github_client_factory=self.github_client_factory,
+            github_repository_binding_resolver=self.github_repository_binding_resolver,
         )
         self.integration_control_service = IntegrationControlService(
             self.db,
@@ -1819,7 +1810,7 @@ class Orchestrator(
         from src.integration.parent_ci import ParentCIService
 
         parent_ci = ParentCIService(
-            self.integration_attestation_service, self.integration_repository_binding_resolver
+            self.integration_attestation_service, self.github_repository_binding_resolver
         )
         collection = CollectionService(
             self.db, hierarchy_service_factory=self._branch_materialization_hierarchy

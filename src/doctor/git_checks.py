@@ -26,6 +26,8 @@ from __future__ import annotations
 from collections import Counter
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
+from src.git.github import GitHubAccess
+from src.git.manager import GitManager
 
 OWNER = "git"
 CHECK_ID = "git.stale_branches"
@@ -44,7 +46,13 @@ def _development_publisher(ctx: DoctorContext):
         return factory()
     from src.integration.development import DevelopmentIntegration
 
-    return DevelopmentIntegration(ctx.db, data_dir=ctx.config.data_dir)
+    integration = getattr(ctx.config, "integration", None)
+    access = GitHubAccess.from_config(getattr(integration, "github_app", None))
+    return DevelopmentIntegration(
+        ctx.db,
+        data_dir=ctx.config.data_dir,
+        git=GitManager(github_access=access),
+    )
 
 
 async def _scan(ctx: DoctorContext, *, delete: bool = False):

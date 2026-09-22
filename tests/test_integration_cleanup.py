@@ -672,7 +672,7 @@ async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
         db,
         data_dir="/daemon",
         git_manager=git,
-        app_client_factory=lambda _binding: app,
+        github_client_factory=lambda _binding: app,
         forge_provider=forge,
         clock=lambda: 30.0,
     )
@@ -828,7 +828,7 @@ async def test_cleanup_preserves_moved_ref_and_source_pr_with_undelivered_head(r
         db,
         data_dir="/daemon",
         git_manager=git,
-        app_client_factory=lambda _binding: app,
+        github_client_factory=lambda _binding: app,
         forge_provider=forge,
     )
     await service.materialize("batch", now=30.0)
@@ -1196,7 +1196,7 @@ async def test_cleanup_never_deletes_default_branch_even_with_matching_sha(relea
     app = CleanupApp({"main": HEAD})
     git = CleanupGit(app)
     result = await IntegrationCleanupService(
-        db, data_dir="/daemon", git_manager=git, app_client_factory=lambda _: app
+        db, data_dir="/daemon", git_manager=git, github_client_factory=lambda _: app
     ).execute("batch", "remote_ref", "refs/heads/main", now=30.0)
     assert result.outcome == "conflict"
     assert git.remote_deletes == []
@@ -1229,7 +1229,7 @@ async def test_cleanup_source_ref_requires_frozen_head_and_no_foreign_owner(
     git = CleanupGit(app)
 
     result = await IntegrationCleanupService(
-        db, data_dir="/daemon", git_manager=git, app_client_factory=lambda _: app
+        db, data_dir="/daemon", git_manager=git, github_client_factory=lambda _: app
     ).execute("batch", "remote_ref", "refs/heads/aq/root", now=30.0)
 
     assert result.outcome == "conflict"
