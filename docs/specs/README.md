@@ -35,6 +35,7 @@ lands, the concept page takes over and the row moves out of this table.
 | Spec | Date | Epic | Decides |
 |---|---|---|---|
 | [Provider failover](provider-failover.md) | 2026-09-20 | `bold-rapids` | Provider availability states and their evidence, provider intent on a task (`pinned` / `preferred` / `class_only`), the failover and hold policy, capacity protection, the return path, and every operator surface. |
+| [Unified GitHub access through `gh`](github-access.md) | 2026-09-22 | `smart-beacon` | One GitHub operation path for App and existing-login credentials, repository binding, authenticated Git transfer, capability boundaries, and migration/removal acceptance. |
 
 ## Reading a spec safely
 

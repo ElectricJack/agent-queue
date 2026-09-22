@@ -18,6 +18,11 @@ import aiohttp
 import jwt
 
 from src.config import GitHubAppConfig
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialIdentity,
+    GitHubRepositoryBinding,
+)
 
 ACCEPT = "application/vnd.github+json"
 API_VERSION = "2022-11-28"
@@ -32,28 +37,6 @@ _PERMISSIONS = {
     "issues": "write",
     "variables": "read",
 }
-_FULL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
-
-
-@dataclass(frozen=True)
-class GitHubRepositoryBinding:
-    repository_id: int
-    full_name: str
-    forge_host: str = "github.com"
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.repository_id, bool)
-            or not isinstance(self.repository_id, int)
-            or self.repository_id <= 0
-        ):
-            raise ValueError("repository_id must be a positive integer")
-        if self.forge_host != "github.com":
-            raise ValueError("unsupported_host")
-        if _FULL_NAME.fullmatch(self.full_name) is None:
-            raise ValueError("full_name must be owner/repository")
-
-
 @dataclass(frozen=True)
 class HttpResponse:
     status: int
@@ -123,13 +106,8 @@ class AiohttpTransport:
             raise GitHubAppError("transient", "GitHub request failed") from exc
 
 
-class GitHubAppError(RuntimeError):
-    """Safe provider failure without response bodies or credentials."""
-
-    def __init__(self, category: str, message: str, *, retry_at: float | None = None):
-        self.category = category
-        self.retry_at = retry_at
-        super().__init__(message)
+# Compatibility name retained until the transport-specific client is removed.
+GitHubAppError = GitHubAccessError
 
 
 class GitHubAppClient:
@@ -155,6 +133,14 @@ class GitHubAppClient:
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
 
+    @property
+    def credential_identity(self) -> GitHubCredentialIdentity:
+        """Return non-secret App identity independently of the HTTP transport."""
+        return GitHubCredentialIdentity.app(
+            self.config.app_id,
+            self.config.installation_id,
+        )
+
     @classmethod
     async def bind_repository(
         cls,
@@ -167,12 +153,11 @@ class GitHubAppClient:
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> "GitHubAppClient":
         """Resolve one configured repository name into a least-privilege client."""
-        if _FULL_NAME.fullmatch(full_name) is None:
-            raise ValueError("full_name must be owner/repository")
+        provisional = GitHubRepositoryBinding(1, full_name)
         repository_name = full_name.split("/", 1)[1]
         bootstrap = cls(
             config,
-            GitHubRepositoryBinding(1, full_name),
+            provisional,
             key_provider=key_provider,
             transport=transport,
             clock=clock,

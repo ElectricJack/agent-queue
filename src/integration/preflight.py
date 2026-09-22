@@ -9,6 +9,11 @@ from urllib.parse import quote
 
 from pydantic import ValidationError
 
+from src.git.github_contracts import (
+    GitHubCredentialIdentity,
+    GitHubCredentialMode,
+    credential_identity_from_client,
+)
 from src.integration.attestation import _parse_trust_manifest
 from src.integration.ci import TRUST_MANIFEST_PATH
 from src.integration.models import HierarchicalIntegrationPolicy
@@ -148,16 +153,25 @@ async def daemon_functional_preflight(
                     blockers.append("route_artifact_mismatch")
 
     client = None
+    credential_identity: GitHubCredentialIdentity | None = None
     if factory is not None and binding is not None:
         try:
             client = await _resolve(factory(binding))
             if client is None or client.repository != binding:
                 client = None
                 blockers.append("provider_binding_failed")
+            else:
+                credential_identity = credential_identity_from_client(client)
         except Exception:
+            client = None
+            credential_identity = None
             blockers.append("provider_binding_failed")
 
-    if client is not None and getattr(client, "auth_mode", None) == "gh":
+    if (
+        client is not None
+        and credential_identity is not None
+        and credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
+    ):
         # Existing gh credentials replace App installation and hosted-variable
         # setup. Repository identity and access still come from GitHub, never
         # from a task's claims or a locally authored manifest.
@@ -202,7 +216,7 @@ async def daemon_functional_preflight(
                 policy.parent.required_checks.producer_id,
                 policy.root.required_checks.producer_id,
             }
-            app_id = getattr(getattr(client, "config", None), "app_id", None)
+            app_id = credential_identity.app_id if credential_identity is not None else None
             if (
                 trust.canonical_repository_id != repository_id
                 or trust.repository_id != binding.repository_id
@@ -219,7 +233,7 @@ async def daemon_functional_preflight(
         except Exception:
             blockers.append("hosted_workflow_variables_unavailable")
         else:
-            app_id = getattr(getattr(client, "config", None), "app_id", None)
+            app_id = credential_identity.app_id if credential_identity is not None else None
             required_version = (
                 policy.root.required_checks.version if policy is not None else None
             )
