@@ -105,6 +105,15 @@ escalation reply; its outbound surface is the escalation and digest transport.
 | [src/discord/notifications.py](../../../src/discord/notifications.py) | Lifecycle message and embed formatters, plus `classify_error`, which pattern-matches a raw failure into an actionable suggestion. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_discord_commands.py`. Retained as formatters for logs, the dashboard and the orchestrator's monitoring reports; the interactive views that used them were deleted. |
 | [src/discord/views.py](../../../src/discord/views.py) | `ExpiredInteractionTolerantView`, a `discord.ui.View` that swallows only the expired-interaction error code. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_views.py`. No in-tree consumer: interactive Discord controls were retired. |
 
+## Operator links
+
+The notification surfaces need a dashboard URL that is reachable from the
+operator's browser without ever advertising a loopback-only address.
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [src/remote_links.py](../../../src/remote_links.py) | Resolves a safe, non-loopback dashboard base URL for links sent to remote operators. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_remote_links.py`. Returns no link when the configured URL is not safe to expose. |
+
 ## Command and configuration surfaces
 
 These modules belong to other shards but are where this subsystem is driven

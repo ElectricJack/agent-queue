@@ -32,10 +32,10 @@ own modules; this page is only the index.
 | [`api.md`](api.md) | `api` | 51 | 1442 | [`reference/api/README.md`](../api/README.md), [`conventions.md`](../api/conventions.md), [`events.md`](../api/events.md), [`models.md`](../api/models.md), [`python-client.md`](../api/python-client.md), [`typescript-client.md`](../api/typescript-client.md) |
 | [`dashboard.md`](dashboard.md) | `dashboard` | 258 | — | [Dashboard](../../guides/dashboard.md) |
 | [`database.md`](database.md) | `database` | 61 | — | [Database](../database/README.md), [tables](../database/tables.md), [queries](../database/queries.md), [migrations](../database/migrations.md), [lifecycle](../database/data-lifecycle.md) |
-| [`vault.md`](vault.md) | `vault` | 19 | — | [Configuration and vault](../../concepts/configuration-and-vault.md), [configuration reference](../configuration.md) |
+| [`vault.md`](vault.md) | `vault` | 20 | — | [Configuration and vault](../../concepts/configuration-and-vault.md), [configuration reference](../configuration.md) |
 | [`providers.md`](providers.md) | `providers` | 21 | — | [Providers](../../concepts/providers.md) |
 | [`plugins.md`](plugins.md) | `plugins` | 24 | — | [Plugins and MCP](../../guides/plugins-and-mcp.md) |
-| [`communications.md`](communications.md) | `communications` | 38 | — | [Messaging](../../concepts/messaging.md), [escalations](../../guides/escalations.md) |
+| [`communications.md`](communications.md) | `communications` | 39 | — | [Messaging](../../concepts/messaging.md), [escalations](../../guides/escalations.md) |
 | [`operations.md`](operations.md) | `operations` | 24 | — | [Operations](../../guides/operations.md) |
 | [`contributing.md`](contributing.md) | `contributing` | 0 | — | [Contributing](../../contributing/README.md), [setup](../../contributing/setup.md), [testing](../../contributing/testing.md), [repository map](../../contributing/repo-map.md), [codegen](../../contributing/codegen.md), [checks](../../contributing/checks.md), [scripts](../../contributing/scripts.md), [CI](../../contributing/ci.md), [pull requests](../../contributing/pull-requests.md), [releases](../../contributing/releases.md) |
 
