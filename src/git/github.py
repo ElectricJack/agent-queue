@@ -58,6 +58,10 @@ class GitHubAccessStatus:
         }
 
 
+class GitHubWriteNotStarted(GitHubAccessError):
+    """Credential selection failed before a mutating command could launch."""
+
+
 class GitHubAccess:
     """One startup-owned authentication service and shared ``gh`` runner."""
 
@@ -416,7 +420,10 @@ class GitHubAccess:
         check_result: Callable[[GhResult], None] | None = None,
     ) -> GhResult:
         """Run a write once; an auth failure invalidates but never replays it."""
-        selected = await self.auth.credential_for(repository)
+        try:
+            selected = await self.auth.credential_for(repository)
+        except GitHubAccessError as exc:
+            raise GitHubWriteNotStarted(exc.category, str(exc), retry_at=exc.retry_at) from exc
         try:
             return await self._run(
                 args,
@@ -670,6 +677,21 @@ class GitHubApiResponse:
     status: int
     headers: Mapping[str, str]
     body: bytes
+
+
+class GitHubMergeReconciled(GitHubAccessError):
+    """The merge landed although ``gh`` did not finish cleanly."""
+
+    def __init__(self, sha: str, outcome: str) -> None:
+        super().__init__("transient", "GitHub merged the PR but branch cleanup was not confirmed")
+        self.sha = sha
+        self.outcome = outcome
+
+
+@dataclass(frozen=True, slots=True)
+class PullRequestCreation:
+    url: str
+    created: bool
 
 
 class GitHubClient:
@@ -1116,22 +1138,93 @@ class GitHubClient:
     async def create_pull_request(
         self, *, title: str, body: str, base: str, head: str
     ) -> str:
+        return (await self.create_pull_request_result(
+            title=title, body=body, base=base, head=head
+        )).url
+
+    async def create_pull_request_result(
+        self, *, title: str, body: str, base: str, head: str
+    ) -> PullRequestCreation:
         _validated_short_head(base, label="base branch")
         _validated_short_head(head, label="head branch")
         if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
             raise ValueError("PR title and body must be supplied explicitly")
-        if await self.exact_head_ref(head) is None:
+        head_oid = await self.exact_head_ref(head)
+        if head_oid is None:
+            if await self.exact_head_ref(base) is None:
+                raise GitHubAccessError(
+                    "not_found_or_hidden", "PR repository refs were not readable"
+                )
             raise GitHubAccessError(
                 "conflict_or_invalid", "PR head branch is not published on the authorized repository"
             )
-        result = await self.access.run_write(
-            ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
-             "--head", head],
-            repository=self.repository,
-            stdin=body,
+        existing = await self._ordinary_pr_for_head(head, base, head_oid)
+        if existing is not None:
+            return PullRequestCreation(existing, created=False)
+        try:
+            result = await self.access.run_write(
+                ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
+                 "--head", head],
+                repository=self.repository,
+                stdin=body,
+            )
+            url = result.stdout.decode("utf-8", "replace").strip()
+            GitHubAccess.validate_pr_url(self.repository, url)
+            return PullRequestCreation(url, created=True)
+        except (GitHubAccessError, ValueError) as exc:
+            if isinstance(exc, GitHubWriteNotStarted) or (
+                isinstance(exc, GitHubAccessError) and exc.category == "cli_missing"
+            ):
+                raise
+            # gh pr create makes multiple API calls.  A nonzero exit or bad
+            # final output says nothing about whether the PR was published.
+            # Read with a fresh credential when appropriate; never replay the
+            # write inside this invocation.
+            existing = await self._ordinary_pr_for_head(head, base, head_oid)
+            if existing is not None:
+                return PullRequestCreation(existing, created=False)
+            raise
+
+    async def _ordinary_pr_for_head(self, head: str, base: str, head_oid: str) -> str | None:
+        owner = self.repository.full_name.split("/", 1)[0]
+        pulls = await self.paged_list(
+            f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
+            + "&head=" + quote(f"{owner}:{head}", safe="")
         )
-        url = result.stdout.decode("utf-8", "replace").strip()
-        GitHubAccess.validate_pr_url(self.repository, url)
+        matches = []
+        for pull in pulls:
+            pr_head = pull.get("head")
+            if not isinstance(pr_head, dict) or pr_head.get("ref") != head:
+                continue
+            matches.append(pull)
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise GitHubAccessError("conflict_or_invalid", "PR head has multiple existing requests")
+        pull = matches[0]
+        pr_head = pull["head"]
+        pr_base = pull.get("base")
+        head_repo = pr_head.get("repo")
+        base_repo = pr_base.get("repo") if isinstance(pr_base, dict) else None
+        number = _strict_positive_int(pull.get("number"))
+        url = pull.get("html_url")
+        if (
+            number is None
+            or url != f"https://github.com/{self.repository.full_name}/pull/{number}"
+            or not isinstance(head_repo, dict)
+            or head_repo.get("id") != self.repository.repository_id
+            or head_repo.get("full_name") != self.repository.full_name
+            or not isinstance(base_repo, dict)
+            or base_repo.get("id") != self.repository.repository_id
+            or base_repo.get("full_name") != self.repository.full_name
+            or pr_base.get("ref") != base
+            or pr_head.get("sha") != head_oid
+            or pull.get("state") not in {"open", "closed"}
+            or (pull.get("state") == "closed" and not pull.get("merged_at"))
+        ):
+            raise GitHubAccessError(
+                "conflict_or_invalid", "existing PR head did not match the requested delivery"
+            )
         return url
 
     async def list_pull_requests(
@@ -1159,18 +1252,86 @@ class GitHubClient:
         return payload
 
     async def merge_pull_request(
-        self, pr_url: str, *, method: str, expected_head_oid: str
+        self, pr_url: str, *, method: str, expected_head_oid: str,
+        expected_base_ref: str | None = None,
     ) -> str | None:
         number = GitHubAccess.validate_pr_url(self.repository, pr_url)
         if method not in {"squash", "merge", "rebase"}:
             raise ValueError("invalid PR merge method")
         if re.fullmatch(r"[0-9a-f]{40}", expected_head_oid) is None:
             raise ValueError("invalid expected PR head OID")
-        result = await self.access.run_write(
-            ["pr", "merge", str(number), f"--{method}", "--match-head-commit",
-             expected_head_oid, "--delete-branch"],
-            repository=self.repository,
-        )
+        if expected_base_ref is not None:
+            _validated_short_head(expected_base_ref, label="base branch")
+        try:
+            result = await self.access.run_write(
+                ["pr", "merge", str(number), f"--{method}", "--match-head-commit",
+                 expected_head_oid, "--delete-branch"],
+                repository=self.repository,
+            )
+        except GitHubAccessError as write_error:
+            if isinstance(write_error, GitHubWriteNotStarted) or write_error.category == "cli_missing":
+                raise
+            # A successful merge followed by failed remote branch deletion is
+            # a success with cleanup outstanding, not permission to merge again.
+            try:
+                pull = await self.pull_request(pr_url)
+            except GitHubAccessError as exc:
+                raise GitHubAccessError(
+                    "transient", "Merge outcome is uncertain; PR reconciliation failed"
+                ) from exc
+            head = pull.get("head")
+            base = pull.get("base")
+            sha = pull.get("merge_commit_sha")
+            if pull.get("merged_at"):
+                head_repo = head.get("repo") if isinstance(head, dict) else None
+                if (
+                    pull.get("state") != "closed"
+                    or not isinstance(head, dict)
+                    or head.get("sha") != expected_head_oid
+                    or (
+                        head_repo is not None
+                        and (
+                            not isinstance(head_repo, dict)
+                            or head_repo.get("id") != self.repository.repository_id
+                            or head_repo.get("full_name") != self.repository.full_name
+                        )
+                    )
+                    or not isinstance(base, dict)
+                    or (expected_base_ref is not None and base.get("ref") != expected_base_ref)
+                    or not isinstance(sha, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+                ):
+                    raise GitHubAccessError(
+                        "conflict_or_invalid", "merged PR identity did not match validated delivery"
+                    ) from None
+                branch = head.get("ref")
+                outcome = "merged_cleanup_unknown"
+                if isinstance(branch, str):
+                    try:
+                        remaining = await self.exact_head_ref(branch)
+                    except (GitHubAccessError, ValueError):
+                        pass
+                    else:
+                        if remaining:
+                            outcome = "merged_cleanup_failed"
+                        else:
+                            # A 404 can hide a repository or a ref permission.
+                            # Prove this credential can read refs before
+                            # interpreting the missing head as deleted.
+                            base_ref = base.get("ref") if isinstance(base, dict) else None
+                            if isinstance(base_ref, str):
+                                try:
+                                    base_oid = await self.exact_head_ref(base_ref)
+                                except (GitHubAccessError, ValueError):
+                                    base_oid = None
+                                if base_oid:
+                                    outcome = "merged_reconciled"
+                raise GitHubMergeReconciled(sha, outcome) from None
+            if pull.get("state") != "open":
+                raise GitHubAccessError(
+                    "conflict_or_invalid", "PR closed without a confirmed merge"
+                ) from None
+            raise
         for token in result.stdout.decode("utf-8", "replace").split():
             token = token.strip("().,;:")
             if re.fullmatch(r"[0-9a-f]{40}", token):

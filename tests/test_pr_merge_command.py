@@ -14,7 +14,7 @@ from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError
-from src.git.github import GitHubAccess
+from src.git.github import GitHubAccess, GitHubMergeReconciled, PullRequestCreation
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialMode,
@@ -29,6 +29,29 @@ REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
 # ---------------------------------------------------------------------------
 # GitManager.amerge_pr unit tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("created", [True, False])
+@pytest.mark.asyncio
+async def test_pr_creation_event_only_for_confirmed_new_pr(monkeypatch, created):
+    from src.git.manager import GitManager
+
+    gm = GitManager()
+    client = MagicMock()
+    client.create_pull_request_result = AsyncMock(return_value=PullRequestCreation(
+        "https://github.com/org/repo/pull/42", created=created,
+    ))
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    bus = MagicMock()
+    bus.emit = AsyncMock()
+
+    url = await gm.acreate_pr(
+        "/some/checkout", "feature", "Fix", "Body", "main",
+        event_bus=bus, project_id="p1", repository=REPOSITORY,
+    )
+
+    assert url == "https://github.com/org/repo/pull/42"
+    assert bus.emit.await_count == int(created)
 
 
 def _manager_with_merge(monkeypatch, *, sha=None, error=None):
@@ -54,7 +77,8 @@ async def test_pr_merge_uses_the_shared_client(monkeypatch):
     result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert result == {"success": True, "sha": None, "error": None}
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40
+        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        expected_base_ref="main",
     )
     gm._arun_subprocess.assert_not_awaited()
 
@@ -67,6 +91,22 @@ async def test_pr_merge_reports_shared_client_failure(monkeypatch):
     result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert result["success"] is False
     assert result["error"] == "merge was refused"
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_reports_confirmed_merge_with_failed_cleanup(monkeypatch):
+    gm, client = _manager_with_merge(
+        monkeypatch, error=GitHubMergeReconciled("d" * 40, "merged_cleanup_failed")
+    )
+    result = await gm.amerge_pr(
+        "/some/checkout", _PR_URL, expected_head_oid="b" * 40,
+        expected_base_ref="main", repository=REPOSITORY,
+    )
+    assert result == {
+        "success": True, "sha": "d" * 40, "error": None,
+        "outcome": "merged_cleanup_failed",
+    }
+    client.merge_pull_request.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -94,7 +134,8 @@ async def test_pr_merge_returns_client_sha_and_pins_validated_head(monkeypatch):
     assert result["success"] is True
     assert result["sha"] == sha
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40
+        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        expected_base_ref="main",
     )
 
 
@@ -734,7 +775,8 @@ async def test_pr_merge_proceeds_when_only_the_base_moved_after_ci_validation(mo
     )
     assert result["success"] is True, result
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40
+        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        expected_base_ref="main",
     )
 
 
@@ -768,7 +810,8 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
         "/some/checkout", _PR_URL, repository=REPOSITORY
     )
     client.merge_pull_request.assert_awaited_once_with(
-        _PR_URL, method="squash", expected_head_oid="b" * 40
+        _PR_URL, method="squash", expected_head_oid="b" * 40,
+        expected_base_ref="main",
     )
 
 
@@ -810,6 +853,7 @@ async def handler(db, config):
     o.db = db
     o.git = MagicMock()
     o.git.bind_github_repository = AsyncMock(return_value=GitHubRepositoryBinding(1, "o/r"))
+    o.git.acheck_pr_merged = AsyncMock(return_value=False)
     return CommandHandler(o, config)
 
 
@@ -858,6 +902,44 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     # The base *branch* is pinned (a retargeted PR lands elsewhere); the base
     # OID is not, because it moves with every concurrent delivery.
     assert calls["base_ref"] == "main"
+
+
+@pytest.mark.asyncio
+async def test_cmd_pr_merge_reconciles_prior_merge_without_replaying_or_ci(handler):
+    handler.orchestrator.git.acheck_pr_merged.return_value = True
+    handler.orchestrator.git.apr_base_ref = AsyncMock(return_value="main")
+
+    result = await handler.execute(
+        "pr_merge",
+        {"project_id": "p1", "pr_url": "https://github.com/o/r/pull/1"},
+    )
+
+    assert result["success"] is True
+    assert result["outcome"] == "already_merged"
+    handler.orchestrator.git.avalidate_pr_for_merge.assert_not_called()
+    handler.orchestrator.git.amerge_pr.assert_not_called()
+    handler.orchestrator.git.apr_check_rollup.assert_not_called()
+
+
+@pytest.mark.parametrize("merged,expected", [
+    (None, "closed_unmerged"),
+    (GitError("merged PR state was incomplete"), "merge_state_unknown"),
+])
+@pytest.mark.asyncio
+async def test_cmd_pr_merge_never_replays_when_prior_state_is_not_open(handler, merged, expected):
+    if isinstance(merged, Exception):
+        handler.orchestrator.git.acheck_pr_merged.side_effect = merged
+    else:
+        handler.orchestrator.git.acheck_pr_merged.return_value = merged
+
+    result = await handler.execute(
+        "pr_merge", {"project_id": "p1", "pr_url": "https://github.com/o/r/pull/1"}
+    )
+
+    assert result["success"] is False
+    assert result["outcome"] == expected
+    handler.orchestrator.git.avalidate_pr_for_merge.assert_not_called()
+    handler.orchestrator.git.amerge_pr.assert_not_called()
 
 
 @pytest.mark.asyncio

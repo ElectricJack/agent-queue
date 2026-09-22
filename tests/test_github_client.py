@@ -40,7 +40,11 @@ class FakeRunner:
 
     async def run(self, args, **kwargs):
         self.calls.append({"args": list(args), **kwargs})
-        return self.results.pop(0)
+        result = self.results.pop(0)
+        if result.returncode and kwargs.get("check", True):
+            category = "credentials" if result.returncode == 4 else "transient"
+            raise GitHubAccessError(category, "GitHub CLI request failed")
+        return result
 
 
 class FakeTokenProvider:
@@ -697,6 +701,7 @@ async def test_ordinary_pr_create_requires_published_head_and_uses_shared_creden
         credential_identity,
         [
             _response(200, {"ref": "refs/heads/feature", "object": {"sha": head}}),
+            _response(200, []),
             FakeResult(0, b"https://github.com/acme/widgets/pull/7\n"),
         ],
     )
@@ -707,8 +712,8 @@ async def test_ordinary_pr_create_requires_published_head_and_uses_shared_creden
     )
 
     assert url == "https://github.com/acme/widgets/pull/7"
-    assert len(runner.calls) == 2
-    create = runner.calls[1]
+    assert len(runner.calls) == 3
+    create = runner.calls[2]
     assert create["repository"] == REPOSITORY
     assert create["stdin"] == "Detailed body\n"
     assert create["args"] == [
@@ -720,11 +725,28 @@ async def test_ordinary_pr_create_requires_published_head_and_uses_shared_creden
 
 @pytest.mark.asyncio
 async def test_ordinary_pr_create_refuses_unpublished_head_without_write(credential_identity):
-    runner = FakeRunner(credential_identity, [_response(404, {"message": "Not Found"})])
+    runner = FakeRunner(credential_identity, [
+        _response(404, {"message": "Not Found"}),
+        _response(200, {"ref": "refs/heads/main", "object": {"sha": "b" * 40}}),
+    ])
     client = GitHubClient(REPOSITORY, runner=runner)
     with pytest.raises(GitHubAccessError):
         await client.create_pull_request(title="Fix", body="Body", base="main", head="missing")
-    assert len(runner.calls) == 1
+    assert len(runner.calls) == 2
+    assert all(call["args"][0] == "api" for call in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_create_does_not_call_hidden_repo_an_unpublished_head(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(404, {"message": "Not Found"}),
+        _response(404, {"message": "Not Found"}),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.create_pull_request(title="Fix", body="Body", base="main", head="feature")
+    assert caught.value.category == "not_found_or_hidden"
+    assert all(call["args"][0] == "api" for call in runner.calls)
 
 
 @pytest.mark.asyncio
@@ -752,6 +774,165 @@ async def test_ordinary_merge_pins_head_and_rejects_foreign_pr(credential_identi
         "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
         "--delete-branch",
     ]
+
+
+def _ordinary_pull(*, head_sha="a" * 40, base="main", merged=False):
+    return {
+        "number": 7,
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "state": "closed" if merged else "open",
+        "merged_at": "2026-09-22T00:00:00Z" if merged else None,
+        "merge_commit_sha": "b" * 40 if merged else None,
+        "head": {
+            "ref": "feature", "sha": head_sha,
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {"ref": base, "repo": {"id": 303, "full_name": "acme/widgets"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_ordinary_create_reuses_exact_existing_pr_before_write(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull()]),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    creation = await client.create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/7"
+    assert creation.created is False
+    assert len(runner.calls) == 2
+    assert all(call["args"][0] == "api" for call in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_create_reconciles_uncertain_cli_failure_without_replay(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, []),
+        FakeResult(1, b"", "request timed out"),
+        _response(200, [_ordinary_pull()]),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    creation = await client.create_pull_request_result(
+        title="Fix", body="Body", base="main", head="feature"
+    )
+    assert creation.url == "https://github.com/acme/widgets/pull/7"
+    assert creation.created is False
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_app_create_reconciles_rejected_write_with_refreshed_read():
+    provider = FakeTokenProvider()
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        app_provider=provider, clock=lambda: 1_800_000_000.0,
+    )
+    runner = FakeRunner(auth.credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, []),
+        FakeResult(4, b"", "HTTP 401 Unauthorized"),
+        _response(200, [_ordinary_pull()]),
+    ])
+    client = GitHubClient(REPOSITORY, access=GitHubAccess(auth, runner))
+
+    assert await client.create_pull_request(
+        title="Fix", body="Body", base="main", head="feature"
+    ) == "https://github.com/acme/widgets/pull/7"
+    assert provider.calls == 2
+    assert [call["credential"].generation for call in runner.calls] == [1, 1, 1, 2]
+    assert sum(call["args"][:2] == ["pr", "create"] for call in runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_create_rejects_conflicting_existing_pr(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+        _response(200, [_ordinary_pull(base="release")]),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError, match="existing PR head did not match"):
+        await client.create_pull_request(title="Fix", body="Body", base="main", head="feature")
+    assert len(runner.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_ordinary_merge_reports_confirmed_cleanup_failure(credential_identity):
+    from src.git.github import GitHubMergeReconciled
+
+    runner = FakeRunner(credential_identity, [
+        FakeResult(1, b"", "remote branch cleanup failed"),
+        _response(200, _ordinary_pull(merged=True)),
+        _response(200, {"ref": "refs/heads/feature", "object": {"sha": "a" * 40}}),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubMergeReconciled) as caught:
+        await client.merge_pull_request(
+            "https://github.com/acme/widgets/pull/7", method="squash",
+            expected_head_oid="a" * 40, expected_base_ref="main",
+        )
+    assert caught.value.sha == "b" * 40
+    assert caught.value.outcome == "merged_cleanup_failed"
+    assert sum(call["args"][:2] == ["pr", "merge"] for call in runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_merge_reconciles_when_cleanup_already_finished(credential_identity):
+    from src.git.github import GitHubMergeReconciled
+
+    runner = FakeRunner(credential_identity, [
+        FakeResult(1, b"", "CLI exited after merging"),
+        _response(200, _ordinary_pull(merged=True)),
+        _response(404, {"message": "Not Found"}),
+        _response(200, {"ref": "refs/heads/main", "object": {"sha": "c" * 40}}),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubMergeReconciled) as caught:
+        await client.merge_pull_request(
+            "https://github.com/acme/widgets/pull/7", method="squash",
+            expected_head_oid="a" * 40, expected_base_ref="main",
+        )
+    assert caught.value.outcome == "merged_reconciled"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_merge_does_not_assume_hidden_head_was_deleted(credential_identity):
+    from src.git.github import GitHubMergeReconciled
+
+    runner = FakeRunner(credential_identity, [
+        FakeResult(1, b"", "CLI exited after merging"),
+        _response(200, _ordinary_pull(merged=True)),
+        _response(404, {"message": "Not Found"}),
+        _response(404, {"message": "Not Found"}),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubMergeReconciled) as caught:
+        await client.merge_pull_request(
+            "https://github.com/acme/widgets/pull/7", method="squash",
+            expected_head_oid="a" * 40, expected_base_ref="main",
+        )
+    assert caught.value.outcome == "merged_cleanup_unknown"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_merge_does_not_replay_confirmed_rejection(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        FakeResult(4, b"", "HTTP 401 Unauthorized"),
+        _response(200, _ordinary_pull()),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.merge_pull_request(
+            "https://github.com/acme/widgets/pull/7", method="squash",
+            expected_head_oid="a" * 40, expected_base_ref="main",
+        )
+    assert caught.value.category == "credentials"
+    assert sum(call["args"][:2] == ["pr", "merge"] for call in runner.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -819,4 +1000,28 @@ async def test_app_credential_failure_prevents_ordinary_pr_launch():
         await client.create_pull_request(
             title="Fix", body="Body", base="main", head="feature"
         )
+    assert not runner.calls
+
+
+@pytest.mark.asyncio
+async def test_app_credential_failure_before_merge_is_not_an_uncertain_write():
+    class FailingProvider:
+        credential_identity = GitHubCredentialIdentity.app(101, 202)
+
+        async def mint(self, repository):
+            raise GitHubAccessError("credentials", "App token unavailable")
+
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        app_provider=FailingProvider(),
+    )
+    runner = FakeRunner(auth.credential_identity, [])
+    client = GitHubClient(REPOSITORY, access=GitHubAccess(auth, runner))
+
+    with pytest.raises(GitHubAccessError, match="App token unavailable") as caught:
+        await client.merge_pull_request(
+            "https://github.com/acme/widgets/pull/7", method="squash",
+            expected_head_oid="a" * 40, expected_base_ref="main",
+        )
+    assert caught.value.category == "credentials"
     assert not runner.calls

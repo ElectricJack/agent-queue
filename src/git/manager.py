@@ -2668,13 +2668,14 @@ class GitManager:
         _validate_ref(branch)
         _validate_ref(base, field="base branch")
         try:
-            pr_url = await self._github_client(repository).create_pull_request(
+            creation = await self._github_client(repository).create_pull_request_result(
                 title=title, body=body, base=base, head=branch
             )
         except (GitHubAccessError, ValueError) as exc:
             raise GitError(f"could not create PR: {exc}") from exc
 
-        if event_bus is not None:
+        pr_url = creation.url
+        if event_bus is not None and creation.created:
             try:
                 await event_bus.emit(
                     "git.pr.created",
@@ -2695,6 +2696,9 @@ class GitManager:
         except GitHubAccessError as exc:
             raise GitError(f"could not view PR: {exc}") from exc
         if data.get("merged_at"):
+            sha = data.get("merge_commit_sha")
+            if data.get("state") != "closed" or not isinstance(sha, str) or not _OID_RE.fullmatch(sha):
+                raise GitError("merged PR state was incomplete")
             return True
         if data.get("state") == "open":
             return False
@@ -2735,10 +2739,18 @@ class GitManager:
                 "error": ("PR identity changed after validation (retargeted from "
                           f"{expected_base_ref} to {current.base_ref}); refusing merge"),
             }
+        from src.git.github import GitHubMergeReconciled
+
         try:
             sha = await self._github_client(repository).merge_pull_request(
-                pr_url, method=method, expected_head_oid=current.head_oid
+                pr_url, method=method, expected_head_oid=current.head_oid,
+                expected_base_ref=current.base_ref,
             )
+        except GitHubMergeReconciled as exc:
+            return {
+                "success": True, "sha": exc.sha, "error": None,
+                "outcome": exc.outcome,
+            }
         except (GitError, GitHubAccessError, ValueError) as exc:
             return {"success": False, "sha": None, "error": str(exc)}
         return {"success": True, "sha": sha, "error": None}

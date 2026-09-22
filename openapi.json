@@ -37733,6 +37733,17 @@
             ],
             "title": "Error"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
           "ci": {
             "anyOf": [
               {

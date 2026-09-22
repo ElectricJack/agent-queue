@@ -228,6 +228,7 @@ def _handler(db, config, rollup, behind=("main", 0)) -> CommandHandler:
     o.db = db
     o.git = MagicMock()
     o.git.bind_github_repository = AsyncMock(return_value=REPOSITORY)
+    o.git.acheck_pr_merged = AsyncMock(return_value=False)
     o.git.apr_check_rollup = AsyncMock(return_value=rollup)
     o.git.apr_behind_base = AsyncMock(return_value=behind)
     o.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "s" * 40, "error": None})

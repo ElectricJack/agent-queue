@@ -200,6 +200,7 @@ class PrMergeResponse(BaseModel):
     pr_url: str = ""
     sha: str | None = None
     error: str | None = None
+    outcome: str | None = None
     ci: PrMergeCiVerdict | None = None
 
 

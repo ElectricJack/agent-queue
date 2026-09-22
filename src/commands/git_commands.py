@@ -100,6 +100,38 @@ class GitCommandsMixin:
         cwd = self.config.data_dir or os.getcwd()
         os.makedirs(cwd, exist_ok=True)
 
+        # A repeated command may follow a timeout or a gh exit during branch
+        # cleanup.  A canonical merged PR is already settled: do not re-run
+        # CI against a closed PR or issue a second merge request.
+        try:
+            already_merged = await self.orchestrator.git.acheck_pr_merged(
+                cwd, pr_url, repository=repository
+            )
+        except Exception as exc:
+            return {
+                "success": False, "pr_url": pr_url, "sha": None,
+                "outcome": "merge_state_unknown",
+                "error": f"Could not reconcile PR merge state: {exc}",
+            }
+        if already_merged:
+            response = {
+                "success": True, "pr_url": pr_url, "sha": None,
+                "outcome": "already_merged",
+            }
+            try:
+                response.update(await self._record_pr_base(
+                    project, pr_url, cwd, repository=repository
+                ))
+            except Exception:
+                logger.warning("Could not record the base branch for %s", pr_url, exc_info=True)
+            return response
+        if already_merged is None:
+            return {
+                "success": False, "pr_url": pr_url, "sha": None,
+                "outcome": "closed_unmerged",
+                "error": "PR is closed without a confirmed merge",
+            }
+
         # Validate the concrete base/head pair and the merge-base PR diff
         # before CI is consulted. ``force`` is deliberately unavailable here:
         # it can waive a policy opinion about CI, never delivery identity or
@@ -141,6 +173,8 @@ class GitCommandsMixin:
             "pr_url": pr_url,
             "sha": result.get("sha"),
         }
+        if result.get("outcome"):
+            response["outcome"] = result["outcome"]
         if ci is not None:
             response["ci"] = ci
         if error := result.get("error"):
