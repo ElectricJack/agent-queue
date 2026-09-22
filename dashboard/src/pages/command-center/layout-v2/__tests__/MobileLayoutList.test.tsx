@@ -129,6 +129,24 @@ describe("MobileLayoutList", () => {
     expect(await screen.findByText("Task child")).toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("completed work is shown inside this container");
   });
+
+  it("clears a prior applied variant before the next scope response arrives", async () => {
+    list.mockResolvedValueOnce({
+      nodes: [n("child")], next_cursor: null, layout_version: 1, variant_applied: "all",
+    });
+    const view = render(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}} /></MemoryRouter>);
+    expect(await screen.findByRole("status")).toHaveTextContent("completed work is shown inside this container");
+
+    let resolveNext: (value: unknown) => void;
+    const nextPage = new Promise<unknown>((resolve) => { resolveNext = resolve; });
+    list.mockReturnValueOnce(nextPage);
+    view.rerender(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}}
+      filters={{ ...filters, query: "fresh" }} /></MemoryRouter>);
+
+    expect(screen.queryByRole("status")).toBeNull();
+    resolveNext!({ nodes: [n("fresh")], next_cursor: null, layout_version: 1, variant_applied: "active" });
+    expect(await screen.findByText("Task fresh")).toBeInTheDocument();
+  });
 });
 
 describe("entering a container on a phone", () => {

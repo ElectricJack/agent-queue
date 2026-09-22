@@ -45,6 +45,7 @@ export default function MobileLayoutList({
   const [error, setError] = useState<Error | null>(null);
   const [appliedVariant, setAppliedVariant] = useState<Variant | null>(null);
   const [emptyReason, setEmptyReason] = useState<EmptyReason | null>(null);
+  const [responseScopeKey, setResponseScopeKey] = useState<string | null>(null);
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busy = useRef(false);
   const appliedVariantRef = useRef<Variant | null>(null);
@@ -58,6 +59,11 @@ export default function MobileLayoutList({
   const key = JSON.stringify({
     projectId, variant, root: focusId ?? null, q: filters.query.trim(), status: filters.status,
   });
+  // Effects reset the request after React renders. Scope the last response to
+  // its key as well, so the outgoing variant/empty evidence cannot flash for
+  // that render while the next first page is being scheduled.
+  const scopedAppliedVariant = responseScopeKey === key ? appliedVariant : null;
+  const scopedEmptyReason = responseScopeKey === key ? emptyReason : null;
 
   const loadPage = useCallback(async (after: string | null, reset: boolean) => {
     if (busy.current) return;
@@ -98,6 +104,7 @@ export default function MobileLayoutList({
         appliedVariantRef.current = responseVariant;
         setAppliedVariant(responseVariant);
         setEmptyReason((page.empty_reason as EmptyReason | undefined) ?? null);
+        setResponseScopeKey(key);
       }
       setNodes((previous) => reset ? fetched : [...previous, ...fetched]);
       setCursor(page.next_cursor ?? null);
@@ -124,6 +131,7 @@ export default function MobileLayoutList({
     appliedVariantRef.current = null;
     setAppliedVariant(null);
     setEmptyReason(null);
+    setResponseScopeKey(null);
     void loadPage(null, true);
   }, [loadPage]);
 
@@ -135,6 +143,7 @@ export default function MobileLayoutList({
       appliedVariantRef.current = null;
       setAppliedVariant(null);
       setEmptyReason(null);
+      setResponseScopeKey(null);
       void loadPage(null, true);
     }),
     [projectId, loadPage],
@@ -166,7 +175,7 @@ export default function MobileLayoutList({
         ancestors={focusNode?.ancestors?.map((a) => ({ id: a.id, title: a.title })) ?? []}
         current={focusNode ? { id: focusNode.node.id, title: focusNode.node.title } : { id: focusId, title: focusId }}
         onSelect={onFocus ?? (() => {})} />}
-      <GraphScopeNotice requestedVariant={variant} appliedVariant={appliedVariant}
+      <GraphScopeNotice requestedVariant={variant} appliedVariant={scopedAppliedVariant}
         emptyReason={null} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
         showBanner={!!focusId} showEmpty={false} loading={building} error={error} />
       {error && <p role="alert" className="text-sm text-amber-200">Could not load tasks. {error.message}</p>}
@@ -176,8 +185,8 @@ export default function MobileLayoutList({
           <TaskCard fluid selected={selectedTaskId === node.id} data={taskNodeData(node, context, [])} />
         </div>
       ))}
-      {done && shown.length === 0 && <GraphScopeNotice requestedVariant={variant} appliedVariant={appliedVariant}
-        emptyReason={emptyReason} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
+      {done && shown.length === 0 && <GraphScopeNotice requestedVariant={variant} appliedVariant={scopedAppliedVariant}
+        emptyReason={scopedEmptyReason} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
         showBanner={false} loading={building} error={error}
         emptyClassName="flex flex-col items-center gap-2 py-6 text-center text-sm text-gray-500" />}
       {!done && !building && <button type="button" onClick={() => void loadPage(cursor, false)}
