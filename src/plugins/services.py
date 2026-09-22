@@ -431,8 +431,22 @@ class WorkspaceServiceImpl:
             return None, None, {"error": f"Project '{project_id}' not found"}
 
         checkout_path = None
+        session_id = args.get("session_id")
+        if session_id:
+            # Worker scope injects the live session ID. Its worktree is the
+            # checkout holding the task branch; the first project workspace
+            # can be a different branch or even a shared base checkout.
+            session = await self._db.get_session(session_id)
+            if (
+                session is None
+                or session.project_id != project_id
+                or session.state not in {"starting", "running", "draining"}
+                or not session.work_dir
+            ):
+                return None, project, {"error": "No active session worktree for this project"}
+            checkout_path = session.work_dir
         workspace_param = args.get("workspace")
-        if workspace_param and project_id:
+        if workspace_param and not session_id and project_id:
             ws, ws_err = await self.resolve_workspace(project_id, workspace_param)
             if ws_err:
                 return None, project, ws_err

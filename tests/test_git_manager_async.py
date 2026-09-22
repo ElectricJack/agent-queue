@@ -898,6 +898,40 @@ class TestAsyncPushBranch:
         await mgr.apush_branch(clone, "task/fwl", force_with_lease=True)
 
     @pytest.mark.asyncio
+    async def test_explicit_remote_oid_lease_protects_squash(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/explicit-lease")
+        first = _commit_file(clone, "lease.txt", "first", "first")
+        await mgr.apush_branch(clone, "task/explicit-lease")
+        _git(["reset", "--soft", "HEAD^"], cwd=clone)
+        rewritten = _commit_file(clone, "lease.txt", "rewritten", "rewritten")
+
+        await mgr.apush_branch(
+            clone, "task/explicit-lease", expected_remote_oid=first
+        )
+        assert _git(["rev-parse", "refs/heads/task/explicit-lease"], cwd=bare_repo) == rewritten
+
+        _commit_file(clone, "lease.txt", "later", "later")
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone, "task/explicit-lease", expected_remote_oid=first
+            )
+        assert _git(["rev-parse", "refs/heads/task/explicit-lease"], cwd=bare_repo) == rewritten
+
+    @pytest.mark.asyncio
+    async def test_zero_lease_is_create_only(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/create-only")
+        first = _commit_file(clone, "create.txt", "first", "first")
+        await mgr.apush_branch(
+            clone, "task/create-only", expected_remote_oid="0" * 40
+        )
+        assert _git(["rev-parse", "refs/heads/task/create-only"], cwd=bare_repo) == first
+        _commit_file(clone, "create.txt", "second", "second")
+        with pytest.raises(GitError):
+            await mgr.apush_branch(
+                clone, "task/create-only", expected_remote_oid="0" * 40
+            )
+
+    @pytest.mark.asyncio
     async def test_emits_git_push_event(self, clone, mgr):
         """Successful push emits git.push on the EventBus."""
         from src.event_bus import EventBus

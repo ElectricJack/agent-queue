@@ -69,7 +69,7 @@ def _build_tool_definitions() -> list[dict]:
         },
         {
             "name": "git_push",
-            "description": "Push a branch to the remote origin.",
+            "description": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -77,6 +77,10 @@ def _build_tool_definitions() -> list[dict]:
                     "branch": {
                         "type": "string",
                         "description": "Branch to push (optional, defaults to current)",
+                    },
+                    "expected_remote_oid": {
+                        "type": "string",
+                        "description": "Exact remote branch OID expected before push (40 hex digits; all zero for absent branch)",
                     },
                     "workspace": {
                         "type": "string",
@@ -787,6 +791,7 @@ class GitPlugin(InternalPlugin):
             await git.apush_branch(
                 checkout_path,
                 branch,
+                expected_remote_oid=args.get("expected_remote_oid"),
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id"),
             )

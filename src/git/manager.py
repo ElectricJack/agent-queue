@@ -2095,6 +2095,7 @@ class GitManager:
         branch_name: str,
         *,
         force_with_lease: bool = False,
+        expected_remote_oid: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -2105,13 +2106,29 @@ class GitManager:
         must use :meth:`apush_validated_delivery` with its target base.
         """
         _validate_ref(branch_name)
+        if expected_remote_oid is not None:
+            if not isinstance(expected_remote_oid, str) or not _OID_RE.fullmatch(
+                expected_remote_oid.lower()
+            ):
+                raise GitError("invalid expected remote OID")
+            if force_with_lease:
+                raise GitError("choose an explicit expected remote OID or force_with_lease")
+            expected_remote_oid = expected_remote_oid.lower()
         remote_ref_before = await self._aremote_ref_before_push(
             checkout_path, branch_name, event_bus=event_bus
         )
 
         tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         args = ["push", "origin", f"{tip}:refs/heads/{branch_name}"]
-        if force_with_lease:
+        if expected_remote_oid is not None:
+            args.insert(
+                2, f"--force-with-lease=refs/heads/{branch_name}:{expected_remote_oid}"
+            )
+            remote_ref_before = (
+                None if expected_remote_oid == "0" * len(expected_remote_oid)
+                else expected_remote_oid
+            )
+        elif force_with_lease:
             args.insert(2, "--force-with-lease")
         await self._arun(args, cwd=checkout_path)
 

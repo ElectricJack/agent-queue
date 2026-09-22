@@ -336,6 +336,8 @@ async def _check_worker_git_scope(
         return "out of scope: project_id mismatch"
     if args.get("session_id") not in (None, scope.session_id):
         return "out of scope: session_id mismatch"
+    if args.get("workspace") is not None:
+        return "out of scope: workspace mismatch"
     project = await db.get_project(scope.project_id)
     default_branch = (getattr(project, "repo_default_branch", None) or "main") if project else "main"
     # ``branch``/``name`` name the head a command would act on; ``None`` means

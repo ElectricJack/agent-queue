@@ -24,9 +24,15 @@ An explicit close is what lets the scheduler promote the next task. If you're bl
 Before the first passing close submits a leaf feature for review, squash its
 implementation commits on its own task branch into one commit based on its
 recorded source base. Preserve the final tree, author attribution, and test
-results. Push that final SHA, then close; review must bind the pushed SHA.
-If the branch was already pushed, use an explicit expected-SHA
-`--force-with-lease=<ref>:<observed-remote-sha>` only on your own task branch.
+results. Keep local history edits in your worktree. Publish the final commit
+through `aq git push`, then close; review must bind the pushed SHA.
+If you already pushed the branch before squashing, save the pushed commit's
+full OID at the successful push (for example, `git rev-parse HEAD` before that
+push). After squashing, use `aq git push --expected-remote-oid <pushed-oid>`.
+The daemon uses an explicit lease on your own task branch and refuses a push
+if the remote moved. Do not retry with a newly guessed OID or an unconditional
+force push; report the conflict. An all-zero 40-digit OID is only for creating
+a branch that must still be absent.
 Do not rewrite a branch held by another worker or rewrite reviewed/delivered
 history. Fixes after review require a fresh review of their final SHA.
 
@@ -38,17 +44,29 @@ candidate. Already-reviewed branches retain their existing commits.
 ## Never close over unpushed commits
 
 A close that is not a pass does not run the completion pipeline, so nothing
-merges, pushes or reviews your work. Push before you close:
+merges, pushes or reviews your work. Publish your task branch before you close:
 
-    git push -u origin HEAD
+    aq git push
 
 If you close `--outcome fail` with commits that no remote branch has, the
 daemon pushes them for you to `aq/<task-id>` (or `aq/<task-id>-wip` when that
 name is taken by someone else's commits) and records the branch and SHA in
 your completion summary. If it *cannot* push them, the close is refused and
-the task stays yours: push by hand, then close again. Nothing is discarded and
+the task stays yours: fix the push problem and retry `aq git push`, then close
+again. Nothing is discarded and
 nothing closes silently — a slot is reset for the next task the moment you let
 go of it, and local-only commits are unreachable from that point on.
+
+For a task that requires a PR, publish its branch first, then run
+`aq git create-pr --title "..." --body "..."`. The daemon supplies the
+project's GitHub credentials for these network operations. A worker shell
+does not receive a GitHub App credential. If either command is denied by your
+profile's capabilities, report it to the supervisor. These repair commands
+are operator-only (`out of scope` for a worker). On an upgraded install,
+the operator can inspect `aq doctor --check profiles.system_drift` and add
+missing shipped worker grants with
+`aq agent profile-reseed --profile-id worker-<harness> --grants-only`;
+that repair preserves customized vault profile content.
 
 ## Stacked branches: avoid them
 

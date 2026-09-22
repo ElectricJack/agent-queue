@@ -31,11 +31,12 @@ An operator (not a worker token) can see every workspace and its lock holder:
 aq project list-workspaces --project-id <pid>   # every workspace + who holds each lock
 ```
 
-## Git via plain CLI
+## Local Git work
 
-`git` is on `PATH` in every worker session. Prefer plain `git` over any
-`aq git`/MCP wrapper — it's the same underlying operation with fewer
-layers.
+`git` is on `PATH` in every worker session. Use it for local status, history,
+edits and commits. Use `aq git` for network publication: the daemon supplies
+the project's GitHub credentials, including an App credential when configured.
+The worker shell does not receive a GitHub App credential.
 
 ```bash
 git status
@@ -58,8 +59,7 @@ Longer body explaining the *why*, not the *what*.
 Co-Authored-By: <your-agent-attribution>
 EOF
 )"
-git push -u origin HEAD           # first push on a new branch
-git push                          # subsequent
+aq git push                       # first and subsequent task-branch pushes
 ```
 
 Commit rules:
@@ -69,19 +69,24 @@ Commit rules:
 - **One commit per logical change** where practical. If you did five
   small independent things, five commits is better than one giant one.
 
+For a review workflow that asks you to squash a branch already pushed,
+record the full OID of the successful earlier push (`git rev-parse HEAD` at
+that push). After the local squash, run:
+
+```bash
+aq git push --expected-remote-oid <previously-pushed-oid>
+```
+
+This is an exact lease on your task branch. If the remote moved, stop and
+report the conflict. An all-zero 40-digit OID creates a branch only if it is
+still absent. Do not force push reviewed or delivered history.
+
 ## Opening a PR
 
 For tasks that carry a `pr_url` or a `--needs-pr` flag:
 
 ```bash
-gh pr create --title "..." --body "$(cat <<'EOF'
-## Summary
-...
-
-## Test plan
-...
-EOF
-)"
+aq git create-pr --title "..." --body "..."
 ```
 
 Integration and anyone auditing the task read the branch from
@@ -111,14 +116,20 @@ no remote branch carries are unreachable from that point on — not by a retry,
 not by a reviewer, not by you.
 
 ```bash
-git push -u origin HEAD           # before you close, every time
-git log --oneline origin/HEAD..HEAD   # what is still local-only
+aq git push                       # before you close, every time
+git rev-parse HEAD                # local commit to compare with the push result
 ```
 
 A close with `--outcome fail` and unpushed commits is not silently accepted:
 the daemon pushes them to `aq/<task-id>` (or `aq/<task-id>-wip`) and records
 the branch in your completion summary. If the push fails, the close is refused
-and the task stays yours until you push by hand.
+and the task stays yours until you fix the problem and retry `aq git push`.
+
+If `aq git push` or `aq git create-pr` reports a missing profile grant, tell
+the supervisor. The operator can run `aq doctor --check profiles.system_drift`
+and add only the missing worker-template grants with
+`aq agent profile-reseed --profile-id worker-<harness> --grants-only`.
+This preserves customized vault profiles; a full reseed replaces their text.
 
 ## Reviewers and read-only workspaces
 
