@@ -240,17 +240,12 @@ def test_review_list_renders_table_and_empty_message():
 
 def test_review_formatters_render_generated_response_models():
     """Review-only fields stored in generated models' extras remain visible."""
-    from agent_queue_api_client.models.review_list_response import ReviewListResponse
-    from agent_queue_api_client.models.review_record import ReviewRecord
-    from agent_queue_api_client.models.review_show_response import ReviewShowResponse
-    from agent_queue_api_client.models.review_show_response_comments_type_0_item import (
-        ReviewShowResponseCommentsType0Item,
-    )
-    from agent_queue_api_client.models.review_show_response_revision import (
-        ReviewShowResponseRevision,
-    )
+    class GeneratedModel:
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+            self.additional_properties = fields.pop("additional_properties", {})
 
-    review = ReviewRecord(
+    review = GeneratedModel(
         id="review-typed",
         project_id="agent-queue",
         title="Typed plan",
@@ -259,23 +254,26 @@ def test_review_formatters_render_generated_response_models():
         current_revision=4,
         vault_path="reviews/typed.md",
     )
-    revision = ReviewShowResponseRevision()
-    revision["revision"] = 3
-    revision["content"] = "# Typed heading\n\nTyped body"
-    comment = ReviewShowResponseCommentsType0Item()
-    comment["quote"] = "Typed body"
-    comment["heading_path"] = ["Typed heading"]
-    comment["revision"] = 3
-    comment["resolved_in_revision"] = None
-    comment["body"] = "Please expand this."
+    revision = GeneratedModel(
+        additional_properties={"revision": 3, "content": "# Typed heading\n\nTyped body"}
+    )
+    comment = GeneratedModel(
+        additional_properties={
+            "quote": "Typed body",
+            "heading_path": ["Typed heading"],
+            "revision": 3,
+            "resolved_in_revision": None,
+            "body": "Please expand this.",
+        }
+    )
 
     out = _render(
         "review_show",
-        ReviewShowResponse(review=review, revision=revision, vault_state="ok", comments=[comment]),
+        GeneratedModel(review=review, revision=revision, vault_state="ok", comments=[comment]),
     )
     assert "review-typed" in out and "3 / 4" in out
     assert "Typed body" in out and "Please expand this." in out
 
-    review["relation"] = "author"
-    out = _render("review_list", ReviewListResponse(reviews=[review]))
+    review.additional_properties["relation"] = "author"
+    out = _render("review_list", GeneratedModel(reviews=[review]))
     assert "review-typed" in out and "author" in out
