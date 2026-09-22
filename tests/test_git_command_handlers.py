@@ -1166,9 +1166,13 @@ class TestActiveProjectFallback:
         assert result["merged"] is True
         assert result["project_id"] == project_id
 
-    async def test_git_create_pr_infers_active_project(self, handler, mock_git, project_with_repo):
+    async def test_git_create_pr_infers_active_project(self, handler, db, mock_git, project_with_repo):
         """git_create_pr should work without repo_id when active project is set."""
         project_id, repo_id, checkout_path = project_with_repo
+        from src.git.github_contracts import GitHubRepositoryBinding
+
+        await db.update_project(project_id, repo_url="https://github.com/test/repo")
+        mock_git.bind_github_repository.return_value = GitHubRepositoryBinding(1, "test/repo")
         mock_git.aget_current_branch.return_value = "feature/pr-test"
         mock_git.acreate_pr.return_value = "https://github.com/test/repo/pull/1"
         handler.set_active_project(project_id)

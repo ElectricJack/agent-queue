@@ -714,13 +714,21 @@ async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
     "unknown" and is counted, never reported as a finding — an offline
     doctor run must not accuse every branch in the repository.
     """
-    git = GitManager()
+    from src.git.github import GitHubAccess
+
+    git = GitManager(GitHubAccess.from_config(ctx.config.integration.github_app))
     stranded: list[dict] = []
     stale: list[dict] = []
     unknown = 0
     probes = 0
 
     for project_id, checkout, default in await _project_checkouts(ctx):
+        project = await ctx.db.get_project(project_id)
+        try:
+            repository = await git.bind_github_repository(project.repo_url)
+        except Exception:
+            unknown += 1
+            continue
         try:
             await git._arun(["fetch", "origin", "--prune"], cwd=checkout)
         except Exception:
@@ -742,10 +750,12 @@ async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
                 continue
             probes += 1
             open_to_default = await git.alist_prs(
-                checkout, state="open", head=branch, base=default, limit=1
+                checkout, state="open", head=branch, base=default, limit=1,
+                repository=repository,
             )
             merged_into = await git.alist_prs(
-                checkout, state="merged", base=branch, limit=5
+                checkout, state="merged", base=branch, limit=5,
+                repository=repository,
             )
             if open_to_default is None or merged_into is None:
                 unknown += 1

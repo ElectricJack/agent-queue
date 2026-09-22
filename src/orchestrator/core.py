@@ -237,7 +237,10 @@ class Orchestrator(
             validate_events=config.validate_events,
         )
         self.budget = BudgetManager(global_budget=config.global_token_budget_daily)
-        self.git = GitManager()
+        from src.git.github import GitHubAccess
+
+        self.github_access = GitHubAccess.from_config(config.integration.github_app)
+        self.git = GitManager(self.github_access)
         self.git.set_lock_provider(self._resolve_git_lock)
         self._runtimes = runtimes
         # Lazy-creates agent rows when work needs them; runs at the top of

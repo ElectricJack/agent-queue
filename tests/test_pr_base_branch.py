@@ -24,6 +24,7 @@ from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, PullRequestIdentity
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import (
     AgentProfile,
     Project,
@@ -70,6 +71,9 @@ async def orch(request, tmp_path):
     o = Orchestrator(cfg)
     o.db = db
     o.git = MagicMock()
+    o.git.bind_github_repository = AsyncMock(
+        return_value=GitHubRepositoryBinding(1, "o/r")
+    )
     # ``pr_merge`` resolves the immutable PR identity before it merges and
     # fails closed when it cannot; a bare MagicMock is not awaitable, so the
     # merge under test would never be reached.
@@ -77,7 +81,10 @@ async def orch(request, tmp_path):
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     o.command_handler = CommandHandler(o, cfg)
-    await db.create_project(Project(id="p1", name="P1", repo_default_branch="main"))
+    await db.create_project(Project(
+        id="p1", name="P1", repo_default_branch="main",
+        repo_url="https://github.com/o/r.git",
+    ))
     await db.upsert_profile(AgentProfile(id="worker", name="W"))
     await db.create_workspace(
         Workspace(

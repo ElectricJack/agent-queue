@@ -515,6 +515,7 @@ class GitOpsMixin:
             return None
 
         try:
+            repository = await self.git.bind_github_repository(repo.url)
             pr_url = await self.git.acreate_pr(
                 workspace,
                 branch=task.branch_name,
@@ -523,6 +524,7 @@ class GitOpsMixin:
                 base=repo.default_branch,
                 event_bus=self.bus,
                 project_id=task.project_id,
+                repository=repository,
             )
             return pr_url
         except Exception as e:
@@ -1395,12 +1397,25 @@ class GitOpsMixin:
             if pr_delivery_branch:
                 ctx.delivery_branch = pr_delivery_branch
                 if has_remote and not delivery_guard_blocked:
-                    pr_url = await self.git.afind_open_pr(
-                        workspace,
-                        pr_delivery_branch,
-                        head_ref=pr_delivery_ref,
-                        include_workspace_head=False,
+                    repo = await self.db.get_repo(task.repo_id or "") if task.repo_id else None
+                    project = await self.db.get_project(task.project_id)
+                    repository_url = repo.url if repo and repo.project_id == task.project_id else (
+                        project.repo_url if project and not task.repo_id else ""
                     )
+                    try:
+                        repository = await self.git.bind_github_repository(repository_url)
+                    except Exception as exc:
+                        failures.append((f"Could not authorize PR repository: {exc}", False))
+                        repository = None
+                    pr_url = None
+                    if repository is not None:
+                        pr_url = await self.git.afind_open_pr(
+                            workspace,
+                            pr_delivery_branch,
+                            head_ref=pr_delivery_ref,
+                            include_workspace_head=False,
+                            repository=repository,
+                        )
                     if pr_url:
                         ctx.pr_url = pr_url
                     else:

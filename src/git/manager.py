@@ -64,7 +64,6 @@ See specs/git/git.md for the full behavioral specification.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import math
 import os
@@ -87,7 +86,12 @@ from src.git.askpass_broker import (
     zeroize,
 )
 from src.git.askpass_fd import answer_prompt
-from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+)
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -374,7 +378,7 @@ class GitManager:
     )
     _MAX_STDIN_BYTES = 1024 * 1024
 
-    def __init__(self) -> None:
+    def __init__(self, github_access: GitHubAccess | None = None) -> None:
         # Optional lock provider for serializing shared git operations
         # across branch-isolated worktrees.  When set, ``_arun`` acquires
         # the returned lock before executing serialized subcommands.
@@ -384,6 +388,26 @@ class GitManager:
         # same bare cache at once.
         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
         self._repository_operation_locks: dict[str, asyncio.Lock] = {}
+        self.github_access = github_access
+
+    async def bind_github_repository(self, repository_url: str) -> GitHubRepositoryBinding:
+        if self.github_access is None:
+            raise GitError("GitHub access service is not configured")
+        try:
+            return await self.github_access.bind_repository(repository_url)
+        except GitHubAccessError as exc:
+            raise GitError(str(exc)) from exc
+
+    def _github_client(self, repository: GitHubRepositoryBinding) -> GitHubClient:
+        if self.github_access is None:
+            raise GitError("GitHub access service is not configured")
+        if not isinstance(repository, GitHubRepositoryBinding):
+            raise GitError("an authorized GitHub repository binding is required")
+        return GitHubClient(
+            repository, access=self.github_access,
+            max_response_bytes=16 * 1024 * 1024,
+            max_pagination_bytes=32 * 1024 * 1024,
+        )
 
     def set_lock_provider(
         self,
@@ -1371,73 +1395,22 @@ class GitManager:
         return True
 
     def create_pr(
-        self,
-        checkout_path: str,
-        branch: str,
-        title: str,
-        body: str,
-        base: str = "main",
+        self, checkout_path: str, branch: str, title: str, body: str,
+        base: str = "main", *, repository: GitHubRepositoryBinding | None = None,
     ) -> str:
-        """Create a GitHub PR using the ``gh`` CLI. Returns the PR URL.
+        """Compatibility entry point; the async shared client owns execution."""
+        return asyncio.run(self.acreate_pr(
+            checkout_path, branch, title, body, base, repository=repository
+        ))
 
-        Delegates to ``gh pr create`` rather than the GitHub API directly,
-        so the user's existing gh authentication is reused.
-        """
-        try:
-            result = subprocess.run(
-                [
-                    "gh",
-                    "pr",
-                    "create",
-                    "--title",
-                    title,
-                    "--body",
-                    body,
-                    "--base",
-                    base,
-                    "--head",
-                    branch,
-                ],
-                cwd=checkout_path,
-                capture_output=True,
-                text=True,
-                env=self._SUBPROCESS_ENV,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise GitError("gh pr create timed out (possible auth prompt)")
-        if result.returncode != 0:
-            raise GitError(f"gh pr create failed: {result.stderr.strip()}")
-        return result.stdout.strip()
-
-    def check_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
-        """Check if a PR has been merged via the ``gh`` CLI.
-
-        Returns True (merged), False (still open), None (closed without merge).
-        The orchestrator polls this for ``pr-merged`` gates to detect when
-        a human merges the PR and the task can be marked COMPLETED.
-        """
-        try:
-            result = subprocess.run(
-                ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
-                cwd=checkout_path,
-                capture_output=True,
-                text=True,
-                env=self._SUBPROCESS_ENV,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise GitError("gh pr view timed out (possible auth prompt)")
-        if result.returncode != 0:
-            raise GitError(f"gh pr view failed: {result.stderr.strip()}")
-        data = json.loads(result.stdout)
-        state = data.get("state", "").upper()
-        if state == "MERGED" or data.get("mergedAt"):
-            return True
-        if state == "OPEN":
-            return False
-        # CLOSED without merge
-        return None
+    def check_pr_merged(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> bool | None:
+        """Compatibility entry point; the async shared client owns execution."""
+        return asyncio.run(self.acheck_pr_merged(
+            checkout_path, pr_url, repository=repository
+        ))
 
     def get_status(self, checkout_path: str) -> str:
         """Return the output of `git status` for the given repository path."""
@@ -2456,70 +2429,41 @@ class GitManager:
         base: str = "main",
         event_bus: EventBus | None = None,
         project_id: str | None = None,
+        *,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> str:
         _validate_ref(branch)
         _validate_ref(base, field="base branch")
         try:
-            result = await self._arun_subprocess(
-                [
-                    "gh",
-                    "pr",
-                    "create",
-                    "--title",
-                    title,
-                    "--body",
-                    body,
-                    "--base",
-                    base,
-                    "--head",
-                    branch,
-                ],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
+            pr_url = await self._github_client(repository).create_pull_request(
+                title=title, body=body, base=base, head=branch
             )
-        except subprocess.TimeoutExpired:
-            raise GitError("gh pr create timed out (possible auth prompt)")
-        if result.returncode != 0:
-            raise GitError(f"gh pr create failed: {result.stderr.strip()}")
-        pr_url = result.stdout.strip()
+        except (GitHubAccessError, ValueError) as exc:
+            raise GitError(f"could not create PR: {exc}") from exc
 
-        # Emit git.pr.created event on success
         if event_bus is not None:
             try:
                 await event_bus.emit(
                     "git.pr.created",
-                    {
-                        "pr_url": pr_url,
-                        "branch": branch,
-                        "title": title,
-                        "project_id": project_id,
-                    },
+                    {"pr_url": pr_url, "branch": branch, "title": title,
+                     "project_id": project_id},
                 )
             except Exception:
-                logger.debug(
-                    "Failed to emit git.pr.created event for %s",
-                    checkout_path,
-                    exc_info=True,
-                )
-
+                logger.debug("Failed to emit git.pr.created event for %s", checkout_path,
+                             exc_info=True)
         return pr_url
 
-    async def acheck_pr_merged(self, checkout_path: str, pr_url: str) -> bool | None:
+    async def acheck_pr_merged(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> bool | None:
         try:
-            result = await self._arun_subprocess(
-                ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired:
-            raise GitError("gh pr view timed out (possible auth prompt)")
-        if result.returncode != 0:
-            raise GitError(f"gh pr view failed: {result.stderr.strip()}")
-        data = json.loads(result.stdout)
-        state = data.get("state", "").upper()
-        if state == "MERGED" or data.get("mergedAt"):
+            data = await self._github_client(repository).pull_request(pr_url)
+        except GitHubAccessError as exc:
+            raise GitError(f"could not view PR: {exc}") from exc
+        if data.get("merged_at"):
             return True
-        if state == "OPEN":
+        if data.get("state") == "open":
             return False
         return None
 
@@ -2531,99 +2475,39 @@ class GitManager:
         *,
         expected_head_oid: str | None = None,
         expected_base_ref: str | None = None,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> dict:
-        """Merge a PR via ``gh pr merge``.
-
-        Parameters
-        ----------
-        checkout_path:
-            Any valid checkout of the repo (gh reads the remote from here).
-        pr_url:
-            Full PR URL, e.g. ``https://github.com/org/repo/pull/42``.
-        method:
-            One of ``"squash"``, ``"merge"``, ``"rebase"``.  Defaults to
-            ``"squash"`` — matches the project convention documented in
-            the shipped final-reviewer profile.
-        expected_head_oid:
-            The head the caller validated and had CI judged.  Any other head
-            refuses to merge, and the same OID goes into
-            ``--match-head-commit`` so GitHub enforces it too.
-        expected_base_ref:
-            The branch the PR targeted when the caller validated it.  A PR
-            retargeted since then refuses to merge.  The base branch's *tip*
-            is deliberately not pinned — see :class:`PullRequestIdentity`;
-            the default branch advancing between validation and merge is
-            the normal state of affairs under concurrent delivery, not a
-            change to this PR.
-
-        Returns
-        -------
-        dict
-            ``{"success": bool, "sha": str | None, "error": str | None}``.
-            ``sha`` is best-effort — gh only prints it in some flows;
-            callers who need the merged sha should query the branch head
-            after this returns.
-        """
+        """Merge only the validated head and base through the shared client."""
         if method not in ("squash", "merge", "rebase"):
             return {"success": False, "sha": None, "error": f"invalid method: {method}"}
         if expected_head_oid is not None:
             expected_head_oid = expected_head_oid.lower()
             if not _OID_RE.fullmatch(expected_head_oid):
-                return {
-                    "success": False,
-                    "sha": None,
-                    "error": "invalid expected PR head OID",
-                }
+                return {"success": False, "sha": None, "error": "invalid expected PR head OID"}
         try:
-            current = await self.avalidate_pr_for_merge(checkout_path, pr_url)
+            current = await self.avalidate_pr_for_merge(
+                checkout_path, pr_url, repository=repository
+            )
         except GitError as exc:
             return {"success": False, "sha": None, "error": str(exc)}
         if expected_head_oid is not None and current.head_oid != expected_head_oid:
             return {
-                "success": False,
-                "sha": None,
-                "error": (
-                    "PR identity changed after validation (head moved from "
-                    f"{expected_head_oid} to {current.head_oid}); refusing merge"
-                ),
+                "success": False, "sha": None,
+                "error": ("PR identity changed after validation (head moved from "
+                          f"{expected_head_oid} to {current.head_oid}); refusing merge"),
             }
         if expected_base_ref is not None and current.base_ref != expected_base_ref:
             return {
-                "success": False,
-                "sha": None,
-                "error": (
-                    "PR identity changed after validation (retargeted from "
-                    f"{expected_base_ref} to {current.base_ref}); refusing merge"
-                ),
+                "success": False, "sha": None,
+                "error": ("PR identity changed after validation (retargeted from "
+                          f"{expected_base_ref} to {current.base_ref}); refusing merge"),
             }
-        expected_head_oid = current.head_oid
-        flag = f"--{method}"
-        command = ["gh", "pr", "merge", pr_url, flag]
-        if expected_head_oid is not None:
-            command.extend(["--match-head-commit", expected_head_oid])
-        command.append("--delete-branch")
         try:
-            result = await self._arun_subprocess(
-                command,
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
+            sha = await self._github_client(repository).merge_pull_request(
+                pr_url, method=method, expected_head_oid=current.head_oid
             )
-        except subprocess.TimeoutExpired:
-            return {"success": False, "sha": None, "error": "gh pr merge timed out"}
-        if result.returncode != 0:
-            return {
-                "success": False,
-                "sha": None,
-                "error": (result.stderr or result.stdout or "gh pr merge failed").strip(),
-            }
-        # gh prints "Merged pull request #N (<sha>)" in some flows; best-effort parse.
-        # Strip surrounding punctuation before checking for a 40-char hex token.
-        sha: str | None = None
-        for tok in (result.stdout or "").split():
-            tok = tok.strip("().,;:")
-            if len(tok) == 40 and all(c in "0123456789abcdef" for c in tok):
-                sha = tok
-                break
+        except (GitError, GitHubAccessError, ValueError) as exc:
+            return {"success": False, "sha": None, "error": str(exc)}
         return {"success": True, "sha": sha, "error": None}
 
     async def acount_commits_not_on_any_remote(self, checkout_path: str) -> int | None:
@@ -3560,34 +3444,15 @@ class GitManager:
         base: str | None = None,
         head: str | None = None,
         limit: int = 30,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> list[dict] | None:
-        """``gh pr list`` as data, or ``None`` when gh could not answer.
-
-        ``None`` and ``[]`` mean different things and callers must not
-        conflate them: no ``gh``, no auth and no network all give ``None``
-        ("unknown"), while ``[]`` is gh saying there are genuinely no such
-        pull requests.  A doctor check that read ``None`` as ``[]`` would
-        report every branch on an offline machine as stranded.
-        """
-        if state not in ("open", "closed", "merged", "all"):
-            return None
-        args = ["gh", "pr", "list", "--state", state, "--limit", str(max(1, int(limit)))]
-        if base is not None:
-            args += ["--base", _validate_ref(base, field="base branch")]
-        if head is not None:
-            args += ["--head", _validate_ref(head, field="head branch")]
-        args += ["--json", "number,url,title,baseRefName,headRefName,state"]
+        """Repository-bound PR list, or None when GitHub could not answer."""
         try:
-            result = await self._arun_subprocess(args, cwd=checkout_path, timeout=self._GIT_TIMEOUT)
-        except Exception:
+            return await self._github_client(repository).list_pull_requests(
+                state=state, base=base, head=head, limit=limit
+            )
+        except (GitError, GitHubAccessError, ValueError):
             return None
-        if result.returncode != 0:
-            return None
-        try:
-            data = json.loads(result.stdout or "[]")
-        except (ValueError, TypeError):
-            return None
-        return data if isinstance(data, list) else None
 
     async def alist_remote_branches(
         self, checkout_path: str, *, remote: str = "origin"
@@ -3620,53 +3485,28 @@ class GitManager:
                 names.append(short)
         return names
 
-    async def aget_pr_identity(self, checkout_path: str, pr_url: str) -> PullRequestIdentity:
-        """Resolve the PR identity GitHub will merge, or fail closed.
-
-        Reads the REST pull-request resource (``gh api
-        repos/{owner}/{repo}/pulls/{n}``) rather than ``gh pr view --json``.
-        The GraphQL field list gh exposes depends on the gh version —
-        ``baseRefOid`` only exists from gh 2.46 and there is no
-        ``baseRepository`` field on any version, so asking for them made
-        every merge fail closed on the gh 2.45 this project supports — while
-        the REST resource has carried ``base.sha``, ``head.sha`` and
-        ``base.repo.full_name`` for years.  Host, owner, repo and number come
-        from the URL, so no checkout is needed to resolve them, and the
-        repository and OIDs come from one response so the delivery diff can
-        be derived from an immutable snapshot.
-        """
-        url = _PR_URL_RE.fullmatch(pr_url.strip())
-        if url is None:
-            raise GitError("could not resolve PR identity: not a GitHub pull request URL")
-        host, owner, repo, number = url.group("host", "owner", "repo", "number")
+    async def aget_pr_identity(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> PullRequestIdentity:
+        """Resolve one immutable PR snapshot within an authorized repository."""
         try:
-            result = await self._arun_subprocess(
-                ["gh", "api", "--hostname", host, f"repos/{owner}/{repo}/pulls/{number}"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception as exc:
-            raise GitError(f"could not resolve PR identity: {exc}") from exc
-        if result.returncode != 0:
-            raise GitError(f"could not resolve PR identity: {result.stderr.strip()}")
-        try:
-            data = json.loads(result.stdout)
+            number = GitHubAccess.validate_pr_url(repository, pr_url)
+            data = await self._github_client(repository).pull_request(pr_url)
             resource_number = data["number"]
-            repository = data["base"]["repo"]["full_name"]
-            base_ref = data["base"]["ref"]
-            head_ref = data["head"]["ref"]
-            base_oid = data["base"]["sha"].lower()
-            head_oid = data["head"]["sha"].lower()
+            base = data["base"]
+            head = data["head"]
+            repo_name = base["repo"]["full_name"]
+            base_ref = base["ref"]
+            head_ref = head["ref"]
+            base_oid = base["sha"].lower()
+            head_oid = head["sha"].lower()
             changed_files = _pr_changed_file_count(data)
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise GitError("could not resolve complete PR identity") from exc
+        except (GitHubAccessError, KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise GitError(f"could not resolve complete PR identity: {exc}") from exc
         if (
-            resource_number != int(number)
-            or not isinstance(repository, str)
-            or not _REPOSITORY_RE.fullmatch(repository)
-            # ``owner/repo`` becomes two path components of the delivery-diff
-            # cache; ``.`` and ``..`` are valid to the regex but not names.
-            or any(part in (".", "..") for part in repository.split("/"))
+            resource_number != number
+            or repo_name != repository.full_name
             or not isinstance(base_ref, str)
             or not isinstance(head_ref, str)
             or not _OID_RE.fullmatch(base_oid)
@@ -3674,14 +3514,8 @@ class GitManager:
         ):
             raise GitError("could not resolve complete PR identity")
         return PullRequestIdentity(
-            repository=repository,
-            number=int(number),
-            base_ref=base_ref,
-            base_oid=base_oid,
-            head_ref=head_ref,
-            head_oid=head_oid,
-            changed_files=changed_files,
-            host=host,
+            repository=repo_name, number=number, base_ref=base_ref, base_oid=base_oid,
+            head_ref=head_ref, head_oid=head_oid, changed_files=changed_files,
         )
 
     def _pr_diff_cache_lock(self, cache: str) -> asyncio.Lock:
@@ -3691,7 +3525,10 @@ class GitManager:
             lock = self._pr_diff_cache_locks[cache] = asyncio.Lock()
         return lock
 
-    async def _apr_delivery_diff(self, cache_root: str, identity: PullRequestIdentity) -> str:
+    async def _apr_delivery_diff(
+        self, cache_root: str, identity: PullRequestIdentity, *,
+        repository: GitHubRepositoryBinding,
+    ) -> str:
         """NUL-delimited paths PR ``identity`` changes, derived from its pinned OIDs.
 
         GitHub's PR-files listing is addressed by PR *number*, so a head
@@ -3711,13 +3548,12 @@ class GitManager:
         deletion plus an addition, so a reserved path is listed under its
         reserved name whichever way it moved.
 
-        ``cache_root`` is the directory ``pr_merge`` runs ``gh`` in; it is
-        not a checkout, which is why the PR cannot simply be fetched into
-        ``origin``.  The fetch authenticates through ``gh auth
-        git-credential`` — the same login ``gh api`` already needs — so the
-        operator's own git credential helpers are neither required nor
-        consulted.  Every failure fails closed: an error from git here is an
-        unknown diff, never a clean one.
+        ``cache_root`` is the daemon data directory, not a checkout, which
+        is why the PR cannot simply be fetched into ``origin``.  Existing
+        login mode uses ``gh auth git-credential`` for the exact commit fetch.
+        App mode fails closed until the authenticated Git transfer seam is
+        supplied by the Git transfer work.  A fetch error is an unknown diff,
+        never a clean one.
         """
         owner, repo = identity.repository.split("/")
         cache = str(
@@ -3726,23 +3562,7 @@ class GitManager:
         try:
             async with self._pr_diff_cache_lock(cache):
                 await self._arun(["init", "--bare", "--quiet", cache])
-                await self._arun(
-                    [
-                        "-c",
-                        "credential.helper=",
-                        "-c",
-                        "credential.helper=!gh auth git-credential",
-                        "fetch",
-                        "--quiet",
-                        "--no-tags",
-                        "--filter=blob:none",
-                        identity.clone_url,
-                        identity.head_oid,
-                        identity.base_oid,
-                    ],
-                    cwd=cache,
-                    timeout=self._PR_DIFF_FETCH_TIMEOUT,
-                )
+                await self._afetch_pr_diff_commits(cache, identity, repository=repository)
                 # A fetch that returned without delivering the exact commits
                 # (not our ref, a stale cache, an interrupted pack) cannot be
                 # diffed; prove both objects are present before trusting it.
@@ -3770,7 +3590,29 @@ class GitManager:
         except GitError as exc:
             raise GitError(f"could not inspect PR delivery diff: {exc}") from exc
 
-    async def avalidate_pr_for_merge(self, checkout_path: str, pr_url: str) -> PullRequestIdentity:
+    async def _afetch_pr_diff_commits(
+        self, cache: str, identity: PullRequestIdentity, *,
+        repository: GitHubRepositoryBinding,
+    ) -> None:
+        """Network transfer seam for epic 4; App mode must fail closed meanwhile."""
+        if repository.full_name != identity.repository:
+            raise GitError("PR diff repository did not match authorized repository")
+        if self.github_access is None:
+            raise GitError("GitHub access service is not configured")
+        if self.github_access.credential_identity.mode is GitHubCredentialMode.APP:
+            raise GitError("App-authenticated PR commit fetch is not configured")
+        await self._arun(
+            ["-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential",
+             "fetch", "--quiet", "--no-tags", "--filter=blob:none", identity.clone_url,
+             identity.head_oid, identity.base_oid],
+            cwd=cache,
+            timeout=self._PR_DIFF_FETCH_TIMEOUT,
+        )
+
+    async def avalidate_pr_for_merge(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> PullRequestIdentity:
         """Fail closed unless a PR identity and its reserved-path diff are stable.
 
         The identity — repository, number, branch names, OIDs and GitHub's
@@ -3789,87 +3631,38 @@ class GitManager:
         cache lives (``pr_merge`` passes the daemon data dir); it need not be
         a checkout.
         """
-        identity = await self.aget_pr_identity(checkout_path, pr_url)
-        changed = await self._apr_delivery_diff(checkout_path, identity)
+        identity = await self.aget_pr_identity(checkout_path, pr_url, repository=repository)
+        changed = await self._apr_delivery_diff(checkout_path, identity, repository=repository)
         reserved = self._daemon_bookkeeping_paths(changed)
         if reserved:
             raise GitError(
                 "PR changes reserved daemon bookkeeping paths: " + ", ".join(sorted(reserved))
             )
-        if (await self.aget_pr_identity(checkout_path, pr_url)).pin != identity.pin:
+        if (await self.aget_pr_identity(checkout_path, pr_url, repository=repository)).pin != identity.pin:
             raise GitError("PR identity changed while its delivery diff was inspected")
         return identity
 
-    async def apr_base_ref(self, checkout_path: str, pr_url: str) -> str | None:
-        """The branch a PR targets (``baseRefName``), or ``None`` if unknown.
+    async def apr_base_ref(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> str | None:
+        """Return a PR's validated base branch, or None when unreadable."""
+        try:
+            data = await self._github_client(repository).pull_request(pr_url)
+            base = _validate_ref(data["base"]["ref"], field="base branch")
+        except (GitError, GitHubAccessError, KeyError, TypeError, ValueError):
+            return None
+        return base
 
-        A PR whose base is not the project default branch does not put its
-        commits on the default branch when it merges — that is the whole
-        stacked-PR failure this exists to detect.  ``None`` is a first-class
-        answer (no ``gh``, no auth, no network) and callers must not read it
-        as "targets the default branch".
-        """
+    async def apr_check_rollup(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> list[dict] | None:
+        """Return the PR head check rollup; None remains an unknown verdict."""
         try:
-            result = await self._arun_subprocess(
-                ["gh", "pr", "view", pr_url, "--json", "baseRefName"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception:
+            return await self._github_client(repository).check_rollup(pr_url)
+        except (GitError, GitHubAccessError, ValueError):
             return None
-        if result.returncode != 0:
-            return None
-        try:
-            data = json.loads(result.stdout)
-        except (ValueError, TypeError):
-            return None
-        base = data.get("baseRefName")
-        if not base:
-            return None
-        try:
-            # gh's answer becomes a git ref argument downstream.
-            return _validate_ref(str(base), field="base branch")
-        except GitError:
-            return None
-
-    async def apr_check_rollup(self, checkout_path: str, pr_url: str) -> list[dict] | None:
-        """A PR head's status-check rollup, or ``None`` if it can't be read.
-
-        The raw ``statusCheckRollup`` entries, straight from
-        ``gh pr view --json`` — one per check run or commit status on the
-        PR's head commit.  Judging them is
-        :func:`src.git.ci_gate.classify_rollup`'s job; this method only
-        fetches, so the interesting decisions stay testable without gh.
-
-        ``None`` is a first-class answer (no ``gh``, no auth, no network,
-        malformed JSON) and means "CI status unknown".  Callers must not
-        read it as green: ``_cmd_pr_merge`` under
-        ``integration.merge_ci_policy: required`` refuses on ``None``,
-        because "could not check" is exactly the state in which merging
-        blind lands regressions.  An *empty list* is different — it means
-        the rollup was read and nothing has reported yet.
-        """
-        try:
-            result = await self._arun_subprocess(
-                ["gh", "pr", "view", pr_url, "--json", "statusCheckRollup"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        try:
-            data = json.loads(result.stdout)
-        except (ValueError, TypeError):
-            return None
-        rollup = data.get("statusCheckRollup")
-        if rollup is None:
-            # gh reports ``null`` for a PR whose head has no checks at all.
-            return []
-        if not isinstance(rollup, list):
-            return None
-        return rollup
 
     # -- branch CI reads (ci-main-sentinel) ---------------------------------
 
@@ -3888,133 +3681,68 @@ class GitManager:
             return None
         return f"{match.group(1)}/{match.group(2)}"
 
-    async def _agh_api_json(self, path: str, cwd: str | None):
+    async def acommit_head_sha(
+        self, slug: str, ref: str, *, cwd: str | None = None,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> str | None:
+        """The commit sha a branch resolves to on the authorized repository."""
         try:
-            result = await self._arun_subprocess(
-                ["gh", "api", path], cwd=cwd, timeout=self._GIT_TIMEOUT
-            )
-        except Exception:
+            client = self._github_client(repository)
+            if slug != repository.full_name:
+                raise GitError("CI repository did not match authorized repository")
+            return await client.commit_head(ref)
+        except (GitError, GitHubAccessError, ValueError):
             return None
-        if result.returncode != 0:
-            return None
-        try:
-            return json.loads(result.stdout or "null")
-        except (ValueError, TypeError):
-            return None
-
-    async def acommit_head_sha(self, slug: str, ref: str, *, cwd: str | None = None) -> str | None:
-        """The commit sha ``ref`` resolves to on GitHub, or ``None`` if unreadable."""
-        data = await self._agh_api_json(f"repos/{slug}/commits/{ref}", cwd)
-        sha = data.get("sha") if isinstance(data, dict) else None
-        return str(sha) if sha else None
 
     async def acommit_check_runs(
-        self, slug: str, sha: str, *, cwd: str | None = None
+        self, slug: str, sha: str, *, cwd: str | None = None,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> list[dict] | None:
-        """The check runs GitHub reports for one commit, or ``None`` if unreadable.
-
-        Entries carry ``name``, ``status``, ``conclusion``, ``html_url`` and
-        the job ``id`` — the same fields :func:`src.git.ci_gate.normalize_entry`
-        reads from a PR rollup, so one classifier judges both.  ``None`` is
-        "could not read" (no ``gh``, no auth, no network) and must never be
-        taken as green; an empty list means nothing has reported.
-        """
-        data = await self._agh_api_json(f"repos/{slug}/commits/{sha}/check-runs?per_page=100", cwd)
-        if not isinstance(data, dict):
+        try:
+            client = self._github_client(repository)
+            if slug != repository.full_name:
+                raise GitError("CI repository did not match authorized repository")
+            return await client.commit_check_runs(sha)
+        except (GitError, GitHubAccessError, ValueError):
             return None
-        runs = data.get("check_runs")
-        return runs if isinstance(runs, list) else None
 
     async def ajob_failed_tests(
-        self, slug: str, job_id: int | str, *, cwd: str | None = None
+        self, slug: str, job_id: int | str, *, cwd: str | None = None,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> list[str] | None:
-        """The pytest node ids a failed Actions job reported, or ``None`` if unreadable."""
         try:
-            result = await self._arun_subprocess(
-                ["gh", "api", f"repos/{slug}/actions/jobs/{job_id}/logs"],
-                cwd=cwd,
-                timeout=max(self._GIT_TIMEOUT, 120),
-            )
-        except Exception:
-            return None
-        if result.returncode != 0:
+            client = self._github_client(repository)
+            if slug != repository.full_name:
+                raise GitError("CI repository did not match authorized repository")
+            if isinstance(job_id, bool) or not str(job_id).isdigit():
+                return None
+            log = await client.job_log(int(job_id))
+        except (GitError, GitHubAccessError, ValueError):
             return None
         found: set[str] = set()
-        for line in (result.stdout or "").splitlines():
+        for line in log.splitlines():
             match = self._FAILED_TEST_LINE.search(line)
             if match:
                 found.add(match.group(1).rstrip(","))
         return sorted(found)
 
-    async def apr_behind_base(self, checkout_path: str, pr_url: str) -> tuple[str, int] | None:
-        """``(base_ref, behind_by)`` for a PR head, or ``None`` if unknown.
-
-        ``behind_by`` is the number of commits on the PR's base branch that
-        its head does not contain — GitHub's compare endpoint
-        (``repos/{owner}/{repo}/compare/{base}...{head}``), which is the
-        same question the "Require branches to be up to date before
-        merging" ruleset flag asks.  ``0`` means the head's CI ran against
-        the base as it is now; anything else means the checks passed
-        against a base that has since moved and the merge result is a
-        combination nothing has tested (PRs #390 + #391).  Judging it is
-        :func:`src.git.ci_gate.classify_base`'s job.
-
-        ``None`` is a first-class answer (no ``gh``, no auth, no network,
-        a URL that names no repository, malformed JSON) and callers must
-        not read it as up to date.
-        """
-        from src.git.ci_gate import parse_pr_url
-
-        parsed = parse_pr_url(pr_url)
-        if parsed is None:
-            return None
-        owner, repo, _number = parsed
+    async def apr_behind_base(
+        self, checkout_path: str, pr_url: str, *,
+        repository: GitHubRepositoryBinding | None = None,
+    ) -> tuple[str, int] | None:
+        """Return (base branch, behind count) for the authorized PR head."""
         try:
-            result = await self._arun_subprocess(
-                ["gh", "pr", "view", pr_url, "--json", "baseRefName,headRefOid"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception:
+            client = self._github_client(repository)
+            data = await client.pull_request(pr_url)
+            base = _validate_ref(data["base"]["ref"], field="base branch")
+            head = data["head"]["sha"]
+            comparison = await client.compare(base, head)
+            behind = comparison.get("behind_by")
+            if isinstance(behind, bool) or not isinstance(behind, int) or behind < 0:
+                return None
+            return base, behind
+        except (GitError, GitHubAccessError, KeyError, TypeError, ValueError):
             return None
-        if result.returncode != 0:
-            return None
-        try:
-            data = json.loads(result.stdout)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(data, dict):
-            return None
-        base = str(data.get("baseRefName") or "").strip()
-        head = str(data.get("headRefOid") or "").strip()
-        if not base or not head:
-            return None
-        try:
-            base = _validate_ref(base, field="base branch")
-        except GitError:
-            return None
-        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", head):
-            return None
-        try:
-            result = await self._arun_subprocess(
-                ["gh", "api", f"repos/{owner}/{repo}/compare/{base}...{head}"],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
-            )
-        except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        try:
-            data = json.loads(result.stdout)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(data, dict):
-            return None
-        behind = data.get("behind_by")
-        if isinstance(behind, bool) or not isinstance(behind, int) or behind < 0:
-            return None
-        return base, behind
 
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
@@ -4244,6 +3972,7 @@ class GitManager:
         *,
         head_ref: str | None = None,
         include_workspace_head: bool = True,
+        repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
         """Return an open or merged PR URL delivering *branch_name*, or ``None``.
 
@@ -4264,7 +3993,9 @@ class GitManager:
         Best-effort throughout: any gh/git failure returns ``None``.
         """
         if include_workspace_head:
-            url = await self._open_pr_url_by_head_name(checkout_path, branch_name)
+            url = await self._open_pr_url_by_head_name(
+                checkout_path, branch_name, repository=repository
+            )
             if url:
                 return url
 
@@ -4274,40 +4005,24 @@ class GitManager:
         tips = {sha for ref in refs if (sha := await self.arev_parse(checkout_path, ref))}
         if not tips:
             return None
-        return await self._open_pr_url_by_head_commit(checkout_path, tips, branch_name)
+        return await self._open_pr_url_by_head_commit(
+            checkout_path, tips, branch_name, repository=repository
+        )
 
     async def _open_pr_url_by_head_name(
         self,
         checkout_path: str,
         branch_name: str,
+        *, repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
         try:
-            result = await self._arun_subprocess(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--head",
-                    branch_name,
-                    "--state",
-                    "all",
-                    "--json",
-                    "url,state",
-                    "--jq",
-                    'first(.[] | select(.state == "OPEN" or .state == "MERGED") | .url) // empty',
-                ],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
+            prs = await self._github_client(repository).list_pull_requests(
+                state="all", head=branch_name, limit=100
             )
-        except Exception:
+        except (GitError, GitHubAccessError, ValueError):
             return None
-        if result.returncode != 0:
-            return None
-        # ``--jq`` is deliberately single-valued, but retain this boundary
-        # guard so an older gh implementation or a mocked command cannot
-        # store a newline-delimited list in a task's ``pr_url``.
         return next(
-            (line.strip() for line in (result.stdout or "").splitlines() if line.strip()), None
+            (pr["url"] for pr in prs if pr.get("state") in {"OPEN", "MERGED"}), None
         )
 
     async def _open_pr_url_by_head_commit(
@@ -4315,33 +4030,14 @@ class GitManager:
         checkout_path: str,
         tips: set[str],
         branch_name: str,
+        *, repository: GitHubRepositoryBinding | None = None,
     ) -> str | None:
         """URL of an open or merged PR whose head commit is one of *tips*."""
         try:
-            result = await self._arun_subprocess(
-                [
-                    "gh",
-                    "pr",
-                    "list",
-                    "--state",
-                    "all",
-                    "--json",
-                    "url,state,headRefName,headRefOid",
-                    "--limit",
-                    "100",
-                ],
-                cwd=checkout_path,
-                timeout=self._GIT_TIMEOUT,
+            prs = await self._github_client(repository).list_pull_requests(
+                state="all", limit=100, include_head_oid=True
             )
-        except Exception:
-            return None
-        if result.returncode != 0:
-            return None
-        try:
-            prs = json.loads(result.stdout or "[]")
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(prs, list):
+        except (GitError, GitHubAccessError, ValueError):
             return None
         for pr in prs:
             if not isinstance(pr, dict):

@@ -660,3 +660,137 @@ async def test_ci_observation_uses_shared_repository_client(credential_identity)
     assert observation.payload.checks[0].check_run_id == 11
     assert all(call["repository"] == REPOSITORY for call in runner.calls)
     assert all(call["args"][0] == "api" for call in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pr_create_requires_published_head_and_uses_shared_credential_source(
+    credential_identity,
+):
+    head = "a" * 40
+    runner = FakeRunner(
+        credential_identity,
+        [
+            _response(200, {"ref": "refs/heads/feature", "object": {"sha": head}}),
+            FakeResult(0, b"https://github.com/acme/widgets/pull/7\n"),
+        ],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    url = await client.create_pull_request(
+        title="Fix widget", body="Detailed body\n", base="main", head="feature"
+    )
+
+    assert url == "https://github.com/acme/widgets/pull/7"
+    assert len(runner.calls) == 2
+    create = runner.calls[1]
+    assert create["repository"] == REPOSITORY
+    assert create["stdin"] == "Detailed body\n"
+    assert create["args"] == [
+        "pr", "create", "--title", "Fix widget", "--body-file", "-",
+        "--base", "main", "--head", "feature",
+    ]
+    assert all(word not in create["args"] for word in ("push", "fork"))
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pr_create_refuses_unpublished_head_without_write(credential_identity):
+    runner = FakeRunner(credential_identity, [_response(404, {"message": "Not Found"})])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError):
+        await client.create_pull_request(title="Fix", body="Body", base="main", head="missing")
+    assert len(runner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ordinary_merge_pins_head_and_rejects_foreign_pr(credential_identity):
+    sha = "b" * 40
+    runner = FakeRunner(
+        credential_identity,
+        [FakeResult(0, f"Merged pull request #7 ({sha}).\n".encode())],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError):
+        await client.merge_pull_request(
+            "https://github.com/other/repo/pull/7", method="squash",
+            expected_head_oid="a" * 40,
+        )
+    assert not runner.calls
+
+    result = await client.merge_pull_request(
+        "https://github.com/acme/widgets/pull/7", method="squash",
+        expected_head_oid="a" * 40,
+    )
+    assert result == sha
+    assert runner.calls[0]["repository"] == REPOSITORY
+    assert runner.calls[0]["args"] == [
+        "pr", "merge", "7", "--squash", "--match-head-commit", "a" * 40,
+        "--delete-branch",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pr_and_ci_reads_are_repository_bound(credential_identity):
+    pull = {
+        "number": 7,
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "base": {"repo": {"id": 303, "full_name": "acme/widgets"}, "ref": "main"},
+        "head": {"sha": "a" * 40},
+    }
+    runner = FakeRunner(
+        credential_identity,
+        [
+            _response(200, pull),
+            FakeResult(0, b'{"statusCheckRollup": []}'),
+            _response(200, {"sha": "a" * 40}),
+            _response(200, {"check_runs": [{"name": "Tests", "conclusion": "success"}]}),
+            _response(200, {"behind_by": 0}),
+            _response(200, b"FAILED tests/test_widget.py::test_fix\n"),
+        ],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+    url = "https://github.com/acme/widgets/pull/7"
+    assert (await client.pull_request(url))["number"] == 7
+    assert await client.check_rollup(url) == []
+    assert await client.commit_head("main") == "a" * 40
+    assert await client.commit_check_runs("a" * 40) == [
+        {"name": "Tests", "conclusion": "success"}
+    ]
+    assert (await client.compare("main", "a" * 40))["behind_by"] == 0
+    assert "FAILED tests/test_widget.py" in await client.job_log(17)
+    assert all(call["repository"] == REPOSITORY for call in runner.calls)
+    assert runner.calls[-1]["args"][-1] == "repositories/303/actions/jobs/17/logs"
+
+
+@pytest.mark.asyncio
+async def test_ordinary_pr_payload_cannot_rebind_a_project(credential_identity):
+    runner = FakeRunner(credential_identity, [
+        _response(200, {
+            "number": 7,
+            "html_url": "https://github.com/acme/widgets/pull/7",
+            "base": {"repo": {"id": 404, "full_name": "other/repo"}},
+        }),
+    ])
+    client = GitHubClient(REPOSITORY, runner=runner)
+    with pytest.raises(GitHubAccessError, match="repository did not match"):
+        await client.pull_request("https://github.com/acme/widgets/pull/7")
+
+
+@pytest.mark.asyncio
+async def test_app_credential_failure_prevents_ordinary_pr_launch():
+    class FailingProvider:
+        credential_identity = GitHubCredentialIdentity.app(101, 202)
+
+        async def mint(self, repository):
+            raise GitHubAccessError("credentials", "App token unavailable")
+
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        app_provider=FailingProvider(),
+    )
+    runner = FakeRunner(auth.credential_identity, [])
+    client = GitHubClient(REPOSITORY, access=GitHubAccess(auth, runner))
+    with pytest.raises(GitHubAccessError, match="App token unavailable"):
+        await client.create_pull_request(
+            title="Fix", body="Body", base="main", head="feature"
+        )
+    assert not runner.calls

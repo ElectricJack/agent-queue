@@ -852,6 +852,9 @@ class GitPlugin(InternalPlugin):
             return {"error": "Could not determine current branch"}
         base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
         try:
+            if project is None or not project.repo_url:
+                return {"error": "Project has no authorized GitHub repository"}
+            repository = await git.bind_github_repository(project.repo_url)
             pr_url = await git.acreate_pr(
                 checkout_path,
                 branch,
@@ -860,6 +863,7 @@ class GitPlugin(InternalPlugin):
                 base,
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id", ""),
+                repository=repository,
             )
         except GitError as e:
             return {"error": str(e)}

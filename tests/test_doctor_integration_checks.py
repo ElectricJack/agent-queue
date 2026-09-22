@@ -21,6 +21,7 @@ from src.doctor.integration_checks import run_check
 from src.doctor.models import Severity
 from src.doctor.models import DoctorContext
 from src.doctor.runner import run_doctor
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Project, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -29,7 +30,7 @@ from tests.db_fixtures import lease_dsn
 async def db(tmp_path):
     d = Database(lease_dsn("doctor.db"))
     await d.initialize()
-    await d.create_project(Project(id="p", name="P"))
+    await d.create_project(Project(id="p", name="P", repo_url="https://github.com/o/r"))
     return d
 
 
@@ -108,13 +109,11 @@ async def _orphaned_batch_operation(db):
 
 
 def _handler_with_pr_state(db, merged):
-    """A CommandHandler stand-in whose ``gh`` probe returns *merged*.
-
-    Also gives the project a checkout path — without one ``_pr_is_open``
-    short-circuits to "unknown" and the probe is never reached.
-    """
-    db.get_project_workspace_path = AsyncMock(return_value="/repo")
+    """A CommandHandler stand-in whose bound PR probe returns *merged*."""
     git = MagicMock()
+    git.bind_github_repository = AsyncMock(
+        return_value=GitHubRepositoryBinding(1, "o/r")
+    )
     git.acheck_pr_merged = AsyncMock(return_value=merged)
     orchestrator = MagicMock()
     orchestrator.git = git
