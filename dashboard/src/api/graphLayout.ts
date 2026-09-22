@@ -8,6 +8,8 @@ import { useEffect, useRef } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   getExtentApiProjectsProjectIdGraphExtentGet,
+  getProjectRunningTargetApiProjectsProjectIdGraphRunningTargetGet,
+  getRunningTargetApiGraphRunningTargetGet,
   getJobApiProjectsProjectIdGraphJobsJobIdGet,
   postLocateApiProjectsProjectIdGraphLocatePost,
   getNodeApiProjectsProjectIdGraphNodeTaskIdGet,
@@ -19,6 +21,7 @@ import {
   type ListResponse,
   type LocateResponse,
   type NodeResponse,
+  type RunningTargetResponse,
   type TidyResponse,
   type TilesResponse,
 } from "@aq/ts-client";
@@ -27,6 +30,29 @@ import type { Rect } from "../pages/command-center/layout-v2/units";
 import { refetchLayout } from "../pages/command-center/layout-v2/liveRegistry";
 
 export type Variant = "all" | "active";
+export type RunningTarget = RunningTargetResponse;
+
+/** The server ranks live leaf attempts, so navigation never trusts stale UI state. */
+export async function fetchRunningTarget(
+  projectId?: string,
+  signal?: AbortSignal,
+): Promise<RunningTarget | null> {
+  const r = projectId
+    ? await getProjectRunningTargetApiProjectsProjectIdGraphRunningTargetGet({
+      client, signal, path: { project_id: projectId }, throwOnError: true,
+    })
+    : await getRunningTargetApiGraphRunningTargetGet({ client, signal, throwOnError: true });
+  return (r.data ?? null) as RunningTarget | null;
+}
+
+/** One current target per project (or across projects on the overview). */
+export function useRunningTarget(projectId?: string) {
+  return useQuery({
+    queryKey: ["runningTarget", projectId ?? "all"],
+    queryFn: ({ signal }) => fetchRunningTarget(projectId, signal),
+    staleTime: 15_000,
+  });
+}
 
 /**
  * The canvas never expands a container in place (operator decision

@@ -30,6 +30,7 @@ __all__ = [
     "LocateRequest",
     "LocateResponse",
     "NodeResponse",
+    "RunningTargetResponse",
     "StubOverflow",
     "TidyRequest",
     "TidyResponse",
@@ -164,6 +165,23 @@ class LayoutWorker(BaseModel):
     name: str
     docked_at: str
     in_collapsed: bool
+
+
+class RunningTargetResponse(BaseModel):
+    """The live leaf task a graph should navigate to, if one exists.
+
+    ``ancestors`` is ordered from the project root to the task's immediate
+    parent when a published layout is available.  It lets the root graph pan
+    to the visible enclosing tile while the toolbar enters ``parent_task_id``
+    to reveal the task itself.
+    """
+
+    task_id: str
+    project_id: str
+    parent_task_id: str | None = None
+    ancestors: list[str] = []
+    observed_at: float
+    layout_version: int | None = None
 
 
 class TilesResponse(BaseModel):

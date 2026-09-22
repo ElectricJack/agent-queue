@@ -1011,6 +1011,7 @@ from .run_playbook_response_422 import RunPlaybookResponse422
 from .run_playbook_response_failed_steps_item import RunPlaybookResponseFailedStepsItem
 from .run_playbook_response_node_trace_item import RunPlaybookResponseNodeTraceItem
 from .run_playbook_response_runs_item import RunPlaybookResponseRunsItem
+from .running_target_response import RunningTargetResponse
 from .sampler_metrics import SamplerMetrics
 from .scan_stub_staleness_request import ScanStubStalenessRequest
 from .scan_stub_staleness_response import ScanStubStalenessResponse
@@ -2279,6 +2280,7 @@ __all__ = (
     "RuleDiffDTO",
     "RuleDiffDTOChange",
     "RunBudgetDTO",
+    "RunningTargetResponse",
     "RunPlaybookRequest",
     "RunPlaybookRequestEventType0",
     "RunPlaybookResponse",

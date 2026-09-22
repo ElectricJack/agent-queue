@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useProjects } from "../../api/hooks";
+import type { RunningTarget } from "../../api/graphLayout";
 import { useGraphLive } from "./useGraphLive";
 import { GraphStateProvider } from "./useGraphHierarchy";
 import { FINISHED_STATUSES, readTaskFilters, writeTaskFilters, type TaskFilters } from "./taskFilters";
@@ -22,12 +23,14 @@ interface TaskWorkspaceValue {
   setWindow: (window: string) => void;
   setHeld: (held: boolean) => void;
   clearFilters: () => void;
+  goToRunningWork: (target: RunningTarget) => void;
 }
 const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 
 /** The route is the only project scope; query parameters travel with every tab. */
 export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const { projectId } = useParams<{ projectId: string }>();
+  const navigate = useNavigate();
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
   const rawFilters = useMemo(() => readTaskFilters(params), [params]);
@@ -70,9 +73,24 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
       return writeTaskFilters(previous, { query: "", status: "", showCompleted: false, window: "", held: false, focus: current.focus });
     }, { replace: true });
   }, [setParams]);
+  // This is one navigation entry, not six independent filter edits.  Back
+  // therefore restores the caller's scope and filters in one step.
+  const goToRunningWork = useCallback((target: RunningTarget) => {
+    const next = writeTaskFilters(new URLSearchParams(), {
+      query: "", status: "", showCompleted: false, window: "", held: false,
+      focus: target.parent_task_id ?? "",
+    });
+    if (projectId === target.project_id) {
+      setParams(next);
+      return;
+    }
+    const query = next.toString();
+    navigate(`/projects/${encodeURIComponent(target.project_id)}/graph${query ? `?${query}` : ""}`);
+  }, [projectId, setParams, navigate]);
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
-    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters }),
-  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters]);
+    filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters,
+    goToRunningWork }),
+  [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork]);
   return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 
