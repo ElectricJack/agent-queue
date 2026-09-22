@@ -125,6 +125,7 @@ def test_registry_has_categories(registry):
         "mcp",
         "message",
         "escalation",
+        "review",
         "digest",
         "dashboard",
         "discord",
