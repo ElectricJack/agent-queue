@@ -10,6 +10,7 @@ task → agent) and reaches exactly the branch the task records.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,8 @@ from src.api.scope import (
     worker_branches_for_session,
 )
 from src.database import Database
+from src.plugins.internal.git import _build_tool_definitions
+from src.profiles.drift import diff_profile, merge_profile_grants, vault_profile_path
 from src.models import (
     Agent,
     AgentProfile,
@@ -90,6 +93,31 @@ async def test_worker_pushes_its_own_branch(env):
     db, scope = env
     args = {"branch": "aq/calm-ember-48"}
     assert await check_request_scope("git_push", args, scope, db=db) is None
+
+
+async def test_explicit_lease_stays_on_the_held_task_branch(env):
+    db, scope = env
+    args = {"branch": "aq/calm-ember-48", "expected_remote_oid": "a" * 40}
+    assert await check_request_scope("git_push", args, scope, db=db) is None
+    assert args["project_id"] == "p"
+    assert args["session_id"] == "s1"
+    assert (
+        await check_request_scope(
+            "git_push",
+            {"branch": "main", "expected_remote_oid": "a" * 40},
+            scope,
+            db=db,
+        )
+        == "out of scope: branch mismatch"
+    )
+
+
+async def test_worker_cannot_select_a_different_workspace(env):
+    db, scope = env
+    assert (
+        await check_request_scope("git_push", {"workspace": "other"}, scope, db=db)
+        == "out of scope: workspace mismatch"
+    )
 
 
 @pytest.mark.parametrize(
@@ -184,6 +212,71 @@ async def test_a_token_for_an_unknown_session_grants_nothing(env):
     db, _ = env
     scope = RequestScope(kind="session", session_id="ghost", task_id="t1", project_id="p")
     assert await worker_branches_for_session(db, scope) is None
+
+
+async def test_shipped_worker_grants_match_the_push_and_pr_contract():
+    from src.profiles.parser import parse_profile
+    from src.profiles.capabilities import classify_capability
+
+    root = Path(__file__).resolve().parents[1]
+    names = {item["name"]: item for item in _build_tool_definitions()}
+    assert "expected_remote_oid" in names["git_push"]["input_schema"]["properties"]
+    assert {"title", "body"} <= set(names["git_create_pr"]["input_schema"]["properties"])
+    for command in ("git_push", "git_create_pr"):
+        assert classify_capability(
+            command, plugin_command_names=frozenset(names)
+        ) == "plugin_tools"
+    for harness in ("claude", "codex"):
+        profile = parse_profile(
+            (root / "src" / "profiles" / "defaults" / f"worker-{harness}" / "profile.md")
+            .read_text(encoding="utf-8")
+        )
+        commands = set(profile.capabilities["plugin_tools"])
+        assert {"git_push", "git_create_pr"} <= commands
+        assert "integration_push_conflict_resolution" not in set(profile.capabilities["aq_commands"])
+        assert "integration_delivery_promote" not in set(profile.capabilities["aq_commands"])
+
+
+async def test_cli_push_lease_option_reaches_the_daemon_contract():
+    from unittest.mock import AsyncMock, patch
+
+    from click.testing import CliRunner
+    from src.cli.app import cli
+
+    client = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.execute = AsyncMock(return_value={"project_id": "p", "pushed": "aq/t1"})
+    oid = "a" * 40
+    with patch("src.cli.app._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["git", "push", "--branch", "aq/t1", "--expected-remote-oid", oid]
+        )
+    assert result.exit_code == 0, result.output
+    assert client.execute.await_args.args == (
+        "git_push", {"branch": "aq/t1", "expected_remote_oid": oid}
+    )
+
+
+async def test_old_custom_worker_profile_reports_and_merges_missing_grants(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    profile_id = "worker-codex"
+    shipped = (
+        root / "src" / "profiles" / "defaults" / profile_id / "profile.md"
+    ).read_text(encoding="utf-8")
+    old = shipped.replace('    "git_create_pr",\n', '').replace('    "git_push",\n', '')
+    old += "\n## Operator notes\nKeep this customization.\n"
+    data_dir = str(tmp_path / "data")
+    vault_path = Path(vault_profile_path(data_dir, profile_id))
+    vault_path.parent.mkdir(parents=True)
+    vault_path.write_text(old, encoding="utf-8")
+    drift = diff_profile(profile_id, data_dir)
+    assert drift.missing_grants["plugin_tools"] == ["git_create_pr", "git_push"]
+    result = merge_profile_grants(data_dir, profile_id)
+    assert result["added"]["plugin_tools"] == ["git_create_pr", "git_push"]
+    merged = vault_path.read_text(encoding="utf-8")
+    assert "## Operator notes\nKeep this customization." in merged
+    assert diff_profile(profile_id, data_dir).missing_grants == {}
 
 
 @pytest.mark.parametrize('command', [

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,7 @@ from src.config import AppConfig, DatabaseConfig
 from src.models import AgentProfile, Project, SessionRecord, Task
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
+from src.profiles.parser import parse_profile
 
 pytestmark = pytest.mark.asyncio
 
@@ -531,6 +533,45 @@ class TestStaticSections:
         assert "aq session drain-ack" in body
         assert "--deliverable-unmet 'id: reason'" in body
 
+    @pytest.mark.parametrize("harness", ["claude", "codex"])
+    @pytest.mark.parametrize("delivery_mode", ["disabled", "development"])
+    async def test_worker_prime_uses_granted_daemon_delivery_commands(
+        self, db, config, task, harness, delivery_mode
+    ):
+        profile_id = f"worker-{harness}"
+        shipped = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "profiles" / "defaults" / profile_id / "profile.md"
+        ).read_text(encoding="utf-8")
+        parsed = parse_profile(shipped)
+        assert parsed.errors == []
+        assert {"git_push", "git_create_pr"} <= set(parsed.capabilities["plugin_tools"])
+        await db.update_profile(
+            "coder",
+            aq_commands=parsed.capabilities["aq_commands"],
+            harness_tools=parsed.capabilities["harness_tools"],
+            plugin_tools=parsed.capabilities["plugin_tools"],
+        )
+        _write(os.path.join(config.vault_agent_types, "coder", "profile.md"), shipped)
+        await db.update_project("proj-1", hierarchical_integration_mode=delivery_mode)
+
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        by_key = {section.key: section.body for section in doc.sections}
+        assert "generic coding worker" in by_key["role"]
+        body = by_key["completion_protocol"]
+        assert "aq git push" in body
+        assert "aq git create-pr --title" in body
+        assert "git push -u origin HEAD" not in body
+        assert "gh pr create" not in body
+        assert "aq doctor --check profiles.system_drift" in body
+        assert "--grants-only" in body
+        if delivery_mode == "development":
+            assert "## Development delivery" in body
+            assert "--expected-remote-oid" not in body
+        else:
+            assert "## Prepare feature history before review" in body
+            assert "aq git push --expected-remote-oid <pushed-oid>" in body
+
     @pytest.mark.parametrize("lifecycle", [None, "pool"])
     async def test_completion_protocol_renders_emergent_work_guidance(
         self, db, config, task, lifecycle
@@ -714,6 +755,9 @@ class TestPrimeDocumentModel:
 #: gates, or ``None`` for a CLI verb that never reaches the daemon.
 _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq test": None,
+    "aq git push": "git_push",
+    "aq git create-pr": "git_create_pr",
+    "aq agent profile-reseed": "profile_reseed",
     "aq prime": "prime",
     "aq schema": "get_schema",
     "aq doctor": "doctor_run",
@@ -783,7 +827,7 @@ class TestStaticGuidanceStaysOnTheAgentSurface:
     """
 
     async def test_every_templated_aq_command_is_reachable_or_marked_refused(self):
-        from src.api.scope import AGENT_COMMAND_SET
+        from src.api.scope import AGENT_COMMAND_SET, _WORKER_GIT_COMMANDS
         from src.prime.sections import _TEMPLATES_DIR
 
         unknown: list[tuple[str, str]] = []
@@ -795,7 +839,7 @@ class TestStaticGuidanceStaysOnTheAgentSurface:
                         unknown.append((path.name, phrase))
                         continue
                     command = _CLI_TO_COMMAND[phrase]
-                    if command is None or command in AGENT_COMMAND_SET:
+                    if command is None or command in AGENT_COMMAND_SET | _WORKER_GIT_COMMANDS:
                         continue
                     if "out of scope" not in paragraph:
                         unreachable.append((path.name, phrase))

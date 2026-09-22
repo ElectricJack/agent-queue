@@ -2097,6 +2097,7 @@ class GitManager:
         branch_name: str,
         *,
         force_with_lease: bool = False,
+        expected_remote_oid: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -2107,9 +2108,21 @@ class GitManager:
         must use :meth:`apush_validated_delivery` with its target base.
         """
         _validate_ref(branch_name)
+        if expected_remote_oid is not None:
+            if not isinstance(expected_remote_oid, str) or not _OID_RE.fullmatch(
+                expected_remote_oid.lower()
+            ):
+                raise GitError("invalid expected remote OID")
+            if force_with_lease:
+                raise GitError("choose an explicit expected remote OID or force_with_lease")
+            expected_remote_oid = expected_remote_oid.lower()
         tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         remote_ref_before = await self._apush_oid(
-            checkout_path, tip, branch_name, force_with_lease=force_with_lease
+            checkout_path,
+            tip,
+            branch_name,
+            force_with_lease=force_with_lease or expected_remote_oid is not None,
+            expected_old_oid=expected_remote_oid,
         )
 
         await self._aemit_push_event(
@@ -2961,11 +2974,18 @@ class GitManager:
     async def _apush_destination(
         self, checkout_path: str, remote: str
     ) -> tuple[str | None, str | None]:
-        """Bind a checkout remote to its configured GitHub credential source."""
-        remote = _validate_ref(remote, field="remote")
-        configured_url = await self._arun(
-            ["config", "--get", f"remote.{remote}.url"], cwd=checkout_path
-        )
+        """Bind a named remote or frozen origin URL to its credential source."""
+        if isinstance(remote, str) and remote.startswith(
+            ("/", "./", "../", "file://", "https://", "http://", "ssh://", "git@")
+        ):
+            if any(ord(char) < 32 for char in remote):
+                raise GitError("invalid remote URL")
+            configured_url = remote
+        else:
+            remote = _validate_ref(remote, field="remote")
+            configured_url = await self._arun(
+                ["config", "--get", f"remote.{remote}.url"], cwd=checkout_path
+            )
         if self._uses_existing_ssh(configured_url):
             return None, None
         binding = await self._abind_git_repository(configured_url)

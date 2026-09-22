@@ -96,7 +96,9 @@ somehow declares none.
     "task_subtasks"
   ],
   "plugin_tools": [
+    "git_create_pr",
     "git_diff",
+    "git_push",
     "memory_save",
     "memory_search"
   ]

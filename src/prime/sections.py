@@ -641,7 +641,8 @@ def build_completion_protocol_section(
         start = body.index("## Prepare feature history before review")
         end = body.index("## Never close over unpushed commits")
         body = body[:start] + ("## Development delivery\n\n"
-            "Commit and push your task branch, run focused local checks, and close with actual evidence. "
+            "Commit locally and publish your task branch with `aq git push`, run focused local checks, "
+            "and close with actual evidence. "
             "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
             "The daemon collects completed source branches and publishes validated batches to main. "
             "Do not push main yourself.\n\n") + body[end:]
