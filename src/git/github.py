@@ -734,6 +734,7 @@ class GitHubClient:
         json_body: dict[str, Any] | None = None,
         expected_statuses: set[int] | None = None,
         max_response_bytes: int | None = None,
+        timeout: float | None = None,
     ) -> GitHubApiResponse:
         """Return one framed response after validating status and containment."""
         endpoint = self._validated_endpoint(path)
@@ -743,6 +744,7 @@ class GitHubClient:
             json_body=json_body,
             expected_statuses=expected_statuses,
             max_response_bytes=max_response_bytes,
+            timeout=timeout,
         )
 
     async def request_json(
@@ -773,6 +775,7 @@ class GitHubClient:
         *,
         expected_statuses: set[int] | None = None,
         max_response_bytes: int | None = None,
+        timeout: float | None = None,
     ) -> str:
         """Return a bounded text response, including Actions log payloads."""
         response = await self.request(
@@ -780,6 +783,7 @@ class GitHubClient:
             path,
             expected_statuses=expected_statuses,
             max_response_bytes=max_response_bytes,
+            timeout=timeout,
         )
         return response.body.decode("utf-8", "replace")
 
@@ -853,6 +857,7 @@ class GitHubClient:
         json_body: dict[str, Any] | None = None,
         expected_statuses: set[int] | None = None,
         max_response_bytes: int | None = None,
+        timeout: float | None = None,
     ) -> GitHubApiResponse:
         normalized_method = _validated_method(method)
         allowed = _validated_statuses(expected_statuses)
@@ -903,6 +908,7 @@ class GitHubClient:
             repository=self.repository,
             stdin=stdin,
             max_stdout_bytes=self.max_header_bytes + body_limit,
+            timeout=timeout,
             check_result=validate_result,
         )
         if response is None:  # pragma: no cover - execution contract violation
@@ -1085,6 +1091,141 @@ class GitHubClient:
         )
         if payload.get("number") != number or payload.get("state") != "closed":
             raise GitHubAccessError("conflict_or_invalid", "GitHub PR close was not confirmed")
+
+    # Ordinary PR and CI operations use the same repository authority as the
+    # integration operations above.  The caller supplies the repository; a PR
+    # URL is only an identifier to check against it, never an auth selector.
+    async def pull_request(self, pr_url: str) -> dict[str, Any]:
+        number = GitHubAccess.validate_pr_url(self.repository, pr_url)
+        payload = await self.request_json(
+            "GET", f"/repositories/{self.repository.repository_id}/pulls/{number}"
+        )
+        base = payload.get("base")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        if (
+            payload.get("number") != number
+            or not isinstance(base_repo, dict)
+            or _strict_positive_int(base_repo.get("id")) != self.repository.repository_id
+            or base_repo.get("full_name") != self.repository.full_name
+            or payload.get("html_url")
+            != f"https://github.com/{self.repository.full_name}/pull/{number}"
+        ):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub PR repository did not match")
+        return payload
+
+    async def create_pull_request(
+        self, *, title: str, body: str, base: str, head: str
+    ) -> str:
+        _validated_short_head(base, label="base branch")
+        _validated_short_head(head, label="head branch")
+        if not isinstance(title, str) or not title.strip() or not isinstance(body, str):
+            raise ValueError("PR title and body must be supplied explicitly")
+        if await self.exact_head_ref(head) is None:
+            raise GitHubAccessError(
+                "conflict_or_invalid", "PR head branch is not published on the authorized repository"
+            )
+        result = await self.access.run_write(
+            ["pr", "create", "--title", title, "--body-file", "-", "--base", base,
+             "--head", head],
+            repository=self.repository,
+            stdin=body,
+        )
+        url = result.stdout.decode("utf-8", "replace").strip()
+        GitHubAccess.validate_pr_url(self.repository, url)
+        return url
+
+    async def list_pull_requests(
+        self, *, state: str = "open", base: str | None = None,
+        head: str | None = None, limit: int = 30, include_head_oid: bool = False,
+    ) -> list[dict[str, Any]]:
+        if state not in {"open", "closed", "merged", "all"}:
+            raise ValueError("invalid PR state")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("PR list limit must be between 1 and 100")
+        fields = "number,url,title,baseRefName,headRefName,state"
+        if include_head_oid:
+            fields += ",headRefOid"
+        args = ["pr", "list", "--state", state, "--limit", str(limit), "--json", fields]
+        if base is not None:
+            args.extend(["--base", _validated_short_head(base, label="base branch")])
+        if head is not None:
+            args.extend(["--head", _validated_short_head(head, label="head branch")])
+        result = await self.access.run_read(args, repository=self.repository)
+        payload = _decode_json(result.stdout)
+        if not isinstance(payload, list) or not all(isinstance(item, dict) for item in payload):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub PR list was malformed")
+        for item in payload:
+            GitHubAccess.validate_pr_url(self.repository, item.get("url"))
+        return payload
+
+    async def merge_pull_request(
+        self, pr_url: str, *, method: str, expected_head_oid: str
+    ) -> str | None:
+        number = GitHubAccess.validate_pr_url(self.repository, pr_url)
+        if method not in {"squash", "merge", "rebase"}:
+            raise ValueError("invalid PR merge method")
+        if re.fullmatch(r"[0-9a-f]{40}", expected_head_oid) is None:
+            raise ValueError("invalid expected PR head OID")
+        result = await self.access.run_write(
+            ["pr", "merge", str(number), f"--{method}", "--match-head-commit",
+             expected_head_oid, "--delete-branch"],
+            repository=self.repository,
+        )
+        for token in result.stdout.decode("utf-8", "replace").split():
+            token = token.strip("().,;:")
+            if re.fullmatch(r"[0-9a-f]{40}", token):
+                return token
+        return None
+
+    async def check_rollup(self, pr_url: str) -> list[dict[str, Any]]:
+        number = GitHubAccess.validate_pr_url(self.repository, pr_url)
+        result = await self.access.run_read(
+            ["pr", "view", str(number), "--json", "statusCheckRollup"],
+            repository=self.repository,
+        )
+        payload = _decode_json(result.stdout)
+        rollup = payload.get("statusCheckRollup") if isinstance(payload, dict) else None
+        if rollup is None:
+            return []
+        if not isinstance(rollup, list) or not all(isinstance(item, dict) for item in rollup):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub PR check rollup was malformed")
+        return rollup
+
+    async def commit_head(self, ref: str) -> str:
+        if not isinstance(ref, str) or not ref or any(c in ref for c in "?#\x00\r\n"):
+            raise ValueError("invalid commit reference")
+        payload = await self.request_json(
+            "GET", f"/repositories/{self.repository.repository_id}/commits/{quote(ref, safe='')}"
+        )
+        sha = payload.get("sha")
+        if not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub commit OID was malformed")
+        return sha
+
+    async def commit_check_runs(self, sha: str) -> list[dict[str, Any]]:
+        if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+            raise ValueError("invalid commit OID")
+        return await self.paged_items(
+            f"/repositories/{self.repository.repository_id}/commits/{sha}/check-runs?per_page=100",
+            key="check_runs",
+        )
+
+    async def job_log(self, job_id: int) -> str:
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ValueError("invalid Actions job ID")
+        return await self.request_text(
+            "GET", f"/repositories/{self.repository.repository_id}/actions/jobs/{job_id}/logs",
+            max_response_bytes=16 * 1024 * 1024,
+            timeout=120,
+        )
+
+    async def compare(self, base: str, head: str) -> dict[str, Any]:
+        _validated_short_head(base, label="base branch")
+        if re.fullmatch(r"[0-9a-f]{7,40}", head) is None:
+            raise ValueError("invalid comparison head OID")
+        return await self.request_json(
+            "GET", f"/repositories/{self.repository.repository_id}/compare/{quote(base, safe='')}...{head}"
+        )
 
     async def lookup_audit_pr(self, *, idempotency_key: str, branch: str | None = None):
         marker = self._audit_marker(idempotency_key)
@@ -1446,7 +1587,13 @@ def _validated_short_head(value: Any, *, label: str) -> str:
     if (
         not isinstance(value, str)
         or not value
-        or value.startswith("refs/")
+        or len(value) > 255
+        or value.startswith(("refs/", "-", "/"))
+        or value.endswith(("/", ".", ".lock"))
+        or any(segment in {"", ".", ".."} for segment in value.split("/"))
+        or ".." in value
+        or "@{" in value
+        or any(character in value for character in " ~^:?*[\\%#")
         or any(ord(character) < 32 or ord(character) == 127 for character in value)
     ):
         raise ValueError(f"{label} must be a short head name")

@@ -55,10 +55,11 @@ class GitService(Protocol):
         self,
         checkout_path: str,
         *,
+        project_id: str,
         title: str,
         body: str,
-        base: str | None = None,
-        head: str | None = None,
+        base: str,
+        head: str,
         draft: bool = False,
     ) -> dict: ...
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]: ...
@@ -276,8 +277,9 @@ class GitServiceImpl:
     on the Protocol surface.  External plugins cannot reach this.
     """
 
-    def __init__(self, git_manager: GitManager) -> None:
+    def __init__(self, git_manager: GitManager, db: Database) -> None:
         self._git = git_manager
+        self._db = db
         self._manager = git_manager  # escape hatch for internal plugins
 
     async def status(self, checkout_path: str) -> dict:
@@ -307,15 +309,23 @@ class GitServiceImpl:
         self,
         checkout_path: str,
         *,
+        project_id: str,
         title: str,
         body: str,
-        base: str | None = None,
-        head: str | None = None,
+        base: str,
+        head: str,
         draft: bool = False,
     ) -> dict:
-        return await self._git.acreate_pr(
-            checkout_path, title=title, body=body, base=base, head=head, draft=draft
+        if draft:
+            raise ValueError("draft PR creation is not supported by this service")
+        project = await self._db.get_project(project_id)
+        if project is None or not project.repo_url:
+            raise ValueError("project has no authorized GitHub repository")
+        repository = await self._git.bind_github_repository(project.repo_url)
+        url = await self._git.acreate_pr(
+            checkout_path, head, title, body, base, repository=repository
         )
+        return {"pr_url": url}
 
     async def log(self, checkout_path: str, limit: int = 10) -> list[dict]:
         return await self._git.alog(checkout_path, limit=limit)
@@ -613,7 +623,7 @@ def build_internal_services(
         (KV, temporal facts, scoped search).
     """
     services: dict[str, Any] = {
-        "git": GitServiceImpl(git),
+        "git": GitServiceImpl(git, db),
         "db": DatabaseServiceImpl(db),
         "workspace": WorkspaceServiceImpl(db, git, config),
         "config": ConfigServiceImpl(config),

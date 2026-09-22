@@ -2,6 +2,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, update
 from src.database.tables import integration_branch_owners, task_session_attempts, tasks
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.integration.ownership import BranchKey, BranchOwnership
 from src.models import TaskStatus, Workspace, RepoSourceType
 from tests.test_integration_review_evidence import review_case, _git  # noqa: F401
@@ -114,6 +115,11 @@ async def test_flush_recovers_only_exact_completed_root_pr(review_case, monkeypa
         await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id=None))
     pr_url = "https://github.com/acme/widgets/pull/123"
     git = case["promotion"].git
+    monkeypatch.setattr(
+        git,
+        "bind_github_repository",
+        AsyncMock(return_value=GitHubRepositoryBinding(1, "acme/widgets")),
+    )
     monkeypatch.setattr(git, "afind_open_pr", AsyncMock(return_value=pr_url))
     monkeypatch.setattr(
         git,
@@ -132,6 +138,19 @@ async def test_flush_recovers_only_exact_completed_root_pr(review_case, monkeypa
     assert await recover_completed_pr_links(db, case["promotion"], "p") == []
 
 
+async def test_pr_recovery_skips_local_origin_without_github_authority(review_case):  # noqa: F811
+    from src.integration.completion_recovery import recover_completed_pr_links
+
+    case = review_case
+    db = case["db"]
+    await db.update_project("p", hierarchical_integration_mode="train")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id=None))
+
+    assert await recover_completed_pr_links(db, case["promotion"], "p") == []
+    assert (await db.get_task("leaf")).pr_url is None
+
+
 async def test_pr_recovery_releases_git_before_waiting_for_project_lock(
     review_case, monkeypatch,  # noqa: F811
 ):
@@ -148,6 +167,11 @@ async def test_pr_recovery_releases_git_before_waiting_for_project_lock(
     async with db.immediate() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "leaf").values(parent_task_id=None))
     git = case["promotion"].git
+    monkeypatch.setattr(
+        git,
+        "bind_github_repository",
+        AsyncMock(return_value=GitHubRepositoryBinding(1, "acme/widgets")),
+    )
     repository_lock = asyncio.Lock()
     observing = asyncio.Event()
     project_locked = asyncio.Event()
@@ -159,7 +183,7 @@ async def test_pr_recovery_releases_git_before_waiting_for_project_lock(
         async with repository_lock:
             yield
 
-    async def identity(*_args):
+    async def identity(*_args, **_kwargs):
         observing.set()
         await project_locked.wait()
         return SimpleNamespace(base_ref="main", head_ref="aq/leaf", head_oid=case["head"])

@@ -276,10 +276,11 @@ async def _pr_is_open(ctx: DoctorContext, project_id: str, pr_url: str) -> bool 
     if git is None or ctx.db is None:
         return None
     try:
-        checkout = await ctx.db.get_project_workspace_path(project_id)
-        if not checkout:
+        project = await ctx.db.get_project(project_id)
+        if project is None or not project.repo_url:
             return None
-        merged = await git.acheck_pr_merged(checkout, pr_url)
+        repository = await git.bind_github_repository(project.repo_url)
+        merged = await git.acheck_pr_merged("", pr_url, repository=repository)
     except Exception:
         # Any gh/git failure (no auth, no network, deleted repo) is "unknown".
         return None

@@ -219,7 +219,9 @@ async def test_pr_delivery_diff_imports_pinned_oids_with_fresh_app_credentials(
     monkeypatch.setattr(manager, "_afetch_exact_oid_with_app_auth_to_url", file_source_fetch)
     identity = PullRequestIdentity("acme/widgets", 12, "main", base, "topic", tip, 1)
 
-    changed = await manager._apr_delivery_diff(str(tmp_path), identity)
+    changed = await manager._apr_delivery_diff(
+        str(tmp_path), identity, repository=GitHubRepositoryBinding(303, "acme/widgets")
+    )
 
     assert changed == "file.txt\x00"
     assert access.requested == ["https://github.com/acme/widgets.git"]

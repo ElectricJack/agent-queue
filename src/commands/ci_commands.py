@@ -303,17 +303,38 @@ class CiCommandsMixin:
         not be read.
         """
         git = self.orchestrator.git
-        slug = git.github_repo_slug(project.repo_url)
-        if slug is None:
+        if not project.repo_url:
             return {
                 "state": UNKNOWN,
                 "head_sha": None,
                 "error": f"project {project.id} has no GitHub repo_url to read CI from",
             }
+        from src.projects.github import GitHubError, parse_github_repository
+
+        try:
+            expected_name = parse_github_repository(project.repo_url).full_name
+        except GitHubError:
+            return {
+                "state": UNKNOWN, "head_sha": None,
+                "error": f"project {project.id} has no GitHub repo_url to read CI from",
+            }
+        try:
+            repository = await git.bind_github_repository(project.repo_url)
+            if repository.full_name != expected_name:
+                raise ValueError("GitHub repository identity changed")
+        except Exception:
+            return {
+                "state": UNKNOWN, "head_sha": None,
+                "error": f"could not authorize GitHub repository for project {project.id}",
+            }
+        slug = repository.full_name
         cwd = self.config.data_dir or os.getcwd()
         os.makedirs(cwd, exist_ok=True)
-        head_sha = await git.acommit_head_sha(slug, ref, cwd=cwd)
-        entries = await git.acommit_check_runs(slug, head_sha, cwd=cwd) if head_sha else None
+        head_sha = await git.acommit_head_sha(slug, ref, cwd=cwd, repository=repository)
+        entries = (
+            await git.acommit_check_runs(slug, head_sha, cwd=cwd, repository=repository)
+            if head_sha else None
+        )
         verdict = classify_rollup(entries)
         observed = {
             "head_sha": head_sha,
@@ -337,7 +358,7 @@ class CiCommandsMixin:
             job_id = entry.get("id")
             if job_id is None:
                 continue
-            tests = await git.ajob_failed_tests(slug, job_id, cwd=cwd)
+            tests = await git.ajob_failed_tests(slug, job_id, cwd=cwd, repository=repository)
             failing_tests.update(tests or [])
         observed.update({"failing_tests": sorted(failing_tests), "run_url": run_url})
         return observed

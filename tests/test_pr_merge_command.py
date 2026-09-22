@@ -14,60 +14,59 @@ from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError
+from src.git.github import GitHubAccess
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+)
 from src.models import Project, RepoConfig, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from tests.db_fixtures import lease_dsn
+
+REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
 
 # ---------------------------------------------------------------------------
 # GitManager.amerge_pr unit tests
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_pr_merge_command_shells_gh_and_returns_success(monkeypatch):
+def _manager_with_merge(monkeypatch, *, sha=None, error=None):
     from src.git.manager import GitManager, PullRequestIdentity
 
     gm = GitManager()
-    gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
+    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
+    gm.avalidate_pr_for_merge = AsyncMock(return_value=identity)
+    client = MagicMock()
+    client.merge_pull_request = AsyncMock(
+        side_effect=error if error is not None else None, return_value=sha
     )
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        assert cmd[:3] == ["gh", "pr", "merge"]
-        assert "--squash" in cmd
-        assert "https://github.com/org/repo/pull/42" in cmd
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = "Merged\n"
-        r.stderr = ""
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    result = await gm.amerge_pr("/some/checkout", "https://github.com/org/repo/pull/42")
-    assert result["success"] is True
-    assert result["error"] is None
+    monkeypatch.setattr(
+        gm, "_github_client", lambda binding: client if binding == REPOSITORY else None
+    )
+    gm._arun_subprocess = AsyncMock(side_effect=AssertionError("ordinary merge launched gh"))
+    return gm, client
 
 
 @pytest.mark.asyncio
-async def test_pr_merge_command_reports_gh_failure(monkeypatch):
-    from src.git.manager import GitManager, PullRequestIdentity
-
-    gm = GitManager()
-    gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
+async def test_pr_merge_uses_the_shared_client(monkeypatch):
+    gm, client = _manager_with_merge(monkeypatch)
+    result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
+    assert result == {"success": True, "sha": None, "error": None}
+    client.merge_pull_request.assert_awaited_once_with(
+        _PR_URL, method="squash", expected_head_oid="b" * 40
     )
+    gm._arun_subprocess.assert_not_awaited()
 
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 1
-        r.stdout = ""
-        r.stderr = "not mergeable: conflicts"
-        return r
 
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    result = await gm.amerge_pr("/some/checkout", "https://github.com/org/repo/pull/42")
+@pytest.mark.asyncio
+async def test_pr_merge_reports_shared_client_failure(monkeypatch):
+    gm, _ = _manager_with_merge(
+        monkeypatch, error=GitHubAccessError("conflict_or_invalid", "merge was refused")
+    )
+    result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert result["success"] is False
-    assert "conflicts" in result["error"]
+    assert result["error"] == "merge was refused"
 
 
 @pytest.mark.asyncio
@@ -76,66 +75,27 @@ async def test_pr_merge_invalid_method(monkeypatch):
 
     gm = GitManager()
     result = await gm.amerge_pr(
-        "/some/checkout", "https://github.com/org/repo/pull/42", method="fast-forward"
+        "/some/checkout", _PR_URL, method="fast-forward", repository=REPOSITORY
     )
     assert result["success"] is False
     assert "invalid method" in result["error"]
 
 
 @pytest.mark.asyncio
-async def test_pr_merge_parses_sha_from_output(monkeypatch):
-    from src.git.manager import GitManager, PullRequestIdentity
-
-    gm = GitManager()
-    gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
-    )
+async def test_pr_merge_returns_client_sha_and_pins_validated_head(monkeypatch):
     sha = "a" * 40
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        r = MagicMock()
-        r.returncode = 0
-        r.stdout = f"Merged pull request #42 ({sha})\n"
-        r.stderr = ""
-        return r
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    result = await gm.amerge_pr("/some/checkout", "https://github.com/org/repo/pull/42")
-    assert result["success"] is True
-    assert result["sha"] == sha
-
-
-@pytest.mark.asyncio
-async def test_pr_merge_pins_the_validated_head_oid(monkeypatch):
-    """The reviewed head is passed to gh, not re-resolved by a mutable PR URL."""
-    from src.git.manager import GitManager, PullRequestIdentity
-
-    gm = GitManager()
-    head_oid = "b" * 40
-    gm.avalidate_pr_for_merge = AsyncMock(
-        return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", head_oid, 1)
-    )
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        assert cmd == [
-            "gh",
-            "pr",
-            "merge",
-            "https://github.com/org/repo/pull/42",
-            "--squash",
-            "--match-head-commit",
-            head_oid,
-            "--delete-branch",
-        ]
-        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    gm, client = _manager_with_merge(monkeypatch, sha=sha)
     result = await gm.amerge_pr(
         "/some/checkout",
-        "https://github.com/org/repo/pull/42",
-        expected_head_oid=head_oid,
+        _PR_URL,
+        expected_head_oid="b" * 40,
+        repository=REPOSITORY,
     )
     assert result["success"] is True
+    assert result["sha"] == sha
+    client.merge_pull_request.assert_awaited_once_with(
+        _PR_URL, method="squash", expected_head_oid="b" * 40
+    )
 
 
 def _pr_identity_payload(
@@ -190,66 +150,40 @@ _GH_2_45_PR_VIEW_FIELDS = frozenset(
 )  # fmt: skip
 
 
-def test_every_gh_pr_view_json_field_exists_on_the_minimum_supported_gh():
-    """Regression for the merge path asking gh for fields it does not have.
-
-    ``aget_pr_identity`` used to request ``baseRefOid`` and ``baseRepository``;
-    gh 2.45 rejects both with ``Unknown JSON field`` and every ``aq pr merge``
-    failed closed.  The suite missed it because the subprocess was faked, so
-    this pins every ``gh pr view --json`` literal in the manager to the field
-    list the minimum supported gh actually serves.
-    """
+def test_every_pr_json_field_exists_on_the_minimum_supported_gh():
     import re
     from pathlib import Path
+    from src.git import github
 
-    from src.git import manager
-
-    source = Path(manager.__file__).read_text()
+    source = Path(github.__file__).read_text()
     specs = re.findall(r'"--json",\s*"([A-Za-z0-9,]+)"', source)
-    assert specs, "expected at least one gh pr view --json call in the manager"
+    assert specs
     for spec in specs:
         unknown = set(spec.split(",")) - _GH_2_45_PR_VIEW_FIELDS
         assert not unknown, f"gh 2.45 has no pr view --json field(s) {sorted(unknown)}"
 
 
-@pytest.mark.asyncio
-async def test_pr_identity_is_read_from_the_rest_pull_resource(monkeypatch):
+def _gm_with_payload(monkeypatch, *payloads):
+    import json
     from src.git.manager import GitManager
 
     gm = GitManager()
-    commands: list[list[str]] = []
+    values = iter(payloads)
+    client = MagicMock()
+    client.pull_request = AsyncMock(side_effect=lambda url: json.loads(next(values)))
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
+    return gm, client
 
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        commands.append(cmd)
-        return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
 
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    identity = await gm.aget_pr_identity(
-        "/some/checkout", "https://github.com/org/repo/pull/42#issuecomment-1"
-    )
-
-    assert commands == [_PR_IDENTITY_CMD]
+@pytest.mark.asyncio
+async def test_pr_identity_is_read_from_one_repository_bound_snapshot(monkeypatch):
+    gm, client = _gm_with_payload(monkeypatch, _pr_identity_payload())
+    identity = await gm.aget_pr_identity("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert identity.repository == "org/repo"
     assert identity.number == 42
     assert (identity.base_ref, identity.head_ref) == ("main", "feature/guard")
     assert (identity.base_oid, identity.head_oid) == ("a" * 40, "b" * 40)
-
-
-@pytest.mark.asyncio
-async def test_pr_identity_uses_the_host_from_the_url(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    commands: list[list[str]] = []
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        commands.append(cmd)
-        return MagicMock(returncode=0, stdout=_pr_identity_payload(), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    await gm.aget_pr_identity("/some/checkout", "https://ghe.example.com/org/repo/pull/42")
-
-    assert commands == [["gh", "api", "--hostname", "ghe.example.com", "repos/org/repo/pulls/42"]]
+    client.pull_request.assert_awaited_once_with(_PR_URL)
 
 
 @pytest.mark.asyncio
@@ -259,35 +193,23 @@ async def test_pr_identity_uses_the_host_from_the_url(monkeypatch):
         "https://github.com/org/repo",
         "https://github.com/org/repo/issues/42",
         "https://github.com/org/repo/pull/0",
-        "https://github.com/org/pull/42",
+        "https://github.com/other/repo/pull/42",
+        "https://ghe.example.com/org/repo/pull/42",
         "not a url",
     ],
 )
-async def test_pr_identity_rejects_urls_that_are_not_a_pull_request(monkeypatch, pr_url):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-
-    async def never(cmd, cwd, timeout):  # pragma: no cover - must not be reached
-        raise AssertionError(f"gh must not run for {pr_url!r}: {cmd}")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", never)
-    with pytest.raises(GitError, match="pull request URL"):
-        await gm.aget_pr_identity("/some/checkout", pr_url)
+async def test_pr_identity_rejects_invalid_or_foreign_urls_before_client(monkeypatch, pr_url):
+    gm, client = _gm_with_payload(monkeypatch)
+    with pytest.raises(GitError, match="pull request URL|authorized repository"):
+        await gm.aget_pr_identity("/some/checkout", pr_url, repository=REPOSITORY)
+    client.pull_request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_pr_identity_fails_closed_when_the_resource_is_a_different_pr(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-
-    async def other_pr(cmd, cwd, timeout):
-        return MagicMock(returncode=0, stdout=_pr_identity_payload(number=41), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", other_pr)
+async def test_pr_identity_fails_closed_when_resource_is_a_different_pr(monkeypatch):
+    gm, _ = _gm_with_payload(monkeypatch, _pr_identity_payload(number=41))
     with pytest.raises(GitError, match="complete PR identity"):
-        await gm.aget_pr_identity("/some/checkout", "https://github.com/org/repo/pull/42")
+        await gm.aget_pr_identity("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
 @pytest.mark.integration
@@ -420,18 +342,48 @@ class _FakeGit:
         raise AssertionError(f"unexpected git call: {args}")
 
 
+@pytest.mark.asyncio
+async def test_pr_diff_fetch_cannot_fall_back_to_login_when_app_token_is_unavailable(monkeypatch):
+    from types import SimpleNamespace
+    from src.git.manager import GitManager, PullRequestIdentity
+
+    class DeniedAppAccess:
+        auth = SimpleNamespace(mode=GitHubCredentialMode.APP)
+
+        async def bind_repository(self, reference):
+            assert reference == "https://github.com/org/repo.git"
+            return REPOSITORY
+
+        async def installation_token(self, repository):
+            assert repository == REPOSITORY
+            return None
+
+    access = DeniedAppAccess()
+    gm = GitManager(access)
+    git = _FakeGit({_HEAD_A: _diff("work.py")})
+    monkeypatch.setattr(gm, "_arun", git)
+    identity = PullRequestIdentity("org/repo", 42, "main", _BASE, "feature", _HEAD_A, 1)
+    with pytest.raises(GitError, match="GitHub App credential is unavailable"):
+        await gm._apr_delivery_diff("/data", identity, repository=REPOSITORY)
+    assert not git.commands("fetch")
+
+
 def _gm_with_git(monkeypatch, git: _FakeGit, *, views: list[str] | None = None):
-    """A GitManager whose gh serves ``views`` identity snapshots and whose git is ``git``."""
+    """A manager with shared-client PR snapshots and a fake Git fetch."""
     from src.git.manager import GitManager
 
-    gm = GitManager()
+    gm = GitManager(GitHubAccess.from_config(None))
     snapshots = iter(views if views is not None else [_pr_identity_payload()] * 2)
 
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        assert _is_identity_call(cmd), f"the guard must not list the PR's files: {cmd}"
-        return MagicMock(returncode=0, stdout=next(snapshots), stderr="")
+    async def pull_request(url):
+        import json
 
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+        assert url == _PR_URL
+        return json.loads(next(snapshots))
+
+    client = MagicMock()
+    client.pull_request = AsyncMock(side_effect=pull_request)
+    monkeypatch.setattr(gm, "_github_client", lambda binding: client)
     monkeypatch.setattr(gm, "_arun", git)
     return gm
 
@@ -450,7 +402,7 @@ async def test_pr_validation_rejects_reserved_paths_in_the_pinned_diff(monkeypat
     with pytest.raises(
         GitError, match="reserved daemon bookkeeping.*" + re.escape(reserved)
     ) as excinfo:
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert "work.py" not in str(excinfo.value)
 
 
@@ -468,7 +420,7 @@ async def test_pr_validation_derives_the_diff_from_the_pinned_oids(monkeypatch):
     git = _FakeGit({_HEAD_A: _diff("work.py")})
     gm = _gm_with_git(monkeypatch, git)
 
-    identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+    identity = await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
 
     assert identity.head_oid == _HEAD_A
     assert [git.subcommand(args) for args, _, _ in git.calls] == [
@@ -512,7 +464,7 @@ async def test_pr_validation_refuses_a_head_that_flipped_while_the_diff_was_deri
     )
     gm = _gm_with_git(monkeypatch, git)
     with pytest.raises(GitError, match=r"reserved daemon bookkeeping.*\.aq/claim\.json"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
     (diff,) = git.commands("diff-tree")
     assert diff[-1] == _HEAD_A
 
@@ -523,7 +475,7 @@ async def test_pr_validation_fails_closed_when_the_pinned_head_cannot_be_fetched
     git = _FakeGit({_HEAD_B: _diff("work.py")}, remote_head=_HEAD_B, fetchable={_HEAD_B, _BASE})
     gm = _gm_with_git(monkeypatch, git)
     with pytest.raises(GitError, match="could not inspect PR delivery diff.*not our ref"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert not git.commands("diff-tree")
 
 
@@ -541,7 +493,7 @@ async def test_pr_validation_fails_closed_when_a_fetched_commit_is_missing(monke
     git = _SilentFetch({_HEAD_A: _diff("work.py")})
     gm = _gm_with_git(monkeypatch, git)
     with pytest.raises(GitError, match="could not inspect PR delivery diff"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert not git.commands("diff-tree")
 
 
@@ -551,26 +503,19 @@ async def test_pr_validation_fails_closed_without_a_single_merge_base_oid(monkey
     git = _FakeGit({_HEAD_A: _diff("work.py")}, merge_base=merge_base)
     gm = _gm_with_git(monkeypatch, git)
     with pytest.raises(GitError, match="could not inspect PR delivery diff.*merge-base"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert not git.commands("diff-tree")
 
 
 @pytest.mark.asyncio
-async def test_pr_validation_caches_per_host_and_repository(monkeypatch):
-    """The cache is keyed by the PR URL's host and GitHub's repository name."""
-    import json
-
-    payload = json.loads(_pr_identity_payload())
-    payload["base"]["repo"]["full_name"] = "Org/Repo.Name"
+async def test_pr_validation_rejects_foreign_host_before_using_cache(monkeypatch):
     git = _FakeGit({_HEAD_A: _diff("work.py")})
-    gm = _gm_with_git(monkeypatch, git, views=[json.dumps(payload)] * 2)
-
-    await gm.avalidate_pr_for_merge("/data", "https://ghe.example.com/org/repo/pull/42")
-
-    (init,) = git.commands("init")
-    assert init[-1] == "/data/pr-diff-cache/ghe.example.com/Org/Repo.Name.git"
-    (fetch,) = git.commands("fetch")
-    assert "https://ghe.example.com/Org/Repo.Name.git" in fetch
+    gm = _gm_with_git(monkeypatch, git)
+    with pytest.raises(GitError, match="pull request URL"):
+        await gm.avalidate_pr_for_merge(
+            "/data", "https://ghe.example.com/org/repo/pull/42", repository=REPOSITORY
+        )
+    assert not git.calls
 
 
 @pytest.mark.asyncio
@@ -585,7 +530,7 @@ async def test_pr_validation_refuses_a_repository_name_that_escapes_the_cache(
     git = _FakeGit({_HEAD_A: _diff("work.py")})
     gm = _gm_with_git(monkeypatch, git, views=[json.dumps(payload)] * 2)
     with pytest.raises(GitError, match="complete PR identity"):
-        await gm.avalidate_pr_for_merge("/data", _PR_URL)
+        await gm.avalidate_pr_for_merge("/data", _PR_URL, repository=REPOSITORY)
     assert not git.calls
 
 
@@ -610,8 +555,8 @@ async def test_pr_validation_serializes_fetches_into_one_cache(monkeypatch):
     gm = _gm_with_git(monkeypatch, git, views=[_pr_identity_payload()] * 4)
 
     await asyncio.gather(
-        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL),
-        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL),
+        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY),
+        gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY),
     )
     assert len(git.commands("fetch")) == 2
     assert _SlowFetch.overlap is False
@@ -619,26 +564,14 @@ async def test_pr_validation_serializes_fetches_into_one_cache(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_pr_validation_fails_closed_for_malformed_or_unavailable_identity(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    git = _FakeGit({_HEAD_A: _diff("work.py")})
-    monkeypatch.setattr(gm, "_arun", git)
-
-    async def malformed(cmd, cwd, timeout):
-        return MagicMock(returncode=0, stdout='{"headRefOid": "not-an-oid"}', stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", malformed)
+    gm, client = _gm_with_payload(monkeypatch, '{"headRefOid": "not-an-oid"}')
     with pytest.raises(GitError, match="complete PR identity"):
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
-
-    async def unavailable(cmd, cwd, timeout):
-        return MagicMock(returncode=1, stdout="", stderr="not authenticated")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", unavailable)
-    with pytest.raises(GitError, match="could not resolve PR identity"):
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
-    assert not git.calls
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
+    client.pull_request = AsyncMock(
+        side_effect=GitHubAccessError("credentials", "GitHub credential unavailable")
+    )
+    with pytest.raises(GitError, match="could not resolve complete PR identity"):
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
 @pytest.mark.asyncio
@@ -647,7 +580,7 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
 
     gm = _gm_with_git(monkeypatch, git)
     identity = await gm.avalidate_pr_for_merge(
-        "/some/checkout", "https://github.com/org/repo/pull/42"
+        "/some/checkout", "https://github.com/org/repo/pull/42", repository=REPOSITORY
     )
     assert identity.head_oid == "b" * 40
 
@@ -655,7 +588,9 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
         monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(head_oid="c" * 40)]
     )
     with pytest.raises(GitError, match="identity changed"):
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
+        await gm.avalidate_pr_for_merge(
+            "/some/checkout", "https://github.com/org/repo/pull/42", repository=REPOSITORY
+        )
 
     # The base OID moves on every push to the default branch, which says
     # nothing about this PR: the delivery diff is a merge-base diff, so what
@@ -665,7 +600,7 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
         monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(base_oid="e" * 40)]
     )
     identity = await gm.avalidate_pr_for_merge(
-        "/some/checkout", "https://github.com/org/repo/pull/42"
+        "/some/checkout", "https://github.com/org/repo/pull/42", repository=REPOSITORY
     )
     assert identity.head_oid == "b" * 40
 
@@ -675,7 +610,9 @@ async def test_pr_validation_accepts_clean_paths_and_detects_a_changed_head(monk
         monkeypatch, git, views=[_pr_identity_payload(), _pr_identity_payload(base_ref="develop")]
     )
     with pytest.raises(GitError, match="identity changed"):
-        await gm.avalidate_pr_for_merge("/some/checkout", "https://github.com/org/repo/pull/42")
+        await gm.avalidate_pr_for_merge(
+            "/some/checkout", "https://github.com/org/repo/pull/42", repository=REPOSITORY
+        )
 
 
 @pytest.mark.asyncio
@@ -687,51 +624,26 @@ async def test_pr_validation_fails_closed_without_a_usable_changed_file_count(
     git = _FakeGit({_HEAD_A: _diff("work.py")})
     gm = _gm_with_git(monkeypatch, git, views=[_pr_identity_payload(changed_files=changed_files)])
     with pytest.raises(GitError, match="complete PR identity"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
 @pytest.mark.asyncio
 async def test_pr_identity_pins_the_changed_file_count_in_the_same_snapshot(monkeypatch):
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    commands: list[list[str]] = []
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        commands.append(cmd)
-        return MagicMock(returncode=0, stdout=_pr_identity_payload(changed_files=7), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    identity = await gm.aget_pr_identity("/some/checkout", _PR_URL)
-
+    gm, client = _gm_with_payload(monkeypatch, _pr_identity_payload(changed_files=7))
+    identity = await gm.aget_pr_identity("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert identity.changed_files == 7
-    # One REST ``pulls/{n}`` read carries the OIDs and the count together, so
-    # the count belongs to the same base/head pair and a count that differs
-    # between the two snapshots means the head that was diffed is not the
-    # head that would be merged.
-    assert commands == [_PR_IDENTITY_CMD]
+    client.pull_request.assert_awaited_once_with(_PR_URL)
 
 
 @pytest.mark.asyncio
 async def test_pr_identity_reads_only_the_rest_changed_files_spelling(monkeypatch):
-    # The identity comes from the REST resource, whose field is
-    # ``changed_files``.  The GraphQL spelling behind ``gh pr view --json``
-    # (``changedFiles``) is not a count the REST snapshot produces, so a
-    # payload carrying only that is an incomplete identity.
     import json
 
-    from src.git.manager import GitManager
-
-    gm = GitManager()
     payload = json.loads(_pr_identity_payload(changed_files=None))
     payload["changedFiles"] = 5
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        return MagicMock(returncode=0, stdout=json.dumps(payload), stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
+    gm, _ = _gm_with_payload(monkeypatch, json.dumps(payload))
     with pytest.raises(GitError, match="complete PR identity"):
-        await gm.aget_pr_identity("/some/checkout", _PR_URL)
+        await gm.aget_pr_identity("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
 @pytest.mark.asyncio
@@ -743,7 +655,7 @@ async def test_pr_validation_detects_a_changed_file_count_between_snapshots(monk
         views=[_pr_identity_payload(changed_files=1), _pr_identity_payload(changed_files=2)],
     )
     with pytest.raises(GitError, match="identity changed"):
-        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL)
+        await gm.avalidate_pr_for_merge("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
 @pytest.mark.integration
@@ -769,7 +681,9 @@ async def test_pr_validation_derives_the_diff_against_a_real_repository(tmp_path
         pytest.skip("gh is not authenticated")
 
     gm = GitManager()
-    identity = await gm.avalidate_pr_for_merge(str(tmp_path), "https://github.com/cli/cli/pull/1")
+    identity = await gm.avalidate_pr_for_merge(
+        str(tmp_path), "https://github.com/cli/cli/pull/1", repository=REPOSITORY
+    )
     assert identity.head_oid == "e9a3253762e768badaa1d4a5b3d267416d1e42f4"
     cache = tmp_path / "pr-diff-cache" / "github.com" / "cli" / "cli.git"
     assert (cache / "HEAD").is_file()
@@ -785,129 +699,76 @@ async def test_pr_validation_derives_the_diff_against_a_real_repository(tmp_path
 
 @pytest.mark.asyncio
 async def test_pr_merge_refuses_when_head_changes_after_ci_validation(monkeypatch):
-    from src.git.manager import GitManager
+    from src.git.manager import PullRequestIdentity
 
-    gm = GitManager()
-    merge_called = False
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        nonlocal merge_called
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(head_oid="c" * 40), stderr="")
-        if cmd[:3] == ["gh", "pr", "merge"]:
-            merge_called = True
-        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_B: _diff("work.py")}))
+    gm, client = _manager_with_merge(monkeypatch)
+    gm.avalidate_pr_for_merge.return_value = PullRequestIdentity(
+        "org/repo", 42, "main", "a" * 40, "feature", "c" * 40, 1
+    )
     result = await gm.amerge_pr(
         "/some/checkout",
-        "https://github.com/org/repo/pull/42",
+        _PR_URL,
         expected_head_oid="b" * 40,
         expected_base_ref="main",
+        repository=REPOSITORY,
     )
-
     assert result["success"] is False
-    assert "identity changed" in result["error"]
-    assert "head" in result["error"]
-    assert merge_called is False
+    assert "identity changed" in result["error"] and "head" in result["error"]
+    client.merge_pull_request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_pr_merge_proceeds_when_only_the_base_moved_after_ci_validation(monkeypatch):
-    """Exit gate stark-impact-60.6 M4: base-branch movement is not a PR change.
+    from src.git.manager import PullRequestIdentity
 
-    With several agents delivering concurrently the default branch advances
-    between the CI check and the merge on most attempts.  The PR-files diff
-    inspected during validation is a merge-base diff and ``gh pr merge``
-    merges into the *current* base tip anyway, so refusing here only ever
-    produced a spurious "identity changed" the final-reviewer could not act
-    on.  The head OID stays pinned all the way into ``--match-head-commit``.
-    """
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    merge_cmd: list[str] | None = None
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        nonlocal merge_cmd
-        if _is_identity_call(cmd):
-            return MagicMock(returncode=0, stdout=_pr_identity_payload(base_oid="e" * 40), stderr="")
-        if cmd[:3] == ["gh", "pr", "merge"]:
-            merge_cmd = cmd
-        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_A: _diff("work.py")}))
+    gm, client = _manager_with_merge(monkeypatch)
+    gm.avalidate_pr_for_merge.return_value = PullRequestIdentity(
+        "org/repo", 42, "main", "e" * 40, "feature", "b" * 40, 1
+    )
     result = await gm.amerge_pr(
         "/some/checkout",
-        "https://github.com/org/repo/pull/42",
+        _PR_URL,
         expected_head_oid="b" * 40,
         expected_base_ref="main",
+        repository=REPOSITORY,
     )
-
     assert result["success"] is True, result
-    assert merge_cmd is not None
-    assert merge_cmd[-3:] == ["--match-head-commit", "b" * 40, "--delete-branch"]
+    client.merge_pull_request.assert_awaited_once_with(
+        _PR_URL, method="squash", expected_head_oid="b" * 40
+    )
 
 
 @pytest.mark.asyncio
 async def test_pr_merge_refuses_when_pr_is_retargeted_after_ci_validation(monkeypatch):
-    """Dropping the base OID from the pin must not drop retarget detection.
+    from src.git.manager import PullRequestIdentity
 
-    The base OID used to catch this only by accident (another branch has
-    another tip).  The base *branch name* is what the review and the
-    landed-on-default-branch check actually depend on, so it is pinned
-    explicitly.
-    """
-    from src.git.manager import GitManager
-
-    gm = GitManager()
-    merge_called = False
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        nonlocal merge_called
-        if _is_identity_call(cmd):
-            return MagicMock(
-                returncode=0, stdout=_pr_identity_payload(base_ref="develop"), stderr=""
-            )
-        if cmd[:3] == ["gh", "pr", "merge"]:
-            merge_called = True
-        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    monkeypatch.setattr(gm, "_arun", _FakeGit({_HEAD_A: _diff("work.py")}))
+    gm, client = _manager_with_merge(monkeypatch)
+    gm.avalidate_pr_for_merge.return_value = PullRequestIdentity(
+        "org/repo", 42, "develop", "a" * 40, "feature", "b" * 40, 1
+    )
     result = await gm.amerge_pr(
         "/some/checkout",
-        "https://github.com/org/repo/pull/42",
+        _PR_URL,
         expected_head_oid="b" * 40,
         expected_base_ref="main",
+        repository=REPOSITORY,
     )
-
     assert result["success"] is False
     assert "identity changed" in result["error"]
     assert "main" in result["error"] and "develop" in result["error"]
-    assert merge_called is False
+    client.merge_pull_request.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
-    from src.git.manager import GitManager, PullRequestIdentity
-
-    gm = GitManager()
-    identity = PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
-    gm.avalidate_pr_for_merge = AsyncMock(return_value=identity)
-
-    async def fake_arun_subprocess(cmd, cwd, timeout):
-        assert cmd[-3:] == ["--match-head-commit", "b" * 40, "--delete-branch"]
-        return MagicMock(returncode=0, stdout="Merged\n", stderr="")
-
-    monkeypatch.setattr(gm, "_arun_subprocess", fake_arun_subprocess)
-    result = await gm.amerge_pr("/some/checkout", "https://github.com/org/repo/pull/42")
-
+    gm, client = _manager_with_merge(monkeypatch)
+    result = await gm.amerge_pr("/some/checkout", _PR_URL, repository=REPOSITORY)
     assert result["success"] is True
     gm.avalidate_pr_for_merge.assert_awaited_once_with(
-        "/some/checkout", "https://github.com/org/repo/pull/42"
+        "/some/checkout", _PR_URL, repository=REPOSITORY
+    )
+    client.merge_pull_request.assert_awaited_once_with(
+        _PR_URL, method="squash", expected_head_oid="b" * 40
     )
 
 
@@ -920,7 +781,7 @@ async def test_direct_manager_merge_validates_and_pins_identity(monkeypatch):
 async def db(tmp_path):
     d = Database(lease_dsn("pm.db"))
     await d.initialize()
-    await d.create_project(Project(id="p1", name="P1"))
+    await d.create_project(Project(id="p1", name="P1", repo_url="https://github.com/o/r.git"))
     await d.create_workspace(
         Workspace(
             id="w1",
@@ -948,6 +809,7 @@ async def handler(db, config):
     o = Orchestrator(config)
     o.db = db
     o.git = MagicMock()
+    o.git.bind_github_repository = AsyncMock(return_value=GitHubRepositoryBinding(1, "o/r"))
     return CommandHandler(o, config)
 
 
@@ -958,7 +820,13 @@ async def test_cmd_pr_merge_routes_through_git_manager(monkeypatch, handler):
     head_oid = "c" * 40
 
     async def fake_amerge(
-        checkout_path, pr_url, method="squash", *, expected_head_oid=None, expected_base_ref=None
+        checkout_path,
+        pr_url,
+        method="squash",
+        *,
+        expected_head_oid=None,
+        expected_base_ref=None,
+        repository=None,
     ):
         calls["args"] = (checkout_path, pr_url, method)
         calls["head_oid"] = expected_head_oid
@@ -1007,9 +875,7 @@ async def test_cmd_pr_merge_rejects_unknown_project(handler):
 
 @pytest.mark.parametrize("mode", ["hierarchy", "train"])
 @pytest.mark.asyncio
-async def test_cmd_pr_merge_refuses_managed_project_before_forge_or_filesystem(
-    handler, mode
-):
+async def test_cmd_pr_merge_refuses_managed_project_before_forge_or_filesystem(handler, mode):
     await handler.db.create_repo(
         RepoConfig(id="repo", project_id="p1", source_type=RepoSourceType.CLONE)
     )

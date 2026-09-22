@@ -18,7 +18,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
-from src.git.manager import RemoteRefState
+from src.git.manager import GitError, RemoteRefState
 from src.models import TaskStatus
 from src.review_keys import is_review_completion
 from src.sessions.provider import SessionHandle
@@ -433,6 +433,13 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
         return []
     resolved = await promotion._resolve_repository(project.integration_repository_id)
     await promotion._ensure_retained_repository(resolved)
+    try:
+        repository = await promotion.git.bind_github_repository(resolved.origin_url)
+    except GitError:
+        # A local or otherwise unsupported origin has no GitHub PR to recover.
+        # Keep this best-effort sweep from failing the integration flush.
+        logger.debug("Could not authorize repository for PR recovery", exc_info=True)
+        return []
     recovered = []
     # Git observations precede SQL locking: origin materialization takes the
     # project lock before the repository lock, so retaining the latter while
@@ -450,11 +457,14 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
                 ):
                     continue
                 url = await promotion.git.afind_open_pr(
-                    checkout, row["branch_name"], head_ref=remote.oid, include_workspace_head=False
+                    checkout, row["branch_name"], head_ref=remote.oid,
+                    include_workspace_head=False, repository=repository,
                 )
                 if not url:
                     continue
-                identity = await promotion.git.aget_pr_identity(checkout, url)
+                identity = await promotion.git.aget_pr_identity(
+                    checkout, url, repository=repository
+                )
                 if (
                     identity.head_oid != remote.oid
                     or identity.head_ref != row["branch_name"]

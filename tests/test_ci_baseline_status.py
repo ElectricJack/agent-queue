@@ -65,6 +65,9 @@ async def db(tmp_path):
 @pytest.fixture
 def git():
     manager = create_autospec(GitManager, instance=True)
+    from src.git.github_contracts import GitHubRepositoryBinding
+
+    manager.bind_github_repository.return_value = GitHubRepositoryBinding(303, "example/widgets")
     manager.github_repo_slug.side_effect = GitManager.github_repo_slug
     manager.acommit_head_sha.return_value = SHA
     manager.acommit_check_runs.return_value = list(RED_RUNS)

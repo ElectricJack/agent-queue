@@ -11,12 +11,16 @@ import asyncio
 import pathlib
 import re
 import subprocess
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.event_bus import EventBus
 from src.event_schemas import validate_event
 from src.git.manager import GitError, GitManager
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
+
+PR_REPOSITORY = GitHubRepositoryBinding(1, "test/repo")
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +82,11 @@ def clone(tmp_path, bare_repo):
 
 @pytest.fixture
 def mgr():
-    return GitManager()
+    manager = GitManager()
+    client = MagicMock()
+    client.create_pull_request = AsyncMock(return_value="https://github.com/test/repo/pull/1")
+    manager._github_client = MagicMock(return_value=client)
+    return manager
 
 
 @pytest.fixture
@@ -388,24 +396,14 @@ class TestPRCreatedEventPayload:
     title, project_id. PR URL should be valid."""
 
     @pytest.mark.asyncio
-    async def test_pr_created_event_payload(self, clone, mgr, bus, monkeypatch):
+    async def test_pr_created_event_payload(self, clone, mgr, bus):
         """Mocked gh pr create — verifies event payload."""
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
         fake_url = "https://github.com/test/repo/pull/42"
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            """Simulate a successful `gh pr create`."""
-
-            class _Result:
-                returncode = 0
-                stdout = fake_url
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.return_value = fake_url
 
         pr_url = await mgr.acreate_pr(
             clone,
@@ -415,6 +413,7 @@ class TestPRCreatedEventPayload:
             base="main",
             event_bus=bus,
             project_id="proj-pr",
+            repository=PR_REPOSITORY,
         )
 
         assert pr_url == fake_url
@@ -426,44 +425,27 @@ class TestPRCreatedEventPayload:
         assert evt["project_id"] == "proj-pr"
 
     @pytest.mark.asyncio
-    async def test_pr_url_looks_valid(self, clone, mgr, bus, monkeypatch):
+    async def test_pr_url_looks_valid(self, clone, mgr, bus):
         """PR URL should match a GitHub PR URL pattern."""
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
         fake_url = "https://github.com/org/repo/pull/123"
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = fake_url
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.return_value = fake_url
 
         await mgr.acreate_pr(
-            clone, "feat/x", "Title", "Body", event_bus=bus, project_id="p1"
+            clone, "feat/x", "Title", "Body", event_bus=bus, project_id="p1",
+            repository=PR_REPOSITORY,
         )
 
         url = received[0]["pr_url"]
         assert re.match(r"https://github\.com/.+/pull/\d+", url)
 
     @pytest.mark.asyncio
-    async def test_pr_created_without_bus(self, clone, mgr, monkeypatch):
+    async def test_pr_created_without_bus(self, clone, mgr):
         """No bus means no emission, PR creation still succeeds."""
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = "https://github.com/test/repo/pull/1"
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
-
-        url = await mgr.acreate_pr(clone, "b", "T", "B")
+        url = await mgr.acreate_pr(clone, "b", "T", "B", repository=PR_REPOSITORY)
         assert "pull" in url
 
 
@@ -503,41 +485,36 @@ class TestFailedOperationsNoEvent:
         assert len(received) == 0
 
     @pytest.mark.asyncio
-    async def test_failed_pr_creation_no_event(self, clone, mgr, bus, monkeypatch):
+    async def test_failed_pr_creation_no_event(self, clone, mgr, bus):
         """Failed gh pr create does not emit git.pr.created."""
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 1
-                stdout = ""
-                stderr = "authorization required"
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.side_effect = GitHubAccessError(
+            "credentials", "authorization required"
+        )
 
         with pytest.raises(GitError, match="authorization required"):
             await mgr.acreate_pr(
-                clone, "b", "T", "B", event_bus=bus, project_id="p1"
+                clone, "b", "T", "B", event_bus=bus, project_id="p1",
+                repository=PR_REPOSITORY,
             )
         assert len(received) == 0
 
     @pytest.mark.asyncio
-    async def test_pr_timeout_no_event(self, clone, mgr, bus, monkeypatch):
+    async def test_pr_timeout_no_event(self, clone, mgr, bus):
         """gh pr create timeout does not emit git.pr.created."""
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            raise subprocess.TimeoutExpired(cmd="gh", timeout=30)
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.side_effect = GitHubAccessError(
+            "transient", "GitHub PR creation timed out"
+        )
 
         with pytest.raises(GitError, match="timed out"):
             await mgr.acreate_pr(
-                clone, "b", "T", "B", event_bus=bus, project_id="p1"
+                clone, "b", "T", "B", event_bus=bus, project_id="p1",
+                repository=PR_REPOSITORY,
             )
         assert len(received) == 0
 
@@ -585,21 +562,16 @@ class TestEventPayloadsPassSchema:
         assert errors == [], f"Schema validation errors: {errors}"
 
     @pytest.mark.asyncio
-    async def test_pr_event_passes_schema(self, clone, mgr, bus, collector, monkeypatch):
+    async def test_pr_event_passes_schema(self, clone, mgr, bus, collector):
         """git.pr.created event payload validates against its schema."""
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = "https://github.com/org/repo/pull/99"
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.return_value = (
+            "https://github.com/test/repo/pull/99"
+        )
 
         await mgr.acreate_pr(
-            clone, "feat/x", "Title", "Body", event_bus=bus, project_id="proj-s"
+            clone, "feat/x", "Title", "Body", event_bus=bus, project_id="proj-s",
+            repository=PR_REPOSITORY,
         )
 
         events = collector.get("git.pr.created", [])
@@ -637,7 +609,7 @@ class TestEventBusSubscriberIntegration:
 
     @pytest.mark.asyncio
     async def test_wildcard_subscriber_captures_all_events(
-        self, clone, mgr, bus, monkeypatch
+        self, clone, mgr, bus
     ):
         """A wildcard ('*') subscriber sees commit, push, and PR events."""
         all_events: list[dict] = []
@@ -656,18 +628,12 @@ class TestEventBusSubscriberIntegration:
         )
 
         # 3) PR event (mocked)
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = "https://github.com/test/repo/pull/7"
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
+        mgr._github_client.return_value.create_pull_request.return_value = (
+            "https://github.com/test/repo/pull/7"
+        )
         await mgr.acreate_pr(
             clone, "task/wild-integ", "Wild PR", "Body",
-            event_bus=bus, project_id="proj-wild",
+            event_bus=bus, project_id="proj-wild", repository=PR_REPOSITORY,
         )
 
         event_types = [e["_event_type"] for e in all_events]
@@ -796,25 +762,16 @@ class TestEventEmissionResilience:
         )
 
     @pytest.mark.asyncio
-    async def test_pr_survives_bad_handler(self, clone, mgr, bus, monkeypatch):
+    async def test_pr_survives_bad_handler(self, clone, mgr, bus):
         """PR creation succeeds even when event handler raises."""
         async def bad_handler(data):
             raise RuntimeError("handler exploded")
 
         bus.subscribe("git.pr.created", bad_handler)
 
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = "https://github.com/test/repo/pull/1"
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", _mock_subprocess)
-
         url = await mgr.acreate_pr(
-            clone, "b", "T", "B", event_bus=bus, project_id="p1"
+            clone, "b", "T", "B", event_bus=bus, project_id="p1",
+            repository=PR_REPOSITORY,
         )
         assert "pull" in url
 
@@ -918,7 +875,7 @@ class TestConcurrentAgentIsolation:
 
     @pytest.mark.asyncio
     async def test_concurrent_mixed_operations(
-        self, clone, second_clone, mgr, bus, monkeypatch
+        self, clone, second_clone, mgr, bus
     ):
         """Concurrent commit + push + PR emit separate, correctly typed events."""
         all_events: list[dict] = []
@@ -934,16 +891,11 @@ class TestConcurrentAgentIsolation:
 
         # We need a separate GitManager for the PR mock to not interfere
         pr_mgr = GitManager()
-
-        async def _mock_subprocess(args, cwd=None, timeout=None):
-            class _Result:
-                returncode = 0
-                stdout = "https://github.com/test/repo/pull/55"
-                stderr = ""
-
-            return _Result()
-
-        monkeypatch.setattr(pr_mgr, "_arun_subprocess", _mock_subprocess)
+        pr_client = MagicMock()
+        pr_client.create_pull_request = AsyncMock(
+            return_value="https://github.com/test/repo/pull/55"
+        )
+        pr_mgr._github_client = MagicMock(return_value=pr_client)
 
         await asyncio.gather(
             mgr.acommit_all(
@@ -956,7 +908,7 @@ class TestConcurrentAgentIsolation:
             ),
             pr_mgr.acreate_pr(
                 clone, "mixed-pr", "Mixed PR", "Body",
-                event_bus=bus, project_id="proj-m",
+                event_bus=bus, project_id="proj-m", repository=PR_REPOSITORY,
             ),
         )
 

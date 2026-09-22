@@ -5,17 +5,20 @@ Mirrors key tests from test_git_manager.py but exercises the async methods
 """
 
 import asyncio
-import json
 import pathlib
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
 from src.git.manager import GitError, GitManager, RemoteRefState
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 from src.models import PhaseResult
 from src.orchestrator.git_ops import GitOpsMixin
+
+
+REPOSITORY = GitHubRepositoryBinding(1, "org/repo")
 
 
 def _git(args: list[str], cwd: str) -> str:
@@ -189,42 +192,34 @@ class TestAsyncGetCurrentBranch:
 class TestAsyncFindOpenPr:
     @pytest.mark.asyncio
     async def test_returns_only_the_first_matching_pr_url(self, mgr, monkeypatch):
-        """A duplicated head branch must not leak a newline-delimited URL list."""
-        monkeypatch.setattr(
-            mgr,
-            "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    returncode=0,
-                    stdout=("https://github.com/o/r/pull/41\nhttps://github.com/o/r/pull/42\n"),
-                )
-            ),
+        client = MagicMock()
+        client.list_pull_requests = AsyncMock(
+            return_value=[
+                {"url": "https://github.com/org/repo/pull/41", "state": "OPEN"},
+                {"url": "https://github.com/org/repo/pull/42", "state": "OPEN"},
+            ]
         )
-
-        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/41"
-        jq_filter = mgr._arun_subprocess.await_args.args[0][
-            mgr._arun_subprocess.await_args.args[0].index("--jq") + 1
-        ]
-        assert jq_filter.startswith("first(")
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        assert (
+            await mgr.afind_open_pr("/repo", "feature-x", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/41"
+        )
+        client.list_pull_requests.assert_awaited_once_with(state="all", head="feature-x", limit=100)
 
     @pytest.mark.asyncio
     async def test_accepts_merged_pr_and_excludes_closed_pr(self, mgr, monkeypatch):
-        """Verification can use merged PRs but must reject closed-unmerged ones."""
-        monkeypatch.setattr(
-            mgr,
-            "_arun_subprocess",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    returncode=0, stdout="https://github.com/o/r/pull/42\n"
-                )
-            ),
+        client = MagicMock()
+        client.list_pull_requests = AsyncMock(
+            return_value=[
+                {"url": "https://github.com/org/repo/pull/41", "state": "CLOSED"},
+                {"url": "https://github.com/org/repo/pull/42", "state": "MERGED"},
+            ]
         )
-
-        assert await mgr.afind_open_pr("/repo", "feature-x") == "https://github.com/o/r/pull/42"
-        args = mgr._arun_subprocess.await_args.args[0]
-        assert args[args.index("--state") + 1] == "all"
-        assert "MERGED" in args[args.index("--jq") + 1]
-        assert "CLOSED" not in args[args.index("--jq") + 1]
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+        assert (
+            await mgr.afind_open_pr("/repo", "feature-x", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/42"
+        )
 
     @pytest.mark.asyncio
     async def test_ancestor_recognizes_branch_at_default_tip(self, mgr, clone):
@@ -1559,66 +1554,39 @@ async def test_async_worktree_list_parses_branch_detached_and_locked_entries(mgr
 
 
 @pytest.mark.asyncio
-async def test_async_merge_pr_handles_invalid_method_timeout_and_sha(mgr, monkeypatch):
-    """Each amerge_pr failure mode returns its specified payload; an invalid
-    method never reaches gh; a successful merge parses the printed SHA."""
-    from types import SimpleNamespace
-
-    calls: list[list[str]] = []
-    behaviors: list = []
-
-    async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
-        calls.append(args)
-        behavior = behaviors.pop(0)
-        if isinstance(behavior, Exception):
-            raise behavior
-        return behavior
-
-    monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
-    pr_url = "https://github.com/org/repo/pull/42"
+async def test_async_merge_pr_handles_invalid_method_failure_and_sha(mgr, monkeypatch):
     from src.git.manager import PullRequestIdentity
+    from unittest.mock import MagicMock
 
+    pr_url = "https://github.com/org/repo/pull/42"
     mgr.avalidate_pr_for_merge = AsyncMock(
         return_value=PullRequestIdentity("org/repo", 42, "main", "a" * 40, "feature", "b" * 40, 1)
     )
-
-    # Invalid method: rejected before any gh invocation.
-    result = await mgr.amerge_pr("/repo", pr_url, method="octopus")
+    client = MagicMock()
+    client.merge_pull_request = AsyncMock()
+    monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
+    result = await mgr.amerge_pr("/repo", pr_url, method="octopus", repository=REPOSITORY)
     assert result == {"success": False, "sha": None, "error": "invalid method: octopus"}
-    assert calls == []
+    client.merge_pull_request.assert_not_awaited()
 
-    # Timeout: TimeoutExpired becomes the specified error payload.
-    behaviors.append(subprocess.TimeoutExpired(cmd="gh", timeout=300))
-    result = await mgr.amerge_pr("/repo", pr_url)
-    assert result == {"success": False, "sha": None, "error": "gh pr merge timed out"}
+    client.merge_pull_request.side_effect = GitHubAccessError("transient", "merge timed out")
+    result = await mgr.amerge_pr("/repo", pr_url, repository=REPOSITORY)
+    assert result == {"success": False, "sha": None, "error": "merge timed out"}
 
-    # Nonzero exit: stderr surfaces as the error.
-    behaviors.append(SimpleNamespace(returncode=1, stdout="", stderr="merge conflict\n"))
-    result = await mgr.amerge_pr("/repo", pr_url)
-    assert result == {"success": False, "sha": None, "error": "merge conflict"}
-
-    # Success: SHA is parsed out of gh's punctuation-wrapped output.
-    sha = "0123456789abcdef0123456789abcdef01234567"
-    behaviors.append(
-        SimpleNamespace(returncode=0, stdout=f"Merged pull request #42 ({sha}).\n", stderr="")
+    client.merge_pull_request.side_effect = GitHubAccessError(
+        "conflict_or_invalid", "merge refused"
     )
-    result = await mgr.amerge_pr("/repo", pr_url, method="rebase")
+    result = await mgr.amerge_pr("/repo", pr_url, repository=REPOSITORY)
+    assert result == {"success": False, "sha": None, "error": "merge refused"}
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    client.merge_pull_request.side_effect = None
+    client.merge_pull_request.return_value = sha
+    result = await mgr.amerge_pr("/repo", pr_url, method="rebase", repository=REPOSITORY)
     assert result == {"success": True, "sha": sha, "error": None}
-    assert calls[-1] == [
-        "gh",
-        "pr",
-        "merge",
-        pr_url,
-        "--rebase",
-        "--match-head-commit",
-        "b" * 40,
-        "--delete-branch",
-    ]
-
-
-# ------------------------------------------------------------------
-# afind_open_pr — name match, then commit match
-# ------------------------------------------------------------------
+    client.merge_pull_request.assert_awaited_with(
+        pr_url, method="rebase", expected_head_oid="b" * 40
+    )
 
 
 class TestAfindOpenPr:
@@ -1634,28 +1602,25 @@ class TestAfindOpenPr:
 
     @staticmethod
     def _fake_gh(mgr, monkeypatch, *, by_name: str = "", prs: list[dict] | None = None):
-        from types import SimpleNamespace
+        calls: list[dict] = []
+        client = MagicMock()
 
-        calls: list[list[str]] = []
-        real = mgr._arun_subprocess
+        async def list_pull_requests(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("head"):
+                urls = [line.strip() for line in by_name.splitlines() if line.strip()]
+                return [{"url": url, "state": "OPEN"} for url in urls]
+            return [{"state": "OPEN", **pr} for pr in (prs or [])]
 
-        async def fake_subprocess(args, cwd=None, timeout=None, **kwargs):
-            if args[:3] != ["gh", "pr", "list"]:
-                return await real(args, cwd=cwd, timeout=timeout, **kwargs)
-            calls.append(args)
-            if "--head" in args:
-                return SimpleNamespace(returncode=0, stdout=by_name, stderr="")
-            open_prs = [{"state": "OPEN", **pr} for pr in (prs or [])]
-            return SimpleNamespace(returncode=0, stdout=json.dumps(open_prs), stderr="")
-
-        monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
+        client.list_pull_requests = AsyncMock(side_effect=list_pull_requests)
+        monkeypatch.setattr(mgr, "_github_client", lambda binding: client)
         return calls
 
     @pytest.mark.asyncio
     async def test_head_name_match_wins_without_a_second_query(self, clone, mgr, monkeypatch):
-        calls = self._fake_gh(mgr, monkeypatch, by_name="https://gh/org/repo/pull/1\n")
-        url = await mgr.afind_open_pr(clone, "main")
-        assert url == "https://gh/org/repo/pull/1"
+        calls = self._fake_gh(mgr, monkeypatch, by_name="https://github.com/org/repo/pull/1\n")
+        url = await mgr.afind_open_pr(clone, "main", repository=REPOSITORY)
+        assert url == "https://github.com/org/repo/pull/1"
         assert len(calls) == 1, "a name match must not cost a second gh call"
 
     @pytest.mark.asyncio
@@ -1674,13 +1639,16 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/43",
+                    "url": "https://github.com/org/repo/pull/43",
                     "headRefName": "feature/delivery",
                     "headRefOid": tip,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/43"
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/43"
+        )
 
     @pytest.mark.asyncio
     async def test_exact_head_ref_ignores_a_same_named_tag(self, clone, mgr, monkeypatch):
@@ -1695,7 +1663,7 @@ class TestAfindOpenPr:
             monkeypatch,
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/47",
+                    "url": "https://github.com/org/repo/pull/47",
                     "headRefName": "delivery",
                     "headRefOid": branch_tip,
                 }
@@ -1708,8 +1676,9 @@ class TestAfindOpenPr:
                 "aq/t-shadowed",
                 head_ref="refs/heads/aq/t-shadowed",
                 include_workspace_head=False,
+                repository=REPOSITORY,
             )
-            == "https://gh/org/repo/pull/47"
+            == "https://github.com/org/repo/pull/47"
         )
 
     @pytest.mark.asyncio
@@ -1724,13 +1693,13 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/44",
+                    "url": "https://github.com/org/repo/pull/44",
                     "headRefName": "someone-else",
                     "headRefOid": "0" * 40,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
     @pytest.mark.asyncio
     async def test_strict_lookup_rejects_a_stale_pr_with_the_same_branch_name(
@@ -1745,17 +1714,22 @@ class TestAfindOpenPr:
         self._fake_gh(
             mgr,
             monkeypatch,
-            by_name="https://gh/org/repo/pull/46\n",
+            by_name="https://github.com/org/repo/pull/46\n",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/46",
+                    "url": "https://github.com/org/repo/pull/46",
                     "headRefName": "aq/t-1",
                     "headRefOid": main_tip,
                 }
             ],
         )
 
-        assert await mgr.afind_open_pr(clone, "aq/t-1", include_workspace_head=False) is None
+        assert (
+            await mgr.afind_open_pr(
+                clone, "aq/t-1", include_workspace_head=False, repository=REPOSITORY
+            )
+            is None
+        )
 
     @pytest.mark.asyncio
     async def test_head_commit_counts_when_the_task_branch_never_moved(
@@ -1773,13 +1747,16 @@ class TestAfindOpenPr:
             by_name="",
             prs=[
                 {
-                    "url": "https://gh/org/repo/pull/45",
+                    "url": "https://github.com/org/repo/pull/45",
                     "headRefName": "feature/delivery",
                     "headRefOid": tip,
                 }
             ],
         )
-        assert await mgr.afind_open_pr(clone, "aq/t-1") == "https://gh/org/repo/pull/45"
+        assert (
+            await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY)
+            == "https://github.com/org/repo/pull/45"
+        )
 
     @pytest.mark.asyncio
     async def test_unparseable_gh_output_is_not_an_error(self, clone, mgr, monkeypatch):
@@ -1789,7 +1766,7 @@ class TestAfindOpenPr:
             return SimpleNamespace(returncode=1, stdout="not json", stderr="boom")
 
         monkeypatch.setattr(mgr, "_arun_subprocess", fake_subprocess)
-        assert await mgr.afind_open_pr(clone, "aq/t-1") is None
+        assert await mgr.afind_open_pr(clone, "aq/t-1", repository=REPOSITORY) is None
 
 
 class TestRootDeliveryGatesTheWholeTree:
@@ -1848,9 +1825,7 @@ async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch
     processes = []
 
     async def create(*args, **kwargs):
-        proc = await original_create(
-            sys.executable, "-c", "import time; time.sleep(60)", **kwargs
-        )
+        proc = await original_create(sys.executable, "-c", "import time; time.sleep(60)", **kwargs)
         processes.append(proc)
         started.set()
         return proc
