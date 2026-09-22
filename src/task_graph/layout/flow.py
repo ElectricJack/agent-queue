@@ -10,7 +10,6 @@ from src.task_graph.layout.constants import (
     CARD_H,
     CARD_W,
     CELL_SIZE,
-    GROWTH_BANDS,
     HEADER_H,
     LINE_GAP,
     PADDING,
@@ -19,6 +18,7 @@ from src.task_graph.layout.constants import (
     TARGET_ROW_WIDTH,
     TARGET_ROW_WIDTH_ROOT,
     band_up,
+    growth_bands,
 )
 
 
@@ -42,20 +42,17 @@ def row_target_rungs(floor: float, *, up_to: float | None = None) -> tuple[float
     The rungs ARE the growth ladder, offset by the padding a container adds
     to its content, so a scope flowed at a rung lands exactly under the
     growth band it will be allocated at. ``up_to`` caps the ladder, which is
-    what makes it finite past ``GROWTH_BANDS``' last entry.
+    what makes it finite past the fixed seed rungs.
     """
     rungs: list[float] = []
-    band = GROWTH_BANDS[0]
-    for band in GROWTH_BANDS:
+    # A row rung is a growth rung less its container padding.  Ask the same
+    # ladder used for allocation for enough bands to cover the requested row
+    # target, so the two paths cannot drift above the fixed seed rungs.
+    growth_up_to = None if up_to is None else up_to + 2 * PADDING
+    for band in growth_bands(up_to=growth_up_to):
         rung = band - 2 * PADDING
         if rung > floor and (up_to is None or rung <= up_to):
             rungs.append(rung)
-    if up_to is not None:
-        while band - 2 * PADDING < up_to:
-            band *= 2
-            rung = band - 2 * PADDING
-            if rung > floor and rung <= up_to:
-                rungs.append(rung)
     return tuple(rungs)
 
 
@@ -85,9 +82,7 @@ def row_target(sizes: Mapping[str, tuple[float, float]], *, is_root: bool) -> fl
     want = max(math.sqrt(area) * ROW_ASPECT, max(w for w, _ in sizes.values()))
     if want <= floor:
         return floor
-    band = GROWTH_BANDS[-1]
-    while band - 2 * PADDING < want:
-        band *= 2
+    band = band_up(want + 2 * PADDING)
     for rung in row_target_rungs(floor, up_to=band - 2 * PADDING):
         if rung >= want:
             return rung

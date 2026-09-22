@@ -298,11 +298,13 @@ def test_a_container_never_publishes_a_bigger_box_than_the_floor_would(monkeypat
 def test_the_root_is_not_clamped_so_a_wide_epic_keeps_its_line_mates():
     """Symptom 1's fix is a ROOT effect. The root is never banded, so the
     clamp — which compares drawn boxes — must not be applied to it, or the
-    operator's screenshot goes straight back to three ragged lines."""
+    operator's screenshot goes straight back to three ragged lines.  The
+    finer growth ladder now yields two lines rather than the old one-line
+    target, but it remains an unclamped improvement over the floor."""
     kids = [task("epic", container=True)] + [task(f"c{i}", created=i + 1) for i in range(8)]
     s = scope(kids, sizes={"epic": (12.0, 6.0)})
     res = layout_container(s, mode="tidy")
-    assert len({r.rel_y for r in res.rows.values()}) == 1  # one line
+    assert len({r.rel_y for r in res.rows.values()}) == 2  # fewer than the floor's three
 
 
 def test_incremental_ordering_ignores_activity_and_aggregates():

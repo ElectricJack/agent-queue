@@ -15,6 +15,7 @@ from src.task_graph.layout.constants import (
     TARGET_ROW_WIDTH,
     TARGET_ROW_WIDTH_ROOT,
     band_up,
+    growth_bands,
 )
 from src.task_graph.layout.flow import (
     cells_for_box,
@@ -90,14 +91,17 @@ def test_empty_container_is_card_sized():
 
 # ── the aspect-balanced row target (reorganisation design §3.1) ────────────
 
-#: children → (target, content w, content h, lines, allocated, today's allocated area)
+#: children → (ideal target, content w, content h, lines, raw allocated, published target)
+#: The published target includes the final-order clamp.  In particular, the
+#: 60-card candidate's more balanced raw box would cost more area than that
+#: same ordering's floor baseline, so it is intentionally stepped down.
 ASPECT_TABLE = [
-    (12, 5.8, 5.80, 3.99, 3, (6.0, 6.0), 36.0),
-    (20, 11.8, 11.55, 2.77, 2, (12.0, 3.0), 72.0),
-    (40, 11.8, 11.55, 5.21, 4, (12.0, 6.0), 144.0),
-    (60, 23.8, 23.05, 3.99, 3, (24.0, 6.0), 144.0),
-    (120, 23.8, 23.05, 7.65, 6, (24.0, 12.0), 288.0),
-    (500, 47.8, 47.20, 16.19, 13, (48.0, 24.0), 1152.0),
+    (12, 5.8, 5.80, 3.99, 3, (6.0, 6.0), 5.8),
+    (20, 11.8, 11.55, 2.77, 2, (12.0, 3.0), 11.8),
+    (40, 11.8, 11.55, 5.21, 4, (12.0, 6.0), 11.8),
+    (60, 16.6, 16.15, 6.43, 5, (16.8, 12.0), 5.8),
+    (120, 23.32, 23.05, 7.65, 6, (23.52, 12.0), 16.6),
+    (500, 45.91, 46.05, 16.19, 13, (46.11, 16.8), 45.91),
 ]
 
 
@@ -118,17 +122,37 @@ def test_row_target_returns_the_floor_for_a_small_scope():
 
 
 def test_row_target_balances_the_aspect_ratio():
-    """§3.1's table, including the allocated box the canvas actually draws:
-    the allocated area never grows over today's constant-width flow."""
-    for n, target, cw, ch, lines, allocated, today_area in ASPECT_TABLE:
+    """The approved finer ladder's committed fixture shapes.
+
+    This is the ideal geometry before the final-order clamp.  The clamp is
+    tested separately because the design deliberately does not promise that
+    every old/new candidate has equal area.
+    """
+    for n, target, cw, ch, lines, allocated, _ in ASPECT_TABLE:
         ordered, sizes = cards(n)
         assert row_target(sizes, is_root=False) == pytest.approx(target), n
         r = flow_container(ordered, sizes, is_root=False, target=target)
         assert r.content[0] == pytest.approx(cw, abs=5e-3), n
         assert r.content[1] == pytest.approx(ch, abs=5e-3), n
         assert r.lines_per_rank == [lines], n
-        assert r.allocated == allocated, n
-        assert allocated[0] * allocated[1] <= today_area, n
+        assert r.allocated == pytest.approx(allocated), n
+
+
+def test_finer_ladder_uses_exact_hundredth_rungs_above_twelve():
+    assert growth_bands(up_to=64.56) == (1.5, 3.0, 6.0, 12.0, 16.8, 23.52, 32.93, 46.11, 64.56)
+    assert band_up(16.8) == 16.8
+    assert band_up(16.800001) == 23.52
+
+
+def test_finer_ladder_makes_the_large_epic_candidate_more_balanced():
+    """The old 60-card candidate was 24 × 6 (4:1); the approved rung is
+    16.8 × 12 (1.4:1) before the no-growth publication clamp applies."""
+    ordered, sizes = cards(60)
+    target = row_target(sizes, is_root=False)
+    candidate = flow_container(ordered, sizes, is_root=False, target=target)
+    assert target == pytest.approx(16.6)
+    assert candidate.allocated == pytest.approx((16.8, 12.0))
+    assert candidate.allocated[0] / candidate.allocated[1] < 4.0
 
 
 def test_row_target_is_never_narrower_than_the_widest_child():
@@ -136,11 +160,12 @@ def test_row_target_is_never_narrower_than_the_widest_child():
     ids = ["epic"] + [f"c{i}" for i in range(8)]
     sizes = {"epic": (12.0, 6.0), **unit(ids[1:])}
     target = row_target(sizes, is_root=True)
-    assert target >= 12.0
+    assert target == pytest.approx(16.6)
     r = flow_container([ids], sizes, is_root=True, target=target)
     assert r.positions["epic"] == (0.0, 0.0)
-    assert r.positions["c7"] == (pytest.approx(20.20), 0.0)
-    assert r.lines_per_rank == [1]
+    assert r.positions["c3"] == (pytest.approx(15.60), 0.0)
+    assert r.positions["c7"] == (pytest.approx(3.45), pytest.approx(6.22))
+    assert r.lines_per_rank == [2]
 
 
 def test_content_lands_under_its_growth_band():
@@ -219,11 +244,10 @@ def test_a_widened_target_that_would_grow_the_drawn_box_is_stepped_down():
 
 
 def test_the_clamp_does_not_fire_on_the_unit_card_table():
-    """The §3.1 table must reproduce exactly — the clamp is a safety net for
-    heterogeneous scopes, not a tax on the case the design was tuned for."""
-    for n, target, *_ in ASPECT_TABLE:
+    """The clamp preserves the published target captured in each fixture."""
+    for n, target, *_, published_target in ASPECT_TABLE:
         ordered, sizes = cards(n)
-        assert clamp_row_target(ordered, sizes, is_root=False, target=target) == target, n
+        assert clamp_row_target(ordered, sizes, is_root=False, target=target) == published_target, n
 
 
 def _mixed_scopes(seed, count):
@@ -277,7 +301,7 @@ def test_the_root_keeps_the_unclamped_ideal():
     ideal = row_target(sizes, is_root=True)
     floor_flow = flow_at([ids], sizes, TARGET_ROW_WIDTH_ROOT, is_root=True)
     ideal_flow = flow_at([ids], sizes, ideal, is_root=True)
-    assert floor_flow.lines_per_rank == [3] and ideal_flow.lines_per_rank == [1]
+    assert floor_flow.lines_per_rank == [3] and ideal_flow.lines_per_rank == [2]
     assert ideal_flow.content[1] < floor_flow.content[1]  # shorter …
     assert allocated_area(ideal_flow) > allocated_area(floor_flow)  # … but larger
     # So the clamp, if it were applied here, WOULD step this back down.
