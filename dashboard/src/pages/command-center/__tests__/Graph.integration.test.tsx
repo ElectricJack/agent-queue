@@ -2,9 +2,11 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Graph from "../Graph";
 import type { PlaybookSummary } from "../../../api/hooks";
+import { clearRunningWorkJump } from "../layout-v2/runningWork";
 const mocks = vi.hoisted(() => ({
   playbooks: [] as PlaybookSummary[], open: vi.fn(), close: vi.fn(), pane: { kind: "closed" } as { kind: string; view?: string; args?: unknown },
   query: "", showCompleted: false, extentPending: false, projectIds: ["alpha"],
+  runningTarget: null as { task_id: string; project_id: string; parent_task_id: string | null; ancestors: string[]; observed_at: number; layout_version: number | null } | null,
   project: { id: "alpha", name: "Alpha" },
   layoutProps: { current: null as Record<string, unknown> | null },
   listProps: { current: null as Record<string, unknown> | null }, selectTask: vi.fn(), setShowCompleted: vi.fn(),
@@ -16,6 +18,7 @@ vi.mock("../../../api/graphLayout", () => ({
   useLayoutExtents: (ids: string[]) => ids.map(() => (mocks.extentPending
     ? { pending: true }
     : { layout_version: 1, extent_w: 4, extent_h: 4, node_count: 7 })),
+  useRunningTarget: () => ({ data: mocks.runningTarget }),
 }));
 vi.mock("../layout-v2/LayoutCanvas", () => ({ default: (props: Record<string, unknown>) => {
   mocks.layoutProps.current = props;
@@ -39,6 +42,8 @@ vi.mock("../useTaskSelection", () => ({ useTaskSelection: () => ({ selectedTaskI
 beforeEach(() => { mocks.playbooks = []; mocks.pane = { kind: "closed" }; mocks.open.mockClear(); mocks.close.mockClear();
   mocks.query = ""; mocks.showCompleted = false; mocks.extentPending = false; mocks.selectTask.mockClear();
   mocks.setShowCompleted.mockClear();
+  mocks.runningTarget = null;
+  clearRunningWorkJump();
   mocks.layoutProps.current = null; mocks.listProps.current = null; mocks.projectIds = ["alpha"];
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -72,6 +77,12 @@ it("renders the layout canvas and maps Show completed to the variant", () => {
   mocks.showCompleted = false;
   view.rerender(<Graph />);
   expect(mocks.layoutProps.current).toMatchObject({ variant: "active" });
+});
+
+it("gives a root graph its current running target for the initial viewport", () => {
+  mocks.runningTarget = { task_id: "g0", project_id: "alpha", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
+  render(<Graph />);
+  expect(mocks.layoutProps.current).toMatchObject({ runningTarget: { task_id: "g0" }, manualRunningTarget: false });
 });
 
 it("keeps the canvas mounted and reports progress while an extent is still building", () => {

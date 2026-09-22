@@ -13,8 +13,10 @@ import GraphScopeNotice, { type EmptyReason } from "./GraphScopeNotice";
 import { edgeStyleForType } from "./edgeStyle";
 import { useGraphState } from "../useGraphHierarchy";
 import {
-  useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
+  fetchRunningTarget, useHiddenFinishedCount, useLayoutExtents, useLayoutNode, type TilesParams, type Variant,
 } from "../../../api/graphLayout";
+import type { RunningTarget } from "../../../api/graphLayout";
+import { clearRunningWorkJump, publishRunningWorkNotice } from "./runningWork";
 import { useLayoutTiles } from "./useLayoutTiles";
 import { publishAppliedVariant } from "./appliedVariant";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
@@ -99,6 +101,10 @@ export interface LayoutCanvasProps extends Pick<GraphViewProps,
   setShowCompleted: (show: boolean) => void;
   /** A located match the toolbar asked for; each request is a fresh object. */
   jumpTarget?: LocateHit | null;
+  /** Live work selected by the toolbar, or the default root viewport. */
+  runningTarget?: RunningTarget | null;
+  /** Toolbar jumps are cancelled if the reader navigates before the frame lands. */
+  manualRunningTarget?: boolean;
 }
 
 interface LayerElements {
@@ -206,7 +212,8 @@ function ProjectLayer({
 
 function Inner(props: LayoutCanvasProps) {
   const {
-    projectIds, projectNames, variant, filters, focusId, setFocus, setShowCompleted, jumpTarget, onTaskClick,
+    projectIds, projectNames, variant, filters, focusId, setFocus, setShowCompleted, jumpTarget,
+    runningTarget, manualRunningTarget = false, onTaskClick,
     onBackgroundClick, selectedTaskId, playbooks = NO_PLAYBOOKS, selectedPlaybookId, onPlaybookClick,
   } = props;
   const { density, manualPositions, saveGraphPosition } = useGraphState();
@@ -455,6 +462,10 @@ function Inner(props: LayoutCanvasProps) {
   // there is no box to fit and no title to show until it lands.
   const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
+  const { data: runningData } = useLayoutNode(
+    runningTarget?.project_id, runningTarget?.task_id ?? null,
+  );
+  const runningNode = runningData && !("pending" in runningData) ? runningData : undefined;
   // What the daemon actually served, which is not always what was asked for:
   // entering a container the active layout stubbed or dropped is answered
   // from `all`. That condition is the LAYOUT's (a container every one of
@@ -499,6 +510,62 @@ function Inner(props: LayoutCanvasProps) {
     const box = sizePx(entered.w, entered.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
   }, [focusId, focusNode, entered, fitBounds, focusOffset, density]);
+
+  // The URL has already entered the selected task's immediate parent.  Wait
+  // for the node lookup that belongs to that scope, then pan once.  At the
+  // root a nested leaf is collapsed, so pan to its outermost visible ancestor
+  // instead; the target itself is used for root leaves.
+  const runningHandled = useRef<RunningTarget | null>(null);
+  const runningChecked = useRef<RunningTarget | null>(null);
+  useEffect(() => {
+    if (!runningTarget) {
+      runningHandled.current = null;
+      runningChecked.current = null;
+      return;
+    }
+    if (manualRunningTarget && focusId !== (runningTarget.parent_task_id ?? null)) {
+      clearRunningWorkJump();
+      return;
+    }
+    if (!runningNode || runningHandled.current === runningTarget) return;
+    // Selection and the later node lookup are necessarily separate reads. A
+    // task may finish in that gap, so confirm the target once before moving
+    // the viewport. A vanished or replaced target leaves this navigation
+    // scope alone and gives the toolbar its normal empty-state notice.
+    if (manualRunningTarget && runningChecked.current !== runningTarget) {
+      runningChecked.current = runningTarget;
+      let cancelled = false;
+      void fetchRunningTarget(runningTarget.project_id).then((current) => {
+        if (cancelled || runningHandled.current === runningTarget) return;
+        if (current?.task_id !== runningTarget.task_id) {
+          clearRunningWorkJump();
+          publishRunningWorkNotice(current ? "Running work changed. Try again." : "No running work");
+          return;
+        }
+        const position = toPx(runningNode.node.x, runningNode.node.y + (offsets.get(runningTarget.project_id) ?? 0), density);
+        const box = sizePx(runningNode.node.w, runningNode.node.h, density);
+        runningHandled.current = runningTarget;
+        setKbFocusId(runningTarget.task_id);
+        fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
+      }).catch(() => {
+        if (!cancelled) publishRunningWorkNotice("Could not find running work. Try again.");
+      });
+      return () => { cancelled = true; };
+    }
+    const ancestors = runningNode.ancestors ?? [];
+    const target = !focusId && ancestors.length > 0
+      ? ancestors[0]!
+      : runningNode.node;
+    const offset = offsets.get(runningTarget.project_id) ?? 0;
+    const position = toPx(target.x, target.y + offset, density);
+    const box = sizePx(target.w, target.h, density);
+    runningHandled.current = runningTarget;
+    setKbFocusId(runningTarget.task_id);
+    fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, {
+      padding: 0.2,
+      duration: 0,
+    });
+  }, [runningTarget, manualRunningTarget, focusId, runningNode, offsets, density, fitBounds]);
 
   // Jumping to a search result in THIS scope only needs the hit's box: the
   // tiles covering it load from the viewport change like any other pan. A hit

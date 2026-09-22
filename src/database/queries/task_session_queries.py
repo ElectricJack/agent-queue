@@ -48,8 +48,7 @@ def live_attempt_predicate(now: float, stale_after: float):
         sessions.c.state == "running",
         sessions.c.ended_at.is_(None),
         or_(
-            sessions.c.last_activity.is_not(None)
-            & (sessions.c.last_activity >= now - stale_after),
+            sessions.c.last_activity.is_not(None) & (sessions.c.last_activity >= now - stale_after),
             sessions.c.started_at >= now - stale_after,
         ),
     )
@@ -178,10 +177,61 @@ class TaskSessionQueryMixin:
             if key in seen:
                 continue
             seen.add(key)
-            out.append(
-                {"id": row.agent_id, "name": row.agent_name, "current_task_id": row.task_id}
-            )
+            out.append({"id": row.agent_id, "name": row.agent_name, "current_task_id": row.task_id})
         return out
+
+    async def get_running_task_target(
+        self,
+        project_ids: list[str],
+        *,
+        now: float | None = None,
+        stale_after: float = DEFAULT_STALE_AFTER,
+    ) -> dict | None:
+        """Return the deterministic highest-priority leaf with live work.
+
+        This deliberately shares the graph marker's live-attempt predicate,
+        rather than trusting a task status or ``agents.current_task_id``.
+        A task which became an in-progress container is not a destination:
+        only live leaves can be opened and framed by the graph.
+        """
+        ids = list(dict.fromkeys(project_ids))
+        if not ids:
+            return None
+        now = time.time() if now is None else now
+        child = tasks.alias("running_target_child")
+        oldest_attempt = func.min(task_session_attempts.c.started_at).label("started_at")
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(
+                            tasks.c.id.label("task_id"),
+                            tasks.c.project_id,
+                            tasks.c.parent_task_id,
+                            oldest_attempt,
+                        )
+                        .select_from(
+                            task_session_attempts.join(
+                                sessions, sessions.c.id == task_session_attempts.c.session_id
+                            ).join(tasks, tasks.c.id == task_session_attempts.c.task_id)
+                        )
+                        .where(
+                            live_attempt_predicate(now, stale_after),
+                            tasks.c.project_id.in_(ids),
+                            tasks.c.status == "IN_PROGRESS",
+                            ~exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+                        )
+                        .group_by(
+                            tasks.c.id, tasks.c.project_id, tasks.c.parent_task_id, tasks.c.priority
+                        )
+                        .order_by(tasks.c.priority.desc(), oldest_attempt.asc(), tasks.c.id.asc())
+                        .limit(1)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return dict(row) if row is not None else None
 
     async def list_live_attempt_agent_ids(
         self,

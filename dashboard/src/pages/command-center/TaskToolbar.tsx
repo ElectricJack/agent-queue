@@ -1,10 +1,11 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { MagnifyingGlassIcon, PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import CreateTaskModal from "../../components/CreateTaskModal";
-import { useTidyLayout } from "../../api/graphLayout";
+import { fetchRunningTarget, useTidyLayout } from "../../api/graphLayout";
 import { useAppliedVariant } from "./layout-v2/appliedVariant";
 import { useJumpToResult } from "./layout-v2/useJumpToResult";
+import { publishRunningWorkJump, publishRunningWorkNotice, useRunningWorkNotice } from "./layout-v2/runningWork";
 import { useShellPaneStore } from "../../panes/store";
 import { useShortcut } from "../../shell/hotkeys/useShortcuts";
 import { useTaskWorkspace } from "./TaskWorkspace";
@@ -13,7 +14,7 @@ import { DEFAULT_DENSITY, type LayoutDensity } from "./layout-v2/density";
 import { ACTIVITY_WINDOWS, FINISHED_STATUSES, TASK_STATUSES, taskStatusLabel } from "./taskFilters";
 
 export default function TaskToolbar() {
-  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters } = useTaskWorkspace();
+  const { projectId, filters, focusId, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters, goToRunningWork } = useTaskWorkspace();
   // The variant the canvas was actually SERVED, not the one the filters ask
   // for: the daemon promotes a focused request to the full layout when the
   // entered container is not in the active one, and searching that container
@@ -31,12 +32,31 @@ export default function TaskToolbar() {
   const { density, setDensity } = useGraphState();
   const tidy = useTidyLayout(projectId ?? "");
   const [createOpen, setCreateOpen] = useState(false);
+  const [findingRunningWork, setFindingRunningWork] = useState(false);
+  const runningWorkNotice = useRunningWorkNotice();
   const searchRef = useRef<HTMLInputElement>(null);
   const pane = useShellPaneStore();
   const shortcutsAvailable = () => !createOpen && !document.querySelector('[role="dialog"], [aria-modal="true"]');
   useShortcut("n", { label: "add task", section: "Tasks", onFire: () => setCreateOpen(true), when: shortcutsAvailable });
   useShortcut("/", { label: "search tasks", section: "Tasks", onFire: () => searchRef.current?.focus(), when: shortcutsAvailable });
   const hasFilters = !!(filters.query || filters.status || filters.showCompleted || filters.window || filters.held);
+  const takeToRunningWork = useCallback(async () => {
+    setFindingRunningWork(true);
+    publishRunningWorkNotice(null);
+    try {
+      const target = await fetchRunningTarget(projectId);
+      if (target === null) {
+        publishRunningWorkNotice("No running work");
+        return;
+      }
+      publishRunningWorkJump(target);
+      goToRunningWork(target);
+    } catch {
+      publishRunningWorkNotice("Could not find running work. Try again.");
+    } finally {
+      setFindingRunningWork(false);
+    }
+  }, [projectId, goToRunningWork]);
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-gray-800 bg-gray-950 px-4 py-3">
@@ -76,6 +96,12 @@ export default function TaskToolbar() {
         className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800">
         Next result ({jumpCount})
       </button>}
+      {onGraph && <button type="button" onClick={() => void takeToRunningWork()} disabled={findingRunningWork}
+        title="Enter the container holding the highest-priority running task"
+        className="h-9 rounded-md border border-gray-700 px-3 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50">
+        {findingRunningWork ? "Finding running work…" : "Running work"}
+      </button>}
+      {onGraph && runningWorkNotice && <span role="status" className="text-xs text-gray-400">{runningWorkNotice}</span>}
       {hasFilters && <button type="button" aria-label="Clear task filters" title="Clear filters" onClick={clearFilters}
         className="rounded p-2 text-gray-400 hover:bg-gray-800 hover:text-gray-100"><XMarkIcon className="h-4 w-4" /></button>}
       {onGraph && <label className="flex h-9 items-center rounded-md border border-gray-700 px-3 text-xs text-gray-200">

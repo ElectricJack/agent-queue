@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -59,12 +61,16 @@ async def seed(db):
     for i in range(10):
         await mk(f"d{i}")
         await db.add_dependency(f"d{i}", "hub")
-    await db.create_agent(
-        Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY)
-    )
+    await db.create_agent(Agent(id="a1", name="bot", profile_id="p", state=AgentState.BUSY))
     await seed_task_session_attempt(
-        db, task_id="g0", project_id="p1", agent_id="a1", agent_name="bot", profile_id="p",
-        create_task=False, heartbeat_age=5,
+        db,
+        task_id="g0",
+        project_id="p1",
+        agent_id="a1",
+        agent_name="bot",
+        profile_id="p",
+        create_task=False,
+        heartbeat_age=5,
     )
     drv = LayoutDriver(db)
     await drv.full_layout("p1", "all")
@@ -108,6 +114,146 @@ class _RecordingHandler:
         variants = [args["variant"]] if args.get("variant") else ["all", "active"]
         jobs = [await self.db.enqueue_layout_job(args["project_id"], v, "tidy") for v in variants]
         return {"success": True, "jobs": jobs}
+
+
+async def test_running_target_ranks_live_leaves_and_returns_the_nested_path(db, client_factory):
+    await seed(db)
+    now = time.time()
+    for agent_id in ("a2", "a3", "a4"):
+        await db.create_agent(
+            Agent(id=agent_id, name=agent_id, profile_id="p", state=AgentState.BUSY)
+        )
+    # An in-progress container is deliberately not a destination, even with a
+    # newer/higher-priority worker marker of its own.
+    await db.create_task(
+        Task(
+            id="container",
+            project_id="p1",
+            title="container",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            priority=100,
+        )
+    )
+    await db.create_task(Task(id="inside", project_id="p1", title="inside", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("inside", "container", conn=conn)
+    await seed_task_session_attempt(
+        db,
+        task_id="container",
+        project_id="p1",
+        agent_id="a2",
+        agent_name="a2",
+        profile_id="p",
+        now=now,
+        session_started_at=now - 200,
+        attempt_started_at=now - 200,
+        create_task=False,
+    )
+    # The two root leaves tie on priority.  The oldest live attempt wins.
+    await db.create_task(
+        Task(
+            id="newer",
+            project_id="p1",
+            title="newer",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            priority=80,
+        )
+    )
+    await db.create_task(
+        Task(
+            id="older",
+            project_id="p1",
+            title="older",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            priority=80,
+        )
+    )
+    await seed_task_session_attempt(
+        db,
+        task_id="newer",
+        project_id="p1",
+        agent_id="a3",
+        agent_name="a3",
+        profile_id="p",
+        now=now,
+        session_started_at=now - 20,
+        attempt_started_at=now - 20,
+        create_task=False,
+    )
+    await seed_task_session_attempt(
+        db,
+        task_id="older",
+        project_id="p1",
+        agent_id="a4",
+        agent_name="a4",
+        profile_id="p",
+        now=now,
+        session_started_at=now - 120,
+        attempt_started_at=now - 120,
+        create_task=False,
+    )
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["task_id"] == "older"
+    assert r.json()["parent_task_id"] is None
+    assert r.json()["ancestors"] == []
+
+    # Once the root leaves are no longer running, the existing nested g0
+    # target includes the path the root canvas uses to pan to its outer tile.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table)
+            .where(tasks_table.c.id.in_(["newer", "older"]))
+            .values(status="COMPLETED")
+        )
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["task_id"] == "g0"
+    assert r.json()["parent_task_id"] == "pkg"
+    assert r.json()["ancestors"] == ["e", "pkg"]
+
+
+async def test_running_target_is_null_when_no_live_leaf_exists(db, client_factory):
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json() is None
+
+
+async def test_dashboard_running_target_ranks_across_projects(db, client_factory):
+    await db.create_project(Project(id="p2", name="P2"))
+    await db.create_agent(Agent(id="a2", name="a2", profile_id="p", state=AgentState.BUSY))
+    await db.create_task(
+        Task(
+            id="p2-running",
+            project_id="p2",
+            title="p2-running",
+            description="",
+            status=TaskStatus.IN_PROGRESS,
+            priority=90,
+        )
+    )
+    await seed_task_session_attempt(
+        db,
+        task_id="p2-running",
+        project_id="p2",
+        agent_id="a2",
+        agent_name="a2",
+        profile_id="p",
+        create_task=False,
+    )
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["project_id"] == "p2"
+    assert r.json()["task_id"] == "p2-running"
 
 
 async def test_extent_pending_then_ready(db, client_factory):
@@ -283,16 +429,20 @@ async def test_tiles_culled_collapsed_container_becomes_the_stub(db, client_fact
 async def test_tiles_no_worker_docks_at_a_culled_container(db, client_factory):
     """The pre-cull owner map must not dock a worker at an absent node."""
     await seed(db)
-    await db.create_agent(
-        Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY)
-    )
+    await db.create_agent(Agent(id="a2", name="bot2", profile_id="p", state=AgentState.BUSY))
     async with db._engine.begin() as conn:
         await conn.execute(
             update(tasks_table).where(tasks_table.c.id == "c0").values(status="IN_PROGRESS")
         )
     await seed_task_session_attempt(
-        db, task_id="c0", project_id="p1", agent_id="a2", agent_name="bot2", profile_id="p",
-        create_task=False, heartbeat_age=5,
+        db,
+        task_id="c0",
+        project_id="p1",
+        agent_id="a2",
+        agent_name="bot2",
+        profile_id="p",
+        create_task=False,
+        heartbeat_age=5,
     )
     async with client_factory() as ac:
         first = (await ac.post("/api/projects/p1/graph/tiles", json=ALL)).json()["nodes"]
@@ -481,7 +631,10 @@ async def test_tiles_root_focus_of_finished_container_with_live_descendant_stays
     body = response.json()
     assert body["variant_applied"] == "active"
     assert {node["id"] for node in body["nodes"]} == {"finished-parent", "live-child"}
-    assert next(node for node in body["nodes"] if node["id"] == "finished-parent")["kind"] == "container"
+    assert (
+        next(node for node in body["nodes"] if node["id"] == "finished-parent")["kind"]
+        == "container"
+    )
 
 
 async def test_tiles_focus_leaves_child_containers_collapsed(db, client_factory):
@@ -1225,9 +1378,7 @@ async def test_tiles_omit_a_finished_epic_nothing_needs_from_the_active_view(db,
     assert {node["id"] for node in all_response.json()["nodes"]} == {"done", "child", "live"}
 
 
-async def test_locate_does_not_find_a_dropped_finished_epic_in_the_active_view(
-    db, client_factory
-):
+async def test_locate_does_not_find_a_dropped_finished_epic_in_the_active_view(db, client_factory):
     """The second affordance the drop rule costs, pinned deliberately.
 
     With "Show completed" off the client searches the ``active`` variant's
@@ -1307,7 +1458,10 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
     )
     for i in range(300):
         gid, _ = await db.create_gate(
-            project_id="p1", gate_type="timer", title=f"old{i}", await_id=f"t{i}",
+            project_id="p1",
+            gate_type="timer",
+            title=f"old{i}",
+            await_id=f"t{i}",
             waiter_task_ids=["hub"],
         )
         await db.resolve_gate(gid, resolved_by="test", resolution="done")
@@ -1335,9 +1489,7 @@ async def test_tiles_gate_lookup_is_two_statements_regardless_of_gate_count(db, 
 
 async def test_tiles_reports_subtask_counts_and_zero_for_none(db, client_factory):
     await seed(db)
-    await db.add_task_subtasks(
-        "z", "p1", [{"title": "one"}, {"title": "two"}, {"title": "three"}]
-    )
+    await db.add_task_subtasks("z", "p1", [{"title": "one"}, {"title": "two"}, {"title": "three"}])
     await db.update_task_subtask("z", 1, status="done")
     await db.update_task_subtask("z", 2, status="skipped")
 
@@ -1500,9 +1652,7 @@ async def test_tiles_malformed_phase_metadata_does_not_raise(db, client_factory)
         assert nodes[tid]["phase_label"] is None
 
 
-async def test_tiles_phase_lookup_is_one_statement_regardless_of_visible_count(
-    db, client_factory
-):
+async def test_tiles_phase_lookup_is_one_statement_regardless_of_visible_count(db, client_factory):
     await seed(db)
     await db.set_task_meta("e", PHASE_KEY, {"order": 1, "label": "Foundation"})
 
@@ -1559,9 +1709,7 @@ async def test_tiles_auto_expand_with_empty_expanded_returns_and_applies_active_
     """
     await seed(db)
     async with client_factory() as ac:
-        r = await ac.post(
-            "/api/projects/p1/graph/tiles", json={**ALL, "auto_expand": True}
-        )
+        r = await ac.post("/api/projects/p1/graph/tiles", json={**ALL, "auto_expand": True})
     assert r.status_code == 200
     body = r.json()
     assert body["expanded_applied"] == ["e", "pkg"]
@@ -1692,13 +1840,20 @@ async def test_tiles_report_the_variant_they_applied(db, client_factory):
     async with client_factory() as ac:
         root = await ac.post(
             "/api/projects/p1/graph/tiles",
-            json={"variant": "active", "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
-                  "expanded": []},
+            json={
+                "variant": "active",
+                "rect": {"x0": -1, "y0": -1, "x1": 60, "y1": 60},
+                "expanded": [],
+            },
         )
         focused = await ac.post(
             "/api/projects/p1/graph/tiles",
-            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
-                  "expanded": [], "root": "e"},
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "e",
+            },
         )
         asked_for_all = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
     assert root.json()["variant_applied"] == "active"
@@ -1706,16 +1861,18 @@ async def test_tiles_report_the_variant_they_applied(db, client_factory):
     assert asked_for_all.json()["variant_applied"] == "all"
 
 
-async def test_tiles_report_all_when_the_entered_container_forced_the_promotion(
-    db, client_factory
-):
+async def test_tiles_report_all_when_the_entered_container_forced_the_promotion(db, client_factory):
     """A container the active variant dropped: `active` was asked for, `all` served."""
     await _finished_epic_project(db, anchored=False)
     async with client_factory() as ac:
         r = await ac.post(
             "/api/projects/p1/graph/tiles",
-            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
-                  "expanded": [], "root": "done"},
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "done",
+            },
         )
     assert r.status_code == 200
     assert r.json()["variant_applied"] == "all"
@@ -1752,8 +1909,12 @@ async def test_tiles_report_all_for_an_unfinished_container_the_active_view_stub
     async with client_factory() as ac:
         r = await ac.post(
             "/api/projects/p1/graph/tiles",
-            json={"variant": "active", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
-                  "expanded": [], "root": "open"},
+            json={
+                "variant": "active",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "open",
+            },
         )
     assert r.status_code == 200
     body = r.json()
@@ -1786,8 +1947,7 @@ async def test_list_root_pages_every_child_across_pages(db, client_factory):
         for _ in range(10):
             r = await ac.post(
                 "/api/projects/p1/graph/list",
-                json={"variant": "all", "expanded": [], "root": "e", "limit": 2,
-                      "cursor": cursor},
+                json={"variant": "all", "expanded": [], "root": "e", "limit": 2, "cursor": cursor},
             )
             assert r.status_code == 200
             body = r.json()
@@ -1842,8 +2002,12 @@ async def test_locate_places_a_hit_where_the_focused_view_draws_it(db, client_fa
     async with client_factory() as ac:
         tiles = await ac.post(
             "/api/projects/p1/graph/tiles",
-            json={"variant": "all", "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
-                  "expanded": [], "root": "p"},
+            json={
+                "variant": "all",
+                "rect": {"x0": 0, "y0": 0, "x1": 1, "y1": 1},
+                "expanded": [],
+                "root": "p",
+            },
         )
         focused = await ac.post(
             "/api/projects/p1/graph/locate",
