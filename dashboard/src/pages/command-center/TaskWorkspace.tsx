@@ -73,7 +73,7 @@ export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ projectId, projectIds, projects, isLoadingProjects, projectsError,
     filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters }),
   [projectId, projectIds, projects, isLoadingProjects, projectsError, filters, focusId, setFocus, setQuery, setStatus, setShowCompleted, setWindow, setHeld, clearFilters]);
-  return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider projectIds={projectIds}>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
+  return <TaskWorkspaceContext.Provider value={value}><GraphStateProvider>{children}</GraphStateProvider></TaskWorkspaceContext.Provider>;
 }
 
 // A paired provider/hook module follows the existing pane-store convention.

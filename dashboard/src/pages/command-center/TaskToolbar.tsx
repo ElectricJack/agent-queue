@@ -28,8 +28,8 @@ export default function TaskToolbar() {
   const onGraph = useLocation().pathname.endsWith("/graph");
   const { next: jumpNext, count: jumpCount } = useJumpToResult(
     onGraph ? projectId : undefined, variant, filters, focusId);
-  const { clearGraphPositions, density, setDensity } = useGraphState();
-  const tidy = useTidyLayout(projectId ?? "", projectId ? () => clearGraphPositions(projectId) : undefined);
+  const { density, setDensity } = useGraphState();
+  const tidy = useTidyLayout(projectId ?? "");
   const [createOpen, setCreateOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const pane = useShellPaneStore();

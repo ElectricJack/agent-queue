@@ -5,4 +5,5 @@ export interface ManualPosition {
   y: number;
 }
 
-export type ManualPositions = Record<string, Record<string, ManualPosition>>;
+/** Pins survive only for the separate playbook graph, never project tasks. */
+export type ManualPositions = Partial<Record<typeof PLAYBOOK_POSITION_SCOPE, Record<string, ManualPosition>>>;
