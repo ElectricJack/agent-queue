@@ -41,6 +41,7 @@ from src.config import resolve_project_root
 from src.projects.github import GhClient, GitHubError, scrub_secrets
 from src.projects.paths import ProjectPathError, list_directory
 
+
 def _display_root_path(path: str) -> str:
     """Render a configured root for an operator without making it an input.
 
@@ -178,7 +179,12 @@ class ProjectOnboardingCommandsMixin:
         the client tests, without putting a test-only option on the command
         surface.
         """
-        return GhClient()
+        from src.git.github import GitHubAccess
+
+        access = getattr(self.orchestrator, "github_access", None)
+        if access is None:
+            access = GitHubAccess.from_config(self.config.integration.github_app)
+        return GhClient(access=access)
 
     @staticmethod
     def _github_error_result(error: GitHubError) -> dict[str, Any]:
@@ -195,15 +201,20 @@ class ProjectOnboardingCommandsMixin:
 
     async def _execute_get_github_auth_status(self, request) -> Any:
         try:
-            status = await self._github_client().auth_status()
+            status = await self._github_client().auth_status(request.repository_url)
         except GitHubError as error:
             return self._github_error_result(error)
 
         if not status.installed:
+            setup = (
+                "the GitHub CLI (gh) is not installed on the daemon host; install it"
+                if status.credential_mode == "app"
+                else "the GitHub CLI (gh) is not installed on the daemon host; "
+                "install it and run 'gh auth login'"
+            )
             return ProjectOnboardingError(
                 ProjectOnboardingErrorCode.GITHUB_CLI_MISSING,
-                "the GitHub CLI (gh) is not installed on the daemon host; "
-                "install it and run 'gh auth login'",
+                setup,
             ).to_dict()
         if not status.authenticated:
             return ProjectOnboardingError(
@@ -216,6 +227,12 @@ class ProjectOnboardingCommandsMixin:
             "authenticated": True,
             "host": status.hostname,
             "login": status.login,
+            "credential_mode": status.credential_mode,
+            "repository_access": status.repository_access,
+            "account_operations_available": status.account_operations_available,
+            "configuration_changes_require_restart": status.configuration_changes_require_restart,
+            "app_id": status.app_id,
+            "installation_id": status.installation_id,
         }
 
     async def _execute_list_github_owners(self, request) -> Any:
@@ -225,10 +242,7 @@ class ProjectOnboardingCommandsMixin:
             return self._github_error_result(error)
         return {
             "success": True,
-            "owners": [
-                {"login": owner.login, "kind": owner.kind}
-                for owner in owners
-            ]
+            "owners": [{"login": owner.login, "kind": owner.kind} for owner in owners],
         }
 
     async def _execute_search_github_repositories(self, request) -> Any:
@@ -258,11 +272,15 @@ class ProjectOnboardingCommandsMixin:
     async def _execute_onboard_project(self, request) -> Any:
         from src.projects.onboarding import ProjectOnboardingService
 
-        service = ProjectOnboardingService(self.db, self.config, self.orchestrator.git)
+        service = ProjectOnboardingService(
+            self.db, self.config, self.orchestrator.git, gh_client=self._github_client()
+        )
         return await service.onboard_project(request)
 
     async def _execute_get_project_onboarding(self, request) -> Any:
         from src.projects.onboarding import ProjectOnboardingService
 
-        service = ProjectOnboardingService(self.db, self.config, self.orchestrator.git)
+        service = ProjectOnboardingService(
+            self.db, self.config, self.orchestrator.git, gh_client=self._github_client()
+        )
         return await service.get_project_onboarding(request.request_id)

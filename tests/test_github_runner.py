@@ -141,7 +141,6 @@ async def test_existing_login_preserves_auth_discovery_but_scrubs_target_overrid
     assert capture["env"]["GITHUB_TOKEN"] == "operator-github-token"
     for removed in (
         "GH_REPO",
-        "GH_HOST",
         "GH_DEBUG",
         "GH_HTTP_UNIX_SOCKET",
         "GIT_DIR",
@@ -151,11 +150,26 @@ async def test_existing_login_preserves_auth_discovery_but_scrubs_target_overrid
         "GIT_CONFIG_VALUE_0",
     ):
         assert removed not in capture["env"]
+    assert capture["env"]["GH_HOST"] == "github.com"
     assert capture["env"]["GH_PROMPT_DISABLED"] == "1"
     assert capture["env"]["GIT_TERMINAL_PROMPT"] == "0"
     assert capture["env"]["GIT_CONFIG_NOSYSTEM"] == "1"
     assert capture["env"]["GIT_CONFIG_GLOBAL"] == "/dev/null"
     assert base_env == original_env
+
+
+@pytest.mark.asyncio
+async def test_repo_creation_uses_runner_pinned_host_without_unsupported_flag(tmp_path):
+    executable = _capture_executable(tmp_path)
+    runner = GhRunner(ExistingLoginCredentials(), executable=str(executable), env={}, cwd=tmp_path)
+
+    result = await runner.run(
+        ["repo", "create", "acme/widgets", "--private"], hostname="github.com"
+    )
+
+    capture = json.loads(result.stdout)
+    assert capture["argv"] == ["repo", "create", "acme/widgets", "--private"]
+    assert capture["env"]["GH_HOST"] == "github.com"
 
 
 @pytest.mark.asyncio

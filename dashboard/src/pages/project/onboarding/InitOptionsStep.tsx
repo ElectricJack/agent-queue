@@ -7,6 +7,7 @@ export function InitOptionsStep() {
   const source = state.source;
   const [owners, setOwners] = useState<{ login: string; name?: string | null }[]>([]);
   const [setupMessage, setSetupMessage] = useState<string | null>(null);
+  const [appMode, setAppMode] = useState(false);
   const uid = useId();
   const initSource = source.mode === "init" ? source : null;
   const createGithub = initSource?.createGithub ?? false;
@@ -18,6 +19,12 @@ export function InitOptionsStep() {
     void githubAuthStatus().then(
       async (status) => {
         if (!active) return;
+        if (status.credential_mode === "app") {
+          setAppMode(true);
+          setSetupMessage("This GitHub App cannot create repositories. Create one outside AQ, then paste its URL in Clone from GitHub.");
+          dispatch({ type: "update_source", mode: "init", patch: { createGithub: false } });
+          return;
+        }
         if (!status.installed || !status.authenticated) {
           setSetupMessage(!status.installed ? "Install gh and sign in on the daemon host before creating a GitHub repository." : "Sign in with gh auth login on the daemon host before creating a GitHub repository.");
           return;
@@ -42,7 +49,8 @@ export function InitOptionsStep() {
   return (
     <div className="space-y-5">
       <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createReadme} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createReadme: event.target.checked } })} /> Create initial README and commit</label>
-      <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createGithub} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createGithub: event.target.checked } })} /> Create GitHub repository</label>
+      <label className="flex items-center gap-2 text-sm text-gray-200"><input type="checkbox" checked={initSource.createGithub} disabled={appMode} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { createGithub: event.target.checked } })} /> Create GitHub repository</label>
+      {setupMessage && !initSource.createGithub && <p role="status" className="text-sm text-amber-200">{setupMessage}</p>}
       {initSource.createGithub && <div className="space-y-4 rounded border border-gray-700 p-4">
         {setupMessage && <p role="status" className="text-sm text-amber-200">{setupMessage}</p>}
         <div><label htmlFor={`${uid}-owner`} className="block text-sm font-medium text-gray-200">GitHub owner</label><select id={`${uid}-owner`} value={initSource.githubOwner ?? ""} onChange={(event) => dispatch({ type: "update_source", mode: "init", patch: { githubOwner: event.target.value } })} className="mt-1 w-full rounded border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-100"><option value="" disabled>Choose an owner</option>{owners.map((owner) => <option key={owner.login} value={owner.login}>{owner.name ? `${owner.name} (${owner.login})` : owner.login}</option>)}</select></div>

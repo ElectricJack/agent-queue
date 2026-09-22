@@ -48,10 +48,20 @@ class GithubAuthStatusResponse(BaseModel):
     success: bool = True
     installed: bool = False
     authenticated: bool = False
+    credential_mode: Literal["app", "existing_login"] = "existing_login"
+    repository_access: bool | None = None
+    account_operations_available: bool = True
+    configuration_changes_require_restart: bool = True
+    app_id: int | None = None
+    installation_id: int | None = None
     host: str | None = None
     login: str | None = None
     cli_version: str | None = None
     message: str | None = None
+
+
+class GetGithubAuthStatusRequest(BaseModel):
+    repository_url: str | None = None
 
 
 class GithubOwner(BaseModel):
@@ -125,4 +135,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "search_github_repositories": SearchGithubRepositoriesResponse,
     "onboard_project": OnboardProjectResponse,
     "get_project_onboarding": GetProjectOnboardingResponse,
+}
+
+REQUEST_MODELS: dict[str, type[BaseModel]] = {
+    "get_github_auth_status": GetGithubAuthStatusRequest,
 }

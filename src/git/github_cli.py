@@ -410,6 +410,10 @@ class GhRunner:
 
         if normalized[0] == "api":
             return ("api", "--hostname", target_host, *normalized[1:])
+        # gh repo create has no --hostname flag. The runner pins GH_HOST in
+        # the child environment, so this account operation still has one host.
+        if tuple(normalized[:2]) == ("repo", "create") and repository is None:
+            return tuple(normalized)
         if repository is not None:
             return (*normalized, "--repo", repository.full_name)
         return (*normalized, "--hostname", target_host)
@@ -467,6 +471,7 @@ class GhRunner:
             if key in _REMOVED_ENVIRONMENT_KEYS or key.startswith("GIT_CONFIG_"):
                 environment.pop(key, None)
         environment.update(_SAFE_ENVIRONMENT)
+        environment["GH_HOST"] = "github.com"
         if identity.mode is GitHubCredentialMode.APP:
             for key in _TOKEN_ENVIRONMENT_KEYS:
                 environment.pop(key, None)

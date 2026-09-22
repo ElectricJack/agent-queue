@@ -9,12 +9,25 @@ account.
 from __future__ import annotations
 
 import logging
+import json
 import os
 import shutil
 import stat
+import time
 from pathlib import Path
 
 import pytest
+
+from src.config import GitHubAppConfig
+from src.git.github import GitHubAccess
+from src.git.github_app import AppTokenCandidate
+from src.git.github_auth import GitHubAuth
+from src.git.github_cli import GhRunner
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialIdentity,
+    GitHubRepositoryBinding,
+)
 
 from src.projects.github import (
     GhClient,
@@ -57,6 +70,7 @@ def fake_gh(fake_gh_dir: Path, argv_log: Path, monkeypatch: pytest.MonkeyPatch) 
     """Put the fake ``gh`` first on PATH, in the authenticated state."""
     monkeypatch.setenv("PATH", str(fake_gh_dir) + os.pathsep + os.environ.get("PATH", ""))
     monkeypatch.setenv("FAKE_GH_ARGV_LOG", str(argv_log))
+    monkeypatch.setenv("FAKE_GH_STDIN_LOG", str(argv_log.with_name("stdin.log")))
     monkeypatch.delenv("FAKE_GH_STATE", raising=False)
     monkeypatch.delenv("FAKE_GH_FAIL_STDERR", raising=False)
     monkeypatch.delenv("FAKE_GH_SLEEP", raising=False)
@@ -75,6 +89,95 @@ def invocations(argv_log: Path) -> list[list[str]]:
         assert parts[-1] == b"", "every argument is NUL-terminated"
         out.append([a.decode() for a in parts[:-1]])
     return out
+
+
+def graphql_requests(argv_log: Path) -> list[dict]:
+    path = argv_log.with_name("stdin.log")
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+class _AppProvider:
+    credential_identity = GitHubCredentialIdentity.app(101, 202)
+
+    def __init__(self, *, failure: bool = False):
+        self.failure = failure
+        self.calls = 0
+
+    async def mint_for_repository(self, full_name: str) -> AppTokenCandidate:
+        self.calls += 1
+        if self.failure:
+            raise GitHubAccessError("credentials", "GitHub App credential is unavailable")
+        return AppTokenCandidate(
+            identity=self.credential_identity,
+            repository=GitHubRepositoryBinding(42, full_name),
+            token="app-installation-secret",
+            expires_at=time.time() + 3600,
+        )
+
+    async def mint(self, repository: GitHubRepositoryBinding) -> AppTokenCandidate:
+        return await self.mint_for_repository(repository.full_name)
+
+
+def _app_client(fake_gh: Path, provider: _AppProvider) -> GhClient:
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        app_provider=provider,
+    )
+    access = GitHubAccess(auth, GhRunner(auth, executable=str(fake_gh / "gh")))
+    return GhClient(access=access)
+
+
+async def test_app_without_personal_login_validates_explicit_repository(
+    fake_gh: Path, argv_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_GH_STATE", "unauthed")
+    provider = _AppProvider()
+    client = _app_client(fake_gh, provider)
+
+    status = await client.auth_status()
+    assert status.installed and status.authenticated
+    assert status.credential_mode == "app"
+    assert status.login is None
+    assert status.account_operations_available is False
+    assert (status.app_id, status.installation_id) == (101, 202)
+    assert invocations(argv_log) == []
+
+    checked = await client.auth_status("https://github.com/acme/widgets")
+    assert checked.repository_access is True
+    assert provider.calls == 1
+    assert len(invocations(argv_log)) == 1
+    assert invocations(argv_log)[0][-1] == "repos/acme/widgets"
+
+
+async def test_app_account_operations_are_unsupported_before_credentials(
+    fake_gh: Path, argv_log: Path
+) -> None:
+    provider = _AppProvider(failure=True)
+    client = _app_client(fake_gh, provider)
+    for operation in (
+        client.list_owners(),
+        client.search_repositories("widgets"),
+        client.create_repository("acme", "widgets", "private"),
+    ):
+        with pytest.raises(GitHubError) as error:
+            await operation
+        assert error.value.code is GitHubErrorCode.OPERATION_UNSUPPORTED
+        assert "paste an existing repository URL" in error.value.message
+    assert provider.calls == 0
+    assert invocations(argv_log) == []
+
+
+async def test_app_repository_failure_never_uses_personal_login(
+    fake_gh: Path, argv_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", "personal-secret")
+    provider = _AppProvider(failure=True)
+    client = _app_client(fake_gh, provider)
+    with pytest.raises(GitHubError) as error:
+        await client.validate_repository("https://github.com/acme/widgets")
+    assert error.value.code is GitHubErrorCode.REPOSITORY_INACCESSIBLE
+    assert provider.calls == 1
+    assert invocations(argv_log) == []
 
 
 # --------------------------------------------------------------------------
@@ -298,6 +401,12 @@ async def test_auth_status_installed_and_authenticated(fake_gh: Path, argv_log: 
         "authenticated": True,
         "login": "octocat",
         "hostname": "github.com",
+        "credential_mode": "existing_login",
+        "repository_access": None,
+        "account_operations_available": True,
+        "configuration_changes_require_restart": True,
+        "app_id": None,
+        "installation_id": None,
     }
     calls = invocations(argv_log)
     assert calls[0][:2] == ["auth", "status"]
@@ -359,7 +468,7 @@ async def test_list_owners_returns_user_then_orgs_that_allow_creation(
     assert owners[0].to_dict() == {"login": "octocat", "kind": "user"}
     calls = invocations(argv_log)
     assert len(calls) == 1
-    assert calls[0][:2] == ["api", "graphql"]
+    assert calls[0][:4] == ["api", "--hostname", "github.com", "graphql"]
 
 
 async def test_list_owners_requires_auth(fake_gh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -408,12 +517,11 @@ async def test_search_first_page_returns_identity_visibility_urls_branch_and_cur
     assert d["next_cursor"] == "CURSOR-PAGE-2"
     assert d["repositories"][0]["full_name"] == "acme-corp/widgets"
 
-    # The query and limit travel as GraphQL variables, each one argument.
+    # The query and variables travel through stdin, never process arguments.
     (call,) = invocations(argv_log)
-    assert call[:2] == ["api", "graphql"]
-    assert "q=widgets" in call
-    assert "first=2" in call
-    assert not any(a.startswith("after=") for a in call)
+    assert call[:4] == ["api", "--hostname", "github.com", "graphql"]
+    assert call[-2:] == ["--input", "-"]
+    assert graphql_requests(argv_log)[0]["variables"] == {"q": "widgets", "first": 2}
 
 
 async def test_search_second_page_follows_cursor_and_ends(fake_gh: Path, argv_log: Path) -> None:
@@ -423,7 +531,8 @@ async def test_search_second_page_follows_cursor_and_ends(fake_gh: Path, argv_lo
     assert [r.full_name for r in page.repositories] == ["beta-labs/empty-repo"]
     assert page.repositories[0].default_branch is None
     (call,) = invocations(argv_log)
-    assert "after=CURSOR-PAGE-2" in call
+    assert call[-2:] == ["--input", "-"]
+    assert graphql_requests(argv_log)[0]["variables"]["after"] == "CURSOR-PAGE-2"
 
 
 async def test_search_passes_hostile_query_as_a_single_argument(
@@ -432,7 +541,8 @@ async def test_search_passes_hostile_query_as_a_single_argument(
     hostile = "widgets; rm -rf / $(id) `id` | cat"
     await GhClient().search_repositories(hostile)
     (call,) = invocations(argv_log)
-    assert "q=" + hostile in call
+    assert hostile not in repr(call)
+    assert graphql_requests(argv_log)[0]["variables"]["q"] == hostile
 
 
 @pytest.mark.parametrize("query", ["", "   ", "x" * 257])
@@ -446,8 +556,8 @@ async def test_search_clamps_limit(fake_gh: Path, argv_log: Path) -> None:
     await GhClient().search_repositories("a", limit=999)
     await GhClient().search_repositories("a", limit=0)
     calls = invocations(argv_log)
-    assert "first=50" in calls[0]
-    assert "first=1" in calls[1]
+    assert all(call[-2:] == ["--input", "-"] for call in calls)
+    assert [item["variables"]["first"] for item in graphql_requests(argv_log)] == [50, 1]
 
 
 async def test_search_requires_auth(fake_gh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -571,13 +681,14 @@ async def test_timeout_kills_gh_and_reports_cli_failed(
 # --------------------------------------------------------------------------
 
 
-def test_module_never_uses_a_shell() -> None:
+def test_module_delegates_to_shared_runner_without_a_shell() -> None:
     source = (Path(__file__).parent.parent / "src" / "projects" / "github.py").read_text()
     assert "shell=True" not in source
     assert "create_subprocess_shell" not in source
     assert "os.system" not in source
     assert "subprocess.run" not in source
-    assert "create_subprocess_exec" in source
+    assert "create_subprocess_exec" not in source
+    assert "self.access.runner.run" in source
 
 
 async def test_subprocess_env_disables_prompts(
@@ -599,6 +710,9 @@ async def test_search_query_travels_as_a_raw_field_so_gh_never_reads_a_file(
     query = "@/etc/passwd {owner}"
     await GhClient().search_repositories(query, cursor="@/etc/shadow")
     (call,) = invocations(argv_log)
-    assert call[call.index("q=" + query) - 1] == "-f"
-    assert call[call.index("after=@/etc/shadow") - 1] == "-f"
-    assert call[call.index("first=20") - 1] == "-F"
+    assert call[-2:] == ["--input", "-"]
+    assert graphql_requests(argv_log)[0]["variables"] == {
+        "q": query,
+        "after": "@/etc/shadow",
+        "first": 20,
+    }

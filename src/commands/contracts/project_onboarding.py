@@ -92,6 +92,7 @@ class ProjectOnboardingErrorCode(StrEnum):
     INVALID_GIT_REPOSITORY = "invalid_git_repository"
     GITHUB_CLI_MISSING = "github_cli_missing"
     GITHUB_AUTH_REQUIRED = "github_auth_required"
+    GITHUB_OPERATION_UNSUPPORTED = "github_operation_unsupported"
     GITHUB_REPOSITORY_INACCESSIBLE = "github_repository_inaccessible"
     GITHUB_REPOSITORY_CONFLICT = "github_repository_conflict"
     CLONE_FAILED = "clone_failed"
@@ -286,12 +287,20 @@ class BrowseProjectRootResult(CommandValue):
 
 
 class GetGithubAuthStatusArgs(CommandArgs):
-    """``get_github_auth_status`` takes no arguments."""
+    """Optionally verify access to one explicitly named repository."""
+
+    repository_url: str | None = None
 
 
 class GithubAuthStatus(CommandValue):
     installed: bool
     authenticated: bool
+    credential_mode: Literal["app", "existing_login"] = "existing_login"
+    repository_access: bool | None = None
+    account_operations_available: bool = True
+    configuration_changes_require_restart: bool = True
+    app_id: int | None = None
+    installation_id: int | None = None
     #: GitHub host (``github.com`` unless an enterprise host is configured).
     host: str | None = None
     #: The authenticated login — an identity, never a credential.
