@@ -7,15 +7,24 @@ import time
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import delete, func, insert, select, update
+from sqlalchemy import case, delete, exists, func, insert, select, update
 
 from src.database.tables import (
     layout_dirty,
     layout_jobs,
+    layout_reflow_requests,
     layout_tidy_request_pairs,
     layout_tidy_requests,
     project_layout_meta,
 )
+
+
+MAX_REFLOW_SCOPES_PER_JOB = 32
+"""Bound one periodic reflow group, even for a very busy project."""
+
+REFLOW_LEASE_SECONDS = 1_800
+MAX_REFLOW_ATTEMPTS = 3
+REFLOW_RETRY_BASE_SECONDS = 900
 
 
 def _chunks(seq: list, size: int = 900) -> list[list]:
@@ -219,6 +228,7 @@ class LayoutQueryMixin:
             (cells, cells.c.project_id),
             (project_layout_meta, project_layout_meta.c.project_id),
             (layout_dirty, layout_dirty.c.project_id),
+            (layout_reflow_requests, layout_reflow_requests.c.project_id),
             (layout_jobs, layout_jobs.c.project_id),
             (layout_tidy_request_pairs, layout_tidy_request_pairs.c.project_id),
         ):
@@ -230,6 +240,380 @@ class LayoutQueryMixin:
                 layout_dirty.c.project_id == project_id, layout_dirty.c.seq <= up_to_seq
             )
         )
+
+    # ── deferred active reflow ─────────────────────────────────────────
+    async def _enqueue_layout_reflows_on_conn(
+        self,
+        conn,
+        project_id: str,
+        variant: str,
+        scope_keys: Iterable[str],
+    ) -> None:
+        """Coalesce fresh finished-leaf reflows into their durable ledger.
+
+        A running lease is deliberately retained: its worker owns the older
+        generation, while the upsert records the newer generation behind it.
+        The acknowledgement path releases that successor back to ``queued``.
+        """
+        keys = sorted(set(scope_keys))
+        if not keys:
+            return
+        from sqlalchemy.dialects import postgresql, sqlite
+
+        now = time.time()
+        dialect = self._engine.dialect.name
+        ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(
+            layout_reflow_requests
+        )
+        current = layout_reflow_requests
+        stmt = ins.values(
+            [
+                {
+                    "project_id": project_id,
+                    "variant": variant,
+                    "scope_key": scope_key,
+                    "generation": 1,
+                    "state": "queued",
+                    "requested_at": now,
+                    "retry_after": now,
+                    "attempts": 0,
+                    "last_error": None,
+                    "claimed_generation": None,
+                    "lease_token": None,
+                    "lease_expires_at": None,
+                }
+                for scope_key in keys
+            ]
+        ).on_conflict_do_update(
+            index_elements=["project_id", "variant", "scope_key"],
+            set_={
+                "generation": current.c.generation + 1,
+                "state": case((current.c.state == "running", "running"), else_="queued"),
+                "requested_at": now,
+                "retry_after": now,
+                "attempts": 0,
+                "last_error": None,
+                "claimed_generation": case(
+                    (current.c.state == "running", current.c.claimed_generation), else_=None
+                ),
+                "lease_token": case(
+                    (current.c.state == "running", current.c.lease_token), else_=None
+                ),
+                "lease_expires_at": case(
+                    (current.c.state == "running", current.c.lease_expires_at), else_=None
+                ),
+            },
+        )
+        await conn.execute(stmt)
+
+    async def enqueue_layout_reflows(
+        self, project_id: str, variant: str, scope_keys: Iterable[str]
+    ) -> None:
+        async with self._engine.begin() as conn:
+            await self._enqueue_layout_reflows_on_conn(conn, project_id, variant, scope_keys)
+
+    async def capture_layout_reflow_generations(
+        self, project_id: str, variant: str
+    ) -> dict[str, int]:
+        """Capture generations a full layout may acknowledge on publication.
+
+        This deliberately happens before the full-layout snapshot.  A newer
+        trigger arriving after this read has a greater generation and survives
+        the later acknowledgement.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(
+                        layout_reflow_requests.c.scope_key,
+                        layout_reflow_requests.c.generation,
+                    ).where(
+                        layout_reflow_requests.c.project_id == project_id,
+                        layout_reflow_requests.c.variant == variant,
+                    )
+                )
+            ).all()
+        return {scope_key: generation for scope_key, generation in rows}
+
+    @staticmethod
+    def _reflow_claim(row) -> dict:
+        return {
+            "project_id": row["project_id"],
+            "variant": row["variant"],
+            "scope_key": row["scope_key"],
+            "generation": row["generation"],
+            "lease_token": row["lease_token"],
+        }
+
+    def _reflow_for_update(self, statement):
+        return (
+            statement.with_for_update(skip_locked=True)
+            if self._engine.dialect.name == "postgresql"
+            else statement
+        )
+
+    async def _release_layout_reflow_claim_on_conn(self, conn, claim: dict, error: str) -> bool:
+        """Release one expired/failed claim, preserving a newer generation."""
+        row = (
+            await conn.execute(
+                self._reflow_for_update(
+                    select(layout_reflow_requests).where(
+                        layout_reflow_requests.c.project_id == claim["project_id"],
+                        layout_reflow_requests.c.variant == claim["variant"],
+                        layout_reflow_requests.c.scope_key == claim["scope_key"],
+                    )
+                )
+            )
+        ).mappings().first()
+        if (
+            row is None
+            or row["state"] != "running"
+            or row["claimed_generation"] != claim["generation"]
+            or row["lease_token"] != claim["lease_token"]
+        ):
+            return False
+        now = time.time()
+        current_generation = row["generation"]
+        if current_generation != claim["generation"]:
+            values = {
+                "state": "queued",
+                "retry_after": now,
+                "attempts": 0,
+                "last_error": None,
+                "claimed_generation": None,
+                "lease_token": None,
+                "lease_expires_at": None,
+            }
+        else:
+            attempts = int(row["attempts"]) + 1
+            failed = attempts >= MAX_REFLOW_ATTEMPTS
+            values = {
+                "state": "failed" if failed else "queued",
+                "retry_after": now
+                + (0 if failed else REFLOW_RETRY_BASE_SECONDS * 2 ** (attempts - 1)),
+                "attempts": attempts,
+                "last_error": error,
+                "claimed_generation": None,
+                "lease_token": None,
+                "lease_expires_at": None,
+            }
+        result = await conn.execute(
+            update(layout_reflow_requests)
+            .where(
+                layout_reflow_requests.c.project_id == claim["project_id"],
+                layout_reflow_requests.c.variant == claim["variant"],
+                layout_reflow_requests.c.scope_key == claim["scope_key"],
+                layout_reflow_requests.c.state == "running",
+                layout_reflow_requests.c.claimed_generation == claim["generation"],
+                layout_reflow_requests.c.lease_token == claim["lease_token"],
+            )
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+    async def reap_expired_layout_reflows(self) -> int:
+        """Recover leases left by a stopped daemon before the periodic claim."""
+        async with self._engine.begin() as conn:
+            now = time.time()
+            rows = (
+                await conn.execute(
+                    self._reflow_for_update(
+                        select(layout_reflow_requests).where(
+                            layout_reflow_requests.c.state == "running",
+                            layout_reflow_requests.c.lease_expires_at.is_not(None),
+                            layout_reflow_requests.c.lease_expires_at <= now,
+                        )
+                    )
+                )
+            ).mappings().all()
+            released = 0
+            for row in rows:
+                released += await self._release_layout_reflow_claim_on_conn(
+                    conn, self._reflow_claim(row), "lease expired"
+                )
+            return released
+
+    async def claim_layout_reflow_group(self) -> dict | None:
+        """Claim one bounded, oldest deferred group for a sweep.
+
+        Ordinary queued/running layout jobs keep precedence for their exact
+        project/variant.  Only this sweep-facing query reads the reflow table;
+        the five-second dirty loop continues to inspect ``layout_dirty`` only.
+        """
+        await self.reap_expired_layout_reflows()
+        async with self._engine.begin() as conn:
+            now = time.time()
+            ordinary_job = exists(
+                select(layout_jobs.c.id).where(
+                    layout_jobs.c.project_id == layout_reflow_requests.c.project_id,
+                    layout_jobs.c.variant == layout_reflow_requests.c.variant,
+                    layout_jobs.c.status.in_(("queued", "running")),
+                )
+            )
+            rows = (
+                await conn.execute(
+                    self._reflow_for_update(
+                        select(layout_reflow_requests)
+                        .where(
+                            layout_reflow_requests.c.state == "queued",
+                            layout_reflow_requests.c.retry_after <= now,
+                            ~ordinary_job,
+                        )
+                        .order_by(
+                            layout_reflow_requests.c.requested_at,
+                            layout_reflow_requests.c.project_id,
+                            layout_reflow_requests.c.variant,
+                            layout_reflow_requests.c.scope_key,
+                        )
+                        .limit(MAX_REFLOW_SCOPES_PER_JOB * 4)
+                    )
+                )
+            ).mappings().all()
+            if not rows:
+                return None
+            project_id, variant = rows[0]["project_id"], rows[0]["variant"]
+            group_rows = [
+                row
+                for row in rows
+                if row["project_id"] == project_id and row["variant"] == variant
+            ][:MAX_REFLOW_SCOPES_PER_JOB]
+            token = uuid.uuid4().hex
+            expires = now + REFLOW_LEASE_SECONDS
+            claims: list[dict] = []
+            for row in group_rows:
+                result = await conn.execute(
+                    update(layout_reflow_requests)
+                    .where(
+                        layout_reflow_requests.c.project_id == project_id,
+                        layout_reflow_requests.c.variant == variant,
+                        layout_reflow_requests.c.scope_key == row["scope_key"],
+                        layout_reflow_requests.c.generation == row["generation"],
+                        layout_reflow_requests.c.state == "queued",
+                    )
+                    .values(
+                        state="running",
+                        claimed_generation=row["generation"],
+                        lease_token=token,
+                        lease_expires_at=expires,
+                    )
+                )
+                if result.rowcount:
+                    claims.append(
+                        {
+                            "project_id": project_id,
+                            "variant": variant,
+                            "scope_key": row["scope_key"],
+                            "generation": row["generation"],
+                            "lease_token": token,
+                        }
+                    )
+            return {"project_id": project_id, "variant": variant, "claims": claims} if claims else None
+
+    async def fail_layout_reflow_claims(self, claims: Iterable[dict], error: str) -> None:
+        """Release a failed compute/publish group with bounded backoff."""
+        async with self._engine.begin() as conn:
+            for claim in claims:
+                await self._release_layout_reflow_claim_on_conn(conn, claim, error)
+
+    async def _ack_layout_reflows_on_conn(
+        self,
+        conn,
+        project_id: str,
+        variant: str,
+        *,
+        captured: dict[str, int],
+        claims: Iterable[dict],
+    ) -> None:
+        """Acknowledge a full-layout capture or exact deferred leases.
+
+        A newer generation is never deleted.  When an older running lease has
+        a successor, its successful publication releases the successor for a
+        future sweep instead of making the newer request disappear.
+        """
+        for scope_key, generation in captured.items():
+            await conn.execute(
+                delete(layout_reflow_requests).where(
+                    layout_reflow_requests.c.project_id == project_id,
+                    layout_reflow_requests.c.variant == variant,
+                    layout_reflow_requests.c.scope_key == scope_key,
+                    layout_reflow_requests.c.generation <= generation,
+                )
+            )
+        for claim in claims:
+            row = (
+                await conn.execute(
+                    self._reflow_for_update(
+                        select(layout_reflow_requests).where(
+                            layout_reflow_requests.c.project_id == project_id,
+                            layout_reflow_requests.c.variant == variant,
+                            layout_reflow_requests.c.scope_key == claim["scope_key"],
+                            layout_reflow_requests.c.state == "running",
+                            layout_reflow_requests.c.claimed_generation == claim["generation"],
+                            layout_reflow_requests.c.lease_token == claim["lease_token"],
+                        )
+                    )
+                )
+            ).mappings().first()
+            if row is None:
+                continue
+            if row["generation"] == claim["generation"]:
+                await conn.execute(
+                    delete(layout_reflow_requests).where(
+                        layout_reflow_requests.c.project_id == project_id,
+                        layout_reflow_requests.c.variant == variant,
+                        layout_reflow_requests.c.scope_key == claim["scope_key"],
+                        layout_reflow_requests.c.generation == claim["generation"],
+                        layout_reflow_requests.c.lease_token == claim["lease_token"],
+                    )
+                )
+            else:
+                await conn.execute(
+                    update(layout_reflow_requests)
+                    .where(
+                        layout_reflow_requests.c.project_id == project_id,
+                        layout_reflow_requests.c.variant == variant,
+                        layout_reflow_requests.c.scope_key == claim["scope_key"],
+                        layout_reflow_requests.c.lease_token == claim["lease_token"],
+                    )
+                    .values(
+                        state="queued",
+                        retry_after=time.time(),
+                        claimed_generation=None,
+                        lease_token=None,
+                        lease_expires_at=None,
+                    )
+                )
+
+    async def layout_reflow_status(self, project_id: str | None = None) -> dict:
+        """Return operator diagnostics without changing deferred work."""
+        async with self._engine.begin() as conn:
+            condition = [] if project_id is None else [layout_reflow_requests.c.project_id == project_id]
+            rows = (
+                await conn.execute(
+                    select(layout_reflow_requests).where(*condition).order_by(
+                        layout_reflow_requests.c.project_id,
+                        layout_reflow_requests.c.variant,
+                        layout_reflow_requests.c.requested_at,
+                        layout_reflow_requests.c.scope_key,
+                    )
+                )
+            ).mappings().all()
+        counts = {state: 0 for state in ("queued", "running", "failed")}
+        failed: list[dict] = []
+        for row in rows:
+            counts[row["state"]] = counts.get(row["state"], 0) + 1
+            if row["state"] == "failed":
+                failed.append(
+                    {
+                        "project_id": row["project_id"],
+                        "variant": row["variant"],
+                        "scope_key": row["scope_key"],
+                        "generation": row["generation"],
+                        "attempts": row["attempts"],
+                        "last_error": row["last_error"],
+                    }
+                )
+        return {**counts, "failed_scopes": failed}
 
     # ── meta ────────────────────────────────────────────────────────────
     async def get_layout_meta(self, project_id: str, variant: str) -> dict | None:
@@ -932,7 +1316,17 @@ class LayoutQueryMixin:
         }
 
     # ── publish ─────────────────────────────────────────────────────────
-    async def publish_layout(self, project_id, variant, write_set, *, consumed_seq, extent) -> int:
+    async def publish_layout(
+        self,
+        project_id,
+        variant,
+        write_set,
+        *,
+        consumed_seq,
+        extent,
+        captured_reflows: dict[str, int] | None = None,
+        reflow_claims: Iterable[dict] = (),
+    ) -> int:
         """Apply upserts/deletes/translations for one layout variant atomically.
 
         The node count is always recomputed with a single ``COUNT(*)``
@@ -949,6 +1343,10 @@ class LayoutQueryMixin:
         from src.task_graph.layout.flow import cells_for_box
 
         dialect = self._engine.dialect.name
+        # A reflow worker may have computed while a Tidy/full layout was
+        # publishing.  Materialise once because the preflight and the final
+        # acknowledgement both need the exact same leased claims.
+        reflow_claims = list(reflow_claims)
 
         def _meta_query():
             q = select(project_layout_meta).where(
@@ -982,6 +1380,26 @@ class LayoutQueryMixin:
                     seed_ins.on_conflict_do_nothing(index_elements=["project_id", "variant"])
                 )
                 meta = (await conn.execute(_meta_query())).mappings().first()
+
+            # The meta-row lock serializes layout publications for this pair.
+            # Do this before touching geometry: if a full layout already
+            # acknowledged this lease, an older reflow must become a harmless
+            # no-op rather than overwrite the Tidy's newer ordering.
+            for claim in reflow_claims:
+                valid = (
+                    await conn.execute(
+                        select(layout_reflow_requests.c.scope_key).where(
+                            layout_reflow_requests.c.project_id == project_id,
+                            layout_reflow_requests.c.variant == variant,
+                            layout_reflow_requests.c.scope_key == claim["scope_key"],
+                            layout_reflow_requests.c.state == "running",
+                            layout_reflow_requests.c.claimed_generation == claim["generation"],
+                            layout_reflow_requests.c.lease_token == claim["lease_token"],
+                        )
+                    )
+                ).scalar_one_or_none()
+                if valid is None:
+                    return meta["layout_version"]
 
             # deletes
             if write_set.deletes:
@@ -1136,6 +1554,24 @@ class LayoutQueryMixin:
                     updated_at=now,
                 )
             )
+
+            # The active incremental batch adds requests only when it proved
+            # that normal work merely removes a finished leaf and refreshes
+            # aggregates.  Keeping this upsert in the geometry transaction
+            # makes a successful hole-creating publication inseparable from
+            # its eventual compaction request.
+            if write_set.reflow_scopes:
+                await self._enqueue_layout_reflows_on_conn(
+                    conn, project_id, variant, write_set.reflow_scopes
+                )
+            if captured_reflows or reflow_claims:
+                await self._ack_layout_reflows_on_conn(
+                    conn,
+                    project_id,
+                    variant,
+                    captured=captured_reflows or {},
+                    claims=reflow_claims,
+                )
 
             if consumed_seq is not None:
                 await self.clear_layout_dirty(project_id, consumed_seq, conn=conn)

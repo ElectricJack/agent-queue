@@ -690,6 +690,56 @@ async def test_finished_leaf_leaves_active_variant_without_relaying_siblings(db)
     assert (after["e"].w, after["e"].h) == (before["e"].w, before["e"].h)
 
 
+async def test_finished_active_leaf_writes_a_deferred_reflow_then_compacts(db):
+    kids = await seed_epic(db, n=4)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)  # drain setup marks
+    before = await db.load_layout_rows("p1", "active", kids)
+
+    await db.transition_task(kids[1], TaskStatus.COMPLETED, force=True)
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    # The ordinary sequence drain consumed its own mark but cannot consume the
+    # separate deferred request.  The first pass intentionally left siblings
+    # fixed; the periodic worker is what later closes the hole.
+    assert await db.dirty_layout_projects() == []
+    group = await db.claim_layout_reflow_group()
+    assert group is not None
+    assert (group["project_id"], group["variant"]) == ("p1", "active")
+    assert [claim["scope_key"] for claim in group["claims"]] == ["e"]
+
+    await drv.reflow(group["project_id"], group["variant"], group["claims"])
+    assert (await db.layout_reflow_status())["queued"] == 0
+    after = await db.load_layout_rows("p1", "active", kids)
+    assert kids[1] not in after
+    for kid in (kids[0], kids[2], kids[3]):
+        assert after[kid].ordinal == before[kid].ordinal
+    assert (after[kids[2]].abs_x, after[kids[2]].abs_y) != (
+        before[kids[2]].abs_x,
+        before[kids[2]].abs_y,
+    )
+
+
+async def test_finished_leaf_needing_a_stub_does_not_request_reflow(db):
+    kids = await seed_epic(db, n=1)
+    drv = LayoutDriver(db)
+    await drv.full_layout("p1", "all")
+    await drv.full_layout("p1", "active")
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    await db.transition_task(kids[0], TaskStatus.COMPLETED, force=True)
+    await drv.process_dirty("p1", min_age_seconds=0)
+
+    assert (await db.layout_reflow_status()) == {
+        "queued": 0,
+        "running": 0,
+        "failed": 0,
+        "failed_scopes": [],
+    }
+
+
 async def test_last_finished_child_still_collapses_its_container_to_a_stub(db):
     kids = await seed_epic(db, n=2)
     drv = LayoutDriver(db)

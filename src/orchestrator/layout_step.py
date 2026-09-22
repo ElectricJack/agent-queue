@@ -184,6 +184,25 @@ class LayoutStepMixin:
 
         if not sweep_due:
             return
+        # Finished leaves deliberately leave their active siblings in place
+        # on the five-second path.  Only the infrequent sweep looks at the
+        # separate reflow ledger, claims one bounded project/variant group,
+        # and pays for the one snapshot needed to compact it.  Ordinary jobs
+        # are advanced above and take precedence in the claim query.
+        reflow = await self.db.claim_layout_reflow_group()
+        if reflow is not None:
+            try:
+                await driver.reflow(
+                    reflow["project_id"], reflow["variant"], reflow["claims"]
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "layout reflow for %s/%s failed: %s",
+                    reflow["project_id"],
+                    reflow["variant"],
+                    exc,
+                )
+                await self.db.fail_layout_reflow_claims(reflow["claims"], str(exc))
         cutoff = time.time() - cfg.reconcile_interval_seconds
         projects = await self.db.list_projects()
         for project in projects:
