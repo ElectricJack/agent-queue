@@ -468,6 +468,42 @@ layout_jobs = Table(
     ),
 )
 
+# A fleet-wide Tidy is deliberately not represented by a burst of ordinary
+# layout_jobs.  Its durable request lists the pairs still to process, and the
+# layout step releases only one pair into the existing job queue at a time.
+layout_tidy_requests = Table(
+    "layout_tidy_requests",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("reason", Text, nullable=False),
+    Column("status", Text, nullable=False),  # queued | running | completed
+    Column("requested_at", Float, nullable=False),
+    Column("finished_at", Float, nullable=True),
+    Index("idx_layout_tidy_requests_status_requested", "status", "requested_at"),
+)
+
+layout_tidy_request_pairs = Table(
+    "layout_tidy_request_pairs",
+    metadata,
+    Column(
+        "request_id",
+        Text,
+        ForeignKey("layout_tidy_requests.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("variant", Text, nullable=False),
+    # ``job_id`` remains a soft reference: project deletion clears layout jobs
+    # before its request rows, and a restart reconciles a missing job as a
+    # failed pair rather than leaving the batch wedged.
+    Column("job_id", Text, nullable=True),
+    Column("status", Text, nullable=False),  # pending | queued | running | completed | failed
+    Column("error", Text, nullable=True),
+    Column("finished_at", Float, nullable=True),
+    PrimaryKeyConstraint("request_id", "project_id", "variant"),
+    Index("idx_layout_tidy_request_pairs_status", "status", "request_id"),
+)
+
 task_context = Table(
     "task_context",
     metadata,

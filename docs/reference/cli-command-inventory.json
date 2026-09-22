@@ -2954,10 +2954,10 @@
         "disposable-daemon:S14"
       ],
       "parameters": {
-        "required": [
-          "--project-id"
-        ],
+        "required": [],
         "optional": [
+          "--project-id",
+          "--all",
           "--variant",
           "--json",
           "--brief",

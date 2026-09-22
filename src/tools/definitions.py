@@ -5437,18 +5437,22 @@ _ALL_TOOL_DEFINITIONS = [
     },
     {
         "name": "graph_tidy",
-        "description": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
+        "description": "Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active published project. Breaks spatial memory; user-triggered only.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project id"},
+                "all": {
+                    "type": "boolean",
+                    "description": "Tidy every active published project and variant once; cannot be combined with project_id.",
+                    "default": False,
+                },
                 "variant": {
                     "type": "string",
                     "enum": ["all", "active"],
                     "description": "Omit for both",
                 },
             },
-            "required": ["project_id"],
         },
     },
     # dv2 phase 2 — review-policy commands

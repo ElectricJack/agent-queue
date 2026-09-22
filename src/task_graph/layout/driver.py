@@ -14,6 +14,7 @@ from src.task_graph.layout.constants import (
     CARD_W,
     DRAWN_TYPES,
     FINISHED_STATUSES,
+    ROW_ASPECT,
     HEADER_H,
     PADDING,
     RANKING_DEP_TYPES,
@@ -210,6 +211,7 @@ def build_full_write_set(
     mode: Literal["tidy"] = "tidy",
     seed: int = 0,
     deadline: float | None = None,
+    row_aspect: float = ROW_ASPECT,
 ) -> tuple[WriteSet, tuple[float, float]]:
     """Lay out every container in *snapshot* from scratch (§4.7).
 
@@ -273,7 +275,9 @@ def build_full_write_set(
             # from whatever the last published row happened to carry (§3.2).
             child_aggregates={k: aggs[k] for k in kids if k in aggs},
         )
-        res = layout_container(scope, mode=container_mode, seed=seed)
+        res = layout_container(
+            scope, mode=container_mode, seed=seed, row_aspect=row_aspect
+        )
         rel_rows.update(res.rows)
         return res.allocated
 
@@ -298,9 +302,17 @@ def build_full_write_set(
 
 
 class LayoutDriver:
-    def __init__(self, db, *, seed: int = 0, tidy_job_seconds: float | None = TIDY_JOB_SECONDS):
+    def __init__(
+        self,
+        db,
+        *,
+        seed: int = 0,
+        tidy_job_seconds: float | None = TIDY_JOB_SECONDS,
+        row_aspect: float = ROW_ASPECT,
+    ):
         self.db = db
         self.seed = seed
+        self.row_aspect = row_aspect
         # Spec §4.7's overall tidy-job budget. ``None`` disables it.
         self.tidy_job_seconds = tidy_job_seconds
 
@@ -325,6 +337,7 @@ class LayoutDriver:
             mode=mode,
             seed=self.seed,
             deadline=deadline,
+            row_aspect=self.row_aspect,
         )
         # Replace everything: rows no longer present (including orphans left
         # behind by a deleted task, or stray rows under this project_id/
@@ -447,6 +460,7 @@ class _IncrementalBatch:
     def __init__(self, driver, project_id, variant, snapshot, edges, blocked, marks):
         self.db = driver.db
         self.seed = driver.seed
+        self.row_aspect = driver.row_aspect
         self.project_id = project_id
         self.variant = variant
         self.snapshot = snapshot
@@ -697,7 +711,9 @@ class _IncrementalBatch:
             stub_ids=frozenset(s for s in self.stubs if s in kids),
             origin=origin,
         )
-        res = await asyncio.to_thread(layout_container, scope, mode=mode, seed=self.seed)
+        res = await asyncio.to_thread(
+            layout_container, scope, mode=mode, seed=self.seed, row_aspect=self.row_aspect
+        )
         self.processed.add(cid)
         # Remember the FRAME these children were authored in, not just the
         # path: a container framed on its pending row (moved here, or created

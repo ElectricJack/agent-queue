@@ -15,16 +15,25 @@ T = TypeVar("T", bound="GraphTidyRequest")
 class GraphTidyRequest:
     """
     Attributes:
-        project_id (str): Project id
+        project_id (None | str | Unset): Project id
+        all_ (bool | Unset): Tidy every active published project and variant once; cannot be combined with project_id.
+            Default: False.
         variant (None | str | Unset): Omit for both
     """
 
-    project_id: str
+    project_id: None | str | Unset = UNSET
+    all_: bool | Unset = False
     variant: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        project_id = self.project_id
+        project_id: None | str | Unset
+        if isinstance(self.project_id, Unset):
+            project_id = UNSET
+        else:
+            project_id = self.project_id
+
+        all_ = self.all_
 
         variant: None | str | Unset
         if isinstance(self.variant, Unset):
@@ -34,11 +43,11 @@ class GraphTidyRequest:
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
-        field_dict.update(
-            {
-                "project_id": project_id,
-            }
-        )
+        field_dict.update({})
+        if project_id is not UNSET:
+            field_dict["project_id"] = project_id
+        if all_ is not UNSET:
+            field_dict["all"] = all_
         if variant is not UNSET:
             field_dict["variant"] = variant
 
@@ -47,7 +56,17 @@ class GraphTidyRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-        project_id = d.pop("project_id")
+
+        def _parse_project_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        all_ = d.pop("all", UNSET)
 
         def _parse_variant(data: object) -> None | str | Unset:
             if data is None:
@@ -60,6 +79,7 @@ class GraphTidyRequest:
 
         graph_tidy_request = cls(
             project_id=project_id,
+            all_=all_,
             variant=variant,
         )
 

@@ -129,18 +129,25 @@ class LayoutStepMixin:
                     logger.debug("layout disabled: discarded %d dirty mark(s)", trimmed)
             return
 
-        driver = LayoutDriver(self.db, tidy_job_seconds=cfg.tidy_job_budget_seconds)
+        driver = LayoutDriver(
+            self.db,
+            tidy_job_seconds=cfg.tidy_job_budget_seconds,
+            row_aspect=cfg.row_aspect,
+        )
 
         job = await self.db.next_layout_job()
         if job:
+            await self.db.layout_tidy_request_for_job(job["id"], running=True)
             recorded = False
             try:
                 await driver.full_layout(job["project_id"], job["variant"])
                 await self.db.finish_layout_job(job["id"], error=None)
+                await self.db.layout_tidy_request_for_job(job["id"])
                 recorded = True
             except Exception as exc:  # noqa: BLE001
                 logger.error("layout job %s failed: %s", job["id"], exc)
                 await self.db.finish_layout_job(job["id"], error=str(exc))
+                await self.db.layout_tidy_request_for_job(job["id"])
                 recorded = True
             finally:
                 if not recorded:
@@ -153,6 +160,7 @@ class LayoutStepMixin:
                         await self.db.finish_layout_job(
                             job["id"], error="cancelled: daemon stopped mid-job"
                         )
+                        await self.db.layout_tidy_request_for_job(job["id"])
 
         dirty = await self.db.dirty_layout_projects()
         for pid in dirty[:MAX_LAYOUT_PROJECTS_PER_CYCLE]:
@@ -168,6 +176,11 @@ class LayoutStepMixin:
                     for variant in ("all", "active"):
                         await self.db.enqueue_layout_job(pid, variant, "tidy")
                     self._layout_failures.pop(pid, None)
+
+        # A bulk request records every pair durably but only releases one
+        # ordinary Tidy once the regular job queue is clear. This call also
+        # reconciles a pair whose job completed while the daemon was down.
+        await self.db.advance_layout_tidy_requests()
 
         if not sweep_due:
             return

@@ -18,7 +18,11 @@ class GraphCommandsMixin:
         pid = args.get("project_id")
         if not pid or await self.db.get_project(pid) is None:
             return {"success": False, "error": f"No project '{pid}'"}
-        driver = LayoutDriver(self.db)
+        graph_layout = getattr(self.config, "graph_layout", None)
+        driver = LayoutDriver(
+            self.db,
+            row_aspect=getattr(graph_layout, "row_aspect", 1.3),
+        )
         versions = {v: await driver.full_layout(pid, v) for v in VARIANTS}
         return {"success": True, "project_id": pid, "versions": versions}
 
@@ -31,6 +35,14 @@ class GraphCommandsMixin:
             }
 
         pid = args.get("project_id")
+        if args.get("all"):
+            if pid or args.get("variant"):
+                return {
+                    "success": False,
+                    "error": "all cannot be combined with project_id or variant",
+                }
+            request = await self.db.create_layout_tidy_request(reason="operator")
+            return {"success": True, "request": request}
         if not pid or await self.db.get_project(pid) is None:
             return {"success": False, "error": f"No project '{pid}'"}
         variants = [args["variant"]] if args.get("variant") in VARIANTS else list(VARIANTS)

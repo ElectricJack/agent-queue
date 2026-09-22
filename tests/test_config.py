@@ -286,13 +286,16 @@ def test_graph_layout_config_defaults_and_parse(tmp_path):
     p.write_text(yaml.dump({
         "discord": {"bot_token": "t", "guild_id": "1"},
         "database": {"url": "postgresql://u:p@localhost:5533/aq_cfg_test"},
-        "dashboard": {"graph_layout": {"enabled": False, "incremental_debounce_ms": 250}},
+        "dashboard": {
+            "graph_layout": {"enabled": False, "incremental_debounce_ms": 250, "row_aspect": 1.8}
+        },
     }))
     cfg = load_config(str(p))
     # The block wins over the on-by-default field.
     assert cfg.graph_layout.enabled is False
     assert cfg.graph_layout.incremental_debounce_ms == 250
     assert cfg.graph_layout.reconcile_interval_seconds == 900
+    assert cfg.graph_layout.row_aspect == 1.8
 
 
 def test_graph_layout_config_defaults_when_absent(tmp_path):
@@ -309,6 +312,7 @@ def test_graph_layout_config_defaults_when_absent(tmp_path):
     assert cfg.graph_layout.reconcile_interval_seconds == 900
     assert cfg.graph_layout.incremental_debounce_ms == 500
     assert cfg.graph_layout.tidy_job_budget_seconds == 60
+    assert cfg.graph_layout.row_aspect == 1.3
 
 
 def test_graph_layout_config_validate_rejects_negative():
@@ -316,6 +320,14 @@ def test_graph_layout_config_validate_rejects_negative():
 
     errors = GraphLayoutConfig(reconcile_interval_seconds=-1).validate()
     assert [e.field for e in errors] == ["reconcile_interval_seconds"]
+
+
+@pytest.mark.parametrize("value", (False, 0.0, -1.0, float("inf"), float("nan")))
+def test_graph_layout_config_rejects_non_positive_or_non_finite_row_aspect(value):
+    from src.config import GraphLayoutConfig
+
+    errors = GraphLayoutConfig(row_aspect=value).validate()
+    assert [e.field for e in errors] == ["row_aspect"]
 
 
 def _dashboard_server_config(tmp_path, **sections):

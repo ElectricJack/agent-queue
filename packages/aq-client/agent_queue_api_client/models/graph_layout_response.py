@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.graph_layout_response_jobs_type_0_item import GraphLayoutResponseJobsType0Item
+    from ..models.graph_layout_response_request_type_0 import GraphLayoutResponseRequestType0
     from ..models.graph_layout_response_versions_type_0 import GraphLayoutResponseVersionsType0
 
 
@@ -25,6 +26,7 @@ class GraphLayoutResponse:
         project_id (None | str | Unset):
         versions (GraphLayoutResponseVersionsType0 | None | Unset):
         jobs (list[GraphLayoutResponseJobsType0Item] | None | Unset):
+        request (GraphLayoutResponseRequestType0 | None | Unset):
         error (None | str | Unset):
     """
 
@@ -32,10 +34,12 @@ class GraphLayoutResponse:
     project_id: None | str | Unset = UNSET
     versions: GraphLayoutResponseVersionsType0 | None | Unset = UNSET
     jobs: list[GraphLayoutResponseJobsType0Item] | None | Unset = UNSET
+    request: GraphLayoutResponseRequestType0 | None | Unset = UNSET
     error: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.graph_layout_response_request_type_0 import GraphLayoutResponseRequestType0
         from ..models.graph_layout_response_versions_type_0 import GraphLayoutResponseVersionsType0
 
         success = self.success
@@ -66,6 +70,14 @@ class GraphLayoutResponse:
         else:
             jobs = self.jobs
 
+        request: dict[str, Any] | None | Unset
+        if isinstance(self.request, Unset):
+            request = UNSET
+        elif isinstance(self.request, GraphLayoutResponseRequestType0):
+            request = self.request.to_dict()
+        else:
+            request = self.request
+
         error: None | str | Unset
         if isinstance(self.error, Unset):
             error = UNSET
@@ -85,6 +97,8 @@ class GraphLayoutResponse:
             field_dict["versions"] = versions
         if jobs is not UNSET:
             field_dict["jobs"] = jobs
+        if request is not UNSET:
+            field_dict["request"] = request
         if error is not UNSET:
             field_dict["error"] = error
 
@@ -93,6 +107,7 @@ class GraphLayoutResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.graph_layout_response_jobs_type_0_item import GraphLayoutResponseJobsType0Item
+        from ..models.graph_layout_response_request_type_0 import GraphLayoutResponseRequestType0
         from ..models.graph_layout_response_versions_type_0 import GraphLayoutResponseVersionsType0
 
         d = dict(src_dict)
@@ -146,6 +161,23 @@ class GraphLayoutResponse:
 
         jobs = _parse_jobs(d.pop("jobs", UNSET))
 
+        def _parse_request(data: object) -> GraphLayoutResponseRequestType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                request_type_0 = GraphLayoutResponseRequestType0.from_dict(data)
+
+                return request_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(GraphLayoutResponseRequestType0 | None | Unset, data)
+
+        request = _parse_request(d.pop("request", UNSET))
+
         def _parse_error(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -160,6 +192,7 @@ class GraphLayoutResponse:
             project_id=project_id,
             versions=versions,
             jobs=jobs,
+            request=request,
             error=error,
         )
 

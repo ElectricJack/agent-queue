@@ -44,6 +44,47 @@ async def test_jobs_lifecycle(db):
     assert (await db.get_layout_job(job["id"]))["status"] == "done"
 
 
+async def test_bulk_tidy_releases_one_pair_at_a_time_and_records_progress(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    for variant in ("active", "all"):
+        await LayoutDriver(db).full_layout("p1", variant)
+
+    request = await db.create_layout_tidy_request(reason="operator")
+    assert request["total"] == 2 and request["pending"] == 2
+
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["queued"] == 1 and progress["pending"] == 1
+    first = await db.next_layout_job()
+    assert first is not None
+    await db.layout_tidy_request_for_job(first["id"], running=True)
+    await db.finish_layout_job(first["id"], error=None)
+
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["completed"] == 1 and progress["queued"] == 1
+    second = await db.next_layout_job()
+    assert second is not None and second["id"] != first["id"]
+    await db.finish_layout_job(second["id"], error=None)
+    assert await db.advance_layout_tidy_requests() is None
+
+
+async def test_bulk_tidy_waits_for_an_ordinary_job_before_releasing_a_pair(db):
+    from src.task_graph.layout.driver import LayoutDriver
+
+    await db.create_task(Task(id="a", project_id="p1", title="a", description=""))
+    for variant in ("active", "all"):
+        await LayoutDriver(db).full_layout("p1", variant)
+    await db.create_layout_tidy_request(reason="operator")
+    ordinary = await db.enqueue_layout_job("p1", "all", "tidy")
+
+    assert await db.advance_layout_tidy_requests() is None
+    assert (await db.get_layout_job(ordinary["id"]))["status"] == "queued"
+    await db.finish_layout_job(ordinary["id"], error=None)
+    progress = await db.advance_layout_tidy_requests()
+    assert progress is not None and progress["queued"] == 1
+
+
 async def test_layout_job_ledger_index_starts_with_the_kind_filter(db):
     """The persistent rules ledger must not scan every historic job."""
     async with db._engine.connect() as conn:

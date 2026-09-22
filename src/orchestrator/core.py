@@ -3395,12 +3395,30 @@ class Orchestrator(
         config = data.get("config")
         if config is None:
             return
+        previous = data.get("previous_config")
+        previous_aspect = getattr(getattr(previous, "graph_layout", None), "row_aspect", None)
+        current_aspect = getattr(getattr(config, "graph_layout", None), "row_aspect", None)
         self.config = config
         # Propagate the global budget to the manager ``_schedule`` reads it
         # back out of.  Assign unconditionally: ``None`` means "no global
         # cap", and skipping it would leave a cleared budget enforced until
         # the next restart.
         self.budget.global_budget = config.global_token_budget_daily
+        if (
+            "graph_layout" in data.get("changed_sections", [])
+            and previous_aspect is not None
+            and current_aspect is not None
+            and previous_aspect != current_aspect
+        ):
+            request = await self.db.create_layout_tidy_request(
+                reason=f"row_aspect:{current_aspect:.12g}"
+            )
+            logger.info(
+                "queued all-project layout Tidy %s after row aspect changed from %s to %s",
+                request.get("id"),
+                previous_aspect,
+                current_aspect,
+            )
         logger.info(
             "Config reloaded: updated sections: %s",
             ", ".join(data.get("changed_sections", [])),

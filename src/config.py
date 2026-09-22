@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import dataclasses
+import math
 import ipaddress
 import logging
 import os
@@ -2757,12 +2758,21 @@ class GraphLayoutConfig:
     reconcile_interval_seconds: int = 900
     incremental_debounce_ms: int = 500
     tidy_job_budget_seconds: int = 60
+    row_aspect: float = 1.3
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         for key in ("reconcile_interval_seconds", "incremental_debounce_ms", "tidy_job_budget_seconds"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("dashboard.graph_layout", key, "must be >= 0"))
+        if (
+            isinstance(self.row_aspect, bool)
+            or not isinstance(self.row_aspect, (int, float))
+            or not math.isfinite(self.row_aspect)
+        ):
+            errors.append(ConfigError("dashboard.graph_layout", "row_aspect", "must be finite"))
+        elif self.row_aspect <= 0:
+            errors.append(ConfigError("dashboard.graph_layout", "row_aspect", "must be > 0"))
         return errors
 
 
@@ -3477,7 +3487,8 @@ class ConfigWatcher:
             logger.warning("Config reload failed (keeping current config): %s", e)
             return {"error": str(e), "changed_sections": [], "applied": []}
 
-        changed = diff_configs(self._config, new_config)
+        previous_config = copy.deepcopy(self._config)
+        changed = diff_configs(previous_config, new_config)
         if not changed:
             return {"changed_sections": [], "restart_required": [], "applied": []}
 
@@ -3500,6 +3511,11 @@ class ConfigWatcher:
                 {
                     "changed_sections": sorted(hot_reloadable),
                     "config": self._config,
+                    # ``self._config`` is updated in place above. Consumers
+                    # whose mechanism depends on a particular value changing
+                    # (rather than merely on its section being reloaded) need
+                    # the prior typed value to make that distinction.
+                    "previous_config": previous_config,
                 },
             )
             logger.info(
@@ -4354,6 +4370,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         tidy_job_budget_seconds=int(
             gl.get("tidy_job_budget_seconds", gl_defaults.tidy_job_budget_seconds)
         ),
+        row_aspect=gl.get("row_aspect", gl_defaults.row_aspect),
     )
 
     config.dashboard_server = dashboard_server_config_from_raw(raw)

@@ -65,9 +65,11 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GraphTidyRequest,
 ) -> Response[GraphLayoutResponse | GraphTidyResponse422]:
-    """Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+    """Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
-     Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+     Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
     Args:
         body (GraphTidyRequest):
@@ -96,9 +98,11 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GraphTidyRequest,
 ) -> GraphLayoutResponse | GraphTidyResponse422 | None:
-    """Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+    """Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
-     Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+     Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
     Args:
         body (GraphTidyRequest):
@@ -122,9 +126,11 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GraphTidyRequest,
 ) -> Response[GraphLayoutResponse | GraphTidyResponse422]:
-    """Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+    """Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
-     Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+     Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
     Args:
         body (GraphTidyRequest):
@@ -151,9 +157,11 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GraphTidyRequest,
 ) -> GraphLayoutResponse | GraphTidyResponse422 | None:
-    """Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+    """Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
-     Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.
+     Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active
+    published project. Breaks spatial memory; user-triggered only.
 
     Args:
         body (GraphTidyRequest):

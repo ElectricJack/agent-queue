@@ -56,6 +56,7 @@ class GraphLayoutResponse(BaseModel):
     project_id: str | None = None
     versions: dict[str, int] | None = None
     jobs: list[dict] | None = None
+    request: dict | None = None
     error: str | None = None
 
 

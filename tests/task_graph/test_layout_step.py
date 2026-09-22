@@ -27,6 +27,45 @@ async def test_layout_step_processes_dirty_and_jobs(orchestrator_factory):
     assert (await o.db.get_layout_job(job["id"]))["status"] == "done"
 
 
+async def test_row_aspect_reload_relays_out_every_published_pair(orchestrator_factory):
+    import copy
+
+    o = await orchestrator_factory()
+    await _laid_out_install(o, n=1)
+    # Keep the engine-rules sweep from adding an unrelated queue entry: this
+    # test isolates the automatic all-project request made by the config hook.
+    for variant in ("active", "all"):
+        job = await o.db.enqueue_layout_job("p00", variant, _rules_kind())
+        await o.db.finish_layout_job(job["id"], error=None)
+    before = {
+        variant: (await o.db.get_layout_meta("p00", variant))["layout_version"]
+        for variant in ("active", "all")
+    }
+    previous = copy.deepcopy(o.config)
+    changed = copy.deepcopy(o.config)
+    changed.graph_layout.row_aspect = 2.0
+
+    await o._on_config_reloaded(
+        {
+            "config": changed,
+            "previous_config": previous,
+            "changed_sections": ["graph_layout"],
+        }
+    )
+    request = await o.db.create_layout_tidy_request(reason="row_aspect:2")
+    assert request["total"] == 2 and request["pending"] == 2
+
+    # First pass releases active, then each following pass runs one full
+    # layout and releases the next durable pair.
+    await o._run_layout_step()
+    await o._run_layout_step()
+    await o._run_layout_step()
+    assert {
+        variant: (await o.db.get_layout_meta("p00", variant))["layout_version"] > before[variant]
+        for variant in ("active", "all")
+    } == {"active": True, "all": True}
+
+
 async def test_layout_step_is_noop_when_disabled(orchestrator_factory):
     o = await orchestrator_factory()
     await o.db.create_project(Project(id="p1", name="P1"))
@@ -595,17 +634,20 @@ async def test_a_failed_pair_is_retried_at_most_three_times(orchestrator_factory
 async def test_a_version_bump_resets_the_retry_budget(orchestrator_factory):
     o = await orchestrator_factory()
     await _laid_out_install(o, n=1)
+    current_kind = _rules_kind()
+    next_version = int(current_kind.removeprefix("rules:")) + 1
+    next_kind = f"rules:{next_version}"
     for variant in ("active", "all"):
         for _ in range(3):
-            job = await o.db.enqueue_layout_job("p00", variant, "rules:1")
+            job = await o.db.enqueue_layout_job("p00", variant, current_kind)
             await o.db.finish_layout_job(job["id"], error="boom")
 
     await _converge(o)
-    assert [j for j in await _rules_jobs(o, "rules:1") if j["status"] == "queued"] == []
+    assert [j for j in await _rules_jobs(o, current_kind) if j["status"] == "queued"] == []
 
-    with patch("src.orchestrator.layout_step.ENGINE_RULES_VERSION", 2):
+    with patch("src.orchestrator.layout_step.ENGINE_RULES_VERSION", next_version):
         await _converge(o)
-    fresh = await _rules_jobs(o, "rules:2")
+    fresh = await _rules_jobs(o, next_kind)
     assert [(j["project_id"], j["variant"]) for j in fresh] == [("p00", "active")]
 
 

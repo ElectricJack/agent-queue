@@ -9,7 +9,13 @@ from collections.abc import Iterable
 
 from sqlalchemy import delete, func, insert, select, update
 
-from src.database.tables import layout_dirty, layout_jobs, project_layout_meta
+from src.database.tables import (
+    layout_dirty,
+    layout_jobs,
+    layout_tidy_request_pairs,
+    layout_tidy_requests,
+    project_layout_meta,
+)
 
 
 def _chunks(seq: list, size: int = 900) -> list[list]:
@@ -214,6 +220,7 @@ class LayoutQueryMixin:
             (project_layout_meta, project_layout_meta.c.project_id),
             (layout_dirty, layout_dirty.c.project_id),
             (layout_jobs, layout_jobs.c.project_id),
+            (layout_tidy_request_pairs, layout_tidy_request_pairs.c.project_id),
         ):
             await conn.execute(delete(table).where(col == project_id))
 
@@ -242,33 +249,300 @@ class LayoutQueryMixin:
         return dict(row) if row else None
 
     # ── jobs ────────────────────────────────────────────────────────────
-    async def enqueue_layout_job(self, project_id: str, variant: str, kind: str) -> dict:
-        async with self._engine.begin() as conn:
-            existing = (
-                (
-                    await conn.execute(
-                        select(layout_jobs).where(
-                            layout_jobs.c.project_id == project_id,
-                            layout_jobs.c.variant == variant,
-                            layout_jobs.c.status.in_(("queued", "running")),
-                        )
+    async def _enqueue_layout_job_on_conn(
+        self, conn, project_id: str, variant: str, kind: str
+    ) -> dict:
+        existing = (
+            (
+                await conn.execute(
+                    select(layout_jobs).where(
+                        layout_jobs.c.project_id == project_id,
+                        layout_jobs.c.variant == variant,
+                        layout_jobs.c.status.in_(("queued", "running")),
                     )
                 )
-                .mappings()
-                .first()
             )
-            if existing:
-                return dict(existing)
-            row = {
-                "id": uuid.uuid4().hex,
-                "project_id": project_id,
-                "variant": variant,
-                "kind": kind,
-                "status": "queued",
-                "requested_at": time.time(),
-            }
-            await conn.execute(insert(layout_jobs).values(**row))
-            return row
+            .mappings()
+            .first()
+        )
+        if existing:
+            return dict(existing)
+        row = {
+            "id": uuid.uuid4().hex,
+            "project_id": project_id,
+            "variant": variant,
+            "kind": kind,
+            "status": "queued",
+            "requested_at": time.time(),
+        }
+        await conn.execute(insert(layout_jobs).values(**row))
+        return row
+
+    async def enqueue_layout_job(self, project_id: str, variant: str, kind: str) -> dict:
+        async with self._engine.begin() as conn:
+            return await self._enqueue_layout_job_on_conn(conn, project_id, variant, kind)
+
+    async def _layout_tidy_request_summary(self, conn, request_id: str) -> dict | None:
+        request = (
+            await conn.execute(
+                select(layout_tidy_requests).where(layout_tidy_requests.c.id == request_id)
+            )
+        ).mappings().first()
+        if request is None:
+            return None
+        rows = (
+            await conn.execute(
+                select(layout_tidy_request_pairs.c.status, func.count().label("count"))
+                .where(layout_tidy_request_pairs.c.request_id == request_id)
+                .group_by(layout_tidy_request_pairs.c.status)
+            )
+        ).mappings().all()
+        counts = {status: 0 for status in ("pending", "queued", "running", "completed", "failed")}
+        counts.update({row["status"]: int(row["count"]) for row in rows})
+        return {
+            **dict(request),
+            "total": sum(counts.values()),
+            "remaining": counts["pending"] + counts["queued"] + counts["running"],
+            **counts,
+        }
+
+    async def create_layout_tidy_request(self, *, reason: str) -> dict:
+        """Create (or report) a durable all-project Tidy request.
+
+        Repeated calls with the same active reason are status reads, so an
+        operator can re-run ``aq graph tidy --all`` to see progress without
+        queuing duplicate work. Completed requests do not block a later run.
+        """
+        from src.database.tables import projects
+
+        async with self._engine.begin() as conn:
+            active = (
+                await conn.execute(
+                    select(layout_tidy_requests.c.id)
+                    .where(
+                        layout_tidy_requests.c.reason == reason,
+                        layout_tidy_requests.c.status.in_(("queued", "running")),
+                    )
+                    .order_by(layout_tidy_requests.c.requested_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                return (await self._layout_tidy_request_summary(conn, active)) or {}
+
+            now = time.time()
+            request_id = uuid.uuid4().hex
+            pairs = (
+                await conn.execute(
+                    select(project_layout_meta.c.project_id, project_layout_meta.c.variant)
+                    .join(projects, projects.c.id == project_layout_meta.c.project_id)
+                    .where(projects.c.status == "ACTIVE")
+                    .order_by(project_layout_meta.c.project_id, project_layout_meta.c.variant)
+                )
+            ).all()
+            status = "queued" if pairs else "completed"
+            await conn.execute(
+                insert(layout_tidy_requests).values(
+                    id=request_id,
+                    reason=reason,
+                    status=status,
+                    requested_at=now,
+                    finished_at=None if pairs else now,
+                )
+            )
+            if pairs:
+                await conn.execute(
+                    insert(layout_tidy_request_pairs),
+                    [
+                        {
+                            "request_id": request_id,
+                            "project_id": project_id,
+                            "variant": variant,
+                            "status": "pending",
+                        }
+                        for project_id, variant in pairs
+                    ],
+                )
+            return (await self._layout_tidy_request_summary(conn, request_id)) or {}
+
+    async def layout_tidy_request_for_job(self, job_id: str, *, running: bool = False) -> None:
+        """Reflect an existing layout job's lifecycle in its bulk request."""
+        async with self._engine.begin() as conn:
+            if running:
+                await conn.execute(
+                    update(layout_tidy_request_pairs)
+                    .where(
+                        layout_tidy_request_pairs.c.job_id == job_id,
+                        layout_tidy_request_pairs.c.status == "queued",
+                    )
+                    .values(status="running")
+                )
+                return
+            job = (
+                await conn.execute(select(layout_jobs).where(layout_jobs.c.id == job_id))
+            ).mappings().first()
+            if job is None or job["status"] not in ("done", "failed"):
+                return
+            await conn.execute(
+                update(layout_tidy_request_pairs)
+                .where(
+                    layout_tidy_request_pairs.c.job_id == job_id,
+                    layout_tidy_request_pairs.c.status.in_(("queued", "running")),
+                )
+                .values(
+                    status="completed" if job["status"] == "done" else "failed",
+                    error=job["error"],
+                    finished_at=job["finished_at"] or time.time(),
+                )
+            )
+
+    async def advance_layout_tidy_requests(self) -> dict | None:
+        """Settle completed bulk pairs and release at most one pending pair.
+
+        The scheduler only releases another pair once the existing layout-job
+        queue is clear. That leaves an operator's ordinary per-project Tidy
+        ahead of future bulk entries while preserving the already-committed
+        pair across a daemon restart.
+        """
+        async with self._engine.begin() as conn:
+            tracked = (
+                await conn.execute(
+                    select(
+                        layout_tidy_request_pairs.c.request_id,
+                        layout_tidy_request_pairs.c.project_id,
+                        layout_tidy_request_pairs.c.variant,
+                        layout_tidy_request_pairs.c.job_id,
+                        layout_jobs.c.status.label("job_status"),
+                        layout_jobs.c.error.label("job_error"),
+                        layout_jobs.c.finished_at.label("job_finished_at"),
+                    )
+                    .select_from(
+                        layout_tidy_request_pairs.outerjoin(
+                            layout_jobs,
+                            layout_jobs.c.id == layout_tidy_request_pairs.c.job_id,
+                        )
+                    )
+                    .where(layout_tidy_request_pairs.c.status.in_(("queued", "running")))
+                )
+            ).mappings().all()
+            for pair in tracked:
+                if pair["job_status"] in ("done", "failed"):
+                    await conn.execute(
+                        update(layout_tidy_request_pairs)
+                        .where(
+                            layout_tidy_request_pairs.c.request_id == pair["request_id"],
+                            layout_tidy_request_pairs.c.project_id == pair["project_id"],
+                            layout_tidy_request_pairs.c.variant == pair["variant"],
+                        )
+                        .values(
+                            status="completed" if pair["job_status"] == "done" else "failed",
+                            error=pair["job_error"],
+                            finished_at=pair["job_finished_at"] or time.time(),
+                        )
+                    )
+                elif pair["job_status"] is None:
+                    await conn.execute(
+                        update(layout_tidy_request_pairs)
+                        .where(
+                            layout_tidy_request_pairs.c.request_id == pair["request_id"],
+                            layout_tidy_request_pairs.c.project_id == pair["project_id"],
+                            layout_tidy_request_pairs.c.variant == pair["variant"],
+                        )
+                        .values(
+                            status="failed",
+                            error="layout job disappeared",
+                            finished_at=time.time(),
+                        )
+                    )
+
+            active_requests = (
+                await conn.execute(
+                    select(layout_tidy_requests.c.id).where(
+                        layout_tidy_requests.c.status.in_(("queued", "running"))
+                    )
+                )
+            ).scalars().all()
+            for request_id in active_requests:
+                pending = (
+                    await conn.execute(
+                        select(func.count())
+                        .select_from(layout_tidy_request_pairs)
+                        .where(
+                            layout_tidy_request_pairs.c.request_id == request_id,
+                            layout_tidy_request_pairs.c.status.in_(("pending", "queued", "running")),
+                        )
+                    )
+                ).scalar_one()
+                if not pending:
+                    await conn.execute(
+                        update(layout_tidy_requests)
+                        .where(layout_tidy_requests.c.id == request_id)
+                        .values(status="completed", finished_at=time.time())
+                    )
+
+            in_flight_pair = (
+                await conn.execute(
+                    select(layout_tidy_request_pairs.c.request_id)
+                    .where(layout_tidy_request_pairs.c.status.in_(("queued", "running")))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if in_flight_pair is not None:
+                return await self._layout_tidy_request_summary(conn, in_flight_pair)
+
+            queued_job = (
+                await conn.execute(
+                    select(layout_jobs.c.id)
+                    .where(layout_jobs.c.status.in_(("queued", "running")))
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if queued_job is not None:
+                return None
+
+            pair = (
+                await conn.execute(
+                    select(
+                        layout_tidy_request_pairs.c.request_id,
+                        layout_tidy_request_pairs.c.project_id,
+                        layout_tidy_request_pairs.c.variant,
+                    )
+                    .join(
+                        layout_tidy_requests,
+                        layout_tidy_requests.c.id == layout_tidy_request_pairs.c.request_id,
+                    )
+                    .where(
+                        layout_tidy_requests.c.status.in_(("queued", "running")),
+                        layout_tidy_request_pairs.c.status == "pending",
+                    )
+                    .order_by(
+                        layout_tidy_requests.c.requested_at,
+                        layout_tidy_request_pairs.c.project_id,
+                        layout_tidy_request_pairs.c.variant,
+                    )
+                    .limit(1)
+                )
+            ).mappings().first()
+            if pair is None:
+                return None
+            job = await self._enqueue_layout_job_on_conn(
+                conn, pair["project_id"], pair["variant"], "tidy"
+            )
+            await conn.execute(
+                update(layout_tidy_request_pairs)
+                .where(
+                    layout_tidy_request_pairs.c.request_id == pair["request_id"],
+                    layout_tidy_request_pairs.c.project_id == pair["project_id"],
+                    layout_tidy_request_pairs.c.variant == pair["variant"],
+                )
+                .values(job_id=job["id"], status="queued")
+            )
+            await conn.execute(
+                update(layout_tidy_requests)
+                .where(layout_tidy_requests.c.id == pair["request_id"])
+                .values(status="running")
+            )
+            return await self._layout_tidy_request_summary(conn, pair["request_id"])
 
     async def next_layout_job(self) -> dict | None:
         async with self._engine.begin() as conn:

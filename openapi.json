@@ -5422,8 +5422,8 @@
         "tags": [
           "graph"
         ],
-        "summary": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
-        "description": "Enqueue a Tidy layout job for a project. Breaks spatial memory; user-triggered only.",
+        "summary": "Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active published project. Breaks spatial memory; user-triggered only.",
+        "description": "Enqueue a Tidy layout job for one project, or a durable one-pair-at-a-time Tidy across every active published project. Breaks spatial memory; user-triggered only.",
         "operationId": "graph_tidy",
         "requestBody": {
           "content": {
@@ -28527,6 +28527,18 @@
             ],
             "title": "Jobs"
           },
+          "request": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request"
+          },
           "error": {
             "anyOf": [
               {
@@ -28806,9 +28818,22 @@
       "GraphTidyRequest": {
         "properties": {
           "project_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Project Id",
             "description": "Project id"
+          },
+          "all": {
+            "type": "boolean",
+            "title": "All",
+            "description": "Tidy every active published project and variant once; cannot be combined with project_id.",
+            "default": false
           },
           "variant": {
             "anyOf": [
@@ -28824,9 +28849,6 @@
           }
         },
         "type": "object",
-        "required": [
-          "project_id"
-        ],
         "title": "GraphTidyRequest"
       },
       "GrepRequest": {

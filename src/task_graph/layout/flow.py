@@ -56,7 +56,9 @@ def row_target_rungs(floor: float, *, up_to: float | None = None) -> tuple[float
     return tuple(rungs)
 
 
-def row_target(sizes: Mapping[str, tuple[float, float]], *, is_root: bool) -> float:
+def row_target(
+    sizes: Mapping[str, tuple[float, float]], *, is_root: bool, row_aspect: float = ROW_ASPECT
+) -> float:
     """The width a scope's ranks would ideally wrap at (design §3.1).
 
     A constant target makes a scope's width fixed and its height linear in
@@ -79,7 +81,7 @@ def row_target(sizes: Mapping[str, tuple[float, float]], *, is_root: bool) -> fl
     if not sizes:
         return floor
     area = sum((w + SIBLING_GAP) * (h + LINE_GAP) for w, h in sizes.values())
-    want = max(math.sqrt(area) * ROW_ASPECT, max(w for w, _ in sizes.values()))
+    want = max(math.sqrt(area) * row_aspect, max(w for w, _ in sizes.values()))
     if want <= floor:
         return floor
     band = band_up(want + 2 * PADDING)

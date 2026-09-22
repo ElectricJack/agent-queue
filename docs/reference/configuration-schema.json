@@ -220,7 +220,8 @@
       "default": {
         "enabled": true,
         "host": "127.0.0.1",
-        "port": 8082
+        "port": 8082,
+        "public_url": ""
       },
       "properties": {
         "enabled": {
@@ -234,6 +235,10 @@
         "port": {
           "default": 8082,
           "type": "integer"
+        },
+        "public_url": {
+          "default": "",
+          "type": "string"
         }
       },
       "type": "object",
@@ -502,6 +507,7 @@
         "enabled": true,
         "incremental_debounce_ms": 500,
         "reconcile_interval_seconds": 900,
+        "row_aspect": 1.3,
         "tidy_job_budget_seconds": 60
       },
       "properties": {
@@ -516,6 +522,10 @@
         "reconcile_interval_seconds": {
           "default": 900,
           "type": "integer"
+        },
+        "row_aspect": {
+          "default": 1.3,
+          "type": "number"
         },
         "tidy_job_budget_seconds": {
           "default": 60,
@@ -567,6 +577,7 @@
         "merge_ci_policy": "warn",
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
+        "owner_recovery_sweep": false,
         "scratch_probe": null
       },
       "properties": {
@@ -632,6 +643,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "owner_recovery_sweep": {
+          "default": false,
+          "type": "boolean"
         },
         "scratch_probe": {
           "additionalProperties": false,

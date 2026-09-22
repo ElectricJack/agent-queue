@@ -20,6 +20,7 @@ from src.task_graph.layout.constants import (
     INCREMENTAL_EVALS,
     INCREMENTAL_SECONDS,
     MAX_OPTIMIZED_SIBLINGS,
+    ROW_ASPECT,
     TARGET_ROW_WIDTH,
     TARGET_ROW_WIDTH_ROOT,
     TIDY_EVALS,
@@ -370,14 +371,16 @@ def _tidy_sweep(
                 break
 
 
-def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> ContainerResult:
+def layout_container(
+    scope: ContainerScope, *, mode: Mode, seed: int = 0, row_aspect: float = ROW_ASPECT
+) -> ContainerResult:
     is_root = scope.container_id is None
     sizes = _sizes(scope)
     # Computed ONCE per container pass: it depends only on the children's
     # sizes, never on the candidate ordering, and ``_tidy_sweep`` evaluates
     # thousands of candidates. ``chain_target`` deliberately stays at the
     # floor so serpentine folding is unaffected by a widened scope (§3.1).
-    target = row_target(sizes, is_root=is_root)
+    target = row_target(sizes, is_root=is_root, row_aspect=row_aspect)
     chain_target = TARGET_ROW_WIDTH_ROOT if is_root else TARGET_ROW_WIDTH
     edges = break_cycles(scope.children, scope.sibling_edges)
     # ``edges`` is already acyclic — don't make ``minimal_ranks`` repeat the

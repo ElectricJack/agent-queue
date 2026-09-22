@@ -121,20 +121,21 @@ def test_tidy_container_aggregate_order_is_deterministic_across_input_permutatio
     assert len(snapshots) == 1
     baseline = dict(next(iter(snapshots)))
     assert [child_id for child_id, _ in sorted(baseline.items(), key=lambda item: (item[1][3], item[1][2]))] == [
+        "finished",
         "running",
         "active-a",
         "active-b",
-        "finished",
     ]
 
     # This control proves aggregates participate in the sort: making the
-    # formerly-running container finished moves both active containers ahead.
+    # formerly-running container to-do moves both active containers ahead,
+    # while the finished band still leads under the binding OD5 Q1 policy.
     changed = dict(aggregate_values)
-    changed["running"] = {"descendants": 4, "running": 0, "active": 0}
+    changed["running"] = {"descendants": 4, "running": 0, "active": 3}
     result = layout_container(
         scope(list(children.values()), [], changed), mode="tidy", seed=17
     )
-    assert reading_order(result) == ["active-a", "active-b", "finished", "running"]
+    assert reading_order(result) == ["finished", "active-a", "active-b", "running"]
 
 
 def test_tidy_output_is_unchanged_when_every_sibling_is_one_class(monkeypatch):

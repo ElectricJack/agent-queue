@@ -476,9 +476,9 @@ async def test_reparenting_freshly_created_task_does_not_relay_root(db, monkeypa
     calls: list[str | None] = []
     orig = driver_mod.layout_container
 
-    def spy(scope, *, mode, seed):
+    def spy(scope, *, mode, seed, row_aspect):
         calls.append(scope.container_id)
-        return orig(scope, mode=mode, seed=seed)
+        return orig(scope, mode=mode, seed=seed, row_aspect=row_aspect)
 
     monkeypatch.setattr(driver_mod, "layout_container", spy)
 
