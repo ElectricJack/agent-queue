@@ -527,7 +527,7 @@ function Inner(props: LayoutCanvasProps) {
     // The node lookup uses the persisted "all" layout. The active canvas
     // compacts finished work away, so those coordinates can be far outside
     // the viewport. Fit the card that this scope actually drew instead.
-    const visibleId = !focusId && runningTarget.ancestors.length > 0
+    const visibleId = !focusId && runningTarget.ancestors?.length
       ? runningTarget.ancestors[0]!
       : runningTarget.task_id;
     const layer = layers.get(runningTarget.project_id);
