@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from src.config import GitHubAppConfig
 from src.git.github_app import (
+    AppTokenProvider,
     GitHubAppClient,
     GitHubAppError,
     GitHubRepositoryBinding,
@@ -90,7 +91,8 @@ def _private_key() -> tuple[bytes, bytes]:
 @pytest.mark.asyncio
 async def test_mints_narrow_installation_token_after_app_and_repository_binding():
     private, public = _private_key()
-    expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    now = 1_800_000_000.0
+    expires = (datetime.fromtimestamp(now, timezone.utc) + timedelta(hours=1)).isoformat()
     transport = ScriptedTransport(
         [
             HttpResponse(200, {}, b'{"id":101}'),
@@ -99,13 +101,12 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
                 {},
                 (
                     '{"token":"installation-secret","expires_at":"%s",'
-                    '"repositories":[{"id":303}],"permissions":'
+                    '"repositories":[{"id":303,"full_name":"acme/widgets"}],"permissions":'
                     '{"checks":"write","actions":"read","contents":"write",'
                     '"administration":"read","pull_requests":"write",'
                     '"issues":"write","variables":"read","metadata":"read"}}' % expires
                 ).encode(),
             ),
-            HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
         ]
     )
     client = GitHubAppClient(
@@ -113,7 +114,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
         GitHubRepositoryBinding(303, "acme/widgets"),
         key_provider=StaticKeyProvider(private),
         transport=transport,
-        clock=lambda: 1_800_000_000.0,
+        clock=lambda: now,
     )
 
     assert await client.installation_token() == "installation-secret"
@@ -143,6 +144,78 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
 
 
 @pytest.mark.asyncio
+async def test_app_provider_rejects_bootstrap_redirect_without_following_location():
+    private, _ = _private_key()
+    transport = ScriptedTransport(
+        [HttpResponse(302, {"Location": "https://attacker.example/app"}, b"")]
+    )
+    provider = AppTokenProvider(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        key_provider=StaticKeyProvider(private),
+        transport=transport,
+        clock=lambda: 1_800_000_000.0,
+    )
+
+    with pytest.raises(GitHubAppError, match="redirect") as caught:
+        await provider.mint(GitHubRepositoryBinding(303, "acme/widgets"))
+
+    assert caught.value.category == "conflict_or_invalid"
+    assert [request[1] for request in transport.requests] == ["https://api.github.com/app"]
+
+
+@pytest.mark.asyncio
+async def test_app_provider_rejects_expired_or_widened_token_response():
+    private, _ = _private_key()
+    responses = [
+        HttpResponse(200, {}, b'{"id":101}'),
+        HttpResponse(
+            201,
+            {},
+            b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
+            b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
+            b'"permissions":{"checks":"write",'
+            b'"actions":"read","contents":"write","administration":"write",'
+            b'"pull_requests":"write","issues":"write","variables":"read"}}',
+        ),
+    ]
+    provider = AppTokenProvider(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        key_provider=StaticKeyProvider(private),
+        transport=ScriptedTransport(responses),
+        clock=lambda: 1_800_000_000.0,
+    )
+
+    with pytest.raises(GitHubAppError, match="permissions") as widened:
+        await provider.mint(GitHubRepositoryBinding(303, "acme/widgets"))
+    assert widened.value.category == "permission"
+
+    expired_transport = ScriptedTransport(
+        [
+            HttpResponse(200, {}, b'{"id":101}'),
+            HttpResponse(
+                201,
+                {},
+                b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
+                b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
+                b'"permissions":{"checks":"write",'
+                b'"actions":"read","contents":"write","administration":"read",'
+                b'"pull_requests":"write","issues":"write","variables":"read"}}',
+            ),
+        ]
+    )
+    expired = AppTokenProvider(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        key_provider=StaticKeyProvider(private),
+        transport=expired_transport,
+        clock=lambda: 1_900_000_000.0,
+    )
+
+    with pytest.raises(GitHubAppError, match="expiry") as expiry:
+        await expired.mint(GitHubRepositoryBinding(303, "acme/widgets"))
+    assert expiry.value.category == "credentials"
+
+
+@pytest.mark.asyncio
 async def test_rejects_installation_token_without_variables_read_permission():
     private, _public = _private_key()
     transport = ScriptedTransport(
@@ -153,7 +226,8 @@ async def test_rejects_installation_token_without_variables_read_permission():
                 {},
                 b'{"token":"installation-secret",'
                 b'"expires_at":"2030-01-01T00:00:00Z",'
-                b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
+                b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
+                b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
                 b'"pull_requests":"write","issues":"write"}}',
             ),
@@ -268,7 +342,9 @@ async def test_audit_pr_transport_reconciles_by_marker_and_creates_exact_bound_p
 
     assert found == created
     assert found.idempotency_key == key
-    assert transport.requests[0][1].endswith("/repositories/303/pulls?state=all&per_page=100&head=acme%3Aaq%2Fintegration%2Fbatch")
+    assert transport.requests[0][1].endswith(
+        "/repositories/303/pulls?state=all&per_page=100&head=acme%3Aaq%2Fintegration%2Fbatch"
+    )
     assert transport.requests[2][3] == {
         "title": "Integration train batch",
         "head": "aq/integration/batch",
@@ -321,7 +397,7 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
         {},
         (
             f'{{"token":"{token}","expires_at":"{expires}",'
-            '"repositories":[{"id":303}],"permissions":'
+            '"repositories":[{"id":303,"full_name":"acme/widgets"}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
             '"administration":"read","pull_requests":"write","issues":"write",'
             '"variables":"read"}}'
@@ -331,11 +407,9 @@ async def test_authenticated_request_retries_one_401_with_a_fresh_token():
         [
             HttpResponse(200, {}, b'{"id":101}'),
             token_response("first"),
-            HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
             HttpResponse(401, {}, b"never expose this body"),
             HttpResponse(200, {}, b'{"id":101}'),
             token_response("second"),
-            HttpResponse(200, {}, b'{"id":303,"full_name":"acme/widgets"}'),
             HttpResponse(200, {}, b'{"ok":true}'),
         ]
     )
@@ -361,11 +435,11 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
                 201,
                 {},
                 b'{"token":"sensitive","expires_at":"2030-01-01T00:00:00Z",'
-                b'"repositories":[{"id":303}],"permissions":{"checks":"write",'
+                b'"repositories":[{"id":303,"full_name":"attacker/redirected"}],'
+                b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
                 b'"pull_requests":"write","issues":"write","variables":"read"}}',
             ),
-            HttpResponse(200, {}, b'{"id":303,"full_name":"attacker/redirected"}'),
         ]
     )
     client = GitHubAppClient(
@@ -451,9 +525,12 @@ async def test_audit_pr_reuses_exact_batch_pr_for_new_revision(mismatch, pr_stat
         repository_full_name="acme/widgets",
     )
     from unittest.mock import AsyncMock
-    monkeypatch.setattr(client, "exact_head_ref", AsyncMock(
-        return_value="d" * 40 if mismatch == "closed_base" else head
-    ))
+
+    monkeypatch.setattr(
+        client,
+        "exact_head_ref",
+        AsyncMock(return_value="d" * 40 if mismatch == "closed_base" else head),
+    )
     if mismatch and (mismatch != "closed_base" or pr_state == "closed"):
         with pytest.raises(GitHubAppError):
             await client.create_audit_pr(**kwargs)
