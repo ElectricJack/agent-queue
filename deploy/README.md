@@ -122,12 +122,117 @@ sudo docker compose -f docker-compose.prod.yml exec daemon claude auth login
 sudo docker compose -f docker-compose.prod.yml exec daemon codex login --device-auth
 ```
 
-### What it builds, and the three decisions inside it
+### First deploy, end to end
 
-- **No external IP.** Egress is Cloud NAT (agents must reach LLM APIs); ingress
-  is a single firewall rule for IAP's `35.235.240.0/20`. Given the web layer has
-  effectively no authentication, the network *is* the security model — see
+What is automatic, what is yours, and in what order. Roughly 30 minutes, most of
+it waiting.
+
+**1. Authenticate to GCP — two separate logins.**
+
+```bash
+gcloud auth login                       # for gcloud itself
+gcloud auth application-default login   # what Terraform actually reads
+```
+
+They are not the same credential and the first does not create the second.
+Skipping the second produces `could not find default credentials` from the
+provider, after a plan that otherwise looks fine.
+
+**2. Provision.**
+
+```bash
+cd deploy/terraform/gcp
+cp terraform.tfvars.example terraform.tfvars   # set project_id
+terraform init && terraform plan                # review; this is the real check
+terraform apply
+```
+
+~15 minutes. Cloud SQL and the VPC peering dominate; most of the other 20-odd
+resources are quick.
+
+**3. The VM boots itself.** `cloud-init.yaml` runs, and re-runs on every
+subsequent boot:
+
+- formats the data disk — **only** if it has no filesystem
+- installs Docker, points its `data-root` at the persistent disk
+- clones the repository
+- reads the database DSN from Secret Manager using the VM's service account
+- writes `deploy/.env`
+- `docker compose up -d --build`
+
+The build takes ~10 minutes: both images are built on the box, including a
+dashboard bundle and the harness CLIs. Nothing is pulled from a private
+registry, and nothing needs publishing anywhere.
+
+**The database needs nothing from you.** Terraform created the instance,
+database, user and password, and put the whole DSN in Secret Manager. The daemon
+runs its own Alembic migrations on first start.
+
+Watch it: `./deploy.sh gcp ssh`, then `sudo tail -f /var/log/aq-bootstrap.log`.
+
+**4. Reach it.**
+
+```bash
+./deploy.sh gcp tunnel     # then http://127.0.0.1:8088
+```
+
+There is no external route by design. See [Security posture](#security-posture)
+before changing that.
+
+**5. Authenticate the harnesses.** Interactive, and yours — AQ never types a
+credential.
+
+```bash
+./deploy.sh gcp ssh
+cd /opt/aq/agent-queue/deploy
+sudo docker compose -f docker-compose.prod.yml exec daemon claude auth login
+sudo docker compose -f docker-compose.prod.yml exec daemon codex login --device-auth
+```
+
+Both persist on their own volumes and survive a rebuild.
+
+**6. Give it a project.**
+
+```bash
+D="sudo docker compose -f docker-compose.prod.yml exec -T daemon"
+
+$D aq project create --name myproj \
+     --repo-url https://github.com/you/repo.git --default-branch main
+
+# `clone` provisions the workspace from the project's repo-url.
+# `link` instead points at a directory already on the box.
+$D aq project add-workspace --project-id myproj --source clone
+```
+
+For a private repository this clone needs a credential on the VM — see
+[GitHub access](#github-access), and note the secrets gap in
+[Known gaps](#known-gaps).
+
+**7. Give it work**, using the flags from
+[Verifying the stack](#verifying-the-stack) — `--intelligence-class` and
+`-P <profile>` both matter, and the profile must match an agent that exists.
+
+#### What you still have to do by hand
+
+- **A GitHub App private key, or a `GH_TOKEN`, if you want forge access.**
+  cloud-init fetches only the database DSN from Secret Manager, so anything else
+  is placed on the box manually and the daemon restarted.
+- **Branch protection** on the default branch — the layer that actually
+  constrains what agents can publish.
+
+### The decisions inside it
+
+- **No ingress except IAP.** The only rule admits IAP's `35.235.240.0/20` to
+  port 22; the custom VPC denies everything else by default, and the dashboard
+  binds to `127.0.0.1` *on the VM*. Given the web layer has effectively no
+  authentication, the network *is* the security model — see
   [Security posture](#security-posture).
+- **`egress_mode` decides how the box reaches the internet**, and it must reach
+  it — base images, the repo, the harness CLIs, and every LLM call an agent
+  makes. The default `external_ip` attaches an ephemeral public IPv4 for about
+  $3/month; `nat` routes through Cloud NAT for about $32/month plus per-GB and
+  leaves no public address at all. Neither opens an inbound path, but NAT
+  removes one that could be misconfigured.
 - **The data disk is separate and `prevent_destroy`.** It holds the vault, the
   base clones and every worktree slot, and PostgreSQL rows reference those
   paths. Docker's `data-root` is moved onto it so named volumes live there
@@ -624,6 +729,18 @@ docker compose -f docker-compose.prod.yml exec -T daemon cat -v /data/agent-queu
 - Embeddings default to a local Ollama, which is not in this stack — repoint at a
   hosted embedding API before enabling memory.
 - No automated backup of the data volume yet; the vault lives there.
+- **Secrets other than the database DSN are not delivered to the VM.**
+  `cloud-init.yaml` fetches `AQ_DATABASE_URL` from Secret Manager and nothing
+  else, so a GitHub App private key or a `GH_TOKEN` has to be placed on the box
+  by hand and the daemon restarted. Closing this means a second Secret Manager
+  entry and a few lines in the bootstrap.
+- **`terraform apply` has never been run.** `validate` passes and `plan`
+  succeeds against a real project, but first boot is untested — cloud-init in
+  particular.
+- **No image registry is involved.** Both images are built on the VM from the
+  cloned source, so first boot spends ~10 minutes building. Publishing to a
+  registry would trade that for a CI step and a pull credential; nothing here
+  requires it.
 
 Design rationale, the scaling constraint, spot/preemptible hosts, the Kubernetes
 question and the roadmap are in [`DESIGN.md`](DESIGN.md).
