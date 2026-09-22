@@ -149,7 +149,7 @@ async def test_stale_claim_epoch_is_refused(env):
     assert (await run(env, "task_subtasks", {"task_id": "t"}))["total"] == 0
 
 
-async def test_update_emits_exactly_one_event_without_title(env):
+async def test_update_emits_exactly_one_event_without_subtask_title(env):
     added = await run(
         env, "task_subtask_add", {"task_id": "t", "subtasks": [{"title": "secret title"}]}
     )
@@ -166,7 +166,13 @@ async def test_update_emits_exactly_one_event_without_title(env):
     events = subtask_events(env)
     assert len(events) == 1
     payload = events[0]
-    assert payload == {"task_id": "t", "project_id": "p", "total": 1, "settled": 1}
+    assert payload == {
+        "task_id": "t",
+        "project_id": "p",
+        "title": "t",
+        "total": 1,
+        "settled": 1,
+    }
     assert "secret title" not in str(payload)
 
 

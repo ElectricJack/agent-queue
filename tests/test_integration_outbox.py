@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -1365,7 +1366,7 @@ async def test_gc_win_does_not_freeze_an_unusable_artifact_manifest(db, tmp_path
         db, compiled, "integration-train", "integration.sealed", source_digit="2"
     )
     collected = await db.collect_playbook_artifacts(
-        NOW + 1_000_000, min_versions=0, limit=100
+        time.time() + 1_000_000, min_versions=0, limit=100
     )
     assert old_sha in {sha for sha, _path in collected}
 

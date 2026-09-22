@@ -174,5 +174,6 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
                 # Task-lifecycle sessions on this route, reported beside the
                 # pool without counting toward its supply.
                 "outside_pools": [],
+                "provider_unavailable": None,
             }
         ]

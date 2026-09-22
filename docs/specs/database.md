@@ -521,6 +521,29 @@ highest processed sequence number in its own transaction.
 
 Index: `idx_layout_dirty_project` (`project_id`, `seq`).
 
+### Table: `layout_reflow_requests`
+
+Durable, generation-fenced requests to compact an `active` layout scope after a finished
+leaf leaves a hole. A newer generation survives acknowledgement of an older claimed request.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL | Project whose layout needs compaction |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `scope_key` | TEXT | PRIMARY KEY, NOT NULL | Task id or the layout root sentinel; deliberately no task FK |
+| `generation` | INTEGER | NOT NULL DEFAULT 1 | Monotonic request generation |
+| `state` | TEXT | NOT NULL | `queued`, `running`, or `failed` |
+| `requested_at` | FLOAT | NOT NULL | Unix timestamp of the newest request |
+| `retry_after` | FLOAT | NOT NULL | Earliest retry time |
+| `attempts` | INTEGER | NOT NULL DEFAULT 0 | Claim attempts |
+| `last_error` | TEXT | nullable | Most recent failure detail |
+| `claimed_generation` | INTEGER | nullable | Generation held by the current lease |
+| `lease_token` | TEXT | nullable | Claim token |
+| `lease_expires_at` | FLOAT | nullable | Claim expiry |
+
+Composite primary key: (`project_id`, `variant`, `scope_key`). Index
+`idx_layout_reflow_requests_due` orders due work by state, retry time, request time, and scope.
+
 ### Table: `layout_jobs`
 
 Lifecycle records for user-requested Tidy work and initial-layout backfills. Only one queued or
@@ -540,6 +563,39 @@ error text for inspection.
 | `error` | TEXT | nullable | Failure detail |
 
 Index: `idx_layout_jobs_project_status` (`project_id`, `status`).
+
+### Table: `layout_tidy_requests`
+
+Fleet-wide Tidy requests. The request is a durable batch; its project/variant pairs are
+released into the ordinary layout-job queue one at a time.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Request identifier |
+| `reason` | TEXT | NOT NULL | Operator-supplied reason |
+| `status` | TEXT | NOT NULL | `queued`, `running`, or `completed` |
+| `requested_at` | FLOAT | NOT NULL | Unix timestamp when requested |
+| `finished_at` | FLOAT | nullable | Unix timestamp when all pairs settled |
+
+Index: `idx_layout_tidy_requests_status_requested` (`status`, `requested_at`).
+
+### Table: `layout_tidy_request_pairs`
+
+One project/variant item in a fleet-wide Tidy request. `job_id` is a soft reference so
+project deletion and restart reconciliation can settle a missing job without wedging the batch.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `request_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES layout_tidy_requests(id) ON DELETE CASCADE | Owning Tidy request |
+| `project_id` | TEXT | PRIMARY KEY, NOT NULL, REFERENCES projects(id) ON DELETE CASCADE | Project to lay out |
+| `variant` | TEXT | PRIMARY KEY, NOT NULL | Layout variant |
+| `job_id` | TEXT | nullable | Soft reference to the released layout job |
+| `status` | TEXT | NOT NULL | `pending`, `queued`, `running`, `completed`, or `failed` |
+| `error` | TEXT | nullable | Failure detail |
+| `finished_at` | FLOAT | nullable | Unix timestamp when the pair settled |
+
+Composite primary key: (`request_id`, `project_id`, `variant`). Index
+`idx_layout_tidy_request_pairs_status` (`status`, `request_id`).
 
 ### Table: `task_context`
 
@@ -2128,6 +2184,28 @@ archive of the task. See
 | `released_by` | TEXT | NOT NULL | `integration_service`, `integration_abort`, `integration_cancel_preserving` or `doctor` |
 | `released_at` | REAL | NOT NULL | Unix timestamp |
 | `cleanup` | JSON | nullable | What the delegate still holds: `{"state": clear\|blocked, "blockers": [...]}` |
+
+### Table: `integration_owner_recoveries`
+
+Append-only audit of attempts to recover a stranded integration branch-owner row. All
+identities are soft text so the evidence outlives the owner, task, session, and workspace.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Recovery audit id |
+| `owner_row_id` | TEXT | NOT NULL | Recovered branch-owner row id |
+| `repository_id` | TEXT | NOT NULL | Repository observed by the recovery |
+| `ref` | TEXT | NOT NULL | Protected integration ref |
+| `task_id` | TEXT | nullable | Soft task identity, when known |
+| `outcome` | TEXT | NOT NULL | `released`, `preserved_and_released`, or `not_eligible` |
+| `reason` | TEXT | nullable | Named refusal when not eligible |
+| `evidence` | JSON | NOT NULL | Origin/local tips, checkout, preservation ref, and stop proof |
+| `principal` | TEXT | NOT NULL | Sweep, local operator, or supervisor that ran recovery |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+
+Check `ck_integration_owner_recoveries_outcome` restricts `outcome`; index
+`idx_integration_owner_recoveries_owner` (`owner_row_id`, `created_at`) orders an owner's
+recovery history.
 
 ### Table: `integration_check_evidence`
 

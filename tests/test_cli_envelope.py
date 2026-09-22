@@ -456,10 +456,15 @@ class TestCrossFamilySuccessContract:
             (["restart"], "aq restart"),
         ],
     )
-    def test_local_operator_workflows_reject_json_before_side_effects(self, runner, args, command):
+    def test_local_operator_workflows_reject_json_before_side_effects(
+        self, runner, monkeypatch, args, command
+    ):
         """Human-only local operations still honor the one-document rule."""
         from src.cli.app import cli
 
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         result = runner.invoke(cli, ["--json", *args])
 
         assert result.exit_code == 2

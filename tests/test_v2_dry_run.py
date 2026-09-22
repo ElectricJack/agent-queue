@@ -80,7 +80,7 @@ class DryRunAi:
     def __init__(self) -> None:
         self.complete_calls = 0
 
-    def resolve(self, _spec: Any) -> Any:
+    def resolve_current(self, _spec: Any) -> Any:
         return SimpleNamespace(model="dry-run-model")
 
     def _provider_for(self, _resolved: Any) -> Any:

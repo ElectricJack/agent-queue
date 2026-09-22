@@ -150,7 +150,7 @@ async def _cancelled_operation_with_delegate(
         await _stage(conn, repair_task_id="delegate")
 
 
-# -- §3 history still refuses removal, by name --------------------------------
+# -- §3 history refuses deletion but permits archive, by name -----------------
 
 
 def test_the_audit_table_names_tasks_by_id_only():
@@ -163,14 +163,13 @@ def test_the_audit_table_names_tasks_by_id_only():
     assert [fk.target_fullname for fk in integration_delegate_releases.foreign_keys] == []
 
 
-@pytest.mark.parametrize("removal", ["delete", "archive"])
 @pytest.mark.parametrize("state", ["cancelled", "completed"])
-async def test_finished_operation_history_still_refuses_removal_by_name(db, removal, state):
-    """The four history foreign keys are kept (the archive-history spec holds them).
+async def test_finished_operation_history_refuses_delete_but_permits_archive(db, state):
+    """Audit history pins an id against deletion, not a live queue row.
 
-    A finished operation's episode and verifier reference still keep the task
-    in the queue, but the refusal is ``integration_owned`` naming the table --
-    never a raw ``ForeignKeyViolationError`` -- and nothing is removed.
+    The approved archive-history spec makes the four references soft: delete
+    has the named ``integration_history_retained`` refusal, while archive
+    preserves the id in ``archived_tasks`` and lets the live row leave.
     """
     await _task(db, "parent")
     await _task(db, "verifier")
@@ -180,19 +179,21 @@ async def test_finished_operation_history_still_refuses_removal_by_name(db, remo
         await _stage(conn, repair_task_id="stage-writer")
     await db.transition_task("verifier", TaskStatus.FAILED, force=True)
 
-    for task_id, table in (
+    references = (
         ("parent", "integration_parent_episodes"),
         ("verifier", "integration_repair_operations"),
-    ):
+    )
+    for task_id, table in references:
         with pytest.raises(HierarchyError) as refusal:
-            if removal == "delete":
-                await db.delete_task(task_id)
-            else:
-                await db.archive_task(task_id)
-        assert refusal.value.code == "integration_owned"
+            await db.delete_task(task_id)
+        assert refusal.value.code == "integration_history_retained"
         assert table in refusal.value.detail
         assert "integration_operation" not in refusal.value.context
         assert await db.get_task(task_id) is not None
+
+    for task_id, _table in references:
+        await db.archive_task(task_id)
+        assert await db.get_task(task_id) is None
 
 
 async def test_a_live_operation_still_refuses_and_says_what_would_let_go(db):
@@ -206,8 +207,9 @@ async def test_a_live_operation_still_refuses_and_says_what_would_let_go(db):
         "operation_id": "operation",
         "state": "active",
         "role": "repair_stage",
+        "task_id": "delegate",
     }
-    assert "aq integration abort operation" in refusal.value.detail
+    assert "aq integration cancel-preserving operation" in refusal.value.detail
     assert "integration.stranded_delegates" in refusal.value.detail
     assert await db.get_task("delegate") is not None
 
@@ -810,7 +812,7 @@ async def test_an_unfinished_reservation_of_an_ended_operation_does_not_re_wedge
 
     with pytest.raises(HierarchyError) as refusal:
         await db.delete_task("delegate")
-    assert refusal.value.code == "integration_owned"
+    assert refusal.value.code == "integration_history_retained"
     assert "integration_operation" not in refusal.value.context
     assert "integration_candidate_resolutions" in refusal.value.detail
     async with db._engine.connect() as conn:

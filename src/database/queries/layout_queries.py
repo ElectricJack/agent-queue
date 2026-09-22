@@ -346,11 +346,7 @@ class LayoutQueryMixin:
         }
 
     def _reflow_for_update(self, statement):
-        return (
-            statement.with_for_update(skip_locked=True)
-            if self._engine.dialect.name == "postgresql"
-            else statement
-        )
+        return statement.with_for_update(skip_locked=True)
 
     async def _release_layout_reflow_claim_on_conn(self, conn, claim: dict, error: str) -> bool:
         """Release one expired/failed claim, preserving a newer generation."""

@@ -59,10 +59,15 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             capture_output=True,
             check=False,
             text=True,
-            timeout=600,
+            # The full kit now covers S1-S19 and takes about eight minutes on
+            # an otherwise idle box, but 15-16 minutes when CI's xdist worker
+            # runs it beside the Postgres performance fixtures. Keep the
+            # subprocess bounded below the job's 30-minute timeout without
+            # turning ordinary shared-runner contention into a smoke failure.
+            timeout=1200,
         )
         assert result.returncode == 0, f"{result.stdout}\n--- stderr ---\n{result.stderr}"
-        assert "15/15 scenarios passed" in result.stdout
+        assert "19/19 scenarios passed" in result.stdout
         for status in (
             "passed",
             "unsupported",

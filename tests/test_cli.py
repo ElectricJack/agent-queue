@@ -1284,13 +1284,16 @@ class TestDaemonCommands:
         with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
             assert is_daemon_running() is True
 
-    def test_stop_not_running(self, runner):
+    def test_stop_not_running(self, runner, monkeypatch):
         from src.cli.app import cli
 
         # aq stop also reaps sessions when no daemon is running. Keep this
         # unit test away from the real tmux server (including its own worker).
         # Nor may it reach the dashboard server named by the real
         # ~/.agent-queue PID file: that one may be the operator's.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         with (
             patch("src.cli.daemon._find_daemon_pid", return_value=None),
             patch("src.cli.daemon.stop_agent_sessions", return_value=0) as stop_sessions,

@@ -1590,6 +1590,7 @@ def s15_development_delivery(state: dict) -> str:
 PROVA, PROVB = "prova", "provb"
 STD_A, STD_B, SOLO_A = "std-high-prova", "std-high-provb", "solo-high-prova"
 FAILOVER_PROFILES = (STD_A, STD_B, SOLO_A)
+FAILOVER_PLAYBOOK = "provider-failover"
 
 
 def note(message: str) -> None:
@@ -1643,6 +1644,18 @@ def set_provider_state(key: str, state: str, reason: str = "e2e S16") -> dict:
     if state != "auto":
         args += ["--reason", reason, "--for", "30m"]
     return aq(*args)
+
+
+def set_failover_policy_enabled(enabled: bool) -> None:
+    """Keep S16's operator-driven sweeps isolated from the automatic policy."""
+    result = aq(
+        "playbook",
+        "set-enabled",
+        "--playbook-id",
+        FAILOVER_PLAYBOOK,
+        "--enabled" if enabled else "--no-enabled",
+    )
+    check(result.get("enabled") is enabled, f"could not set {FAILOVER_PLAYBOOK}: {result}")
 
 
 def held_tasks() -> dict[str, dict]:
@@ -1728,6 +1741,12 @@ def _restore_providers() -> None:
 def s16_provider_failover(state: dict) -> str:
     """A provider runs out: detect, suppress, re-route, hold, recover, undo, all-down."""
     state["s16_started"] = True
+    # S18 needs command-only playbooks enabled for this same Tier-1 run.  The
+    # shipped provider-failover playbook would otherwise consume S16's state
+    # change and move the first task before this scenario can inspect the full
+    # held set and exercise the operator's dry-run/live commands itself.
+    set_failover_policy_enabled(False)
+    note("paused the automatic provider-failover playbook for manual sweep coverage")
     try:
         return _s16(state)
     finally:
@@ -1735,6 +1754,8 @@ def s16_provider_failover(state: dict) -> str:
             _restore_providers()
         except Exception as exc:  # noqa: BLE001 — cleanup failure belongs in the report
             print(f"     ! S16 cleanup could not restore providers: {exc}")
+        finally:
+            set_failover_policy_enabled(True)
 
 
 def _s16(state: dict) -> str:
