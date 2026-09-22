@@ -428,6 +428,32 @@ async def test_composed_app_read_retries_one_rejected_generation_through_shared_
 
 
 @pytest.mark.asyncio
+async def test_shared_client_git_token_uses_the_same_startup_auth_service():
+    provider = FakeTokenProvider()
+    auth = GitHubAuth(
+        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
+        app_provider=provider,
+        clock=lambda: 1_800_000_000.0,
+    )
+    runner = FakeRunner(auth.credential_identity, [])
+    access = GitHubAccess(auth, runner)
+    client = GitHubClient(REPOSITORY, access=access)
+
+    assert await client.installation_token() == "installation-secret-1"
+    assert provider.calls == 1
+    assert runner.calls == []
+
+    existing_auth = GitHubAuth()
+    existing_runner = FakeRunner(existing_auth.credential_identity, [])
+    existing = GitHubClient(
+        REPOSITORY,
+        access=GitHubAccess(existing_auth, existing_runner),
+    )
+    assert await existing.installation_token() is None
+    assert existing_runner.calls == []
+
+
+@pytest.mark.asyncio
 async def test_composed_app_write_invalidates_rejection_without_replaying_mutation():
     provider = FakeTokenProvider()
     auth = GitHubAuth(

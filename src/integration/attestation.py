@@ -52,7 +52,7 @@ from src.integration.outbox import enqueue_integration_event
 
 _MAX_TRUST_BYTES = 64 * 1024
 _PUBLICATION_LEASE_SECONDS = 300.0
-AppClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
+GitHubClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
 EnablementReader = Callable[[str], Awaitable[bool | tuple[str, ...]] | bool | tuple[str, ...]]
 
 
@@ -82,7 +82,7 @@ class IntegrationAttestationService:
         *,
         data_dir: str | Path,
         git_manager: Any,
-        app_client_factory: AppClientFactory | None,
+        github_client_factory: GitHubClientFactory | None,
         protection_reader: EnablementReader | None = None,
         probe_reader: EnablementReader | None = None,
         debug_class_reader: EnablementReader | None = None,
@@ -92,7 +92,7 @@ class IntegrationAttestationService:
         self.db = db
         self.data_dir = Path(data_dir)
         self.git = git_manager
-        self.app_client_factory = app_client_factory
+        self.github_client_factory = github_client_factory
         self.protection_reader = protection_reader
         self.probe_reader = probe_reader
         self.debug_class_reader = debug_class_reader
@@ -290,7 +290,7 @@ class IntegrationAttestationService:
         self, canonical_repository_id: str
     ) -> IntegrationEnablementProbeResult:
         blockers: list[str] = []
-        if self.app_client_factory is None:
+        if self.github_client_factory is None:
             blockers.append("missing_trusted_integration_app")
         repository = await self.db.get_repo(canonical_repository_id)
         if (
@@ -377,11 +377,11 @@ class IntegrationAttestationService:
         return trust, client
 
     async def _client(self, binding: GitHubRepositoryBinding) -> Any:
-        if self.app_client_factory is None:
+        if self.github_client_factory is None:
             raise AttestationError("trusted integration App is unavailable")
         if binding in self._clients:
             return self._clients[binding]
-        value = self.app_client_factory(binding)
+        value = self.github_client_factory(binding)
         if inspect.isawaitable(value):
             value = await value
         if (

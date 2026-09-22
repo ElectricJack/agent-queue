@@ -216,8 +216,8 @@ def _service(db, tmp_path, *, git=None, client=None) -> BranchDiscardService:
         db,
         data_dir=tmp_path,
         git_manager=git if git is not None else _Git(),
-        app_client_factory=lambda binding: client if client is not None else _Client(),
-        repository_binding_resolver=lambda repository: BINDING,
+        github_client_factory=lambda binding: client if client is not None else _Client(),
+        github_repository_binding_resolver=lambda repository: BINDING,
         clock=lambda: 1000.0,
     )
 
@@ -425,8 +425,8 @@ async def test_an_unavailable_transport_retries_rather_than_giving_up(db, tmp_pa
         db,
         data_dir=tmp_path,
         git_manager=_Git(),
-        app_client_factory=None,
-        repository_binding_resolver=lambda repository: BINDING,
+        github_client_factory=None,
+        github_repository_binding_resolver=lambda repository: BINDING,
         clock=time.time,
     )
 

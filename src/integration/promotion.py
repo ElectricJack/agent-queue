@@ -91,7 +91,7 @@ class PromotionService:
         db,
         *,
         data_dir: str | Path,
-        git_manager: GitManager | None = None,
+        git_manager: GitManager,
         repository_resolver: RepositoryResolver | None = None,
         ownership: BranchOwnership | None = None,
         crash_hook: CrashHook | None = None,
@@ -99,7 +99,7 @@ class PromotionService:
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
-        self.git = git_manager or GitManager()
+        self.git = git_manager
         self.repository_resolver = repository_resolver
         self.ownership = ownership or BranchOwnership(db)
         self.crash_hook = crash_hook

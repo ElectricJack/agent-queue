@@ -481,7 +481,10 @@ async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_name
     assert open_incident["owner"]["kind"] == "integration_operation"
 
     cancelled = await DevelopmentIntegration(
-        db, data_dir=str(tmp_path), confirm_stopped=AsyncMock(return_value=True)
+        db,
+        data_dir=str(tmp_path),
+        git=GitManager(),
+        confirm_stopped=AsyncMock(return_value=True),
     ).cancel_preserving("operation", reason="operator abort")
     assert cancelled["outcome"] == "cancelled"
     assert cancelled["preserved_owners"] == ["aq/parent"]

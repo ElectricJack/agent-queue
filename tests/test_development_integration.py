@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database import Database
+from src.git.manager import GitManager
 from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.tables import gates, projects, task_gates, tasks
 from src.event_bus import EventBus
@@ -43,7 +44,7 @@ async def setup(tmp_path):
         await conn.execute(
             update(projects).where(projects.c.id == "p").values(integration_repository_id="r")
         )
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "data")
+    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
     await service.configure(
         "p",
         {"validation": "focused", "commands": ["test -f base.txt"]},
@@ -514,7 +515,7 @@ async def test_adopting_an_open_task_delivers_the_completion_it_records(
 async def test_repository_exclusion_prevents_second_publisher(setup):
     db, service, _source, _remote, _repo = setup
     async with service.exclusion("r"):
-        other = DevelopmentIntegration(db, data_dir=service.data_dir)
+        other = DevelopmentIntegration(db, data_dir=service.data_dir, git=service.git)
         with pytest.raises(DevelopmentBusy):
             async with other.exclusion("r"):
                 pytest.fail("second publisher acquired exclusion")

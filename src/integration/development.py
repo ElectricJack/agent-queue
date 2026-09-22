@@ -118,13 +118,19 @@ class DevelopmentBusy(RuntimeError):
 
 class DevelopmentIntegration:
     def __init__(
-        self, db, *, data_dir, git=None, confirm_stopped=None, owner_recovery: Any | None = None
+        self,
+        db,
+        *,
+        data_dir,
+        git: GitManager,
+        confirm_stopped=None,
+        owner_recovery: Any | None = None,
     ):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
         #: Bundles and the deletion log every branch delete writes first.
         self.backup_dir = Path(data_dir) / "backups" / "branch-deletions"
-        self.git = git or GitManager()
+        self.git = git
         self.next_due = {}
         self._project_faults = {}
         self.confirm_stopped = confirm_stopped

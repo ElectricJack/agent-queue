@@ -183,7 +183,7 @@ class CandidateService:
         db,
         *,
         data_dir: str | Path,
-        git_manager: GitManager | None = None,
+        git_manager: GitManager,
         repository_resolver: RepositoryResolver | None = None,
         forge_provider: AuditForgeProvider | None = None,
         app_client: Any | None = None,
@@ -194,7 +194,7 @@ class CandidateService:
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
-        self.git = git_manager or GitManager()
+        self.git = git_manager
         self.repository_resolver = repository_resolver
         self.forge_provider = forge_provider
         self.app_client = app_client

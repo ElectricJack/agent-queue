@@ -108,6 +108,24 @@ class GitHubAccess:
     def credential_identity(self) -> GitHubCredentialIdentity:
         return self.auth.credential_identity
 
+    async def installation_token(
+        self,
+        repository: GitHubRepositoryBinding,
+        *,
+        force_refresh: bool = False,
+    ) -> str | None:
+        """Return the selected Git transfer credential for one exact binding.
+
+        Repository API calls stay on the shared runner.  Integration's
+        isolated Git transfer path still needs the same credential authority
+        during the staged migration, so expose that narrow adapter here rather
+        than letting consumers construct a second App client.
+        """
+        return await self.auth.installation_token(
+            repository,
+            force_refresh=force_refresh,
+        )
+
     def status(self) -> GitHubAccessStatus:
         """Report mode and CLI availability without a personal identity call."""
         return GitHubAccessStatus(
@@ -425,6 +443,13 @@ class GitHubExecutionAccess(Protocol):
     @property
     def credential_identity(self) -> GitHubCredentialIdentity: ...
 
+    async def installation_token(
+        self,
+        repository: GitHubRepositoryBinding,
+        *,
+        force_refresh: bool = False,
+    ) -> str | None: ...
+
     async def run_read(
         self,
         args: Sequence[str],
@@ -470,6 +495,24 @@ class GitHubRunnerAccess:
     @property
     def credential_identity(self) -> GitHubCredentialIdentity:
         return self.runner.credential_identity
+
+    async def installation_token(
+        self,
+        repository: GitHubRepositoryBinding,
+        *,
+        force_refresh: bool = False,
+    ) -> str | None:
+        """Bridge legacy runner-owned credentials until their removal."""
+        credentials = getattr(self.runner, "credentials", None)
+        provider = getattr(credentials, "installation_token", None)
+        if callable(provider):
+            value = provider(repository, force_refresh=force_refresh)
+            if hasattr(value, "__await__"):
+                value = await value
+            return value
+        if self.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
+            return None
+        raise GitHubAccessError("credentials", "GitHub App credential provider is unavailable")
 
     async def run_read(self, args: Sequence[str], **kwargs: Any) -> GhResultLike:
         try:
@@ -567,6 +610,13 @@ class GitHubClient:
         if not isinstance(identity, GitHubCredentialIdentity):
             raise ValueError("GitHub credential identity is unavailable")
         return identity
+
+    async def installation_token(self, *, force_refresh: bool = False) -> str | None:
+        """Supply isolated Git with this client's startup-selected credential."""
+        return await self.access.installation_token(
+            self.repository,
+            force_refresh=force_refresh,
+        )
 
     async def request(
         self,

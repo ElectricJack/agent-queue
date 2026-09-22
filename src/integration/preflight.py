@@ -85,8 +85,8 @@ async def daemon_functional_preflight(
 ) -> tuple[str, ...]:
     """Read only the dependencies and repository configuration used at runtime."""
     blockers: list[str] = []
-    factory = getattr(orchestrator, "integration_app_client_factory", None)
-    resolver = getattr(orchestrator, "integration_repository_binding_resolver", None)
+    factory = getattr(orchestrator, "github_client_factory", None)
+    resolver = getattr(orchestrator, "github_repository_binding_resolver", None)
     runtime = getattr(orchestrator, "playbook_manager", None)
     if factory is None:
         blockers.append("provider_not_wired")
