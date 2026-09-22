@@ -274,8 +274,10 @@ def _register_all():
         deps_raw = task.depends_on or []
         blocks_raw = task.blocks or []
         subtasks_raw = task.subtasks or []
-        deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
-        dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
+        # Keep typed dicts (they carry dep_type) so format_task_detail can
+        # group edges by type ("Part of" vs "Blocked by" vs provenance).
+        deps_on = list(deps_raw)
+        dependents = list(blocks_raw)
         subtask_stats = None
         if subtasks_raw:
             total = len(subtasks_raw)

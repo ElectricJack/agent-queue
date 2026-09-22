@@ -668,8 +668,10 @@ def task_select(ctx: click.Context, project: str | None) -> None:
             t = task_proxy(detail)
             deps_raw = _getval(detail, "depends_on", [])
             blocks_raw = _getval(detail, "blocks", [])
-            deps_on = [d.id if hasattr(d, "id") else d["id"] for d in deps_raw]
-            dependents = [d.id if hasattr(d, "id") else d["id"] for d in blocks_raw]
+            # Pass the full typed dicts (with dep_type) so the panel can
+            # group edges into "Blocked by" vs "Part of" vs provenance.
+            deps_on = list(deps_raw)
+            dependents = list(blocks_raw)
             panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
             console.print(panel)
 
@@ -764,8 +766,9 @@ def task_show(ctx: click.Context, task_id: str) -> None:
         t = task_proxy(data)
         deps_raw = _getval(data, "depends_on", [])
         blocks_raw = _getval(data, "blocks", [])
-        deps_on = [d.get("id") if isinstance(d, dict) else d for d in deps_raw]
-        dependents = [d.get("id") if isinstance(d, dict) else d for d in blocks_raw]
+        # Keep typed dicts (they carry dep_type) for grouped rendering.
+        deps_on = list(deps_raw)
+        dependents = list(blocks_raw)
         panel = format_task_detail(t, deps_on=deps_on, dependents=dependents)
         console.print(panel)
 
