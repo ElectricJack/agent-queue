@@ -1222,7 +1222,7 @@ async def test_public_control_authority_keeps_enable_local_and_status_project_sc
         interval_seconds=600,
         expected_generation=0,
         reason="operator requested",
-        operator_id="local:-",
+        operator_id="human:local-operator",
         waiver_id=None,
     )
 

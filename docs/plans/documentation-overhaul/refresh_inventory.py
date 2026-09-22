@@ -460,6 +460,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
     ("src/integrations/**", "integration", "docs/concepts/integration.md",
      PRODUCTION, "External integration adapters."),
 
+    ("src/reviews/**", "tasks", "docs/concepts/tasks.md", PRODUCTION,
+     "Document review diffing, notification, persistence and vault copies."),
+
     ("src/playbooks/executors/**", "playbooks", "docs/concepts/playbooks.md",
      PRODUCTION, "Playbook step executor."),
     ("src/playbooks/**", "playbooks", "docs/concepts/playbooks.md", PRODUCTION,

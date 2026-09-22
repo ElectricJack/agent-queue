@@ -166,6 +166,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "old_parent": "p-1",
         "new_parent": "p-2",
     },
+    "task.subtasks_updated": {
+        "task_id": "t-1",
+        "project_id": "proj-1",
+        "title": "Implement feature X",
+        "total": 3,
+        "settled": 2,
+    },
     # Work graph (docs/specs/design/work-graph.md §10.2)
     "task.blocked": {
         "task_id": "t-1",
@@ -893,6 +900,32 @@ _CANONICAL_PAYLOADS["pool.bounds_rescoped"] = {
     "effective_min_active": 0,
     "previous_effective_max_active": 20,
     "previous_effective_min_active": 0,
+}
+_CANONICAL_PAYLOADS["provider.state_changed"] = {
+    "provider": "codex",
+    "from_state": "available",
+    "to_state": "exhausted",
+    "generation": 2,
+}
+_CANONICAL_PAYLOADS["task.rerouted"] = {
+    "task_id": "t-1",
+    "project_id": "proj-1",
+    "title": "Implement feature X",
+    "reason_code": "provider_unavailable",
+}
+_CANONICAL_PAYLOADS["provider.reroute_batch"] = {
+    "batch_id": "prb-codex-2",
+    "provider": "codex",
+    "moved": 1,
+}
+_CANONICAL_PAYLOADS["notify.provider_state"] = {
+    "event_type": "notify.provider_state",
+    "severity": "warning",
+    "category": "provider",
+    "provider": "codex",
+    "from_state": "available",
+    "to_state": "exhausted",
+    "generation": 2,
 }
 _CANONICAL_PAYLOADS["formula.cooked"] = {
     "container_id": "t-1",

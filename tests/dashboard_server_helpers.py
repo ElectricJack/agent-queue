@@ -84,7 +84,10 @@ async def serve_asgi(app: Any, *, host: str = "127.0.0.1", **config: Any) -> Asy
         "server_header": False,
         "date_header": False,
         "proxy_headers": False,
-        "ws": "websockets-sansio",
+        # Match production's uvicorn default. Older releases select the
+        # backpressure-safe legacy implementation; newer releases select the
+        # SansIO implementation after its subprotocol parsing fixes.
+        "ws": "auto",
         "timeout_graceful_shutdown": 2,
     }
     options.update(config)

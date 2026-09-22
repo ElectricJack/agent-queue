@@ -77,6 +77,9 @@ from src.database.tables import (
     integration_root_intent_members,
     layout_dirty,
     layout_jobs,
+    layout_reflow_requests,
+    layout_tidy_request_pairs,
+    layout_tidy_requests,
     merge_slots,
     message_discord_receipts,
     messages,
@@ -181,6 +184,8 @@ _ORDERED_TABLES = [
     playbook_pending_events,
     layout_dirty,
     layout_jobs,
+    layout_reflow_requests,
+    layout_tidy_requests,
     task_layout_cells,
     digest_windows,
     # FK → playbook_artifacts
@@ -192,6 +197,7 @@ _ORDERED_TABLES = [
     # FK → agent_profiles
     projects,
     # FK → projects
+    layout_tidy_request_pairs,
     repos,
     project_layout_meta,
     gates,

@@ -935,9 +935,9 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     """A clean install creates the minimal default playbook set.
 
     The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
-    blocked-task escalation, and provider usage probe ship installed by
-    default. Retired playbooks must stay absent so bootstrap cannot recreate
-    a catalog entry that an operator deleted.
+    blocked-task escalation, provider failover, provider usage, and supervisor
+    failure triage ship installed by default. Retired playbooks must stay
+    absent so bootstrap cannot recreate a catalog entry that an operator deleted.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -946,7 +946,9 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
+        "provider-failover.md",
         "provider-usage-probe.md",
+        "supervisor-failure-triage.md",
     ]
 
     # All expected files must exist on disk
