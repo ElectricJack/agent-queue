@@ -178,3 +178,102 @@ def test_pool_table_renders_a_reasonless_quarantine():
         ]},
     ]})
     assert "quarantined until" in out
+
+
+def test_review_show_renders_markdown_header_and_comments():
+    out = _render(
+        "review_show",
+        {
+            "success": True,
+            "review": {
+                "id": "review-1",
+                "title": "Release plan",
+                "kind": "plan",
+                "state": "changes_requested",
+                "current_revision": 3,
+            },
+            "revision": {"revision": 2, "content": "# Proposed release\n\nShip it carefully."},
+            "vault_state": "diverged",
+            "comments": [
+                {
+                    "quote": "Ship it carefully.",
+                    "heading_path": ["Proposed release", "Safety"],
+                    "revision": 2,
+                    "resolved_in_revision": 3,
+                    "body": "Add a rollback step.",
+                }
+            ],
+        },
+    )
+
+    assert "review-1" in out and "Release plan" in out
+    assert "plan" in out and "changes_requested" in out
+    assert "2 / 3" in out and "diverged" in out
+    assert "Proposed release" in out and "Ship it carefully." in out
+    assert "Safety" in out and "revision 3" in out
+    assert "Add a rollback step." in out
+
+
+def test_review_list_renders_table_and_empty_message():
+    out = _render(
+        "review_list",
+        {
+            "reviews": [
+                {
+                    "id": "review-2",
+                    "title": "API spec",
+                    "kind": "spec",
+                    "state": "submitted",
+                    "current_revision": 4,
+                    "relation": "waiting",
+                }
+            ]
+        },
+    )
+    assert "Document reviews" in out
+    assert "review-2" in out and "API spec" in out
+    assert "spec" in out and "submitted" in out and "4" in out and "waiting" in out
+
+    out = _render("review_list", {"reviews": []})
+    assert "No reviews found." in out
+
+
+def test_review_formatters_render_generated_response_models():
+    """Review-only fields stored in generated models' extras remain visible."""
+    class GeneratedModel:
+        def __init__(self, **fields):
+            self.__dict__.update(fields)
+            self.additional_properties = fields.pop("additional_properties", {})
+
+    review = GeneratedModel(
+        id="review-typed",
+        project_id="agent-queue",
+        title="Typed plan",
+        kind="plan",
+        state="submitted",
+        current_revision=4,
+        vault_path="reviews/typed.md",
+    )
+    revision = GeneratedModel(
+        additional_properties={"revision": 3, "content": "# Typed heading\n\nTyped body"}
+    )
+    comment = GeneratedModel(
+        additional_properties={
+            "quote": "Typed body",
+            "heading_path": ["Typed heading"],
+            "revision": 3,
+            "resolved_in_revision": None,
+            "body": "Please expand this.",
+        }
+    )
+
+    out = _render(
+        "review_show",
+        GeneratedModel(review=review, revision=revision, vault_state="ok", comments=[comment]),
+    )
+    assert "review-typed" in out and "3 / 4" in out
+    assert "Typed body" in out and "Please expand this." in out
+
+    review.additional_properties["relation"] = "author"
+    out = _render("review_list", GeneratedModel(reviews=[review]))
+    assert "review-typed" in out and "author" in out
