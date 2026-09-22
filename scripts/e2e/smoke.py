@@ -32,6 +32,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
     S14 graph + vault          layout mutations and isolated vault dry-run
     S15 development delivery   local validation and exact Git publication
     S16 provider failover      exhaust a fake provider: detect, re-route, hold, recover
+    S17 phased graph           real CLI graph phases, subtasks, prime, and close semantics
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 AQ_LAUNCHER = os.path.join(REPO_ROOT, "scripts", "e2e", "aq.py")
@@ -381,7 +383,12 @@ class Worker:
         )
 
 
-def fresh_workers(count: int) -> list[Worker]:
+def fresh_workers(
+    count: int,
+    *,
+    project_id: str = PROJECT,
+    cleanup_projects: tuple[str, ...] = (PROJECT, OTHER_PROJECT),
+) -> list[Worker]:
     """Put the pool in a known state: exactly *count* idle, unspent workers.
 
     Scenarios that ran earlier leave the pool in whatever shape they
@@ -405,21 +412,24 @@ def fresh_workers(count: int) -> list[Worker]:
     """
 
     def _quiesced():
-        for project_id in (PROJECT, OTHER_PROJECT):
-            _delete_open_pool_tasks(project_id)
+        for cleanup_project_id in cleanup_projects:
+            _delete_open_pool_tasks(cleanup_project_id)
         live = pool_sessions(None)
         for s in live:
             aq("session", "kill", s["id"], check_ok=False)
         return not live and not any(
-            _open_pool_tasks(project_id) for project_id in (PROJECT, OTHER_PROJECT)
+            _open_pool_tasks(cleanup_project_id) for cleanup_project_id in cleanup_projects
         )
 
     wait_for(_quiesced, what="the pool to quiesce (no live sessions, empty frontier)")
 
-    fillers = [create_task(f"pool primer {n}", profile=POOL_PROFILE) for n in range(count)]
+    fillers = [
+        create_task(f"pool primer {n}", project_id=project_id, profile=POOL_PROFILE)
+        for n in range(count)
+    ]
 
     def _enough_sessions():
-        rows = pool_sessions()
+        rows = pool_sessions(project_id)
         return rows if len(rows) >= count else None
 
     live = wait_for(
@@ -1545,6 +1555,19 @@ def s15_development_delivery(state: dict) -> str:
     check(adopted.get("outcome") == "adopted", str(adopted))
     status = aq("integration", "status", "e2e-development")
     check(status.get("effective_mode") == "development", str(status))
+
+    # S16 starts by quiescing the e2e project's worker fleet.  Do not leave
+    # this S15-only READY successor continuously replacing a worker in its
+    # separate development project, or that cross-project session keeps the
+    # global pool nonempty forever.  A delete can race an already-started fake
+    # session, so stop it and retry the public delete until it lands.
+    def _delete_successor() -> bool:
+        for session in pool_sessions("e2e-development"):
+            aq("session", "kill", session["id"], check_ok=False)
+        deleted = aq("task", "delete", "--task-id", successor_id, check_ok=False)
+        return deleted.get("deleted") == successor_id
+
+    wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
     return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
 
 
@@ -1973,6 +1996,321 @@ def _s16(state: dict) -> str:
     )
 
 
+def _ensure_phased_development_project() -> tuple[str, Path, Path]:
+    """Create the disposable development project S17 needs, once per e2e home."""
+    project_id = "e2e-phased"
+    home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
+    root = home / "onboarding"
+    remote = root / "phased-graph.git"
+    source = root / "phased-graph-source"
+    root.mkdir(parents=True, exist_ok=True)
+
+    if not remote.exists():
+        subprocess.run(
+            ["git", "init", "--bare", "--initial-branch=main", str(remote)],
+            check=True,
+            capture_output=True,
+        )
+    if not source.exists():
+        subprocess.run(["git", "clone", str(remote), str(source)], check=True, capture_output=True)
+    if not (source / "README.md").exists():
+        _git_text(str(source), "config", "user.name", "AQ E2E")
+        _git_text(str(source), "config", "user.email", "e2e@example.test")
+        (source / "README.md").write_text("phased graph fixture\n")
+        _git_text(str(source), "add", ".")
+        _git_text(str(source), "commit", "-m", "base")
+        _git_text(str(source), "push", "origin", "main")
+
+    project_ids = {p["id"] for p in collection_rows(aq("project", "list"), "projects")}
+    if project_id not in project_ids:
+        aq_text(
+            "project",
+            "onboard",
+            "--request-id",
+            "e2e-phased-graph",
+            "--source-mode",
+            "link",
+            "--root-id",
+            "e2e-onboarding",
+            "--relative-path",
+            source.name,
+            "--project-name",
+            "Phased graph",
+            "--project-id",
+            project_id,
+        )
+
+    configured = aq(
+        "integration",
+        "develop",
+        project_id,
+        "--command",
+        "test -f README.md",
+        "--interval-seconds",
+        "86400",
+        "--reason",
+        "isolated phased-graph acceptance",
+    )
+    check(configured.get("outcome") == "configured", f"development configuration: {configured}")
+    return project_id, home, source
+
+
+def s17_phased_graph(state: dict) -> str:
+    """Cook and work a phased spec through the real CLI in development mode."""
+    project_id, home, source = _ensure_phased_development_project()
+    first_worker = fresh_workers(
+        1,
+        project_id=project_id,
+        cleanup_projects=(PROJECT, OTHER_PROJECT, project_id),
+    )[0]
+    retired_session_ids: set[str] = set()
+
+    graph = {
+        "version": 1,
+        "defaults": {"profile": POOL_PROFILE, "intelligence_class": POOL_CLASS},
+        "parent": {"title": "S17 phased graph"},
+        "phases": [
+            {"key": "prepare", "title": "Prepare fixture"},
+            {"key": "exercise", "title": "Exercise runner"},
+        ],
+        "nodes": [
+            {
+                "key": "fixture",
+                "title": "Create deterministic fixture",
+                "phase": "prepare",
+                "acceptance": ["fixture contract is explicit"],
+                "subtasks": [
+                    "Write the fixture",
+                    "Record the contract",
+                    "Check the expected result",
+                ],
+            },
+            {
+                "key": "verification",
+                "title": "Verify fixture",
+                "phase": "prepare",
+                "acceptance": ["fixture verification is complete"],
+            },
+            {
+                "key": "runner",
+                "title": "Run the fixture",
+                "phase": "exercise",
+                "acceptance": ["runner starts after preparation"],
+            },
+        ],
+    }
+    spec_relative = f"projects/{project_id}/specs/s17-phased-graph.md"
+    spec_path = home / "vault" / spec_relative
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(
+        "---\n"
+        "title: S17 phased graph\n"
+        f"project: {project_id}\n"
+        "status: approved\n"
+        "---\n\n"
+        "# S17 phased graph\n\n"
+        "This disposable fixture proves graph phase and checklist behavior through the CLI.\n\n"
+        "```aq-graph\n"
+        f"{json.dumps(graph, indent=2)}\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+    create_args = (
+        "task",
+        "create",
+        "--project",
+        project_id,
+        "--from-spec",
+        spec_relative,
+        "--profile",
+        POOL_PROFILE,
+        "--intelligence-class",
+        POOL_CLASS,
+    )
+    dry_run = aq(*create_args, "--dry-run")
+    check(len(dry_run.get("phases", [])) == 2, f"dry-run phases: {dry_run}")
+    check(len(dry_run.get("nodes", [])) == 3, f"dry-run nodes: {dry_run}")
+    check(
+        sum(node.get("subtasks", 0) for node in dry_run.get("nodes", [])) == 3,
+        f"dry-run subtask counts: {dry_run}",
+    )
+    absent = run_aq("task", "show", dry_run["parent_id"])
+    check(absent.returncode != 0, f"dry-run persisted {dry_run['parent_id']}: {absent}")
+
+    cooked = aq(*create_args)
+    epic = cooked["parent_id"]
+    phases = {row["key"]: row["task_id"] for row in cooked["phases"]}
+    nodes = {row["key"]: row["task_id"] for row in cooked["nodes"]}
+    check(set(phases) == {"prepare", "exercise"}, f"cooked phases: {cooked}")
+    check(set(nodes) == {"fixture", "verification", "runner"}, f"cooked nodes: {cooked}")
+
+    def phase_rows() -> list[dict]:
+        return aq("task", "phase-list", "--project-id", project_id, "--parent-id", epic)["phases"]
+
+    before = {row["order"]: row for row in phase_rows()}
+    check(set(before) == {1, 2}, f"phase orders: {before}")
+    check(before[2]["is_blocked"], f"phase 2 was not withheld: {before[2]}")
+    check(task_show(nodes["runner"])["is_blocked"], "phase-2 task escaped its withheld parent")
+
+    phase_one_nodes = {nodes["fixture"], nodes["verification"]}
+
+    def fixture_ready() -> dict | None:
+        row = task_show(nodes["fixture"])
+        return row if row["status"] == "READY" else None
+
+    wait_for(
+        fixture_ready,
+        what="the first phase-1 task to reach the claim frontier",
+    )
+    first_claim = first_worker.claim_next()
+    check(first_claim.get("result") == "claimed", f"first phase-1 claim: {first_claim}")
+    check(first_worker.task_id in phase_one_nodes, f"withheld runner was claimed: {first_worker.task_id}")
+
+    def retire(worker: Worker) -> None:
+        worker.drain_ack()
+
+        def stopped() -> dict | None:
+            shown = aq("session", "show", worker.session_id)
+            row = shown.get("session") or shown
+            return row if row.get("state") == "stopped" else None
+
+        wait_for(stopped, what=f"session {worker.session_id} to drain")
+        retired_session_ids.add(worker.session_id)
+
+    def replacement_worker(expected_task_id: str, what: str) -> Worker:
+        session = wait_for(
+            lambda: next(
+                (
+                    row
+                    for row in pool_sessions(project_id)
+                    if row["id"] not in retired_session_ids and not row.get("task_id")
+                ),
+                None,
+            ),
+            what=what,
+        )
+        worker = Worker.adopt(session["id"])
+        claim = worker.claim_next()
+        check(claim.get("result") == "claimed", f"{what} claim: {claim}")
+        check(worker.task_id == expected_task_id, f"{what} claimed {worker.task_id}")
+        return worker
+
+    def push_current_branch() -> None:
+        """Meet development mode's exact-pushed-workspace close requirement."""
+        _git_text(str(source), "push", "-u", "origin", "HEAD")
+
+    first_task_id = first_worker.task_id
+    if first_task_id == nodes["verification"]:
+        push_current_branch()
+        first_worker.close(summary="S17 phase-1 verification")
+        retire(first_worker)
+        fixture_worker = replacement_worker(nodes["fixture"], "a worker for the checklist task")
+    else:
+        fixture_worker = first_worker
+    prime = run_aq(
+        "prime",
+        json_mode=False,
+        token=fixture_worker.token,
+        session_id=fixture_worker.session_id,
+    )
+    check(prime.returncode == 0, f"prime failed: {prime}")
+    check("## Subtasks" in prime.stdout, f"prime omitted checklist: {prime.stdout}")
+    check("- [ ] 1. Write the fixture" in prime.stdout, f"prime checklist: {prime.stdout}")
+    check("- [ ] 3. Check the expected result" in prime.stdout, f"prime checklist: {prime.stdout}")
+
+    refused = fixture_worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "pass",
+        "--summary",
+        "S17 open-checklist refusal",
+        "--work-outcome",
+        "no-op",
+        "--claim-epoch",
+        str(fixture_worker.claim_epoch),
+        check_ok=False,
+    )
+    refusal = refused.get("_error")
+    check(refusal is not None, "open checklist close unexpectedly succeeded")
+    check(
+        "subtasks.open" in f"{refusal.error} {refusal.details}",
+        f"open checklist refused for the wrong reason: {refusal}",
+    )
+
+    push_current_branch()
+    closed = fixture_worker.aq(
+        "task",
+        "close",
+        "--outcome",
+        "pass",
+        "--summary",
+        "S17 skip the graph-seeded checklist",
+        "--work-outcome",
+        "no-op",
+        "--claim-epoch",
+        str(fixture_worker.claim_epoch),
+        "--skip-open-subtasks",
+    )
+    check(closed.get("success") is not False, f"skip-open-subtasks close: {closed}")
+    retire(fixture_worker)
+
+    if first_task_id == nodes["fixture"]:
+        verification_worker = replacement_worker(
+            nodes["verification"], "a worker for the second phase-1 task"
+        )
+        push_current_branch()
+        verification_worker.close(summary="S17 phase-1 verification")
+        retire(verification_worker)
+
+    subtasks = aq("task", "subtasks", nodes["fixture"])
+    rows = subtasks["subtasks"]
+    check(subtasks["total"] == 3 and subtasks["settled"] == 3, f"subtask counts: {subtasks}")
+    check(
+        [row["status"] for row in rows] == ["skipped", "skipped", "skipped"],
+        f"skipped rows: {rows}",
+    )
+    check(
+        all(row["note"] == "skipped at close" for row in rows),
+        f"skipped-row notes: {rows}",
+    )
+
+    def released_phase() -> list[dict] | None:
+        rows = phase_rows()
+        by_order = {row["order"]: row for row in rows}
+        if by_order[1]["status"] in ("COMPLETED", "DONE") and not by_order[2]["is_blocked"]:
+            return rows
+        return None
+
+    released = wait_for(
+        released_phase,
+        what="phase 1 to settle COMPLETED and release phase 2",
+    )
+    check(task_show(phases["prepare"]).get("branch_name") is None, "phase container has a branch")
+    check(not {row["order"]: row for row in released}[2]["is_blocked"], f"phase 2 still held: {released}")
+
+    runner_worker = replacement_worker(
+        nodes["runner"], "a replacement pool session for the released phase-2 task"
+    )
+    push_current_branch()
+    runner_worker.close(summary="S17 phase-2 runner")
+    retire(runner_worker)
+
+    def epic_settled() -> dict | None:
+        row = task_show(epic)
+        return row if row["status"] in ("COMPLETED", "DONE") else None
+
+    wait_for(epic_settled, what=f"phased epic {epic} to settle")
+    aq("task", "delete", "--task-id", epic, "--cascade")
+    gone = run_aq("task", "show", epic)
+    check(gone.returncode != 0, f"S17 cleanup left epic {epic}: {gone}")
+    return (
+        f"dry-run/cook {epic}; phase 2 withheld then released after branchless phase 1 COMPLETED; "
+        "prime rendered 3 checklist rows and close skipped all 3"
+    )
+
+
 @dataclass
 class Scenario:
     key: str
@@ -2009,6 +2347,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         "S16", "provider failover", s16_provider_failover, ("provider availability/failover",)
     ),
+    Scenario("S17", "phased graph", s17_phased_graph, ("task graph/phases/subtasks",)),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.
