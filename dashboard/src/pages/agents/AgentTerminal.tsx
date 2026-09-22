@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { CommandLineIcon } from "@heroicons/react/24/outline";
 import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
+import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
 
@@ -7,6 +9,8 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
   const tmux = agent.session_provider === "tmux";
   const start = useStartAgentTerminal();
+  const { data: projects = [] } = useProjects();
+  const [projectId, setProjectId] = useState("");
   const sleeping = agent.session_state === "sleeping";
   const starting = agent.session_state === "starting" || agent.session_state === "stopping";
   const taskOwned = !!agent.current_task_id || agent.state === "busy";
@@ -38,8 +42,19 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
             ? "Session state: " + (agent.session_state || "unknown") + ". Viewing this agent will not wake or restart it."
             : "This worker has no live terminal. Viewing it does not start a session."}
         </p>
+        <label className="flex w-full max-w-sm flex-col gap-1 text-left text-xs text-gray-400">
+          Project
+          <select aria-label={"Project for " + agent.name + " terminal"} value={projectId}
+            onChange={(event) => setProjectId(event.target.value)} disabled={!canStart || start.isPending}
+            className="rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-xs text-gray-200 disabled:opacity-40">
+            <option value="">No project</option>
+            {projects.filter((project) => project.status === "ACTIVE").map((project) => (
+              <option key={project.id} value={project.id}>{project.name} ({project.id})</option>
+            ))}
+          </select>
+        </label>
         <button type="button" disabled={!canStart || start.isPending}
-          onClick={() => start.mutate({ agent_id: agent.id })}
+          onClick={() => start.mutate({ agent_id: agent.id, ...(projectId ? { project_id: projectId } : {}) })}
           className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">
           {start.isPending || starting ? "Starting…" : sleeping ? "Resume terminal" : "Start terminal"}
         </button>

@@ -43,6 +43,9 @@ export default function AgentWindow({ agent, onClose, resetToken }: {
             <p className="mt-0.5 truncate text-xs text-gray-400" title={agent.current_task_title || agent.current_task_id || ""}>
               {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
             </p>
+            {agent.session_id && !agent.current_task_id && agent.project_id && (
+              <p className="mt-0.5 truncate text-xs text-indigo-300">Attached project: {agent.project_id}</p>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-3">
             <div role="tablist" aria-label={agent.name + " view"} className="flex gap-3">

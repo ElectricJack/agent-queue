@@ -109,9 +109,10 @@ beforeEach(() => {
     return { data: { deleted: deleted.id, name: deleted.name } };
   });
   api.sessionInput.mockResolvedValue({ data: { success: true, session_id: "session-b", accepted: true } });
-  api.startAgentTerminal.mockImplementation(async ({ body }: { body: { agent_id: string } }) => {
+  api.startAgentTerminal.mockImplementation(async ({ body }: { body: { agent_id: string; project_id?: string } }) => {
     roster = roster.map((row) => row.id === body.agent_id
-      ? { ...row, session_id: "started-" + row.id, session_state: "running", session_provider: "tmux" }
+      ? { ...row, session_id: "started-" + row.id, session_state: "running", session_provider: "tmux",
+        project_id: body.project_id ?? null }
       : row);
     return { data: roster.find((row) => row.id === body.agent_id) };
   });
@@ -664,6 +665,25 @@ describe("Starting and using agent terminals", () => {
     expect(api.startAgentTerminal).toHaveBeenCalledWith({ body: { agent_id: "b" }, throwOnError: true });
     expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/started-b");
     expect(api.sessionInput).not.toHaveBeenCalled();
+  });
+
+  it("starts a terminal attached to the selected active project", async () => {
+    roster[1] = { ...roster[1]!, session_id: null, session_state: null };
+    api.listProjects.mockResolvedValue({ data: { projects: [
+      { id: "active", name: "Active project", status: "ACTIVE" },
+      { id: "paused", name: "Paused project", status: "PAUSED" },
+    ] } });
+    renderFlock("/agents?agent=b", true);
+    const window = await screen.findByRole("region", { name: "Builder agent window" });
+    const picker = within(window).getByRole("combobox", { name: "Project for Builder terminal" });
+    expect(within(picker).getByRole("option", { name: /Active project/ })).toBeInTheDocument();
+    expect(within(picker).queryByRole("option", { name: /Paused project/ })).not.toBeInTheDocument();
+    fireEvent.change(picker, { target: { value: "active" } });
+    fireEvent.click(within(window).getByRole("button", { name: "Start terminal" }));
+    await waitFor(() => expect(api.startAgentTerminal).toHaveBeenCalledWith({
+      body: { agent_id: "b", project_id: "active" }, throwOnError: true,
+    }));
+    expect(await within(window).findByText("Attached project: active")).toBeInTheDocument();
   });
 
   it.each(["disabled", "busy", "starting", "subprocess"])("does not offer to launch an unavailable %s agent", async (reason) => {

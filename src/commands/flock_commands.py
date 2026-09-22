@@ -159,8 +159,13 @@ class FlockCommandsMixin:
         agent_id = args.get("agent_id")
         if not isinstance(agent_id, str) or not agent_id:
             return {"error": "agent_id is required"}
+        project_id = args.get("project_id")
+        if project_id is not None and (not isinstance(project_id, str) or not project_id):
+            return {"error": "project_id must be a non-empty string"}
         try:
-            await start_agent_terminal(self.orchestrator, agent_id, config=self.config)
+            await start_agent_terminal(
+                self.orchestrator, agent_id, config=self.config, project_id=project_id
+            )
         except TerminalStartError as exc:
             return {"error": str(exc)}
         return await self._cmd_get_agent({"agent_id": agent_id})
