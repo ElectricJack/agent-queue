@@ -224,6 +224,7 @@ class CommandStep(StepBase):
 
 class LlmStep(StepBase):
     type: Literal["llm"] = "llm"
+    transport: Literal["api", "cli"] = Field(default="api", exclude_if=lambda value: value == "api")
     profile_id: QualifiedName
     prompt: Value  # rendered to a string; normally a TemplateValue
     inputs: dict[str, Value] = Field(default_factory=dict)  # named, typed prompt inputs

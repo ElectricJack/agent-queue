@@ -44,6 +44,8 @@ def _operation(step: LlmStep, ctx: StepContext, spec: LLMCallSpec | None) -> str
     """
     if spec is None:
         return f"llm:{step.profile_id}"
+    if step.transport == "cli":
+        return f"llm:{step.profile_id}/{spec.model}" if spec.model else f"llm:{step.profile_id}"
     try:
         # ``resolve_current``: while ``llm.fallback`` is serving calls, the
         # model named is the fallback's (provider-failover D13a).
@@ -63,8 +65,8 @@ def _spec(step: LlmStep, ctx: StepContext, intelligence_class: str | None) -> LL
     ``None`` means the profile declares no class, which is the config default.
 
     ``provider`` is deliberately left unset, so ``resolve_call`` takes it from
-    ``llm.provider``.  The profile's ``harness`` names the CLI that runs a
-    *session*, and this step is a headless API call with no CLI; more
+    ``llm.provider``.  This helper is for API transport only.  The profile's
+    ``harness`` names the CLI that runs a session; more
     concretely, ``llm:`` carries a single ``api_key`` / ``base_url`` pair bound
     to ``llm.provider``, so honouring the harness here would hand one
     provider's credentials to another's adapter.  The AI card follows this
@@ -222,6 +224,7 @@ class ProfileResolution:
     #: declares none and when there is no profile; read it only alongside a
     #: non-``None`` :attr:`principal`.
     intelligence_class: str | None = None
+    harness: str | None = None
     #: The profile itself could not be read, as opposed to being refused.
     #: §4.4 step 1: a missing profile is ``unavailable`` (it can be
     #: transiently unloaded), a widening one is ``unauthorized``.
@@ -289,7 +292,64 @@ async def resolve_profile_principal(
     return ProfileResolution(
         principal=replace(effective, profile_id=step.profile_id),
         intelligence_class=str(getattr(profile, "default_class", "") or "").strip() or None,
+        harness=str(getattr(profile, "harness", "") or "").strip() or None,
     )
+
+
+async def _execute_cli(step: LlmStep, ctx: StepContext, resolution: ProfileResolution) -> ExecutorResult:
+    """One headless CLI response, parsed by the same schema as an API response."""
+    from src.llm.cli import ask_cli
+
+    if (step.tool_use.enabled or step.tool_use.aq_commands or step.tool_use.plugin_tools
+            or not resolution.harness or not resolution.intelligence_class):
+        return _result(step, ctx, outcome="unavailable", diagnostics=("CLI step needs a tool-free profile",))
+    try:
+        provider, model, effort = ctx.services.llm.cli_settings(
+            resolution.intelligence_class, resolution.harness
+        )
+    except (AttributeError, LookupError):
+        return _result(step, ctx, outcome="unavailable", diagnostics=("CLI model unavailable",))
+    spec = LLMCallSpec(
+        provider=provider, model=model, intelligence_class=resolution.intelligence_class,
+        max_tokens=step.budget.max_output_tokens,
+    )
+    calls = 0
+    usage = TokenUsage()
+    messages, _, _ = _resume_state(_prompt(step, ctx), ctx)
+    try:
+        for _ in range(step.retry.max_attempts if step.retry else 1):
+            if calls >= step.budget.max_calls:
+                return _result(step, ctx, spec=spec, outcome="budget_exceeded", usage=usage, llm_calls=calls)
+            answer = await ask_cli(
+                harness=resolution.harness, model=model, effort=effort,
+                prompt="\n\n".join(str(m.get("content", "")) for m in messages),
+                schema=step.output_schema, timeout_seconds=step.budget.timeout_seconds,
+                cancel_event=ctx.cancel_event,
+            )
+            calls += 1
+            usage = usage + answer.usage if calls > 1 else answer.usage
+            if (step.budget.max_total_tokens is not None and not usage.reported) or _usage_breaches(step, usage):
+                return _result(step, ctx, spec=spec, outcome="budget_exceeded", usage=usage, llm_calls=calls)
+            try:
+                value = _parse_and_validate(answer.text, step)
+            except (ValueError, ValidationError):
+                messages.extend((
+                    {"role": "assistant", "content": answer.text},
+                    {"role": "user", "content": "Return only JSON that validates against the declared schema."},
+                ))
+                continue
+            outcome = value.get(step.outcome_field) if step.outcome_field else "completed"
+            if not isinstance(outcome, str) or outcome not in step.transitions:
+                return _result(step, ctx, spec=spec, outcome="invalid_output", usage=usage, llm_calls=calls)
+            return _result(step, ctx, spec=spec, outcome=outcome, usage=usage, llm_calls=calls, value=value)
+        return _result(step, ctx, spec=spec, outcome="invalid_output", usage=usage, llm_calls=calls)
+    except TimeoutError:
+        return _result(step, ctx, spec=spec, outcome="timed_out", llm_calls=calls)
+    except asyncio.CancelledError:
+        return _result(step, ctx, spec=spec, outcome="cancelled", llm_calls=calls)
+    except Exception as exc:  # noqa: BLE001 - CLI errors are typed playbook outcomes
+        return _result(step, ctx, spec=spec, outcome="provider_error", llm_calls=calls,
+                       diagnostics=(type(exc).__name__,))
 
 
 class LiveLlmExecutor:
@@ -314,6 +374,9 @@ class LiveLlmExecutor:
                 diagnostics=resolution.diagnostics,
             )
         ctx = replace(ctx, principal=resolution.principal)
+
+        if step.transport == "cli":
+            return await _execute_cli(step, ctx, resolution)
 
         spec = _spec(step, ctx, resolution.intelligence_class)
         try:

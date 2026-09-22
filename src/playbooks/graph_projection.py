@@ -779,10 +779,15 @@ def _routing(profiles: Any, step: Any, profile_id: str) -> Any | None:
 
     Both methods are part of the ``ProfileLookup`` protocol, but a caller may
     still pass an older stub that answers only ``policy``, or only the
-    session-surface ``routing``; such a lookup reports no routing rather
-    than raising.
+    session-surface ``routing``. CLI LLM steps also use that surface because
+    their profile harness selects the provider; an unavailable lookup reports
+    no routing rather than raising.
     """
-    method = "direct_routing" if isinstance(step, LlmStep) else "routing"
+    method = (
+        "direct_routing"
+        if isinstance(step, LlmStep) and step.transport == "api"
+        else "routing"
+    )
     lookup = getattr(profiles, method, None)
     return lookup(profile_id) if callable(lookup) else None
 

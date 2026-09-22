@@ -167,6 +167,24 @@ class LLMClient:
     def resolve(self, spec: LLMCallSpec) -> ResolvedCall:
         return resolve_call(spec, self._config, self._classes_loader())
 
+    def cli_settings(self, class_id: str, harness: str) -> tuple[str, str, str]:
+        """Resolve a profile's logged-in CLI model without API credentials."""
+        from src.intelligence_classes import resolve_class
+        from src.profiles.intelligence import provider_for_harness
+
+        provider = provider_for_harness(harness)
+        cls = self._classes_loader().get(class_id)
+        if not provider or cls is None:
+            raise LookupError("CLI harness or intelligence class unavailable")
+        setting = resolve_class(cls, "codex") if harness == "codex" else {}
+        if not setting:
+            setting = resolve_class(cls, provider)
+        model = str(setting.get("model") or "")
+        if not model:
+            raise LookupError("intelligence class has no model for CLI harness")
+        effort = str(setting.get("reasoning_effort") or setting.get("thinking") or "")
+        return provider, model, effort
+
     def resolve_current(self, spec: LLMCallSpec) -> ResolvedCall:
         """What a call on *spec* made right now would run on.
 

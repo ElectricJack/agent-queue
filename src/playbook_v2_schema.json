@@ -1539,6 +1539,15 @@
           "title": "Transitions",
           "type": "object"
         },
+        "transport": {
+          "default": "api",
+          "enum": [
+            "api",
+            "cli"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
         "type": {
           "const": "llm",
           "default": "llm",

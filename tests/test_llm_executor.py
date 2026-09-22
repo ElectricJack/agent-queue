@@ -13,6 +13,7 @@ from src.commands.principal import TRUSTED_LOCAL, ExecutionPrincipal, PrincipalK
 from src.config import LLMConfig
 from src.intelligence_classes import IntelligenceClass
 from src.llm import LLMClient
+from src.llm.cli import CliAnswer
 from src.llm.fake import FakeProvider
 from src.llm.types import TokenUsage
 from src.playbooks.definition import LlmStep
@@ -368,6 +369,43 @@ async def test_intelligence_class_comes_from_the_profile_not_from_its_id() -> No
     # profile id (which names no class at all).
     assert factory.models == ["declared-deep-model"]
     assert result.operation == "llm:worker/declared-deep-model"
+
+
+async def test_cli_transport_uses_profile_harness_and_class_without_api_call(monkeypatch) -> None:
+    calls = []
+
+    async def fake_ask_cli(**kwargs):
+        calls.append(kwargs)
+        return CliAnswer('{"risk":"low"}', TokenUsage(100, 4, True))
+
+    monkeypatch.setattr("src.llm.cli.ask_cli", fake_ask_cli)
+    provider = FakeProvider()
+    cls = IntelligenceClass(
+        id="routing-sol-low", name="Routing", description="",
+        mapping={"openai": {"model": "api-model", "reasoning_effort": "none"},
+                 "codex": {"model": "gpt-6-sol", "reasoning_effort": "low"}},
+    )
+    named_profile = SimpleNamespace(
+        **vars(profile(aq_commands=[])), default_class="routing-sol-low", harness="codex"
+    )
+    ctx, _ = classed_context(provider, db=ProfileStore(named_profile), classes={cls.id: cls})
+
+    result = await LiveLlmExecutor().execute(llm_step(transport="cli"), ctx)
+
+    assert result.outcome == "low"
+    assert result.value == {"risk": "low"}
+    assert result.usage == TokenUsage(100, 4, True)
+    assert result.operation == "llm:worker/gpt-6-sol"
+    assert provider.calls == []
+    assert len(calls) == 1
+    assert calls[0]["harness"] == "codex"
+    assert calls[0]["model"] == "gpt-6-sol"
+    assert calls[0]["effort"] == "low"
+
+
+def test_default_api_transport_is_absent_from_canonical_step() -> None:
+    assert "transport" not in llm_step().model_dump(mode="json")
+    assert llm_step(transport="cli").model_dump(mode="json")["transport"] == "cli"
 
 
 async def test_profile_without_a_class_falls_back_to_configuration() -> None:
