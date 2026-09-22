@@ -655,6 +655,68 @@ async def test_stranded_fences_ignores_a_collector_row(db):
 
 
 # --------------------------------------------------------------------------
+# integration.stranded_dependents
+# --------------------------------------------------------------------------
+
+
+async def test_stranded_dependents_reports_cleaned_commitsless_blocker(db):
+    import sqlalchemy as sa
+
+    from src.database.tables import projects
+    from src.models import RepoConfig, RepoSourceType, TaskCompletion
+
+    await _development_project(db)
+    await db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.CLONE, url="/repo"
+    ))
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa.update(projects).where(projects.c.id == "p").values(integration_repository_id="r")
+        )
+    source_sha = "a" * 40
+    await db.create_task(Task(
+        id="blocker", project_id="p", repo_id="r", title="blocker", description="",
+        branch_name="aq/blocker", status=TaskStatus.COMPLETED,
+    ))
+    await db.create_task(Task(
+        id="dependent", project_id="p", repo_id="r", title="dependent", description="",
+        branch_name="aq/dependent", status=TaskStatus.COMPLETED,
+    ))
+    await db.add_dependency("dependent", "blocker")
+    await db.save_task_completion(TaskCompletion(
+        id="blocker-close", task_id="blocker", outcome="pass", commits=[], completed_at=time.time(),
+    ))
+    await _batch(
+        db,
+        "delivered-blocker",
+        state="delivered",
+        manifest=[{"task_id": "blocker", "source_sha": source_sha}],
+        branch_cleanup={
+            "state": "complete",
+            "deleted": [{"branch": "aq/blocker", "sha": source_sha, "kind": "task"}],
+        },
+    )
+
+    result = await run_check(db, "integration.stranded_dependents")
+
+    assert result.severity is Severity.ERROR
+    assert "dependent" in result.detail and "blocker" in result.detail
+    assert "Restore the blocker's branch" in result.detail
+    assert result.data["dependents"] == [{
+        "project_id": "p",
+        "dependent_task_id": "dependent",
+        "blocker_task_id": "blocker",
+        "delivery_id": "delivered-blocker",
+        "source_sha": source_sha,
+    }]
+
+
+def test_stranded_dependents_is_registered():
+    registry = default_registry()
+    assert "integration.stranded_dependents" in registry.ids()
+
+
+# --------------------------------------------------------------------------
 # integration.development_publisher_stalled
 # --------------------------------------------------------------------------
 
@@ -672,7 +734,16 @@ async def _development_project(db, project_id="p"):
         )
 
 
-async def _batch(db, batch_id, *, manifest, state="parked", diagnostic=None, project_id="p"):
+async def _batch(
+    db,
+    batch_id,
+    *,
+    manifest,
+    state="parked",
+    diagnostic=None,
+    branch_cleanup=None,
+    project_id="p",
+):
     import sqlalchemy as sa
 
     from src.database.tables import development_deliveries
@@ -681,6 +752,8 @@ async def _batch(db, batch_id, *, manifest, state="parked", diagnostic=None, pro
     evidence = {"kind": "validation"}
     if diagnostic is not None:
         evidence["publisher_diagnostic"] = diagnostic
+    if branch_cleanup is not None:
+        evidence["branch_cleanup"] = branch_cleanup
     async with db._engine.begin() as conn:
         await conn.execute(
             sa.insert(development_deliveries).values(
