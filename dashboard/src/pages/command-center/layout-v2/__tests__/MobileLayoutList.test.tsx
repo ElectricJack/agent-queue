@@ -21,10 +21,10 @@ const n = (id: string) => ({
 
 const filters = { query: "", status: "", showCompleted: false, focus: "", window: "", held: false };
 const props = {
-  projectId: "p1", variant: "active" as const, filters, onTaskClick: () => {},
+  projectId: "p1", variant: "active" as const, filters, onTaskClick: () => {}, setShowCompleted: vi.fn(),
 };
 
-beforeEach(() => { list.mockReset(); layoutNode.data = undefined; });
+beforeEach(() => { list.mockReset(); layoutNode.data = undefined; props.setShowCompleted.mockReset(); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("MobileLayoutList", () => {
@@ -88,6 +88,65 @@ describe("MobileLayoutList", () => {
     expect(screen.getByText("Task a")).toBeInTheDocument();
     expect(screen.queryByRole("status")).toBeNull();
   });
+
+  it("distinguishes all-finished work and offers to show it", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "active", empty_reason: "all_finished",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} /></MemoryRouter>);
+
+    expect(await screen.findByText("No unfinished work here.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show completed" }));
+    expect(props.setShowCompleted).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps a filtered empty response distinct from all-finished work", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "active", empty_reason: "no_matches",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} filters={{ ...filters, query: "absent" }} /></MemoryRouter>);
+
+    expect(await screen.findByText("No tasks match these filters.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).toBeNull();
+  });
+
+  it("shows a genuine empty-project state", async () => {
+    list.mockResolvedValue({
+      nodes: [], next_cursor: null, layout_version: 1, variant_applied: "all", empty_reason: "no_work",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} variant="all" filters={{ ...filters, showCompleted: true }} /></MemoryRouter>);
+
+    expect(await screen.findByText("No tasks yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show completed" })).toBeNull();
+  });
+
+  it("shows the canvas's completed-work banner for a server fallback", async () => {
+    list.mockResolvedValue({
+      nodes: [n("child")], next_cursor: null, layout_version: 1, variant_applied: "all",
+    });
+    render(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}} /></MemoryRouter>);
+
+    expect(await screen.findByText("Task child")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("completed work is shown inside this container");
+  });
+
+  it("clears a prior applied variant before the next scope response arrives", async () => {
+    list.mockResolvedValueOnce({
+      nodes: [n("child")], next_cursor: null, layout_version: 1, variant_applied: "all",
+    });
+    const view = render(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}} /></MemoryRouter>);
+    expect(await screen.findByRole("status")).toHaveTextContent("completed work is shown inside this container");
+
+    let resolveNext: (value: unknown) => void;
+    const nextPage = new Promise<unknown>((resolve) => { resolveNext = resolve; });
+    list.mockReturnValueOnce(nextPage);
+    view.rerender(<MemoryRouter><MobileLayoutList {...props} focusId="parent" onFocus={() => {}}
+      filters={{ ...filters, query: "fresh" }} /></MemoryRouter>);
+
+    expect(screen.queryByRole("status")).toBeNull();
+    resolveNext!({ nodes: [n("fresh")], next_cursor: null, layout_version: 1, variant_applied: "active" });
+    expect(await screen.findByText("Task fresh")).toBeInTheDocument();
+  });
 });
 
 describe("entering a container on a phone", () => {
@@ -130,7 +189,7 @@ describe("MobileLayoutLists", () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
-      variant="active" filters={filters} onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} setShowCompleted={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByRole("heading", { name: "Alpha" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Beta" })).toBeInTheDocument();
@@ -143,7 +202,7 @@ describe("MobileLayoutLists", () => {
     });
     render(<MemoryRouter initialEntries={["/command-center/graph"]}><MobileLayoutLists
       projectIds={["p1", "p2"]} projectNames={new Map([["p1", "Alpha"], ["p2", "Beta"]])}
-      variant="active" filters={filters} onTaskClick={() => {}} onFocus={() => {}} />
+      variant="active" filters={filters} onTaskClick={() => {}} onFocus={() => {}} setShowCompleted={() => {}} />
       <LocationProbe /></MemoryRouter>);
 
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Enter Task a" })).toHaveLength(2));
@@ -158,7 +217,7 @@ describe("MobileLayoutLists", () => {
     list.mockResolvedValue({ nodes: [n("a")], next_cursor: null, layout_version: 1 });
     render(<MemoryRouter><MobileLayoutLists
       projectIds={["p1"]} projectNames={new Map([["p1", "Alpha"]])}
-      variant="active" filters={filters} onTaskClick={() => {}} /></MemoryRouter>);
+      variant="active" filters={filters} onTaskClick={() => {}} setShowCompleted={() => {}} /></MemoryRouter>);
 
     expect(await screen.findByText("Task a")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Alpha" })).toBeNull();

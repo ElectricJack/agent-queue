@@ -9,6 +9,7 @@ import PlaybookNode from "../PlaybookNode";
 import AgentAvatarLayer from "../AgentAvatarLayer";
 import ContainerNode from "./ContainerNode";
 import Breadcrumbs from "./Breadcrumbs";
+import GraphScopeNotice, { type EmptyReason } from "./GraphScopeNotice";
 import { edgeStyleForType } from "./edgeStyle";
 import { useGraphState } from "../useGraphHierarchy";
 import {
@@ -460,7 +461,9 @@ function Inner(props: LayoutCanvasProps) {
   // whose descendants has finished is stubbed whatever its own status), so it
   // is read from the response and never inferred.
   const appliedVariant = layers.get(focusProject ?? "")?.variantApplied ?? null;
-  const showingCompleted = appliedVariant === "all" && !filters.showCompleted;
+  const emptyReason: EmptyReason | null = !nothingDrawn ? null
+    : filters.showCompleted ? "no_work"
+      : (filters.query.trim() || filters.status) ? "no_matches" : "all_finished";
   useEffect(() => { publishAppliedVariant((appliedVariant as Variant | null) ?? null); }, [appliedVariant]);
   // Only on unmount: publishing null between values would make the toolbar
   // fall back to the filters' variant for a render and re-issue its locate.
@@ -602,9 +605,10 @@ function Inner(props: LayoutCanvasProps) {
       {/* A container the active layout does not carry is answered from the
         * full one, so finished children are on screen with "Show completed"
         * off. Say so, rather than leaving the reader to wonder. */}
-      {focusId && showingCompleted && <p role="status" className="shrink-0 border-b border-gray-800 px-4 py-1 text-xs text-gray-400">
-        No active work here, so completed work is shown inside this container.
-      </p>}
+      {focusId && <GraphScopeNotice requestedVariant={requestVariant}
+        appliedVariant={(appliedVariant as Variant | null) ?? null} emptyReason={null}
+        showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
+        showEmpty={false} loading={pending} error={layerError} />}
       <div ref={wrapRef} role="region" aria-label="Task graph" tabIndex={0} onKeyDown={onKeyDown}
         className="relative min-h-0 flex-1 outline-none">
         {projectIds.map((pid) => (
@@ -663,29 +667,11 @@ function Inner(props: LayoutCanvasProps) {
           )}
         </ReactFlow>
         {pending && <div role="status" className="pointer-events-none absolute inset-0 flex items-center justify-center bg-gray-950/70 text-sm text-gray-300">Laying out…</div>}
-        {allLoaded && !pending && !layerError && nothingDrawn && (
-          filters.showCompleted ? (
-            <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-gray-500">
-              No tasks yet.
-            </p>
-          ) : (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-gray-500">
-              {/* Show completed defaults off (design decision 2026-09-20), so a
-                * fully-finished project would otherwise land on a blank canvas
-                * with no explanation. */}
-              <p className="pointer-events-none">
-                No unfinished work here.
-                {hiddenFinishedCount !== null && hiddenFinishedCount > 0 && (
-                  <> {hiddenFinishedCount} finished {hiddenFinishedCount === 1 ? "task" : "tasks"} hidden.</>
-                )}
-              </p>
-              <button type="button" onClick={() => setShowCompleted(true)}
-                className="pointer-events-auto rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800">
-                Show completed
-              </button>
-            </div>
-          )
-        )}
+        {allLoaded && !pending && !layerError && nothingDrawn && <GraphScopeNotice
+          requestedVariant={requestVariant} appliedVariant={(appliedVariant as Variant | null) ?? null}
+          emptyReason={emptyReason} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
+          hiddenFinishedCount={hiddenFinishedCount} showBanner={false}
+          emptyClassName="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center text-sm text-gray-500" />}
       </div>
     </div>
   );

@@ -230,6 +230,27 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             return "all"
         return "all" if any(row.kind == "stub" for row in rows.values()) else variant
 
+    async def _all_scope_has_displayed_card(
+        project_id: str, root: str | None, expanded: list[str]
+    ) -> bool:
+        """Whether the unfiltered full scope has a card a phone list displays.
+
+        The list omits an entered scope's root card, so the root alone is not
+        evidence of work to display. This deliberately reads just the root and
+        opened container scopes, matching the normal list query rather than
+        loading a project-wide layout.
+        """
+        all_rows = await db.load_rows_for_containers(
+            project_id, "all", [root if root is not None else None, *expanded]
+        )
+        if root is not None:
+            all_rows.update(await db.load_rows_with_tasks(project_id, "all", [root]))
+        rows = {task_id: row_task[0] for task_id, row_task in all_rows.items()}
+        visible = resolve_visible(
+            rows, expanded=set(expanded), max_depth=None, root=root, forced_expanded=set()
+        )
+        return any(task_id != root for task_id in visible.visible)
+
     @router.get(
         "/api/projects/{project_id}/graph/extent",
         response_model=ExtentResponse,
@@ -713,11 +734,25 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         nxt = None
         if offset + req.limit < len(ordered):
             nxt = base64.urlsafe_b64encode(str(offset + req.limit).encode()).decode()
+        empty_reason = None
+        # The phone list does not render an entered container's own card. An
+        # empty first page therefore needs a server-side reason; zero active
+        # rows alone cannot distinguish a new project from finished work.
+        if offset == 0 and not any(task_id != req.root for task_id in ordered):
+            if matches is not None:
+                empty_reason = "no_matches"
+            elif variant == "active" and await _all_scope_has_displayed_card(
+                project_id, req.root, req.expanded
+            ):
+                empty_reason = "all_finished"
+            else:
+                empty_reason = "no_work"
         return ListResponse(
             nodes=nodes,
             next_cursor=nxt,
             layout_version=meta["layout_version"],
             variant_applied=variant,
+            empty_reason=empty_reason,
         )
 
     @router.get(
