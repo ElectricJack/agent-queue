@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import SessionDetail from "../SessionDetail";
 import { TerminalMock, FitAddonMock, TerminalSocketMock, ResizeObserverMock } from "../../testUtils/terminal";
@@ -51,12 +51,13 @@ describe("Session terminal", () => {
     expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 
-  it.each(["running", "draining"])("uses the flock terminal for a %s session, including raw colors and input", (sessionState) => {
+  it.each(["running", "draining"])("uses the flock terminal for a %s session, including raw colors and input", async (sessionState) => {
     state.session.state = sessionState;
     render(page());
     expect(TerminalSocketMock.instances).toHaveLength(0);
     fireEvent.click(screen.getByText("Pane"));
     expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
     const terminal = TerminalMock.instances[0]!;
     expect(socket.url).toContain("/ws/terminal/session-a");
@@ -71,10 +72,12 @@ describe("Session terminal", () => {
     expect(screen.getByText("Saved transcript")).toBeInTheDocument();
   });
 
-  it("closes the terminal and returns to Transcript when the session stops", () => {
+  it("closes the terminal and returns to Transcript when the session stops", async () => {
     const view = render(page());
     fireEvent.click(screen.getByText("Pane"));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     const socket = TerminalSocketMock.instances[0]!;
+    act(() => socket.open());
     expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
     state.session.state = "stopped";
     view.rerender(page());

@@ -303,6 +303,7 @@ describe("Tiled agent workspace", () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
     expect(within(window).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname)).toEqual(["/ws/terminal/session-a"]);
     act(() => {
       TerminalSocketMock.instances[0]!.ready();
@@ -317,7 +318,8 @@ describe("Tiled agent workspace", () => {
   it("closes only the selected window and releases that terminal stream", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Builder agent window" });
-    expect(TerminalSocketMock.instances).toHaveLength(2);
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2));
+    act(() => TerminalSocketMock.instances.forEach((source) => source.open()));
     fireEvent.click(screen.getByRole("button", { name: "Close Supervisor view" }));
     expect(TerminalSocketMock.instances.find((source) => source.url.includes("session-a"))?.closed).toBe(true);
     expect(TerminalSocketMock.instances.find((source) => source.url.includes("session-b"))?.closed).toBe(false);
@@ -332,18 +334,21 @@ describe("Tiled agent workspace", () => {
   it("keeps four streams after a fifth Shift click and leaves one after a plain click", async () => {
     renderFlock("/agents?agent=a&agent=b&agent=c&agent=d", true);
     await screen.findByRole("region", { name: "Tester agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(4));
+    act(() => TerminalSocketMock.instances.forEach((source) => source.open()));
     fireEvent.click(screen.getByRole("button", { name: "Open Writer" }), { shiftKey: true });
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(4);
     expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(4);
     fireEvent.click(screen.getByRole("button", { name: "Open Writer" }));
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(1);
-    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
+    await waitFor(() => expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1));
     expect(screen.getByRole("region", { name: "Writer agent window" })).toBeInTheDocument();
   });
 
   it("normalizes duplicate and excessive URL selections before subscribing", async () => {
     renderFlock("/agents?agent=a&agent=a&agent=b&agent=c&agent=d&agent=e", true);
     await screen.findByRole("region", { name: "Tester agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(4));
     expect(screen.getAllByRole("region", { name: /agent window/ })).toHaveLength(4);
     expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(4);
     expect(screen.queryByRole("region", { name: "Writer agent window" })).not.toBeInTheDocument();
@@ -363,11 +368,13 @@ describe("Tiled agent workspace", () => {
   it("stops streaming while Settings is visible and resumes on Terminal", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    act(() => TerminalSocketMock.instances[0]!.open());
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     expect(TerminalSocketMock.instances[0]!.closed).toBe(true);
     expect(within(window).getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(within(window).getByRole("tab", { name: "Terminal" }));
-    expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
+    await waitFor(() => expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1));
   });
 
   it("disables a non-pooled agent from its flock row and shows what stays running", async () => {
@@ -510,6 +517,7 @@ describe("Agents finishing current work", () => {
     roster[0]!.session_state = "draining";
     renderFlock("/agents?agent=a", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(TerminalSocketMock.instances.filter((source) => !source.closed)).toHaveLength(1);
     act(() => {
       TerminalSocketMock.instances[0]!.ready();
@@ -524,6 +532,7 @@ describe("Agents finishing current work", () => {
     renderFlock("/agents?agent=a", true);
     const sidebar = await screen.findByRole("button", { name: "Open Supervisor" });
     const window = screen.getByRole("region", { name: "Supervisor agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(within(sidebar).getByText("busy")).toBeInTheDocument();
     expect(within(sidebar).getByText("New work disabled")).toBeInTheDocument();
     expect(within(window).getByText("busy")).toBeInTheDocument();
@@ -640,6 +649,7 @@ describe("Starting and using agent terminals", () => {
   it("offers direct terminal input for workers and the supervisor without a Chat tab", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2));
     act(() => TerminalSocketMock.instances.forEach((source) => source.ready()));
     const builder = TerminalMock.instances.find((term) => term.textarea?.getAttribute("aria-label") === "Builder terminal input")!;
     const supervisor = TerminalMock.instances.find((term) => term.textarea?.getAttribute("aria-label") === "Supervisor terminal input")!;

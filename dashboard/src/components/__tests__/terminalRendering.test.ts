@@ -24,6 +24,7 @@ describe("Real xterm rendering of the terminal byte stream", () => {
         renders.push(new Promise((resolve) => terminal.write(bytes, () => { processed(); resolve(); })));
       },
     });
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const socket = TerminalSocketMock.instances[0]!;
     socket.ready();
     const encoder = new TextEncoder();

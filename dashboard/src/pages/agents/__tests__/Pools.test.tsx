@@ -551,6 +551,7 @@ describe("pool instance selection", () => {
     // Oldest instance first, so the first live session is bound by default.
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
+    act(() => TerminalSocketMock.instances[0]!.open());
 
     const picker = within(window).getByLabelText("Instance");
     expect(within(picker).getByRole("option", { name: /p-worker-standard--agent-queue--bbb · agent-queue · quick-torrent-39 · 42s idle/ })).toBeInTheDocument();

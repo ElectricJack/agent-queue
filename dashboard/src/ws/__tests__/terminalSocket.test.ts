@@ -6,6 +6,7 @@ const encoder = new TextEncoder();
 let connections: TerminalConnection[] = [];
 
 beforeEach(() => {
+  vi.useFakeTimers();
   TerminalSocketMock.instances = [];
   vi.stubEnv("VITE_TERMINAL_WS_URL", "");
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -15,6 +16,7 @@ afterEach(() => {
   connections = [];
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 function connect(sessionId = "session-b") {
@@ -24,6 +26,7 @@ function connect(sessionId = "session-b") {
     sessionId, cols: 100, rows: 30, onState: (state) => states.push(state),
     write: (bytes, processed) => writes.push({ bytes, processed }),
   });
+  vi.runOnlyPendingTimers();
   connections.push(connection);
   return { connection, socket: TerminalSocketMock.instances.slice(-1)[0]!, states, writes };
 }
@@ -133,6 +136,33 @@ describe("Bidirectional terminal transport", () => {
     connection.close();
     expect(socket.onmessage).toBeNull();
     expect(TerminalSocketMock.instances).toHaveLength(1);
+  });
+
+  it("never closes a CONNECTING socket and ignores its later events after close", () => {
+    const { socket, connection, states, writes } = connect();
+    connection.close();
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.onmessage).toBeNull();
+    expect(socket.onerror).toBeNull();
+    expect(socket.onclose).toBeNull();
+
+    socket.message(JSON.stringify({ type: "ready", session_id: "session-b", cols: 100, rows: 30 }));
+    expect(writes).toEqual([]);
+    expect(states).toEqual([{ status: "connecting" }]);
+
+    socket.open();
+    expect(socket.close).toHaveBeenCalledOnce();
+    expect(states).toEqual([{ status: "connecting" }]);
+  });
+
+  it("also defers a CONNECTING close when a connection error finishes it", () => {
+    const { socket, states } = connect();
+    socket.onerror?.();
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error" });
+
+    socket.open();
+    expect(socket.close).toHaveBeenCalledOnce();
   });
 
   it("keeps each tiled terminal independent and detaches only the closed viewer", () => {
