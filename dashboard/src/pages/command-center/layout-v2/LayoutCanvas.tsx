@@ -17,7 +17,7 @@ import {
 import { useLayoutTiles } from "./useLayoutTiles";
 import { publishAppliedVariant } from "./appliedVariant";
 import { refetchLayout, registerLayoutRefetch } from "./liveRegistry";
-import { toFlowElements, type FlowCache, type FlowHandlers } from "./flowNodes";
+import { enteredBounds, toFlowElements, type FlowCache, type FlowHandlers, type WorldRect } from "./flowNodes";
 import { CELL, fromPx, sizePx, toPx, worldRectFromViewport, type Rect } from "./units";
 import type { LayoutDensity } from "./density";
 import { PLAYBOOK_POSITION_SCOPE } from "./manualPositions";
@@ -110,6 +110,9 @@ interface LayerElements {
   error: Error | null;
   /** The variant the daemon served this layer's last response from. */
   variantApplied: string | null;
+  /** The entered container's cropped frame plus its docked stubs, in world
+   *  units of this project's own frame; null outside a container. */
+  enteredBounds: WorldRect | null;
 }
 
 interface LayerProps {
@@ -194,6 +197,7 @@ function ProjectLayer({
     }));
     onElements(projectId, {
       nodes, edges, workers, pending, loaded, error, variantApplied: store.variantApplied,
+      enteredBounds: enteredBounds(store, focusId, projectId),
     });
   }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, simpleEdges]);
 
@@ -462,12 +466,37 @@ function Inner(props: LayoutCanvasProps) {
   // Only on unmount: publishing null between values would make the toolbar
   // fall back to the filters' variant for a render and re-issue its locate.
   useEffect(() => () => publishAppliedVariant(null), []);
+  // Two steps: the persisted box first, so the tiles covering the children are
+  // the ones requested, then -- once, when those tiles have landed -- the
+  // frame cropped to the children plus the stubs docked beside it. The
+  // persisted box is sized for the fully expanded subtree and can be several
+  // times the content, which left the children a speck in the middle. Each
+  // step runs once per entry, so a refetch never yanks a viewport the
+  // operator has since panned.
+  const boxFitted = useRef<string | null>(null);
+  const fittedEntry = useRef<string | null>(null);
   useEffect(() => {
-    if (!focusId || !focusNode) return;
+    if (!focusId) { boxFitted.current = null; return; }
+    if (!focusNode) return;
+    const key = `${focusId}|${density}`;
+    if (boxFitted.current === key) return;
+    boxFitted.current = key;
+    fittedEntry.current = null;
     const position = toPx(focusNode.node.x, focusNode.node.y + focusOffset, density);
     const box = sizePx(focusNode.node.w, focusNode.node.h, density);
     fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
   }, [focusId, focusNode, fitBounds, focusOffset, density]);
+  const focusLayer = layers.get(focusProject ?? "");
+  const entered = focusLayer?.loaded && !focusLayer.pending ? focusLayer.enteredBounds : null;
+  useEffect(() => {
+    if (!focusId || !focusNode || !entered) return;
+    const key = `${focusId}|${density}`;
+    if (boxFitted.current !== key || fittedEntry.current === key) return;
+    fittedEntry.current = key;
+    const position = toPx(entered.x, entered.y + focusOffset, density);
+    const box = sizePx(entered.w, entered.h, density);
+    fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.1, duration: 0 });
+  }, [focusId, focusNode, entered, fitBounds, focusOffset, density]);
 
   // Jumping to a search result in THIS scope only needs the hit's box: the
   // tiles covering it load from the viewport change like any other pan. A hit

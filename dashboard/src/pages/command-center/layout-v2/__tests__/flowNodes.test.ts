@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { emptyStore, mergeTiles } from "../layoutStore";
-import { toFlowElements } from "../flowNodes";
+import { enteredBounds, enteredFrame, toFlowElements } from "../flowNodes";
 
 const n = (id: string, kind: string, x: number, y: number, extra = {}) => ({
   id, title: id, status: "READY", priority: 100, is_blocked: false, x, y, w: 1, h: 1, depth: 0,
@@ -242,5 +242,62 @@ describe("toFlowElements", () => {
     const far = toFlowElements(store, { ...ctx, simpleEdges: true }).edges[0]!;
     expect(far.type).toBe("straight");
     expect(far.label).toBeUndefined();
+  });
+  describe("inside an entered container", () => {
+    // The daemon's real answer for smart-meadow: a 3x12 box whose six
+    // children end at y=6.33, and a boundary stub at its ROOT-layout position.
+    const entered = () => mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("box", "container", 0, 0, { w: 3, h: 12, agg_children: 6 }),
+        n("c1", "card", 0.1, 0.45, { container_id: "box", depth: 1 }),
+        n("c2", "card", 1.25, 2.89, { container_id: "box", depth: 1 }),
+        n("c3", "card", 0.1, 5.33, { container_id: "box", depth: 1 }),
+      ],
+      edges: [{ from: "c3", to: "far", dep_type: "blocks", description: null, count: 1 }],
+      stubs: [{ id: "far", project_id: "p1", x: 6.15, y: 12.22, w: 1, h: 1, title: "Far" },
+              { id: "near", project_id: "p1", x: 4, y: 1, w: 1, h: 1, title: "Near" }],
+      stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const inside = { ...ctx, focusId: "box" };
+
+    it("crops the frame to the children it holds", () => {
+      const frame = enteredFrame(entered(), "box")!;
+      expect(frame.x).toBe(0); expect(frame.y).toBe(0);
+      expect(frame.w).toBeCloseTo(2.25 + 0.15);
+      expect(frame.h).toBeCloseTo(6.33 + 0.15);
+      const box = toFlowElements(entered(), inside).nodes.find((x) => x.id === "box")!;
+      expect(box.height).toBeCloseTo((6.33 + 0.15) * 312 / 2);
+    });
+    it("never grows the frame past its persisted box", () => {
+      const store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [n("box", "container", 0, 0, { w: 1.2, h: 1.3 }), n("c", "card", 0.1, 0.25, { container_id: "box" })],
+        edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as never);
+      expect(enteredFrame(store, "box")).toEqual({ x: 0, y: 0, w: 1.2, h: 1.3 });
+    });
+    it("docks same-project stubs beside the frame in reading order, and edges follow", () => {
+      const { nodes, edges } = toFlowElements(entered(), inside);
+      const near = nodes.find((x) => x.id === "near")!, far = nodes.find((x) => x.id === "far")!;
+      expect(near.position.x).toBeCloseTo((2.4 + 0.6) * 240);
+      expect(near.position.y).toBe(0);
+      expect(far.position.y).toBeCloseTo(1.2 * 156);
+      expect(edges).toHaveLength(1);
+    });
+    it("fits to the cropped frame and the docked stubs, never the root-layout position", () => {
+      const bounds = enteredBounds(entered(), "box", "p1")!;
+      expect(bounds.x).toBe(0); expect(bounds.y).toBe(0);
+      expect(bounds.w).toBeCloseTo(2.4 + 0.6 + 1);
+      expect(bounds.h).toBeCloseTo(6.48);
+    });
+    it("has no frame until the entered scope has delivered the container", () => {
+      const store = entered();
+      expect(enteredFrame({ ...store, carried: new Set(["box"]) }, "box")).toBeNull();
+      expect(enteredFrame(store, null)).toBeNull();
+      expect(enteredFrame(store, "missing")).toBeNull();
+    });
+    it("leaves stubs where they are outside a container", () => {
+      const far = toFlowElements(entered(), ctx).nodes.find((x) => x.id === "far")!;
+      expect(far.position).toEqual({ x: 6.15 * 240, y: 12.22 * 156 });
+    });
   });
 });
