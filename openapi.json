@@ -36818,6 +36818,28 @@
               }
             ],
             "title": "Quarantine Reason"
+          },
+          "input_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Prompt"
+          },
+          "unchanged_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unchanged Seconds"
           }
         },
         "type": "object",
@@ -37384,6 +37406,11 @@
           "ready": {
             "type": "integer",
             "title": "Ready"
+          },
+          "blocked_on_input": {
+            "type": "integer",
+            "title": "Blocked On Input",
+            "default": 0
           },
           "projects": {
             "items": {

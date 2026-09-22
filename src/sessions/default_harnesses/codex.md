@@ -51,6 +51,42 @@ vault watcher; no restart, no release.
       "quarantine": true,
       "signal": "auth"
     }
+  ],
+  "input_prompts": [
+    {
+      "name": "model-upgrade-menu",
+      "pattern": "Try new model.*Use existing model|Use existing model.*Try new model",
+      "is_regex": true
+    },
+    {
+      "name": "numbered-menu",
+      "pattern": "(?m)^[ \\t]*[›>❯]?[ \\t]*[0-9]+[.)][ \\t]+.+$",
+      "is_regex": true
+    },
+    {
+      "name": "menu-navigation",
+      "pattern": "Use .* to move, press enter to confirm",
+      "is_regex": true
+    },
+    {
+      "name": "login-required",
+      "pattern": "Sign in with ChatGPT|codex login|log out and sign in again",
+      "is_regex": true
+    },
+    {
+      "name": "usage-limit",
+      "pattern": "usage limit|limit reached|you.ve hit your .* limit",
+      "is_regex": true
+    },
+    {
+      "name": "trust-or-permission",
+      "pattern": "Do you trust|Hooks need review|approval required|Allow command",
+      "is_regex": true
+    },
+    {
+      "name": "press-enter-to-continue",
+      "pattern": "press enter to continue"
+    }
   ]
 }
 ```
@@ -190,6 +226,12 @@ and possible MCP-startup warnings all render above the composer and need no
 keys. The `login-required` dialog quarantines instead of typing — an
 unauthenticated codex cannot be fixed by keystrokes; run `codex login` on
 the host.
+
+**`input_prompts` is observation-only.** AQ checks these signatures only on
+an unclaimed pool worker whose pane has stayed unchanged past the claim-loop
+stall window. A match is reported by doctor and `aq pool status`; no listed
+prompt is ever answered automatically. Add a named substring or regex here
+when a new Codex interactive chooser appears.
 
 **`composer_clear_keys: ["C-u"]`** is the recovery key for a nudge that was
 typed but never submitted. Enter races the composer's repaint (an attached

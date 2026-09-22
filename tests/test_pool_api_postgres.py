@@ -153,6 +153,7 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
                 "starting": 0,
                 "draining": 0,
                 "ready": 0,
+                "blocked_on_input": 0,
                 "projects": [
                     {
                         "project_id": "pool-project",

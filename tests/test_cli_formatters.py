@@ -90,6 +90,32 @@ def test_task_progress_renders_a_raw_response_dict():
     assert "1. a, b" in out and "2. c" in out
 
 
+def test_pool_status_names_sessions_blocked_on_input():
+    out = _render(
+        "pool_status",
+        {
+            "pools": [
+                {
+                    "profile_id": "standard-high-codex",
+                    "blocked_on_input": 1,
+                    "instances": [
+                        {
+                            "name": "p-standard-high-codex--proj--abc",
+                            "state": "blocked_on_input",
+                            "input_prompt": "model-upgrade-menu",
+                            "unchanged_seconds": 1_800,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert "Blocked on input" in out
+    assert "model-upgrade-menu" in out
+    assert "unchanged 1800s" in out
+
+
 def test_task_progress_renders_a_typed_response_model():
     """The same spec must handle the generated client's typed model."""
     from src.api.models.task import TaskProgressResponse

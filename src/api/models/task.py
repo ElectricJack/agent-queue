@@ -829,6 +829,10 @@ class PoolInstanceStatus(BaseModel):
     idle_seconds: float | None = None
     started_at: float
     quarantine_reason: str | None = None
+    #: Named harness ``input_prompts`` signature when this stable, unclaimed
+    #: worker is waiting for a human decision.
+    input_prompt: str | None = None
+    unchanged_seconds: float | None = None
 
 
 class OutsidePoolSessionStatus(BaseModel):
@@ -915,6 +919,9 @@ class PoolStatusRow(BaseModel):
     starting: int
     draining: int
     ready: int
+    #: Stable, unclaimed sessions whose pane matches an observation-only
+    #: interactive prompt signature. They are not counted in ``running_idle``.
+    blocked_on_input: int = 0
     #: Per-project placement detail, ascending by project id.  Filtered when
     #: the caller passed ``project_id`` -- that argument is a view filter,
     #: never pool identity.

@@ -1389,8 +1389,35 @@ def format_pool_table(pools: list[dict]):
             _pool_project_summary(row),
         )
 
-    notes = [n for n in (_pool_provider_notes(pools), _pool_quarantine_notes(pools)) if n]
+    notes = [
+        n
+        for n in (
+            _pool_input_notes(pools),
+            _pool_provider_notes(pools),
+            _pool_quarantine_notes(pools),
+        )
+        if n
+    ]
     return table if not notes else Group(table, *(part for n in notes for part in (Text(), n)))
+
+
+def _pool_input_notes(pools: list[dict]) -> Text | None:
+    """Named prompt matches for workers that need a human decision."""
+    notes = Text()
+    for row in pools:
+        for instance in row.get("instances", []):
+            if instance.get("state") != "blocked_on_input":
+                continue
+            if not notes:
+                notes.append("Blocked on input\n", style="bold yellow")
+            seconds = float(instance.get("unchanged_seconds") or 0)
+            notes.append(
+                f"  {row.get('profile_id', '?')}: {instance.get('name', '?')} — "
+                f"{instance.get('input_prompt', 'interactive prompt')} "
+                f"(unchanged {seconds:.0f}s)\n",
+                style="yellow",
+            )
+    return notes if notes else None
 
 
 def _pool_provider_notes(pools: list[dict]) -> Text | None:
