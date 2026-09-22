@@ -7,7 +7,7 @@ import json
 import logging
 import time
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.tables import (
@@ -43,11 +43,13 @@ RETRYABLE_REASONS = frozenset(
     }
 )
 ROUTING_FIELDS = ("profile_id", "intelligence_class", "affinity_agent_id", "preferred_workspace_id")
-#: A terminal ``BLOCKED`` close leg (``blocked_terminal``) is the failure the
-#: ``task.failed`` event reports, so the event and the scan share one incident
-#: for it too.  An operator's own stop is a decision, not an incident.
+#: A terminal ``BLOCKED`` close leg (``blocked_terminal``) is one failure the
+#: ``task.failed`` event reports. A terminal ``FAILED`` transition can have
+#: no worker attempt at all, so it uses its durable task revision as the
+#: failure generation. An operator's own stop is a decision, not an incident.
 TERMINAL_BLOCKED_KEY = "blocked_terminal"
 _NOT_INCIDENTS = frozenset({"stop_task"})
+_FAILURE_STATUSES = frozenset({TaskStatus.BLOCKED.value, TaskStatus.FAILED.value})
 #: Which clock tripped the attempt.  A task session's watchdog measures
 #: wall-clock runtime since start (or the last answered question); a pool
 #: session's measures inactivity since its last activity.
@@ -62,12 +64,18 @@ _INTEGRATION_ENDED = ("completed", "cancelled")
 
 
 def _incident_id(task, attempt, reason):
+    """Stable identity for one failure generation, including no-attempt failures."""
+    generation = (
+        ("attempt", attempt["id"])
+        if attempt is not None
+        else ("terminal_transition", task["status"], task["updated_at"])
+    )
     identity = [
         task["id"],
         task["project_id"],
         task["created_at"],
         task["claim_epoch"],
-        attempt["id"],
+        generation,
         reason,
     ]
     return "recovery-" + hashlib.sha256(json.dumps(identity).encode()).hexdigest()[:32]
@@ -80,7 +88,7 @@ def _decoded(raw):
         return raw  # Older rows may hold an unencoded string.
 
 
-def incident_reason(meta):
+def incident_reason(meta, task=None):
     """The failure one incident is about: an operational exit, else a terminal close leg."""
     reason = meta.get("needs_attention")
     if isinstance(reason, str) and reason:
@@ -88,6 +96,8 @@ def incident_reason(meta):
     reason = meta.get(TERMINAL_BLOCKED_KEY)
     if isinstance(reason, str) and reason and reason not in _NOT_INCIDENTS:
         return reason
+    if task is not None and task["status"] == TaskStatus.FAILED.value:
+        return "terminal_failed"
     return None
 
 
@@ -242,10 +252,17 @@ class TaskRecoveryQueryMixin:
                 (
                     await conn.execute(
                         select(tasks.c.id)
-                        .join(task_metadata, task_metadata.c.task_id == tasks.c.id)
+                        .outerjoin(task_metadata, task_metadata.c.task_id == tasks.c.id)
                         .where(
-                            tasks.c.status == "BLOCKED",
-                            task_metadata.c.key.in_(("needs_attention", TERMINAL_BLOCKED_KEY)),
+                            or_(
+                                tasks.c.status == TaskStatus.FAILED.value,
+                                and_(
+                                    tasks.c.status == TaskStatus.BLOCKED.value,
+                                    task_metadata.c.key.in_(
+                                        ("needs_attention", TERMINAL_BLOCKED_KEY)
+                                    ),
+                                ),
+                            )
                         )
                         .distinct()
                     )
@@ -313,12 +330,14 @@ class TaskRecoveryQueryMixin:
             incident = meta.get(INCIDENT_KEY) or {}
             if incident.get("id") != expected_id or incident.get("decision"):
                 return
-            reason = incident_reason(meta)
+            reason = incident_reason(meta, task)
             current = (
-                task["status"] == "BLOCKED"
+                task["status"] in _FAILURE_STATUSES
                 and bool(reason)
-                and attempt is not None
-                and attempt["state"] in ("stopped", "quarantined")
+                and (
+                    (attempt is not None and attempt["state"] in ("stopped", "quarantined"))
+                    or (attempt is None and task["status"] == TaskStatus.FAILED.value)
+                )
                 and expected_id == _incident_id(task, attempt, reason)
             )
             owner = await self._recovery_owner(conn, task) if current else None
@@ -368,21 +387,28 @@ class TaskRecoveryQueryMixin:
             )
             if task is None or (project_id is not None and task["project_id"] != project_id):
                 return {"outcome": "not_found", "task_id": task_id}
-            if task["status"] != "BLOCKED":
+            if task["status"] not in _FAILURE_STATUSES:
                 return {
                     "outcome": "not_actionable",
                     "task_id": task_id,
-                    "detail": f"task is {task['status']}, not BLOCKED",
+                    "detail": f"task is {task['status']}, not a terminal failure",
                 }
             meta, attempt = await self._recovery_context(conn, task)
-            reason = incident_reason(meta)
+            reason = incident_reason(meta, task)
             if not reason or "manual_pause" in meta:
                 return {
                     "outcome": "not_actionable",
                     "task_id": task_id,
                     "detail": "operator hold" if reason else "no recorded failure to recover",
                 }
-            if not attempt or attempt["state"] not in ("stopped", "quarantined"):
+            stopped_attempt = attempt is not None and attempt["state"] in ("stopped", "quarantined")
+            if task["status"] == TaskStatus.BLOCKED.value and not stopped_attempt:
+                return {
+                    "outcome": "not_actionable",
+                    "task_id": task_id,
+                    "detail": "execution attempt has not stopped; the recovery scan records it",
+                }
+            if attempt is not None and not stopped_attempt:
                 return {
                     "outcome": "not_actionable",
                     "task_id": task_id,
@@ -409,12 +435,14 @@ class TaskRecoveryQueryMixin:
                     "incident_id": incident_id,
                     "redelivered": bool(redelivered),
                 }
-            row = (
-                (await conn.execute(select(sessions).where(sessions.c.id == attempt["session_id"])))
-                .mappings()
-                .first()
-            )
-            end = attempt["ended_at"]
+            row = None
+            if attempt is not None:
+                row = (
+                    (await conn.execute(select(sessions).where(sessions.c.id == attempt["session_id"])))
+                    .mappings()
+                    .first()
+                )
+            end = attempt["ended_at"] if attempt is not None else None
             activity = (
                 row["last_activity"]
                 if row and row["started_at"] == attempt["session_started_at"]
@@ -431,11 +459,15 @@ class TaskRecoveryQueryMixin:
                 "task_id": task_id,
                 "project_id": task["project_id"],
                 "title": task["title"],
-                "session_id": attempt["session_id"],
-                "attempt_id": attempt["id"],
+                "session_id": attempt["session_id"] if attempt is not None else None,
+                "attempt_id": attempt["id"] if attempt is not None else None,
                 "reason": reason,
-                "end_reason": attempt["end_reason"],
-                "runtime_seconds": round(end - attempt["started_at"]) if end is not None else None,
+                "end_reason": attempt["end_reason"] if attempt is not None else None,
+                "runtime_seconds": (
+                    round(end - attempt["started_at"])
+                    if end is not None and attempt is not None
+                    else None
+                ),
                 "idle_seconds": max(0, round(end - activity))
                 if end is not None and activity is not None
                 else None,
@@ -452,7 +484,7 @@ class TaskRecoveryQueryMixin:
                 "decision": None,
             }
             body = (
-                "AQ operational incident: a worker attempt stopped and its task needs attention. "
+                "AQ operational incident: a task reached a terminal failure and needs attention. "
                 "This is the one incident for this failure: the task.failed event and the "
                 "periodic recovery scan both reach it, so a replay never means a second failure. "
                 "Its owner, remaining budget, deadline kind and next action are in the JSON below. "

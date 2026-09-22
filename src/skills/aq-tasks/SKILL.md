@@ -397,15 +397,26 @@ aq task phase-create --project-id <pid> --title "..." [--label "..."] [--parent-
 aq task phase-list --project-id <pid> [--parent-id <id>]
 ```
 
-File tasks into a phase with `aq task create --parent <phase-id>` — from the
-loopback CLI or a supervisor session. A **worker or planner session cannot**:
-a non-elevated filing's parent must be the task it holds, one of that task's
-descendants, or that task's own parent, and a root-level phase is none of
-those (`hierarchy.parent_out_of_scope`). Such a session has no in-scope way
-to populate a phase: file the work under the task you hold as usual, and ask
-the supervisor to place it (`aq message send --to session:supervisor-<pid>
---body "..."`) — never attempt `--graph`/`--from-spec`, which are
-elevated/supervisor-only.
+**Supervisor or loopback workflow.** An elevated supervisor or the loopback
+CLI owns root-level phased planning: it may create a phase and place work in
+it with `aq task create --parent <phase-id>`, or create a root graph that
+declares `phases:`. That is the supported path for a phase → task plan.
+
+**Planner workflow.** A planner has `create_task_graph`, but its graph is
+fenced to the planning task it holds. Use `aq task create --from-spec <path>
+--dry-run --reason "..."` and then the same command without `--dry-run` to
+create ordinary direct children with local `needs` edges. Do not request a
+root or another parent, declare a document `parent:`, `phases:`, external
+task-id dependencies, `cross_project`, or authored `parent-child` edges.
+`phases:` needs a root graph and is refused beneath the held task as
+`graph.phases_need_root`; a planner cannot use phase creation to gain an
+arbitrary container into which to file work.
+
+**Checklist ownership.** An unphased planner graph may put `subtasks:` on a
+child task. Those are checklist rows owned and settled by the worker that
+later holds that child, not work assigned to the planner or separate tasks to
+schedule. The planner supplies the initial, concrete checklist; the worker
+works the received rows and records progress with the subtask commands.
 A phase settles like any container — all children COMPLETED — so a failed
 child holds the gate on purpose. A childless phase is never claimable and is
 held open (never auto-settled); if it turns out to be unneeded, delete it

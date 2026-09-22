@@ -142,6 +142,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # graph — server-side spatial task-graph layout (spatial-layout design §5.6, §10)
     "graph_layout_rebuild": "graph",
     "graph_tidy": "graph",
+    "graph_reflow_status": "graph",
     # playbook — compilation, run management, human-in-the-loop resume
     "run_playbook": "playbook",
     "dry_run_playbook": "playbook",
@@ -5342,6 +5343,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
                 "parent_id": {"type": "string"},
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why this graph is being filed. Required for a non-elevated "
+                        "session; recorded on every discovered-from provenance edge."
+                    ),
+                },
             },
         },
     },
@@ -5451,6 +5459,19 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "enum": ["all", "active"],
                     "description": "Omit for both",
+                },
+            },
+        },
+    },
+    {
+        "name": "graph_reflow_status",
+        "description": "Read queued, running, and failed durable active-layout reflow requests. Does not enqueue, retry, or otherwise mutate work. Not available to agent sessions.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Optional project id; omit for every project.",
                 },
             },
         },

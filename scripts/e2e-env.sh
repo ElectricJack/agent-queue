@@ -381,6 +381,60 @@ Under Tier 1 (`sessions.provider: fake`) nothing actually reads this Role —
 - On `session_exhausted` or `drain_requested`, run `aq session drain-ack`.
 MD
 
+# S19 exercises the scoped graph capability through a session token. The
+# production planner is task-lifecycle, while the fake-provider kit needs a
+# pullable session for its CLI runner to impersonate, so this fixture keeps
+# the planner's capability contract but gives it a tiny pool.
+mkdir -p "$E2E_VAULT/agent-types/planner"
+cat > "$E2E_VAULT/agent-types/planner/profile.md" <<'MD'
+---
+id: planner
+name: "E2E Planner"
+tags: [profile, agent-type, e2e]
+---
+
+# E2E Planner
+
+## Role
+Plan a graph only beneath the task currently held by this session.
+
+## Config
+```json
+{
+  "harness": "claude",
+  "lifecycle": "pool",
+  "default_class": "fast-high",
+  "min_active": 0,
+  "max_active": 1,
+  "max_claims_per_session": 1,
+  "needs_workspace": true,
+  "workspaces": ["project-repo"]
+}
+```
+
+## Capabilities
+```json
+{
+  "harness_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+  "aq_commands": [
+    "create_task_graph",
+    "prime",
+    "session_drain_ack",
+    "task_claim",
+    "task_children",
+    "task_close",
+    "task_heartbeat",
+    "task_show"
+  ],
+  "plugin_tools": []
+}
+```
+
+## Rules
+- A graph may only create direct children of the held planning task.
+- Supply a filing reason, use dry-run first, and never retry an ambiguous result.
+MD
+
 # `review-and-fix` names `reviewer` and `coding` as node profiles; graph
 # validation resolves both against the DB, so the vault must carry them.
 #
@@ -464,12 +518,11 @@ done
 # 4. Config
 # ---------------------------------------------------------------------------
 #
-# One switch decides the tier.  `AQ_E2E_SESSION_PROVIDER=tmux` means real
-# `claude` processes, and a live agent needs playbooks plus named supervisor
-# sessions.  Under `fake` those stay off because both need an LLM.  The
-# durable message queue remains enabled in both tiers; with
-# `messaging_platform: none` it is a local database sink for S11, not an
-# external messaging provider.
+# One switch decides the tier. `AQ_E2E_SESSION_PROVIDER=tmux` means real
+# `claude` processes and a named supervisor session. Command-only reviewed
+# playbooks also run under `fake` for S18; neither that route nor the durable
+# message queue needs an LLM. With `messaging_platform: none` the latter is a
+# local database sink, never an external messaging provider.
 
 if [ "$AQ_E2E_SESSION_PROVIDER" = "fake" ]; then
     TIER=1
@@ -478,6 +531,13 @@ else
     TIER=2
     LIVE_SUBSYSTEMS=true
 fi
+
+# Command-only reviewed playbooks are deterministic under the fake provider:
+# S18 uses that tier to exercise a durable task.failed subscription without a
+# model process or a named supervisor.  Keep the switch explicit for a caller
+# diagnosing a playbook issue, but make the isolated kit cover the shipped
+# path by default.
+PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
 
 # Both fake providers start healthy; S16 rewrites this file mid-run.
 printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
@@ -569,13 +629,13 @@ work_graph:
 state_machine:
   enforce: false
 
-# Tier 2 only: playbooks provide worker-filed triage and supervisor_agent
-# launches the named chat sessions.  The durable message queue itself is on
-# in both tiers so S11 can use a synthetic user recipient as a database-only
-# sink.  messaging_platform:none means no Discord/webhook/external send is
-# possible, and fake sessions mean there is no model process to wake.
+# Command-only reviewed playbooks run in both tiers; the fake tier's S18
+# verifies their durable event/command path without an LLM.  The supervisor
+# agent itself stays Tier 2 because it launches a named chat session. The
+# durable message queue remains on in both tiers so S11 and S18 use a local
+# database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
-  enabled: $LIVE_SUBSYSTEMS
+  enabled: $PLAYBOOKS_ENABLED
 
 messages:
   enabled: true

@@ -27,6 +27,8 @@ class CreateTaskGraphRequest:
             vault root (e.g. 'projects/<pid>/specs/x.md'). Paths that resolve outside the vault are refused.
         dry_run (bool | Unset): Validate and report assigned ids without writing Default: False.
         parent_id (None | str | Unset):
+        reason (None | str | Unset): Why this graph is being filed. Required for a non-elevated session; recorded on
+            every discovered-from provenance edge.
     """
 
     profile_id: None | str | Unset = UNSET
@@ -36,6 +38,7 @@ class CreateTaskGraphRequest:
     spec_path: None | str | Unset = UNSET
     dry_run: bool | Unset = False
     parent_id: None | str | Unset = UNSET
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,6 +84,12 @@ class CreateTaskGraphRequest:
         else:
             parent_id = self.parent_id
 
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -98,6 +107,8 @@ class CreateTaskGraphRequest:
             field_dict["dry_run"] = dry_run
         if parent_id is not UNSET:
             field_dict["parent_id"] = parent_id
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -171,6 +182,15 @@ class CreateTaskGraphRequest:
 
         parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
 
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         create_task_graph_request = cls(
             profile_id=profile_id,
             intelligence_class=intelligence_class,
@@ -179,6 +199,7 @@ class CreateTaskGraphRequest:
             spec_path=spec_path,
             dry_run=dry_run,
             parent_id=parent_id,
+            reason=reason,
         )
 
         create_task_graph_request.additional_properties = d

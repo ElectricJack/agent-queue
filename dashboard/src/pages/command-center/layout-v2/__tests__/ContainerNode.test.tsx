@@ -68,6 +68,39 @@ describe("ContainerNode", () => {
     expect(screen.queryByLabelText("Phase gated")).not.toBeInTheDocument();
   });
 
+  it("renders a failed-phase hold with status-bearing links to the affected children", async () => {
+    const onOpenTask = vi.fn();
+    render(
+      <ContainerNode
+        id="e"
+        data={{
+          node: {
+            ...node,
+            phase_order: 1,
+            phase_label: "Foundation",
+            phase_hold: {
+              phase_id: "e",
+              failed_children_total: 2,
+              descendant_blocker_count: 3,
+              remedies: [],
+              failed_children: [
+                { id: "e.1", status: "FAILED" },
+                { id: "e.2", status: "BLOCKED" },
+              ],
+            },
+          },
+          projectId: "p1",
+          onOpenTask,
+        }}
+      /> as never,
+    );
+    expect(screen.getByText("Waiting for failed work")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open failed work e.1 (FAILED)" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open failed work e.2 (BLOCKED)" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open failed work e.2 (BLOCKED)" }));
+    expect(onOpenTask).toHaveBeenCalledWith("e.2", { id: "e.2" });
+  });
+
   /**
    * The engine only reserves `headerPx` (0.35 * UNIT_H, mirroring
    * `HEADER_H` in src/task_graph/layout/constants.py) before a container's

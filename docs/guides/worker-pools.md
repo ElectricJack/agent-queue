@@ -1010,6 +1010,17 @@ remains for that legacy-`## Tools` case, or for any other divergence you'd
 rather just take the shipped version of — it overwrites the whole file (also
 behind a `.bak-<epoch>`), so reconcile edits from the backup afterwards.
 
+When a release also changes profile prose, merge that prose separately after
+the grants-only repair. For example, the scoped planner-graph release adds
+`create_task_graph` to the planner grant list and narrows the shipped planner
+Role and Rules to held-parent, local-only graph filing. First run
+`aq agent profile-reseed --profile-id planner --grants-only`; then compare
+`src/profiles/defaults/planner/profile.md` with
+`vault/agent-types/planner/profile.md`, save a backup, and manually merge
+only the relevant Role/Rules paragraphs. Do not full-reseed an edited profile
+just to receive prose: preserve its `## Config` (including a local
+`harness: codex`), its capabilities, and unrelated Rules edits.
+
 ### Retiring a shipped default
 
 Deleting one of the *current* shipped defaults is the case that used to

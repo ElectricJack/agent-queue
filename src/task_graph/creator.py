@@ -35,14 +35,22 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.queries.hierarchy_queries import PHASE_KEY, HierarchyError
 from src.database.tables import (
     projects,
+    sessions,
     task_context,
     task_criteria,
     task_dependencies,
     task_labels,
     tasks,
 )
+from src.models import DepType, TaskStatus
 from src.task_graph.models import GraphNode, TaskGraph
-from src.task_names import generate_task_id, reserve_child_ordinal
+from src.task_names import (
+    MAX_NAMING_DEPTH,
+    MAX_STRUCTURAL_DEPTH,
+    generate_task_id,
+    naming_depth,
+    reserve_child_ordinal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +70,42 @@ NODE_STATUS = "DEFINED"
 #: only used when the graph is being created under an *existing* container,
 #: where the ordinal must be reserved inside ``write_plan``'s transaction.
 PROVISIONAL_SUFFIX = ".?"
+
+#: Metadata shared by every task written by one scoped graph request.  It is
+#: deliberately task metadata, not a response-only UUID: an ambiguous client
+#: response can be inspected durably without resubmitting a non-idempotent
+#: graph request.
+GRAPH_FILING_REQUEST_META_KEY = "graph_filing_request_id"
+FILED_BY_PROFILE_META_KEY = "filed_by_profile_id"
+
+
+class GraphFilingError(Exception):
+    """A scoped graph refusal raised from the transaction that made it."""
+
+    def __init__(self, code: str, detail: str):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class GraphFilingContext:
+    """Trusted session facts required to file a graph below a held task.
+
+    This is assembled by the command boundary from the authenticated scope;
+    graph text and public command arguments never get to choose any of these
+    values.  :func:`write_plan` locks and rechecks every mutable fact before
+    it writes, so this preflight object cannot become an authorization cache.
+    """
+
+    session_id: str
+    session_instance_token: str | None
+    held_task_id: str
+    claim_epoch: int
+    reason: str
+    request_id: str
+    max_filings: int
+    profile_id: str | None
 
 
 def assign_child_ids(parent_id: str, keys: list[str], *, provisional: bool) -> dict[str, str]:
@@ -559,6 +603,105 @@ async def _graph_route(service, conn, plan: GraphPlan):
     return await service.graph_route(conn, plan.project_id, existing_parent)
 
 
+def _filing_cost(plan: GraphPlan) -> int:
+    """How many durable task rows a scoped graph would add."""
+    return len(plan.node_rows) + len(plan.phase_rows) + int(plan.parent_row is not None)
+
+
+async def _fence_graph_filing(
+    db, conn, plan: GraphPlan, filing: GraphFilingContext, *, reserve: bool
+) -> None:
+    """Validate and optionally reserve one session's whole graph batch.
+
+    The lock order is intentional: session first, then the project hierarchy
+    lock and held-task row supplied by ``lock_filing_scope``.  It matches the
+    claim/activation family and prevents a close, reparent, reassignment, or
+    session restart from turning an earlier command-layer preflight into an
+    authorization decision for this transaction.
+    """
+    session = (
+        await conn.execute(
+            select(
+                sessions.c.id,
+                sessions.c.project_id,
+                sessions.c.task_id,
+                sessions.c.instance_token,
+                sessions.c.state,
+                sessions.c.claim_phase,
+            )
+            .where(sessions.c.id == filing.session_id)
+            .with_for_update()
+        )
+    ).mappings().fetchone()
+    if session is None:
+        raise GraphFilingError("stale_claim", "the filing session no longer exists")
+    if (
+        not filing.session_instance_token
+        or session["instance_token"] != filing.session_instance_token
+        or session["state"] != "running"
+        or session["claim_phase"] != "active"
+        or session["task_id"] != filing.held_task_id
+        or session["project_id"] != plan.project_id
+    ):
+        raise GraphFilingError("stale_claim", "the filing session no longer holds this task")
+
+    # This takes the project hierarchy lock before re-locking the held row.
+    # Its hierarchy lock serialises every reparent that could otherwise move
+    # the held task between our parent decision and the structural write.
+    locked = await db.lock_filing_scope(conn, [filing.held_task_id])
+    if filing.held_task_id not in locked:
+        raise GraphFilingError("stale_claim", "the held task no longer exists")
+    held = (
+        await conn.execute(
+            select(
+                tasks.c.project_id,
+                tasks.c.status,
+                tasks.c.claim_epoch,
+                tasks.c.filed_count,
+            )
+            .where(tasks.c.id == filing.held_task_id)
+            .with_for_update()
+        )
+    ).mappings().one()
+    if (
+        held["project_id"] != plan.project_id
+        or held["status"] != TaskStatus.IN_PROGRESS.value
+        or held["claim_epoch"] != filing.claim_epoch
+    ):
+        raise GraphFilingError("stale_claim", "the held task's claim is no longer current")
+
+    if plan.parent_id != filing.held_task_id or plan.parent_row is not None:
+        raise GraphFilingError(
+            "hierarchy.parent_out_of_scope",
+            "a session graph may be filed only under the task it currently holds",
+        )
+    depth = await db.structural_depth(filing.held_task_id, conn=conn)
+    if depth + 1 > MAX_STRUCTURAL_DEPTH or naming_depth(filing.held_task_id) >= MAX_NAMING_DEPTH:
+        raise GraphFilingError(
+            "hierarchy.depth",
+            f"held parent '{filing.held_task_id}' cannot accept graph children at the depth cap",
+        )
+
+    cost = _filing_cost(plan)
+    if cost <= 0:
+        raise GraphFilingError("graph.empty", "a scoped graph must create at least one task")
+    if reserve:
+        reserved = await db.reserve_filing(
+            conn,
+            filing.held_task_id,
+            max_filings=filing.max_filings,
+            count=cost,
+        )
+    else:
+        reserved = int(held["filed_count"] or 0) + cost <= filing.max_filings
+    if not reserved:
+        raise GraphFilingError(
+            "filing_quota_exceeded",
+            f"task {filing.held_task_id} cannot reserve {cost} filings "
+            f"within swarm.max_filings_per_task={filing.max_filings}",
+        )
+
+
 async def write_plan(
     db: Any,
     plan: GraphPlan,
@@ -566,6 +709,7 @@ async def write_plan(
     provenance: FormulaProvenance | None = None,
     routing_manager=None,
     hierarchy_service=None,
+    filing: GraphFilingContext | None = None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -594,8 +738,18 @@ async def write_plan(
     a container cooked twice keeps both), and the ``formula:<name>`` label
     ensured with insert-or-ignore semantics (a repeat cook must not violate
     the ``(task_id, label)`` primary key).
+
+    ``filing`` turns this into a worker-scoped graph write.  Its session,
+    hierarchy, held-task and quota fence is the first operation in this
+    transaction; newly created nodes receive trusted creator fields, durable
+    request correlation, and a ``discovered-from`` edge before commit.
     """
     async with db._engine.begin() as conn:
+        if filing is not None:
+            await _fence_graph_filing(db, conn, plan, filing, reserve=True)
+            for row in plan.node_rows:
+                row["created_by_kind"] = "session"
+                row["created_by_id"] = filing.session_id
         if plan.phase_rows and plan.project_id is not None:
             # The same check ``phase_create`` makes, inside the transaction,
             # so a caller that skipped the command layer cannot write a phase
@@ -673,6 +827,25 @@ async def write_plan(
                 batches.setdefault(row.get("_phase_id"), []).append(row["id"])
             for phase_id, child_ids in batches.items():
                 await db.set_parent_bulk(child_ids, phase_id or plan.parent_id, conn=conn)
+        if filing is not None:
+            # A graph's structural edge and its provenance are deliberately
+            # distinct, even when both point at the held parent.  A later
+            # reparent therefore preserves where every task was discovered.
+            # ``add_dependency(..., conn=conn)`` keeps the edge, its reason,
+            # request metadata and quota reservation in this same rollback
+            # unit; a failing provenance insert cannot orphan graph rows.
+            for row in plan.node_rows:
+                await db.add_dependency(
+                    row["id"],
+                    filing.held_task_id,
+                    DepType.DISCOVERED_FROM.value,
+                    description=filing.reason,
+                    conn=conn,
+                )
+                metadata = {GRAPH_FILING_REQUEST_META_KEY: filing.request_id}
+                if filing.profile_id:
+                    metadata[FILED_BY_PROFILE_META_KEY] = filing.profile_id
+                await db._upsert_meta_many(row["id"], metadata, conn=conn)
         for row in plan.phase_rows:
             # Every phase, including one that got no children: ``set_parent_bulk``
             # flags a phase that has work, but an unflagged childless phase is a
@@ -823,6 +996,7 @@ async def create_graph(
     dry_run: bool = False,
     parent_id: str | None = None,
     provenance: FormulaProvenance | None = None,
+    filing: GraphFilingContext | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
@@ -848,19 +1022,28 @@ async def create_graph(
         else None
     )
     if dry_run:
-        if hierarchy_service is not None:
+        if hierarchy_service is not None or filing is not None:
             # Same route check the real run performs first, so a dry run
             # refuses what the real run would refuse instead of reporting a
-            # graph the project cannot file (keen-harbor.14).
-            async with db._engine.connect() as conn:
-                await _graph_route(hierarchy_service, conn, plan)
-        return build_report(graph, plan, dry_run=True, provenance=provenance)
+            # graph the project cannot file (keen-harbor.14).  A scoped dry
+            # run also locks and rechecks its held-task fence and batch quota,
+            # without reserving either IDs or filing capacity.
+            async with db._engine.begin() as conn:
+                if filing is not None:
+                    await _fence_graph_filing(db, conn, plan, filing, reserve=False)
+                if hierarchy_service is not None:
+                    await _graph_route(hierarchy_service, conn, plan)
+        report = build_report(graph, plan, dry_run=True, provenance=provenance)
+        if filing is not None:
+            report["request_id"] = filing.request_id
+        return report
     await write_plan(
         db,
         plan,
         provenance=provenance,
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
         hierarchy_service=hierarchy_service,
+        filing=filing,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)
@@ -888,4 +1071,7 @@ async def create_graph(
         len(plan.dependency_rows),
         project_id,
     )
-    return build_report(graph, plan, dry_run=False, provenance=provenance)
+    report = build_report(graph, plan, dry_run=False, provenance=provenance)
+    if filing is not None:
+        report["request_id"] = filing.request_id
+    return report

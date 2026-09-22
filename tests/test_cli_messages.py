@@ -495,6 +495,28 @@ class TestTaskCreateGraph:
         assert args["project_id"] == "p1"
         assert args["dry_run"] is False
 
+    def test_from_spec_forwards_the_scoped_filing_reason(self, runner):
+        client = _mock_client({"create_task_graph": _GRAPH_RESULT})
+        result = _invoke(
+            runner,
+            [
+                "task",
+                "create",
+                "-p",
+                "p1",
+                "--from-spec",
+                "projects/p1/specs/x.md",
+                "--reason",
+                "Split the approved plan into deliverable work",
+            ],
+            client,
+        )
+
+        assert result.exit_code == 0, result.output
+        assert client.execute.await_args.args[1]["reason"] == (
+            "Split the approved plan into deliverable work"
+        )
+
     def test_graph_file_is_decoded_before_sending(self, runner, tmp_path):
         graph_file = tmp_path / "graph.json"
         graph_file.write_text(

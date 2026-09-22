@@ -321,8 +321,21 @@ class LayoutDriver:
         return {t.id for t in tasks if getattr(t, "is_blocked", False)}
 
     async def full_layout(
-        self, project_id: str, variant: str, *, mode: Literal["tidy"] = "tidy"
+        self,
+        project_id: str,
+        variant: str,
+        *,
+        mode: Literal["tidy"] = "tidy",
+        capture_reflows: bool = True,
     ) -> int:
+        # A Tidy/full rebuild is itself a valid compaction.  Capture before
+        # the snapshot so a request arriving while it computes has a higher
+        # generation and cannot be accidentally consumed on publication.
+        captured_reflows = (
+            await self.db.capture_layout_reflow_generations(project_id, variant)
+            if capture_reflows and variant == "active"
+            else {}
+        )
         snapshot, edges = await self.db.load_project_snapshot(project_id)
         blocked = await self._blocked_ids(project_id)
         deadline = (
@@ -346,7 +359,66 @@ class LayoutDriver:
         keep = {r.task_id for r in ws.upserts}
         ws.deletes = [tid for tid in existing if tid not in keep]
         return await self.db.publish_layout(
-            project_id, variant, ws, consumed_seq=None, extent=extent
+            project_id,
+            variant,
+            ws,
+            consumed_seq=None,
+            extent=extent,
+            captured_reflows=captured_reflows,
+        )
+
+    async def reflow(self, project_id: str, variant: str, claims: list[dict]) -> int:
+        """Compact claimed active scopes without changing their ordering.
+
+        The normal ``incremental`` engine mode already preserves all stored
+        ordinals while flowing the remaining siblings into their now-smaller
+        geometry.  Starting it at only the claimed scopes (deepest first)
+        gives the deferred worker that compaction without turning it into a
+        Tidy/reorder operation.
+        """
+        if variant != "active":
+            raise ValueError("deferred reflow is only defined for the active variant")
+        snapshot, edges = await self.db.load_project_snapshot(project_id)
+        blocked = await self._blocked_ids(project_id)
+        batch = _IncrementalBatch(self, project_id, variant, snapshot, edges, blocked, [])
+        await batch._preload_db_rows()
+
+        scopes: list[str | None] = []
+        for claim in claims:
+            scope_key = claim["scope_key"]
+            cid = None if scope_key == ROOT else scope_key
+            # A scope that was deleted, dropped, or became a stub has no
+            # visible children to compact.  It is still a successful durable
+            # acknowledgement, made atomically by the final publish below.
+            if cid is not None and (cid not in batch.present or cid in batch.stubs):
+                continue
+            if cid is not None and await batch._db_row(cid) is None:
+                continue
+            scopes.append(cid)
+
+        batch.queue = [(cid, "incremental") for cid in scopes]
+        await batch._drain()
+        await batch._relay_moved_containers()
+        await batch._refresh_aggregates()
+        batch.ws.upserts = [batch.pending[k] for k in sorted(batch.pending)]
+        batch.ws.deletes = sorted(set(batch.ws.deletes) - set(batch.pending))
+        if batch.root_extent is not None:
+            batch.ws.sizes[ROOT] = batch.root_extent
+        meta = await self.db.get_layout_meta(project_id, variant)
+        if meta is None:
+            # A concurrent project/layout cleanup removed the published
+            # variant.  There is no geometry left to compact; publishing an
+            # empty replacement would be surprising, so let the caller
+            # release the claims normally instead.
+            raise ValueError(f"active layout disappeared for {project_id}")
+        extent = batch.ws.sizes.get(ROOT, (meta["extent_w"], meta["extent_h"]))
+        return await self.db.publish_layout(
+            project_id,
+            variant,
+            batch.ws,
+            consumed_seq=None,
+            extent=extent,
+            reflow_claims=claims,
         )
 
     async def reconcile(self, project_id: str) -> int:
@@ -428,7 +500,13 @@ class LayoutDriver:
         for idx, variant in enumerate(VARIANTS):
             last = idx == len(VARIANTS) - 1
             if await self.db.get_layout_meta(project_id, variant) is None:
-                out[variant] = await self.full_layout(project_id, variant)
+                # This is the five-second dirty loop's initial build, not an
+                # ordinary Tidy.  It must not read the separate deferred
+                # queue; no published active geometry exists for it to
+                # compact yet in any case.
+                out[variant] = await self.full_layout(
+                    project_id, variant, capture_reflows=False
+                )
                 continue
             batch = _IncrementalBatch(self, project_id, variant, snapshot, edges, blocked, marks)
             # Only the final variant retires the marks: if a later variant
@@ -628,6 +706,13 @@ class _IncrementalBatch:
                 if await self._aggregates_only(tid, reason):
                     # Geometry cannot change: ``_refresh_aggregates`` walks
                     # ``dirty_tasks``' ancestors and rewrites the counters.
+                    # For active finished leaves that is only temporarily
+                    # true: they left a hole among their surviving siblings.
+                    # Queue a later, bounded compaction from this proven
+                    # aggregates-only seam rather than from the raw task
+                    # transition, which cannot distinguish stub/drop cases.
+                    if self.variant == "active" and reason == "status.finished":
+                        self.ws.reflow_scopes.add(self.parent_of.get(tid) or ROOT)
                     continue
                 dirty.add(self.parent_of[tid])
                 if self.snapshot[tid].is_container:

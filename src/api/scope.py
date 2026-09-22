@@ -53,6 +53,13 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # acking anyone else's session.
         "session_drain_ack",
         "create_task",
+        # Scoped graph filing is safe for a non-elevated session only because
+        # ``_cmd_create_task_graph`` derives the held parent and filing
+        # context from the authenticated session, then rechecks both under
+        # the graph writer's transaction fence.  The profile capability is a
+        # second, independent gate, so this does not grant every worker the
+        # command.
+        "create_task_graph",
         "project_ready",
         "formula_list",
         "formula_show",

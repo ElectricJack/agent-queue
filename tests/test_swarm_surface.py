@@ -358,6 +358,33 @@ def test_skill_documents_worker_loop():
     assert "--outcome pass|fail" in text and "needs_context" not in text
 
 
+def test_skill_documents_planner_scoped_graph_filing():
+    """Planner guidance distinguishes held-parent filing from phased planning."""
+    from src.api.scope import AGENT_COMMAND_SET
+    from src.profiles.parser import parse_profile
+
+    skill = open("src/skills/aq-tasks/SKILL.md", encoding="utf-8").read()
+    planner = parse_profile(
+        open("src/profiles/defaults/planner/profile.md", encoding="utf-8").read()
+    )
+    supervisor = parse_profile(
+        open("src/profiles/defaults/supervisor/profile.md", encoding="utf-8").read()
+    )
+
+    assert planner.errors == []
+    assert supervisor.errors == []
+    assert "create_task_graph" in AGENT_COMMAND_SET
+    assert "create_task_graph" in planner.capabilities["aq_commands"]
+    assert {"create_task", "create_task_graph", "phase_create"} <= set(
+        supervisor.capabilities["aq_commands"]
+    )
+    assert "**Supervisor or loopback workflow.**" in skill
+    assert "**Planner workflow.**" in skill
+    assert "fenced to the planning task it holds" in skill
+    assert "`phases:` needs a root graph" in skill
+    assert "**Checklist ownership.**" in skill
+
+
 # ─────────────────── pool scale writes the vault (spec §14) ──────────────
 
 

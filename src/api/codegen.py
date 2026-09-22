@@ -60,9 +60,10 @@ API_EXCLUDED = {
     # ``POST /api/sessions/{name}/message`` (src/api/messages.py); the
     # codegen route would duplicate it and confuse the dashboard chat page.
     "message_send",
-    # Daemon-internal failure-event hook for the recovery incident; only the
-    # blocked-task-escalation playbook calls it.  ``task_recover`` decides.
+    # Daemon-internal compatibility hook for the retired blocked-task
+    # subscriber. ``task_failure_triage_notify`` is the reviewed successor.
     "task_recovery_notify",
+    "task_failure_triage_notify",
     # Provider state-change notice; the daemon and its playbook call it.
     "provider_availability_notify",
 }

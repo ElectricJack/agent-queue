@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -214,6 +215,95 @@ async def test_publish_clears_consumed_dirty_rows(db):
     seq, _ = await db.pop_layout_dirty("p1", min_age_seconds=0)
     await db.publish_layout("p1", "all", WriteSet(), consumed_seq=seq, extent=(0, 0))
     assert await db.dirty_layout_projects() == []
+
+
+async def test_reflow_coalesces_a_successor_behind_a_running_claim(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    first = await db.claim_layout_reflow_group()
+    assert first is not None and first["claims"][0]["generation"] == 1
+
+    # A second finished leaf under the same parent must not create a second
+    # job.  It becomes generation 2 behind the lease for generation 1.
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    status = await db.layout_reflow_status()
+    assert status["running"] == 1 and status["queued"] == 0
+
+    await db.fail_layout_reflow_claims(first["claims"], "simulated restart")
+    successor = await db.claim_layout_reflow_group()
+    assert successor is not None
+    assert successor["claims"][0]["generation"] == 2
+
+
+async def test_full_layout_acknowledges_only_captured_reflow_generations(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    captured = await db.capture_layout_reflow_generations("p1", "active")
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+
+    await db.publish_layout(
+        "p1",
+        "active",
+        WriteSet(),
+        consumed_seq=None,
+        extent=(0, 0),
+        captured_reflows=captured,
+    )
+    next_group = await db.claim_layout_reflow_group()
+    assert next_group is not None
+    assert next_group["claims"][0]["generation"] == 2
+
+
+async def test_full_layout_acknowledgement_makes_an_old_reflow_publish_a_noop(db):
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    group = await db.claim_layout_reflow_group()
+    assert group is not None
+    captured = await db.capture_layout_reflow_generations("p1", "active")
+
+    # The full layout wins publication and consumes the captured lease.  A
+    # worker that finished its old CPU layout afterwards must not overwrite
+    # the full layout's current geometry/order.
+    await db.publish_layout(
+        "p1", "active", WriteSet(), consumed_seq=None, extent=(1, 1), captured_reflows=captured
+    )
+    version = (await db.get_layout_meta("p1", "active"))["layout_version"]
+    returned = await db.publish_layout(
+        "p1",
+        "active",
+        WriteSet(),
+        consumed_seq=None,
+        extent=(99, 99),
+        reflow_claims=group["claims"],
+    )
+    meta = await db.get_layout_meta("p1", "active")
+    assert returned == version and meta["layout_version"] == version
+    assert (meta["extent_w"], meta["extent_h"]) == (1, 1)
+
+
+async def test_concurrent_reflow_marks_coalesce_into_one_latest_generation(db):
+    await asyncio.gather(
+        *(db.enqueue_layout_reflows("p1", "active", ["scope"]) for _ in range(4))
+    )
+    group = await db.claim_layout_reflow_group()
+    assert group is not None and len(group["claims"]) == 1
+    assert group["claims"][0]["generation"] == 4
+
+
+async def test_expired_reflow_lease_is_requeued_with_a_bounded_attempt(db):
+    from sqlalchemy import update as sa_update
+
+    from src.database.tables import layout_reflow_requests
+
+    await db.enqueue_layout_reflows("p1", "active", ["scope"])
+    group = await db.claim_layout_reflow_group()
+    assert group is not None
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(layout_reflow_requests)
+            .where(layout_reflow_requests.c.scope_key == "scope")
+            .values(lease_expires_at=0)
+        )
+    assert await db.reap_expired_layout_reflows() == 1
+    status = await db.layout_reflow_status()
+    assert status["queued"] == 1 and status["failed"] == 0
 
 
 async def test_upsert_then_translation_of_the_same_node_leaves_no_ghost_cells(db):

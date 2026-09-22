@@ -1,4 +1,4 @@
-"""``graph_layout_rebuild`` / ``graph_tidy`` (spatial-layout design §5.6, §10)."""
+"""Graph-layout maintenance commands (spatial-layout design §5.6, §10)."""
 
 from __future__ import annotations
 
@@ -48,3 +48,16 @@ class GraphCommandsMixin:
         variants = [args["variant"]] if args.get("variant") in VARIANTS else list(VARIANTS)
         jobs = [await self.db.enqueue_layout_job(pid, v, "tidy") for v in variants]
         return {"success": True, "project_id": pid, "jobs": jobs}
+
+    async def _cmd_graph_reflow_status(self, args: dict) -> dict:
+        """Read deferred active-layout reflow diagnostics without mutating them."""
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {
+                "success": False,
+                "error": "graph_reflow_status is not available to agent sessions",
+            }
+        pid = args.get("project_id")
+        if pid and await self.db.get_project(pid) is None:
+            return {"success": False, "error": f"No project '{pid}'"}
+        return {"success": True, "project_id": pid, "status": await self.db.layout_reflow_status(pid)}

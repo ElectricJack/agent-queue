@@ -140,9 +140,10 @@ EXCLUDED = {
     "load_tools",  # supervisor-internal meta-tool
     # Core response tool — not useful from CLI
     "reply_to_user",
-    # Daemon-internal failure-event hook for the recovery incident (called by
-    # the blocked-task-escalation playbook); decide with ``aq task recover``.
+    # Daemon-internal failure-event hooks for the recovery incident; the
+    # reviewed supervisor-failure-triage playbook calls the successor.
     "task_recovery_notify",
+    "task_failure_triage_notify",
     # Daemon-internal provider state-change notice (provider-failover D19),
     # contracted for the provider-failover playbook; idempotent per
     # (provider, generation).  Operators read ``aq provider status``.

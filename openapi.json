@@ -5417,6 +5417,53 @@
         }
       }
     },
+    "/api/graph/reflow-status": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Read queued, running, and failed durable active-layout reflow requests. Does not enqueue, retry, or otherwise mutate work. Not available to agent sessions.",
+        "description": "Read queued, running, and failed durable active-layout reflow requests. Does not enqueue, retry, or otherwise mutate work. Not available to agent sessions.",
+        "operationId": "graph_reflow_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphReflowStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphReflowStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/graph/tidy": {
       "post": {
         "tags": [
@@ -19303,6 +19350,18 @@
             ],
             "title": "Parent Id",
             "description": ""
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why this graph is being filed. Required for a non-elevated session; recorded on every discovered-from provenance edge."
           }
         },
         "type": "object",
@@ -23772,6 +23831,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ProviderHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
               },
               {
                 "type": "null"
@@ -28716,6 +28785,100 @@
         ],
         "title": "GraphNodeDTO"
       },
+      "GraphReflowStatus": {
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "title": "Queued",
+            "default": 0
+          },
+          "running": {
+            "type": "integer",
+            "title": "Running",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "failed_scopes": {
+            "items": {
+              "$ref": "#/components/schemas/ReflowFailedScope"
+            },
+            "type": "array",
+            "title": "Failed Scopes",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "GraphReflowStatus",
+        "description": "Payload of a ``graph_reflow_status`` success response (operator diagnostics)."
+      },
+      "GraphReflowStatusRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Optional project id; omit for every project."
+          }
+        },
+        "type": "object",
+        "title": "GraphReflowStatusRequest"
+      },
+      "GraphReflowStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphReflowStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "GraphReflowStatusResponse",
+        "description": "Response for ``graph_reflow_status`` (deferred active-layout reflow diagnostics)."
+      },
       "GraphTaskNode": {
         "properties": {
           "id": {
@@ -29722,6 +29885,16 @@
               }
             ],
             "title": "Phase Label"
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -33718,6 +33891,82 @@
         ],
         "title": "PhaseCreateResponse"
       },
+      "PhaseHoldChild": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "PhaseHoldChild",
+        "description": "One failed direct child retaining a phase's strict completion hold."
+      },
+      "PhaseHoldDetail": {
+        "properties": {
+          "phase_id": {
+            "type": "string",
+            "title": "Phase Id"
+          },
+          "failed_children": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseHoldChild"
+            },
+            "type": "array",
+            "title": "Failed Children"
+          },
+          "failed_children_total": {
+            "type": "integer",
+            "title": "Failed Children Total",
+            "default": 0
+          },
+          "descendant_blocker_count": {
+            "type": "integer",
+            "title": "Descendant Blocker Count",
+            "default": 0
+          },
+          "remedies": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseHoldRemedy"
+            },
+            "type": "array",
+            "title": "Remedies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase_id"
+        ],
+        "title": "PhaseHoldDetail",
+        "description": "Bounded evidence for a phase retained by failed child work."
+      },
+      "PhaseHoldRemedy": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "PhaseHoldRemedy",
+        "description": "A guarded remedy; this never promises that a lifecycle guard is bypassed."
+      },
       "PhaseListRequest": {
         "properties": {
           "project_id": {
@@ -33862,6 +34111,16 @@
             "type": "integer",
             "title": "Done",
             "default": 0
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -40900,6 +41159,51 @@
           "policy"
         ],
         "title": "RedactionRowDTO"
+      },
+      "ReflowFailedScope": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "variant": {
+            "type": "string",
+            "title": "Variant"
+          },
+          "scope_key": {
+            "type": "string",
+            "title": "Scope Key"
+          },
+          "generation": {
+            "type": "integer",
+            "title": "Generation",
+            "default": 1
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts",
+            "default": 0
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "variant",
+          "scope_key"
+        ],
+        "title": "ReflowFailedScope",
+        "description": "A single failed deferred reflow request, as reported by ``graph_reflow_status``."
       },
       "ReleaseProjectConstraintRequest": {
         "properties": {

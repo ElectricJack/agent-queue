@@ -154,8 +154,31 @@ def _phase_fields(meta) -> tuple[int | None, str | None]:
     return order, label if isinstance(label, str) else None
 
 
+def _failed_phase_holds(holds: dict[str, dict]) -> dict[str, dict]:
+    """Return API-shaped hold data only for phases stopped by failed work.
+
+    The query helper also describes ordinary active, empty, manually-paused,
+    and dependency-blocked phase states so ``task explain`` can distinguish
+    them.  A layout card needs the compact, actionable failed-work treatment
+    only; emitting an otherwise-empty ``phase_hold`` object for every phase
+    would make that distinction impossible for clients.
+    """
+    return {
+        task_id: {key: value for key, value in hold.items() if key != "reason_code"}
+        for task_id, hold in holds.items()
+        if hold.get("reason_code") == "phase_failed_work"
+    }
+
+
 def _node(
-    row, task, kind, context_only=False, box=None, subtask_counts=None, phase_meta=None
+    row,
+    task,
+    kind,
+    context_only=False,
+    box=None,
+    subtask_counts=None,
+    phase_meta=None,
+    phase_holds=None,
 ) -> LayoutNode:
     box = box or _persisted_box(row)
     total, settled = (subtask_counts or {}).get(task["id"], (0, 0))
@@ -180,6 +203,7 @@ def _node(
         subtasks_settled=settled,
         phase_order=phase_order,
         phase_label=phase_label,
+        phase_hold=(phase_holds or {}).get(task["id"]),
     )
 
 
@@ -630,6 +654,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # nothing is visible -- never one lookup per node.
         subtask_counts = await db.count_task_subtasks(list(with_tasks)) if with_tasks else {}
         phase_meta = await db.get_task_meta_bulk(list(with_tasks), PHASE_KEY) if with_tasks else {}
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
         nodes = [
             _node(
                 with_tasks[t][0],
@@ -639,6 +668,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 boxes.get(t),
                 subtask_counts,
                 phase_meta,
+                phase_holds,
             )
             for t, kind in visible.items()
             if t in with_tasks
@@ -762,6 +792,11 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # One extra statement for the page, skipped entirely when it is empty.
         subtask_counts = await db.count_task_subtasks(page) if page else {}
         phase_meta = await db.get_task_meta_bulk(page, PHASE_KEY) if page else {}
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
         nodes = [
             _node(
                 rows[t],
@@ -771,6 +806,7 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
                 boxes.get(t),
                 subtask_counts,
                 phase_meta,
+                phase_holds,
             )
             for t in page
         ]
@@ -835,8 +871,20 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
         # container is a container, never "collapsed".
         subtask_counts = await db.count_task_subtasks([task_id])
         phase_meta = await db.get_task_meta_bulk([task_id], PHASE_KEY)
+        phase_holds = _failed_phase_holds(
+            await db.get_phase_hold_details(
+                [task_id for task_id, value in phase_meta.items() if _phase_fields(value)[0] is not None]
+            )
+        )
         return NodeResponse(
-            node=_node(row, task, row.kind, subtask_counts=subtask_counts, phase_meta=phase_meta),
+            node=_node(
+                row,
+                task,
+                row.kind,
+                subtask_counts=subtask_counts,
+                phase_meta=phase_meta,
+                phase_holds=phase_holds,
+            ),
             ancestors=ancestors,
             layout_version=meta["layout_version"],
         )

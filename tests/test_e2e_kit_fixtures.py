@@ -252,9 +252,10 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     smoke = _load_smoke()
     by_key = {scenario.key: scenario for scenario in smoke.SCENARIOS}
 
-    # Sixteen since S16 (provider failover, bold-rapids.5) landed — the docs,
-    # the runner's own banner and scripts.md all say sixteen.
-    assert set(by_key) == {f"S{number}" for number in range(1, 17)}
+    # S17 covers the phased development graph; S18 runs the command-only
+    # durable failure-triage path; and S19 exercises planner-scoped graph
+    # filing under the fake provider, so the docs and runner stay synchronized.
+    assert set(by_key) == {f"S{number}" for number in range(1, 20)}
     assert by_key["S9"].families == ("task CRUD/rollback",)
     assert set(by_key["S10"].families) == {"workspace CRUD", "file/git/note CRUD"}
     assert by_key["S11"].families == ("message CRUD",)
@@ -263,6 +264,9 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S14"].families == ("graph/vault",)
     assert by_key["S15"].families == ("integration",)
     assert by_key["S16"].families == ("provider availability/failover",)
+    assert by_key["S17"].families == ("task graph/phases/subtasks",)
+    assert by_key["S18"].families == ("playbooks/failure triage",)
+    assert by_key["S19"].families == ("authentication/scoped graph/quota",)
 
 
 def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():

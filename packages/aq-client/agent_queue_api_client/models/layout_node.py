@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.phase_hold_detail import PhaseHoldDetail
+
 
 T = TypeVar("T", bound="LayoutNode")
 
@@ -44,6 +48,7 @@ class LayoutNode:
         subtasks_settled (int | Unset):  Default: 0.
         phase_order (int | None | Unset):
         phase_label (None | str | Unset):
+        phase_hold (None | PhaseHoldDetail | Unset):
     """
 
     id: str
@@ -75,9 +80,12 @@ class LayoutNode:
     subtasks_settled: int | Unset = 0
     phase_order: int | None | Unset = UNSET
     phase_label: None | str | Unset = UNSET
+    phase_hold: None | PhaseHoldDetail | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.phase_hold_detail import PhaseHoldDetail
+
         id = self.id
 
         title = self.title
@@ -172,6 +180,14 @@ class LayoutNode:
         else:
             phase_label = self.phase_label
 
+        phase_hold: dict[str, Any] | None | Unset
+        if isinstance(self.phase_hold, Unset):
+            phase_hold = UNSET
+        elif isinstance(self.phase_hold, PhaseHoldDetail):
+            phase_hold = self.phase_hold.to_dict()
+        else:
+            phase_hold = self.phase_hold
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -227,11 +243,15 @@ class LayoutNode:
             field_dict["phase_order"] = phase_order
         if phase_label is not UNSET:
             field_dict["phase_label"] = phase_label
+        if phase_hold is not UNSET:
+            field_dict["phase_hold"] = phase_hold
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.phase_hold_detail import PhaseHoldDetail
+
         d = dict(src_dict)
         id = d.pop("id")
 
@@ -354,6 +374,23 @@ class LayoutNode:
 
         phase_label = _parse_phase_label(d.pop("phase_label", UNSET))
 
+        def _parse_phase_hold(data: object) -> None | PhaseHoldDetail | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                phase_hold_type_0 = PhaseHoldDetail.from_dict(data)
+
+                return phase_hold_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | PhaseHoldDetail | Unset, data)
+
+        phase_hold = _parse_phase_hold(d.pop("phase_hold", UNSET))
+
         layout_node = cls(
             id=id,
             title=title,
@@ -384,6 +421,7 @@ class LayoutNode:
             subtasks_settled=subtasks_settled,
             phase_order=phase_order,
             phase_label=phase_label,
+            phase_hold=phase_hold,
         )
 
         layout_node.additional_properties = d

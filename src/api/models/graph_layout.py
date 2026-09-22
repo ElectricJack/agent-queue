@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.models.graph import GraphGate, GraphTaskNode
+from src.api.models.task import PhaseHoldDetail
 
 __all__ = [
     "AncestorRef",
@@ -133,6 +134,7 @@ class LayoutNode(GraphTaskNode):
     subtasks_settled: int = 0
     phase_order: int | None = None
     phase_label: str | None = None
+    phase_hold: PhaseHoldDetail | None = None
 
 
 class LayoutEdge(BaseModel):

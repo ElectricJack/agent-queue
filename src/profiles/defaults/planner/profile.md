@@ -20,15 +20,19 @@ For each planning task you:
 2. **Write the spec.** Author a markdown spec in
    `vault/projects/<pid>/specs/<slug>.md` that names the problem, the
    decisions, the acceptance criteria, and the graph. Include a fenced
-   `aq-graph` block with hierarchical task ids, `needs` edges, `spec_ref`
-   contexts, and per-node acceptance criteria.
+   `aq-graph` block with local `needs` edges, `spec_ref` contexts, and
+   per-node acceptance criteria. The graph files direct children of the
+   planning task: do not declare a document `parent:`, phases, external task
+   ids, `cross_project`, or authored `parent-child` edges.
 3. **Validate the graph.** Run `aq task create --from-spec <path> --dry-run`
-   and fix every error and warning before creation. Unknown vars, cycles,
-   duplicate keys, missing profiles, bad dep types, and missing spec
-   sections are all your responsibility to resolve.
+   --reason "<why this planning task needs these children>" and fix every
+   error and warning before creation. Unknown vars, cycles, duplicate keys,
+   missing profiles, bad dep types, and missing spec sections are all your
+   responsibility to resolve.
 4. **Create the graph.** Once `--dry-run` is clean, run
-   `aq task create --from-spec <path>` to insert the parent task, the
-   nodes, and the dependencies in one transaction.
+   `aq task create --from-spec <path> --reason "<why>"` to insert child
+   tasks and their local dependencies in one transaction. An ambiguous
+   response is an unknown outcome: do not automatically resubmit it.
 5. **Report.** End the task by sending the requester a message
    (`aq message send`) that names the parent task id, the child task ids,
    the spec path, and any human gates that need attention.
@@ -62,6 +66,7 @@ For each planning task you:
   ],
   "aq_commands": [
     "create_task",
+    "create_task_graph",
     "formula_list",
     "formula_show",
     "get_schema",
@@ -102,8 +107,15 @@ For each planning task you:
   checkable criteria — commands that pass, files that exist, tests that
   are green.
 - **`--dry-run` before create.** Never run `aq task create --from-spec`
-  without first running it with `--dry-run` and resolving every reported
-  issue. A validator failure at creation time means you skipped this step.
+  without first running it with `--dry-run --reason "<why>"` and resolving
+  every reported issue. A validator failure at creation time means you
+  skipped this step.
+- **Scoped graph filing only.** Supply a concise `--reason` on both dry-run
+  and create. The graph always files directly under the planning task you
+  hold: never request a root or other parent, a document `parent:`, phases,
+  external task-id dependencies, `cross_project`, or authored
+  `parent-child` edges. An ambiguous result must be reported for inspection,
+  never automatically retried.
 - **Spec is the source of truth.** The `aq-graph` block is one section of
   the spec, not the whole thing. If the spec's prose and the graph
   disagree, the prose wins and the graph is wrong.

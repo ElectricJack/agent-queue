@@ -48,7 +48,10 @@ REQUIRED_SYSTEM_PLAYBOOK_IDS = (
 # them, and never re-enabled after an operator disables one.  Before this set
 # existed a fresh install activated only the two required policies above, and
 # Settings -> Playbooks showed nothing else even though these ship with AQ.
-DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation", "default-pipeline")
+DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
+# The legacy bundle remains importable for audit, but it cannot stay enabled:
+# it subscribes to the same ``task.failed`` event as the reviewed successor.
+RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
 _ACTOR = "service:required-playbook-reconciler"
 
 
@@ -325,6 +328,7 @@ class RequiredPlaybookReconciler:
                     required[playbook_id]["repointed_from"] = repointed_from
 
             defaults = await self._activate_defaults()
+            await self._retire_superseded_defaults()
             self._import_errors = import_errors
             self.status = {
                 "ok": all(item["ok"] for item in required.values()),
@@ -465,6 +469,30 @@ class RequiredPlaybookReconciler:
             if repointed_from is not None:
                 defaults[playbook_id]["repointed_from"] = repointed_from
         return defaults
+
+    async def _retire_superseded_defaults(self) -> None:
+        """Disable the reviewed predecessor once failure triage is installed.
+
+        This is intentionally a narrow migration instead of a generic
+        overwrite of operator-owned defaults. The old artifact stays durable
+        and auditable, but no runtime may subscribe both policies to one
+        failure event and produce duplicate supervisor wakes.
+        """
+        records, _contracts, _profiles = await self._handler._v2_health_records()
+        for playbook_id in RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS:
+            activation = _system_activation(records, playbook_id)
+            if activation is None or not activation.enabled:
+                continue
+            await self._db.set_playbook_activation(
+                playbook_id=playbook_id,
+                scope="system",
+                scope_identifier="",
+                artifact_sha256=activation.active_artifact_sha256,
+                enabled=False,
+                activated_by=_ACTOR,
+                health="disabled",
+                reasons='["superseded by supervisor-failure-triage"]',
+            )
 
     async def replay_route_needed_events(self) -> dict[str, Any]:
         """Replay held routing events after the runtime has refreshed its snapshot."""

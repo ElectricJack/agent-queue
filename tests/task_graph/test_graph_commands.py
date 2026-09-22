@@ -68,3 +68,17 @@ async def test_graph_tidy_all_creates_one_durable_request(command_handler_factor
     assert again["request"]["id"] == first["request"]["id"]
     assert (await h.execute("graph_tidy", {"project_id": "p1", "all": True}))["success"] is False
     assert (await h.execute("graph_tidy", {"all": True, "variant": "active"}))["success"] is False
+
+
+async def test_graph_reflow_status_is_operator_only_and_read_only(command_handler_factory):
+    h = await command_handler_factory()
+    await h._db.create_project(Project(id="p1", name="P1"))
+    await h._db.enqueue_layout_reflows("p1", "active", ["scope"])
+
+    result = await h.execute("graph_reflow_status", {"project_id": "p1"})
+    assert result["success"] and result["status"]["queued"] == 1
+    assert (await h._db.layout_reflow_status("p1"))["queued"] == 1
+
+    h._current_scope = {"kind": "session", "session_id": "s", "project_id": "p1", "elevated": False}
+    refused = await h._cmd_graph_reflow_status({"project_id": "p1"})
+    assert refused["success"] is False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -68,9 +69,31 @@ def scoped(handler, sid):
     return handler
 
 
+def scoped_graph(handler, sid):
+    handler._current_scope = {
+        "kind": "session",
+        "session_id": sid,
+        "task_id": None,
+        "project_id": PROJECT_ID,
+        "elevated": False,
+        "session_instance_token": "t",
+    }
+    return handler
+
+
 def created_events(handler):
     return [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
             if c.args[0] == "task.created"]
+
+
+def worker_graph(*keys: str, parent: bool = False) -> dict:
+    graph = {
+        "version": 1,
+        "nodes": [{"key": key, "title": key.title()} for key in keys],
+    }
+    if parent:
+        graph["parent"] = {"title": "Misleading new parent"}
+    return graph
 
 
 class TestFiling:
@@ -207,6 +230,127 @@ class TestFiling:
         res = await h._cmd_create_task({"title": "c", "description": "d", "reason": "three"})
         assert res["success"] is False and res["code"] == "filing_quota_exceeded"
         assert len(await db.list_tasks(PROJECT_ID)) == 3  # held + a + b
+
+    async def test_graph_filing_reserves_the_whole_batch_and_records_provenance(
+        self, handler, db
+    ):
+        """A scoped graph costs one quota unit per node, not one per request."""
+        sid = await holding_session(db)
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("first", "second"),
+            "reason": "The held task exposed two independently fixable defects",
+        })
+
+        assert result.get("created") is True, result
+        assert result["task_ids"] == ["held.1", "held.2"]
+        assert result["request_id"]
+        assert (await db.get_task("held")).filed_count == 2
+        for task_id in result["task_ids"]:
+            task = await db.get_task(task_id)
+            assert (task.parent_task_id, task.created_by_kind, task.created_by_id) == (
+                "held", "session", sid,
+            )
+            assert set(await db.get_typed_dependencies(task_id)) == {
+                ("held", "parent-child"),
+                ("held", "discovered-from"),
+            }
+            metadata = await db.get_all_task_meta(task_id)
+            assert metadata["graph_filing_request_id"] == result["request_id"]
+            assert metadata["filed_by_profile_id"] == "worker"
+
+    async def test_concurrent_graph_filings_at_the_quota_boundary_commit_only_one(
+        self, handler, db
+    ):
+        sid = await holding_session(db)
+        h = scoped_graph(handler, sid)
+        graph = worker_graph("one", "two")
+
+        first, second = await asyncio.gather(
+            h._cmd_create_task_graph({"graph": graph, "reason": "first batch"}),
+            h._cmd_create_task_graph({"graph": graph, "reason": "second batch"}),
+        )
+
+        results = (first, second)
+        assert sum(result.get("created") is True for result in results) == 1
+        refused = next(result for result in results if result.get("created") is not True)
+        assert refused["code"] == "filing_quota_exceeded"
+        assert (await db.get_task("held")).filed_count == 2
+        assert len(await db.list_tasks(PROJECT_ID)) == 3
+
+    async def test_graph_filing_failure_after_quota_or_provenance_rolls_back_everything(
+        self, handler, db, monkeypatch
+    ):
+        sid = await holding_session(db)
+        real_add = db.add_dependency
+
+        async def fail_provenance(task_id, depends_on, dep_type="blocks", **kwargs):
+            if dep_type == "discovered-from":
+                raise RuntimeError("provenance write failed")
+            return await real_add(task_id, depends_on, dep_type, **kwargs)
+
+        monkeypatch.setattr(db, "add_dependency", fail_provenance)
+        with pytest.raises(RuntimeError, match="provenance write failed"):
+            await scoped_graph(handler, sid)._cmd_create_task_graph({
+                "graph": worker_graph("one", "two"),
+                "reason": "The held task exposed these fixes",
+            })
+
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_scoped_graph_refuses_foreign_root_and_document_parents_before_writes(
+        self, handler, db
+    ):
+        sid = await holding_session(db)
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e", description="e"))
+        h = scoped_graph(handler, sid)
+
+        foreign = await h._cmd_create_task_graph({
+            "graph": worker_graph("one"),
+            "parent_id": "elsewhere",
+            "reason": "An invalid parent was requested",
+        })
+        root = await h._cmd_create_task_graph({
+            "graph": worker_graph("one"),
+            "parent_id": None,
+            "reason": "An invalid root was requested",
+        })
+        document_parent = await h._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "reason": "An invalid document parent was requested",
+        })
+
+        for result in (foreign, root, document_parent):
+            assert result["code"] == "hierarchy.parent_out_of_scope"
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held", "elsewhere"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_scoped_graph_dry_run_checks_quota_without_reserving_it(self, handler, db):
+        sid = await holding_session(db)
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", "two"),
+            "reason": "Check the graph before filing it",
+            "dry_run": True,
+        })
+
+        assert result["dry_run"] is True
+        assert result["request_id"]
+        assert (await db.get_task("held")).filed_count == 0
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+
+    async def test_scoped_graph_rechecks_the_session_instance_before_writing(self, handler, db):
+        sid = await holding_session(db)
+        h = scoped_graph(handler, sid)
+        h._current_scope["session_instance_token"] = "stale-instance"
+
+        result = await h._cmd_create_task_graph({
+            "graph": worker_graph("one"),
+            "reason": "The request belongs to an old session instance",
+        })
+
+        assert result["code"] == "stale_claim"
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
 
     async def test_gate_failure_rolls_back_task(self, handler, db, monkeypatch):
         sid = await holding_session(db)

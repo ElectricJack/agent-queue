@@ -191,6 +191,53 @@ async def test_generated_client_models_round_trip_real_typed_route(live_app):
         assert "no-such-task" in str(err.error)
 
 
+async def test_generated_client_models_round_trip_graph_reflow_status(live_app):
+    """``graph_reflow_status`` is operator-only and read-only.
+
+    The guard for that lives in the command handler, not in the typed route,
+    so this test only asserts that the generated request/response models
+    round-trip against a real ASGI route and that the shape of the success
+    payload (``queued`` / ``running`` / ``failed`` counters plus a
+    ``failed_scopes`` list) is typed — the field set is a function of the
+    ``layout_reflow_requests`` table, so the model and the query stay in lock
+    step or this test trips.
+    """
+    _import_repo_client()
+    from agent_queue_api_client.api.graph import graph_reflow_status
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.graph_reflow_status_request import (
+        GraphReflowStatusRequest,
+    )
+    from agent_queue_api_client.models.graph_reflow_status_response import (
+        GraphReflowStatusResponse,
+    )
+
+    from src.models import Project
+
+    app, db = live_app
+    await db.create_project(Project(id="p-reflow", name="reflow-target"))
+    await db.enqueue_layout_reflows("p-reflow", "active", ["scope-a"])
+
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+
+        parsed = await graph_reflow_status.asyncio(
+            client=client, body=GraphReflowStatusRequest(project_id="p-reflow"),
+        )
+
+    assert isinstance(parsed, GraphReflowStatusResponse), parsed
+    assert parsed.success is True
+    assert parsed.project_id == "p-reflow"
+    status = parsed.status
+    assert status.queued == 1
+    assert status.running == 0
+    assert status.failed == 0
+    assert status.failed_scopes == []
+
+
 async def test_pool_scale_typed_route_preserves_explicit_null_max(live_app):
     """``max: null`` is a meaningful unbounded-pool request, not omission."""
     from src.models import AgentProfile, Project

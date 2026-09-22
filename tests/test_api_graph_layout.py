@@ -1642,6 +1642,23 @@ async def test_tiles_reports_phase_fields_and_none_for_non_phase(db, client_fact
     assert nodes["z"]["phase_label"] is None
 
 
+async def test_tiles_expose_bounded_failed_phase_hold_detail(db, client_factory):
+    await seed(db)
+    await db.set_task_meta("e", PHASE_KEY, {"order": 2, "label": "Build"})
+    await db.transition_task("c0", TaskStatus.FAILED)
+
+    async with client_factory() as ac:
+        response = await ac.post("/api/projects/p1/graph/tiles", json=ALL)
+    assert response.status_code == 200
+    node = {item["id"]: item for item in response.json()["nodes"]}["e"]
+    hold = node["phase_hold"]
+    assert hold["phase_id"] == "e"
+    assert hold["failed_children"] == [{"id": "c0", "status": "FAILED"}]
+    assert hold["failed_children_total"] == 1
+    assert hold["descendant_blocker_count"] >= 1
+    assert {item["code"] for item in hold["remedies"]} == {"retry_or_reopen", "delete"}
+
+
 async def test_tiles_malformed_phase_metadata_does_not_raise(db, client_factory):
     """A hand-edited or stale ``phase`` value must never 500 the response."""
     await seed(db)

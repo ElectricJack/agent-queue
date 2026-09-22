@@ -132,6 +132,7 @@ def _create_task_graph(
     parent_id: str | None = None,
     profile_id: str | None = None,
     intelligence_class: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -151,6 +152,8 @@ def _create_task_graph(
         params["profile_id"] = profile_id
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
+    if reason:
+        params["reason"] = reason
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -409,6 +412,7 @@ def task_create(
             parent_id=parent_id,
             profile_id=profile_id,
             intelligence_class=intelligence_class,
+            reason=reason,
         )
         return
     if dry_run:

@@ -333,6 +333,30 @@ class PhaseCreateResponse(BaseModel):
     phase: PhaseRef
 
 
+class PhaseHoldChild(BaseModel):
+    """One failed direct child retaining a phase's strict completion hold."""
+
+    id: str
+    status: str
+
+
+class PhaseHoldRemedy(BaseModel):
+    """A guarded remedy; this never promises that a lifecycle guard is bypassed."""
+
+    code: str
+    detail: str
+
+
+class PhaseHoldDetail(BaseModel):
+    """Bounded evidence for a phase retained by failed child work."""
+
+    phase_id: str
+    failed_children: list[PhaseHoldChild] = Field(default_factory=list)
+    failed_children_total: int = 0
+    descendant_blocker_count: int = 0
+    remedies: list[PhaseHoldRemedy] = Field(default_factory=list)
+
+
 class PhaseSummary(BaseModel):
     """One phase as ``phase_list`` reports it."""
 
@@ -344,6 +368,7 @@ class PhaseSummary(BaseModel):
     is_blocked: bool = False
     total: int = 0
     done: int = 0
+    phase_hold: PhaseHoldDetail | None = None
 
 
 class PhaseListResponse(BaseModel):
@@ -666,6 +691,7 @@ class ExplainTaskResponse(BaseModel):
     reason_codes: list[str] = []
     assignment_route: AssignmentRouteDetail | None = None
     provider_hold: ProviderHoldDetail | None = None
+    phase_hold: PhaseHoldDetail | None = None
 
 
 class ReadyTask(BaseModel):

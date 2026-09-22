@@ -268,6 +268,62 @@ class TestPhaseGating:
         assert (await db.get_task(late)).is_blocked is True
         assert await frontier(db) == set()
 
+    async def test_failed_phase_hold_is_bounded_and_explained_with_guarded_remedies(
+        self, handler, orch
+    ):
+        db = orch.db
+        first = await phase(handler, "Phase 1")
+        second = await phase(handler, "Phase 2")
+        failed_ids = [await work(handler, f"failed-{n:02d}", first["phase"]["id"]) for n in range(21)]
+        await work(handler, "later", second["phase"]["id"])
+        await cascade(orch)
+        for task_id in failed_ids[:20]:
+            await db.transition_task(task_id, TaskStatus.FAILED)
+        await db.transition_task(
+            failed_ids[20], TaskStatus.BLOCKED, context="session_close_hard_failure"
+        )
+
+        listed = await handler._cmd_phase_list({"project_id": PROJECT_ID})
+        hold = listed["phases"][0]["phase_hold"]
+        assert hold["phase_id"] == first["phase"]["id"]
+        assert hold["failed_children_total"] == 21
+        assert len(hold["failed_children"]) == 20
+        assert hold["failed_children"][-1]["status"] == TaskStatus.FAILED.value
+        assert hold["descendant_blocker_count"] == 21
+        assert [remedy["code"] for remedy in hold["remedies"]] == ["retry_or_reopen", "delete"]
+
+        explained = await handler._cmd_explain_task({"task_id": first["phase"]["id"]})
+        assert explained["phase_hold"] == hold
+        assert "phase_failed_work" in explained["reason_codes"]
+        assert "Waiting for failed work" in next(
+            reason["detail"] for reason in explained["reasons"] if reason["code"] == "phase_failed_work"
+        )
+
+    async def test_phase_explanations_keep_nonfailure_holds_distinct(self, handler, orch):
+        db = orch.db
+        empty = await phase(handler, "Empty")
+        active = await phase(handler, "Active")
+        ordinary = await phase(handler, "Ordinary")
+        paused = await phase(handler, "Paused")
+        active_child = await work(handler, "active child", active["phase"]["id"])
+        ordinary_child = await work(handler, "ordinary child", ordinary["phase"]["id"])
+        paused_child = await work(handler, "paused child", paused["phase"]["id"])
+        await cascade(orch)
+        await db.transition_task(ordinary_child, TaskStatus.BLOCKED)
+        await db.transition_task(paused_child, TaskStatus.PAUSED)
+
+        expected = {
+            empty["phase"]["id"]: "phase_empty",
+            active["phase"]["id"]: "phase_active_children",
+            ordinary["phase"]["id"]: "phase_child_blocked",
+            paused["phase"]["id"]: "phase_manual_pause",
+        }
+        for task_id, code in expected.items():
+            explained = await handler._cmd_explain_task({"task_id": task_id})
+            assert code in explained["reason_codes"]
+            assert explained["phase_hold"] is None
+        assert (await db.get_task(active_child)).status is not TaskStatus.COMPLETED
+
     async def test_phase_list_reports_order_labels_and_counts(self, handler, orch):
         first = await phase(handler, "Phase 1", label="Foundations")
         second = await phase(handler, "Phase 2", label="Delivery")
