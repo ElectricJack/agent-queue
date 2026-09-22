@@ -60,6 +60,18 @@ SPEC_FILE="$ROOT_DIR/openapi.json"
 CLIENT_DIR="$ROOT_DIR/packages/aq-client"
 API_URL="${AGENT_QUEUE_API_URL:-http://127.0.0.1:8081}"
 
+# Prefer the checkout's interpreter so offline generation imports exactly the
+# code and dependencies this checkout declares.  Some worker images do not
+# provide a ``python`` alias, so never rely on it as a fallback.
+if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    PYTHON="$ROOT_DIR/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+else
+    echo "Error: no Python interpreter found; expected $ROOT_DIR/.venv/bin/python or python3 on PATH." >&2
+    exit 1
+fi
+
 MODE=""
 INSTALL=0
 for arg in "$@"; do
@@ -86,13 +98,13 @@ for arg in "$@"; do
 done
 
 # Where `agent_queue_api_client` imports from in this environment, asked of the
-# same python3 that `--install` hands to `-m pip`, so the answer and the
+# same interpreter that `--install` hands to `-m pip`, so the answer and the
 # install cannot be about two different environments.  Prints `absent`,
 # `here`, or `elsewhere` followed by the directory on a second line.  The
-# working directory is dropped from sys.path: `python3 -c` puts it first, and
+# working directory is dropped from sys.path: the interpreter's `-c` mode puts it first, and
 # run from inside packages/aq-client it would answer `here` on any box.
 installed_client_location() {
-    python3 - "$CLIENT_DIR" <<'PY'
+    "$PYTHON" - "$CLIENT_DIR" <<'PY'
 import importlib.util
 import os
 import sys
@@ -136,7 +148,7 @@ if [[ "$INSTALL" == 1 ]]; then
     fi
     if ! LOCATION="$(installed_client_location)"; then
         echo "Error: could not tell where agent-queue-api-client is installed, so --install cannot" >&2
-        echo "       rule out re-pointing another tree's install. Is python3 on PATH?" >&2
+        echo "       rule out re-pointing another tree's install. Is $PYTHON usable?" >&2
         exit 1
     fi
     if [[ "$(head -n 1 <<<"$LOCATION")" == "elsewhere" ]]; then
@@ -185,7 +197,7 @@ case "$MODE" in
         # checkout.  This is what the drift guard in
         # tests/test_api_client_contract.py compares against.
         echo "Building OpenAPI spec offline from this checkout ..."
-        (cd "$ROOT_DIR" && python -m src.api.spec "$SPEC_FILE")
+        (cd "$ROOT_DIR" && "$PYTHON" -m src.api.spec "$SPEC_FILE")
         ;;
     --from-file)
         if [[ ! -f "$SPEC_FILE" ]]; then
@@ -203,12 +215,12 @@ case "$MODE" in
         # on) leaves the existing openapi.json untouched.
         echo "Fetching OpenAPI spec from $API_URL/openapi.json ..."
         curl -sf "$API_URL/openapi.json" \
-            | (cd "$ROOT_DIR" && python3 -m src.api.spec --stdin "$SPEC_FILE")
+            | (cd "$ROOT_DIR" && "$PYTHON" -m src.api.spec --stdin "$SPEC_FILE")
         ;;
 esac
 
 # Count paths in spec
-PATHS=$(python3 -c "import json; print(len(json.load(open('$SPEC_FILE'))['paths']))")
+PATHS=$("$PYTHON" -c "import json; print(len(json.load(open('$SPEC_FILE'))['paths']))")
 echo "Spec has $PATHS paths"
 
 # Remove old client and regenerate
@@ -247,8 +259,8 @@ echo "Recorded boilerplate digests at $DIGEST_FILE"
 # some interpreters externally managed; the client is a dev artifact, so fall
 # back rather than failing the regeneration.
 if [[ "$INSTALL" == 1 ]]; then
-    if python3 -m pip install -e "$CLIENT_DIR" --quiet \
-        || python3 -m pip install -e "$CLIENT_DIR" --quiet --break-system-packages; then
+    if "$PYTHON" -m pip install -e "$CLIENT_DIR" --quiet \
+        || "$PYTHON" -m pip install -e "$CLIENT_DIR" --quiet --break-system-packages; then
         echo "Installed agent-queue-api-client from $CLIENT_DIR"
     else
         echo "WARNING: could not pip install $CLIENT_DIR — install it manually" >&2

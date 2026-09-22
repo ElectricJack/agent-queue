@@ -317,11 +317,13 @@ def _check_phases(graph: TaskGraph) -> list[GraphError]:
 
     Propagation stops at a phased node: a phased intermediate is reported by
     its *own* outgoing edge, so carrying its reach further would report the
-    same deadlock twice under different names.  The search is a memoised DFS
-    over the gating ``needs`` graph.  In a **cyclic** document it cuts back
-    edges and may therefore under-report — that is deliberate and harmless:
-    :func:`_check_cycles` already errors on a gating cycle, so nothing is
-    created either way.
+    same deadlock twice under different names.  The search settles nodes with
+    an iterative Kahn traversal over reversed gating ``needs`` edges.  In a
+    **cyclic** document, nodes upstream of the unresolved cycle may not settle
+    and can therefore temporarily lack an ``inverted_phase_edge`` finding.
+    That is deliberate and harmless: :func:`_check_cycles` already errors on
+    the gating cycle, so nothing is created until the cycle is fixed and the
+    complete inversion report can be produced.
 
     **Every gating type is an error — there is no soft class.** A
     ``waits-for`` looks like one: ``_waits_for_unsat``
@@ -730,7 +732,9 @@ async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[Gr
     return errors
 
 
-async def _check_subtasks_reportable(graph: TaskGraph, db: Any) -> list[GraphError]:
+async def _check_subtasks_reportable(
+    graph: TaskGraph, project_id: str, db: Any
+) -> list[GraphError]:
     """Warn when a node's checklist is one its worker could not tick off.
 
     ``ensure_default_profiles`` is write-if-absent, so a vault upgraded from
@@ -740,32 +744,75 @@ async def _check_subtasks_reportable(graph: TaskGraph, db: Any) -> list[GraphErr
     still worth writing and this is a **warning**, not an error.  Saying so
     at ``--dry-run`` time is what lets a planner fix the grants first.
 
-    Runs after :func:`_check_profiles`, which rewrites ``node.profile`` to the
-    id that actually resolved, so the reseed command this names is the real
-    profile id.  A node with no profile resolves to nothing and is skipped —
-    ``profile_allows_command`` fails open there, and so does this.
+    Runs after :func:`_check_profiles`, which rewrites an explicit
+    ``node.profile`` to the id that actually resolved.  Nodes whose class
+    needed a different worker route have also been resolved before validation
+    by ``_cmd_create_task_graph``.  For the remaining profileless nodes, use
+    the project's default route (or the same deterministic fallback the agent
+    reconciler will establish).  An absent or unusable route is itself a
+    warning; silently skipping the capability check leaves a planner unable
+    to tell whether the eventual worker can report its checklist.
     """
     if db is None:
         return []
     from src.prime.sections import SUBTASK_UPDATE_COMMAND, profile_allows_command
 
     findings: list[GraphError] = []
+
+    async def implicit_profile_id() -> str | None:
+        """Return the route for a NULL task profile without pinning the node."""
+        get_project = getattr(db, "get_project", None)
+        get_profile = getattr(db, "get_profile", None)
+        if not callable(get_project) or not callable(get_profile):
+            return None
+        project = await get_project(project_id)
+        profile_id = getattr(project, "default_profile_id", None) if project is not None else None
+        if not profile_id:
+            list_profiles = getattr(db, "list_profiles", None)
+            if not callable(list_profiles):
+                return None
+            from src.profiles.default_selection import select_default_profile_id
+
+            profile_id = select_default_profile_id(await list_profiles())
+        if not profile_id:
+            return None
+        profile = await get_profile(profile_id)
+        if profile is None or not getattr(profile, "enabled", True):
+            return None
+        from src.profiles.task_execution import task_execution_profile_error
+
+        return None if task_execution_profile_error(profile) else profile.id
+
+    implicit_profile = await implicit_profile_id()
     allowed: dict[str, bool] = {}
     for node in graph.nodes:
-        if not node.subtasks or not node.profile:
+        if not node.subtasks:
             continue
-        if node.profile not in allowed:
-            allowed[node.profile] = await profile_allows_command(
-                db, node.profile, SUBTASK_UPDATE_COMMAND
+        profile_id = node.profile or implicit_profile
+        if profile_id is None:
+            findings.append(
+                _error(
+                    "subtasks_routing_unresolved",
+                    f"node '{node.key}' has a checklist but no execution profile can be "
+                    "resolved — configure an enabled project default worker profile before "
+                    "creating work with subtasks",
+                    node.key,
+                    severity="warning",
+                )
             )
-        if allowed[node.profile]:
+            continue
+        if profile_id not in allowed:
+            allowed[profile_id] = await profile_allows_command(
+                db, profile_id, SUBTASK_UPDATE_COMMAND
+            )
+        if allowed[profile_id]:
             continue
         findings.append(
             _error(
                 "subtasks_unreportable",
-                f"profile '{node.profile}' cannot run '{SUBTASK_UPDATE_COMMAND}', so the "
+                f"profile '{profile_id}' cannot run '{SUBTASK_UPDATE_COMMAND}', so the "
                 "worker will see this checklist but not be told to tick it off — "
-                f"run `aq agent profile-reseed --profile-id {node.profile} --grants-only`",
+                f"run `aq agent profile-reseed --profile-id {profile_id} --grants-only`",
                 node.key,
                 severity="warning",
             )
@@ -878,7 +925,7 @@ async def validate_graph(
     findings.extend(await _check_needs(graph, project_id, db))
     findings.extend(_check_pins(graph))
     findings.extend(await _check_profiles(graph, project_id, db))
-    findings.extend(await _check_subtasks_reportable(graph, db))
+    findings.extend(await _check_subtasks_reportable(graph, project_id, db))
     findings.extend(_check_spec_refs(graph, vault_root=vault_root))
 
     return findings

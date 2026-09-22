@@ -254,8 +254,9 @@ class PhaseCommandsMixin:
                 "order": phase_state["order"],
                 "label": label,
                 "parent_id": phase_state["parent_id"],
-                # The immediate predecessor, unchanged: what a caller shows as
-                # "this comes after". ``blocked_by_all`` is the full gate set.
+                # The predecessor is history, so preserve the old spelling for
+                # compatibility and publish the unambiguous preferred spelling.
+                "previous_phase_id": phase_state["previous"],
                 "blocked_by": phase_state["previous"],
                 "blocked_by_all": phase_state["gates"],
             },

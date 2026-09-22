@@ -103,6 +103,7 @@ class Sandbox:
         *args: str,
         importable_from: Path | None = None,
         worker: bool = False,
+        path: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run the sandboxed script.
 
@@ -114,7 +115,7 @@ class Sandbox:
         if importable_from is not None:
             pythonpath.append(str(importable_from))
         env = {
-            "PATH": f"{self.bin_dir}:/usr/bin:/bin",
+            "PATH": path or f"{self.bin_dir}:/usr/bin:/bin",
             "HOME": str(self.root),
             "PYTHONPATH": os.pathsep.join(pythonpath),
             "FAKE_PIP_LOG": str(self.pip_log),
@@ -122,7 +123,7 @@ class Sandbox:
         if worker:
             env["AQ_DB_SCOPE"] = "worker"
         return subprocess.run(
-            ["bash", str(self.root / "scripts" / "regenerate-api-client.sh"), *args],
+            [shutil.which("bash") or "/bin/bash", str(self.root / "scripts" / "regenerate-api-client.sh"), *args],
             capture_output=True,
             text=True,
             check=False,
@@ -153,6 +154,14 @@ def sandbox(tmp_path: Path) -> Sandbox:
         encoding="utf-8",
     )
     _client_tree(root / "packages" / "aq-client", "committed")
+    (root / "src" / "api").mkdir(parents=True)
+    (root / "src" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "api" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "src" / "api" / "spec.py").write_text(
+        "import json\nimport sys\nfrom pathlib import Path\n"
+        "Path(sys.argv[-1]).write_text(json.dumps({'paths': {}}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -284,4 +293,41 @@ def test_an_unknown_argument_is_a_usage_error_not_a_daemon_fetch(sandbox: Sandbo
 
     assert result.returncode == 2
     assert "--instal" in result.stderr
+    assert not _regenerated(sandbox)
+
+
+def test_offline_generation_uses_python3_when_python_is_absent(sandbox: Sandbox):
+    """Worker images commonly omit the unversioned ``python`` command."""
+    (sandbox.bin_dir / "python").unlink()
+
+    result = sandbox.run("--offline")
+
+    assert result.returncode == 0, result.stderr
+    assert _regenerated(sandbox)
+
+
+def test_checkout_venv_interpreter_takes_precedence_over_python3(sandbox: Sandbox):
+    marker = sandbox.root / "venv-python-used"
+    interpreter = sandbox.root / ".venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    _executable(
+        interpreter,
+        f'#!/usr/bin/env bash\necho used >> "{marker}"\nexec "{sys.executable}" -S "$@"\n',
+    )
+
+    result = sandbox.run("--from-file")
+
+    assert result.returncode == 0, result.stderr
+    assert set(marker.read_text(encoding="utf-8").splitlines()) == {"used"}
+
+
+def test_missing_venv_and_python3_fails_before_regeneration(sandbox: Sandbox):
+    minimal_bin = sandbox.root / "minimal-bin"
+    minimal_bin.mkdir()
+    os.symlink(shutil.which("dirname") or "/usr/bin/dirname", minimal_bin / "dirname")
+
+    result = sandbox.run("--from-file", path=str(minimal_bin))
+
+    assert result.returncode != 0
+    assert "no Python interpreter found" in result.stderr
     assert not _regenerated(sandbox)

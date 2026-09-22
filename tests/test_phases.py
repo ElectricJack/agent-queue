@@ -202,8 +202,10 @@ class TestPhaseGating:
         first = await phase(handler, "Phase 1")
         second = await phase(handler, "Phase 2")
         assert first["phase"]["order"] == 1
+        assert first["phase"]["previous_phase_id"] is None
         assert first["phase"]["blocked_by"] is None
         assert second["phase"]["order"] == 2
+        assert second["phase"]["previous_phase_id"] == first["phase"]["id"]
         assert second["phase"]["blocked_by"] == first["phase"]["id"]
 
         early = await work(handler, "early", first["phase"]["id"])
@@ -718,6 +720,7 @@ class TestAbandonedPhaseRecovery:
         first = await phase(handler, "Phase 1")
         second = await phase(handler, "Phase 2")
         third = await phase(handler, "Phase 3")
+        assert third["phase"]["previous_phase_id"] == second["phase"]["id"]
         assert third["phase"]["blocked_by"] == second["phase"]["id"]
         assert third["phase"]["blocked_by_all"] == [
             first["phase"]["id"], second["phase"]["id"]
@@ -749,7 +752,9 @@ class TestAbandonedPhaseRecovery:
         second = await phase(handler, "Phase 2")
         third = await phase(handler, "Phase 3")
 
+        assert second["phase"]["previous_phase_id"] == first["phase"]["id"]
         assert second["phase"]["blocked_by_all"] == []
+        assert third["phase"]["previous_phase_id"] == second["phase"]["id"]
         assert third["phase"]["blocked_by_all"] == [second["phase"]["id"]]
         assert await blocks_edges(db, second["phase"]["id"]) == set()
         assert await blocks_edges(db, third["phase"]["id"]) == {second["phase"]["id"]}

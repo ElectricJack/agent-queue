@@ -20,14 +20,18 @@ class PhaseRef:
         order (int):
         label (str):
         parent_id (None | str | Unset):
-        blocked_by (None | str | Unset):
-        blocked_by_all (list[str] | Unset):
+        previous_phase_id (None | str | Unset): The immediate previous sibling phase, regardless of its current status.
+        blocked_by (None | str | Unset): Deprecated compatibility alias for previous_phase_id. It is phase history, not
+            the current blocker; use blocked_by_all for the live gate set.
+        blocked_by_all (list[str] | Unset): Earlier sibling phases with a current blocks edge onto this phase, in order.
+            Completed phases are omitted.
     """
 
     id: str
     order: int
     label: str
     parent_id: None | str | Unset = UNSET
+    previous_phase_id: None | str | Unset = UNSET
     blocked_by: None | str | Unset = UNSET
     blocked_by_all: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -44,6 +48,12 @@ class PhaseRef:
             parent_id = UNSET
         else:
             parent_id = self.parent_id
+
+        previous_phase_id: None | str | Unset
+        if isinstance(self.previous_phase_id, Unset):
+            previous_phase_id = UNSET
+        else:
+            previous_phase_id = self.previous_phase_id
 
         blocked_by: None | str | Unset
         if isinstance(self.blocked_by, Unset):
@@ -66,6 +76,8 @@ class PhaseRef:
         )
         if parent_id is not UNSET:
             field_dict["parent_id"] = parent_id
+        if previous_phase_id is not UNSET:
+            field_dict["previous_phase_id"] = previous_phase_id
         if blocked_by is not UNSET:
             field_dict["blocked_by"] = blocked_by
         if blocked_by_all is not UNSET:
@@ -91,6 +103,15 @@ class PhaseRef:
 
         parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
 
+        def _parse_previous_phase_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        previous_phase_id = _parse_previous_phase_id(d.pop("previous_phase_id", UNSET))
+
         def _parse_blocked_by(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -107,6 +128,7 @@ class PhaseRef:
             order=order,
             label=label,
             parent_id=parent_id,
+            previous_phase_id=previous_phase_id,
             blocked_by=blocked_by,
             blocked_by_all=blocked_by_all,
         )

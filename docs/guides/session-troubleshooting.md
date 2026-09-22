@@ -256,9 +256,15 @@ Related structural checks:
 ```bash
 aq doctor --check claims.holder_consistency
 aq doctor --check pools.orphan_agents
+aq doctor --check agents.dangling_current_task
 aq doctor --check tasks.stale_attention
 aq doctor --check tasks.archive_blocked
 ```
+
+`agents.dangling_current_task` is report-only unless you add `--fix`. It finds a stale
+`current_task_id` only when the agent has no live attempt: a worker still writing up a
+just-completed task is left alone. The fix clears the pointer, resets only BUSY agents to
+`IDLE`, and preserves `PAUSED`, `ERROR`, and `RETIRED` state.
 
 ## `stale_claim`: the task moved on without you
 
