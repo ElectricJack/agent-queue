@@ -159,6 +159,7 @@ import { emptyStore, mergeTiles } from "../layoutStore";
 import { sizePx, toPx } from "../units";
 import LayoutCanvas from "../LayoutCanvas";
 import { GraphStateProvider, resetGraphStateFallback, useGraphState } from "../../useGraphHierarchy";
+import { PLAYBOOK_POSITION_SCOPE } from "../manualPositions";
 
 /** Density lives in the task toolbar, not in the canvas overlay (it floated
  * over the canvas and covered the card underneath it). These tests still own
@@ -169,6 +170,16 @@ import { GraphStateProvider, resetGraphStateFallback, useGraphState } from "../.
 function DensityProbe() {
   const { setDensity } = useGraphState();
   return <button type="button" onClick={() => setDensity("compact")}>Density: compact (toolbar)</button>;
+}
+
+function PlaybookPositionProbe() {
+  const { manualPositions, saveGraphPosition } = useGraphState();
+  return <>
+    <button type="button" onClick={() => saveGraphPosition(PLAYBOOK_POSITION_SCOPE, "playbook:one", { x: 1.2, y: 3.4 })}>
+      Pin playbook
+    </button>
+    <output data-testid="playbook-positions">{JSON.stringify(manualPositions[PLAYBOOK_POSITION_SCOPE])}</output>
+  </>;
 }
 
 const n = (id: string, kind: string, x: number, y: number, extra: Record<string, unknown> = {}) => ({
@@ -220,21 +231,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("LayoutCanvas", () => {
-  it("moves task cards and restores their saved positions", () => {
-    const first = render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(flow.current?.nodesDraggable).toBe(true);
-    expect(flow.current?.nodes.find((node) => node.id === "z")?.draggable).toBe(true);
+  it("keeps task cards at their server-owned positions without drag pinning", () => {
+    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
+    const serverPosition = toPx(2, 0, "comfortable");
+    expect(flow.current?.nodesDraggable).toBe(false);
+    expect(flow.current?.nodes.find((node) => node.id === "z")?.draggable).toBe(false);
 
     act(() => flow.current!.onNodesChange!([
       { id: "z", type: "position", position: { x: 720, y: 312 }, dragging: true },
     ]));
     const moved = flow.current!.nodes.find((node) => node.id === "z")!;
-    expect(moved.position).toEqual({ x: 720, y: 312 });
+    expect(moved.position).toEqual(serverPosition);
     act(() => flow.current!.onNodeDragStop!(null, moved));
-
-    first.unmount();
-    render(<MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>);
-    expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual({ x: 720, y: 312 });
+    expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual(serverPosition);
   });
 
   it("renders server nodes with visibility culling and sends viewport-derived params", () => {
@@ -516,54 +525,47 @@ describe("LayoutCanvas", () => {
       expect(typeof data.onFocus).toBe("function");
     });
 
-    it("ignores an expansion an earlier session stored for this project", async () => {
+    it("ignores a task position stored by an earlier project viewer", async () => {
       seedDashboardDoc("command_center_project_view", "p1", {
         expanded_task_ids: ["e", "pkg"],
         expanded_finished_task_ids: ["pkg"],
-        manual_positions: {},
+        manual_positions: { z: { x: 3, y: 2 } },
         expanded_initialised: true,
       });
       render(
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <GraphStateProvider projectIds={["p1"]}>
+          <GraphStateProvider>
             <MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>
           </GraphStateProvider>
         </QueryClientProvider>,
       );
       await screen.findByTestId("node-e");
-      // Give the document query every chance to land and be read.
-      await waitFor(() => expect(dashboardStateFake.docs.size).toBeGreaterThan(0));
-      for (const params of tiles.paramsSeen as { expanded: string[] }[]) {
-        expect(params.expanded).toEqual([]);
-      }
-      // ...and nothing writes those fields back either.
+      expect(flow.current!.nodes.find((node) => node.id === "z")?.position).toEqual(toPx(2, 0, "comfortable"));
+      expect(flow.current!.nodes.find((node) => node.id === "z")?.draggable).toBe(false);
+      // Compatibility leaves the old document untouched; task positions are
+      // not fetched, overlaid, or written by the graph state provider.
       expect(dashboardStateFake.puts).toEqual([]);
     });
 
-    it("still pins a card per project scope with the expansion gone", async () => {
-      const view = render(
+    it("persists playbook pins in their separate dashboard document", async () => {
+      render(
         <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-          <GraphStateProvider projectIds={["p1"]}>
-            <MemoryRouter><LayoutCanvas {...base} /></MemoryRouter>
+          <GraphStateProvider>
+            <PlaybookPositionProbe />
           </GraphStateProvider>
         </QueryClientProvider>,
       );
-      await screen.findByTestId("node-z");
-      act(() => flow.current!.onNodesChange!([
-        { id: "z", type: "position", position: { x: 720, y: 312 }, dragging: true },
-      ]));
-      const moved = flow.current!.nodes.find((node) => node.id === "z")!;
-      act(() => flow.current!.onNodeDragStop!(null, moved));
+      fireEvent.click(screen.getByRole("button", { name: "Pin playbook" }));
 
       await waitFor(() => {
-        const put = dashboardStateFake.puts.find((p) => p.namespace === "command_center_project_view");
+        const put = dashboardStateFake.puts.find((p) => p.namespace === "playbook_graph_view");
         expect(put).toBeDefined();
-        expect(put!.subject).toBe("p1");
+        expect(put!.subject).toBeUndefined();
         expect((put!.value as { manual_positions: Record<string, unknown> }).manual_positions).toEqual({
-          z: { x: 3, y: 2 },
+          "playbook:one": { x: 1.2, y: 3.4 },
         });
       });
-      view.unmount();
+      expect(screen.getByTestId("playbook-positions")).toHaveTextContent("playbook:one");
     });
 
     it("docks a worker running inside a collapsed container on that container's tile", () => {

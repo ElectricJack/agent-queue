@@ -75,13 +75,12 @@ const RELATION_LABELS: Record<string, string> = {
 interface Viewport { x: number; y: number; zoom: number }
 
 function movable(node: Node): boolean {
-  return node.type === "playbook" || (node.type === "task" && !node.className?.includes("aq-stub"));
+  return node.type === "playbook";
 }
 
-function positionScope(node: Node): string | null {
+function positionScope(node: Node): typeof PLAYBOOK_POSITION_SCOPE | null {
   if (node.type === "playbook") return PLAYBOOK_POSITION_SCOPE;
-  const projectId = (node.data as Partial<TaskNodeData>).projectId;
-  return typeof projectId === "string" && projectId ? projectId : null;
+  return null;
 }
 
 const snapPosition = (value: number) => Math.round(value * 10) / 10;
@@ -377,20 +376,21 @@ function Inner(props: LayoutCanvasProps) {
     return all.map((node) => {
       const scope = positionScope(node);
       const saved = scope ? manualPositions[scope]?.[node.id] : undefined;
-      const offsetY = scope && scope !== PLAYBOOK_POSITION_SCOPE ? (offsets.get(scope) ?? 0) : 0;
       const position = dragPositions[node.id]
-        ?? (saved ? toPx(saved.x, saved.y + offsetY, density) : node.position);
+        ?? (saved ? toPx(saved.x, saved.y, density) : node.position);
       const selected = node.id === selectedId;
       const focused = node.id === kbFocusId;
-      if (!saved && !dragPositions[node.id] && !selected && !focused) return node;
+      const draggable = movable(node);
+      if (!saved && !dragPositions[node.id] && !selected && !focused && node.draggable === draggable) return node;
       return {
         ...node,
         position,
+        draggable,
         selected,
         className: focused ? [node.className, "aq-focused"].filter(Boolean).join(" ") : node.className,
       };
     });
-  }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId, manualPositions, dragPositions, offsets, density]);
+  }, [playbookNodes, headers, projectIds, layers, selectedId, kbFocusId, manualPositions, dragPositions, density]);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     const allowed = new Set(nodes.filter(movable).map((node) => node.id));
@@ -410,8 +410,7 @@ function Inner(props: LayoutCanvasProps) {
     const scope = positionScope(node);
     if (!scope) return;
     const world = fromPx(node.position, density);
-    const offsetY = scope === PLAYBOOK_POSITION_SCOPE ? 0 : (offsets.get(scope) ?? 0);
-    const position = { x: snapPosition(world.x), y: snapPosition(world.y - offsetY) };
+    const position = { x: snapPosition(world.x), y: snapPosition(world.y) };
     saveGraphPosition(scope, node.id, position);
     setDragPositions((current) => {
       if (!(node.id in current)) return current;
@@ -419,7 +418,7 @@ function Inner(props: LayoutCanvasProps) {
       delete next[node.id];
       return next;
     });
-  }, [density, offsets, saveGraphPosition]);
+  }, [density, saveGraphPosition]);
   const edges = useMemo(
     () => projectIds.flatMap((pid) => layers.get(pid)?.edges ?? []),
     [projectIds, layers],
@@ -623,7 +622,7 @@ function Inner(props: LayoutCanvasProps) {
           minZoom={0.15}
           maxZoom={2}
           onMove={onMove}
-          nodesDraggable
+          nodesDraggable={playbookNodes.length > 0}
           nodesConnectable={false}
           nodesFocusable={false}
           edgesFocusable={false}
