@@ -1,8 +1,8 @@
 from src.task_graph.layout import engine as engine_module
+from src.task_graph.layout.constants import CARD_H, CARD_W
 from src.task_graph.layout.cost import count_crossings
 from src.task_graph.layout.engine import _ordered_from, layout_container
 from src.task_graph.layout.model import ContainerScope, SnapTask
-from src.task_graph.layout.constants import CARD_H, CARD_W
 
 
 def task(i, created=0.0, status="READY"):
@@ -54,7 +54,7 @@ def test_tidy_is_deterministic():
     assert {c: r.ordinal for c, r in a.rows.items()} == {c: r.ordinal for c, r in b.rows.items()}
 
 
-def test_tidy_puts_running_work_first_and_finished_last():
+def test_tidy_puts_finished_work_first_and_running_next():
     # created_at is interleaved so creation order alone would scatter the
     # three classes; the seed key must group them.
     kids = [
@@ -66,7 +66,7 @@ def test_tidy_puts_running_work_first_and_finished_last():
         task("ready2", created=6.0),
     ]
     res = layout_container(scope(kids, []), mode="tidy")
-    assert reading_order(res) == ["run0", "ready0", "ready1", "ready2", "done0", "done1"]
+    assert reading_order(res) == ["done0", "done1", "run0", "ready0", "ready1", "ready2"]
 
 
 def test_tidy_output_is_unchanged_when_every_sibling_is_one_class(monkeypatch):

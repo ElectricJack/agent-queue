@@ -979,11 +979,11 @@ def _reading_order(rows, ids):
 
 
 @pytest.mark.parametrize("variant", ["all", "active"])
-async def test_a_finished_epic_sorts_after_a_running_sibling_after_a_full_layout(db, variant):
+async def test_a_finished_epic_sorts_first_and_running_next_after_a_full_layout(db, variant):
     await _seed_activity_fixture(db)
     await LayoutDriver(db).full_layout("p1", variant)
     rows = await db.load_layout_rows("p1", variant, ["e-done", "e-open", "e-run"])
-    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-run", "e-open", "e-done"]
+    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-done", "e-run", "e-open"]
 
 
 async def test_full_layout_seeds_containers_with_fresh_aggregates(db):
@@ -1012,7 +1012,7 @@ async def test_full_layout_seeds_containers_with_fresh_aggregates(db):
         )
     await drv.full_layout("p1", "all")
     rows = await db.load_layout_rows("p1", "all", ["e-done", "e-open", "e-run"])
-    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-run", "e-open", "e-done"]
+    assert _reading_order(rows, ["e-done", "e-open", "e-run"]) == ["e-done", "e-run", "e-open"]
 
 
 async def test_incremental_work_still_appends_between_tidies(db):

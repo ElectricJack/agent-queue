@@ -1,12 +1,13 @@
 """The order Tidy seeds a rank with (reorganisation design §3.2).
 
-Rank-0 siblings used to be seeded by ``(created_at, id)`` alone, so the
-newest work — usually the work being done — sorted last, and at the root,
-where every edge-free child shares rank 0 and a banded epic owns a whole
-line, "last" means "furthest down". The seed key here puts declared phases
-in phase order, then running work, then everything unfinished, then
-finished work, and falls back to ``(created_at, id)`` — so a scope whose
-siblings are all one class is ordered exactly as it is today.
+Rank-0 siblings were seeded by ``(created_at, id)`` alone, so the newest
+work sorted last; at the root, where every edge-free child shares rank 0,
+"last" means "furthest down". The seed key here puts declared phases in
+phase order, then finished work at the top, then the running band, then
+everything still to do, and falls back to ``(created_at, id)`` — the
+operator's model, so completed work collects at the top and the active band
+moves down as work completes. A scope whose siblings are all one class is
+ordered exactly as before.
 
 This is the *seed* only. Nothing here runs on the incremental path, which
 still appends new work at the end of its rank (§3.2, §6.1).
@@ -23,30 +24,35 @@ from src.task_graph.layout.model import SnapTask
 #: ahead of a phase.
 NO_PHASE: int = 1 << 30
 
-RUNNING: int = 0
-UNFINISHED: int = 1
-FINISHED: int = 2
+FINISHED: int = 0
+RUNNING: int = 1
+UNFINISHED: int = 2
 
 
 def activity_class(task: SnapTask, agg: Mapping[str, int] | None = None) -> int:
-    """0 = running, 1 = unfinished, 2 = finished. Lower sorts first.
+    """0 = finished, 1 = running, 2 = unfinished. Lower sorts first.
 
-    A container is classed by its subtree rollup: ``agg["running"] > 0`` is
-    class 0, else ``agg["active"] > 0`` is class 1, else class 2. A leaf is
-    classed by its own status against ``RUNNING_STATUSES`` /
-    ``FINISHED_STATUSES`` — the driver hands the engine an aggregate for
-    every child, and a leaf's is all zeros, which would otherwise read as
-    "finished".
+    The operator's model (roadmap decisions 2026-09-22, OD5 Q1): finished
+    work rises to the top of its rank, the running band moves down as work
+    completes, and the to-do sits at the bottom.
+
+    A container is classed by its subtree rollup: finished (an all-done
+    subtree — including a finished-but-context stub) is class 0,
+    ``agg["running"] > 0`` is class 1, else ``agg["active"] > 0`` is class
+    2. A leaf is classed by its own status against ``FINISHED_STATUSES`` /
+    ``RUNNING_STATUSES`` — the driver hands the engine an aggregate for
+    every child, and a leaf's is all zeros, so a leaf's class comes from
+    its status alone.
 
     **Only a leaf's own ``ASSIGNED``/``IN_PROGRESS``, or a container's
-    ``agg["running"] > 0``, earns class 0.** A container with nothing to
+    ``agg["running"] > 0``, can earn class 1.** A container with nothing to
     roll up — an empty phase, a freshly created standing parent, an epic
     emptied by reparenting, or any container when no aggregate was supplied
-    — is class 1, or class 2 if its own status is finished. A container's
-    own ``IN_PROGRESS`` is not evidence of running work: containers are
-    forced straight to ``IN_PROGRESS`` on release
-    (``_release_ready_containers``), so classing one 0 would put an empty
-    phase ahead of genuinely running siblings.
+    — is class 2 (to-do), or class 0 if its own status is finished. A
+    container's own ``IN_PROGRESS`` is not evidence of running work:
+    containers are forced straight to ``IN_PROGRESS`` on release
+    (``_release_ready_containers``), so classing one 1 would pull an empty
+    phase into the running band.
 
     Note the deliberate disagreement with ``_visible`` (``driver.py``,
     "An UNFINISHED container whose descendants have all finished is still

@@ -395,9 +395,10 @@ def layout_container(scope: ContainerScope, *, mode: Mode, seed: int = 0) -> Con
         ordinals = {cid: (minimal[cid], "") for cid in scope.children}
         budget = _Budget(TIDY_EVALS, TIDY_SECONDS)
         # Seed keys by phase, then activity, then created_at so the sweep
-        # has a deterministic start AND running work leads its rank (§3.2).
-        # Where every sibling is one class this reduces to (created_at, id),
-        # i.e. exactly the pre-§3.2 seed.
+        # has a deterministic start AND finished work leads its rank, with
+        # the running band next (operator's model, decisions note OD5 Q1;
+        # §3.2). Where every sibling is one class this reduces to
+        # (created_at, id), i.e. exactly the original seed.
         for r in set(minimal.values()):
             prev = None
             for cid in sorted(

@@ -408,15 +408,20 @@ count cannot grow either.
 
 - `phase_order` = `task_metadata["phase"]["order"]` when present, else a sentinel that
   sorts **after** every real phase order (a non-phase sibling never jumps ahead of phase 1).
-- `activity_class(child, agg)`:
-  - `0` — a leaf whose `status` is in `RUNNING_STATUSES` (`constants.py:37`), or a
-    container whose `agg["running"] > 0`;
-  - `1` — otherwise not in `FINISHED_STATUSES` (`constants.py:36`), or a container whose
-    `agg["active"] > 0`;
-  - `2` — otherwise (finished, including a finished-but-context stub).
+- `activity_class(child, agg)` — the operator's model (decisions note
+  `graph-visibility-roadmap-decisions-2026-09-22.md`, OD5 Q1: finished → running
+  → to-do):
+  - `0` — finished: a leaf whose `status` is in `FINISHED_STATUSES`
+    (`constants.py:55`), or a container with nothing unfinished in its subtree
+    (`agg["running"] == 0` and `agg["active"] == 0`) — including a
+    finished-but-context stub, which sits at the top of its rank;
+  - `1` — the running band: a leaf whose `status` is in `RUNNING_STATUSES`
+    (`constants.py:56`), or a container whose `agg["running"] > 0`;
+  - `2` — to-do: a leaf status in neither set, or a container still carrying
+    active descendants (`agg["active"] > 0`).
 - `created_at, id` remain as the final tie-breaks, so **a scope whose siblings are all one
-  class produces byte-identical output to today** — which is why all three existing tidy
-  tests pass unmodified (every task in them is `READY`).
+  class produces byte-identical output to before the first slice** — which is why the all
+  one-class tidy tests pass unmodified (every task in them is `READY`).
 
 **Why the aggregates are safe here and nowhere else.** `build_full_write_set` computes the
 project's aggregates at `driver.py:238`, before the first `lay()` (§1.6). The tidy path
@@ -923,9 +928,11 @@ Not in the first draft; raised by the S5 analysis. See §7.3.
 
 ## 7. Open questions for the operator
 
-1. **Should a finished-but-still-context stub sink, or stay put?** §3.2 sinks it (activity
-   class 2) — carried from the previous ruling. The counter-argument is spatial memory: an
-   epic whose position the operator has learned moves once, on the next Tidy.
+1. **Should a finished-but-still-context stub sink, or stay put?** *Decided*
+   (decisions note `graph-visibility-roadmap-decisions-2026-09-22.md`, OD5 Q1): the
+   activity ordering is the operator's model — finished → running → to-do — so a finished
+   but still-context stub **rises to the top of its rank** (activity class 0); it does not
+   sink. This supersedes the earlier "running first, finished sinks" wording of §3.2.
 2. **`ROW_ASPECT = 1.3`** targets a mildly landscape scope. On an ultrawide monitor 2.0
    would be better; on a laptop 1.0. It is a persisted, shared value — it cannot be
    per-viewer. Confirm 1.3, or name a number.
