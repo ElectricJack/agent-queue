@@ -29,8 +29,10 @@ def _fake_gh(
         "with open(os.environ['AQ_TEST_GH_CAPTURE'], 'w') as stream:\n"
         "    json.dump({'argv': sys.argv[1:], 'stdin': stdin}, stream)\n"
         f"response = {response!r}\n"
-        "pages = response if '--paginate' in sys.argv else [response]\n"
-        "for page in pages: print(json.dumps(page, indent=2))\n"
+        "print('HTTP/2.0 200 OK\\r')\n"
+        "print('Content-Type: application/json\\r')\n"
+        "print('\\r')\n"
+        "print(json.dumps(response, indent=2))\n"
         f"print({json.dumps(stderr)}, file=sys.stderr)\n"
         f"raise SystemExit({exit_code})\n"
     )
@@ -39,9 +41,7 @@ def _fake_gh(
 
 
 def _git(args: list[str], cwd: Path) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
-    )
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=True)
     return result.stdout.strip()
 
 
@@ -88,8 +88,13 @@ async def test_bind_repository_uses_authenticated_gh_identity(tmp_path):
         "api",
         "--hostname",
         "github.com",
+        "--include",
         "--method",
         "GET",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "X-GitHub-Api-Version: 2022-11-28",
         "repos/acme/widgets",
     ]
     assert invocation["stdin"] == ""
@@ -116,8 +121,13 @@ async def test_request_json_passes_body_on_stdin_not_process_arguments(tmp_path)
         "api",
         "--hostname",
         "github.com",
+        "--include",
         "--method",
         "POST",
+        "--header",
+        "Accept: application/vnd.github+json",
+        "--header",
+        "X-GitHub-Api-Version: 2022-11-28",
         "repos/acme/widgets/check-runs",
         "--input",
         "-",
@@ -151,10 +161,7 @@ async def test_exact_head_ref_uses_numeric_binding_and_escaped_short_ref(tmp_pat
 async def test_paged_items_flattens_successive_json_pages_without_slurp(tmp_path):
     executable, capture = _fake_gh(
         tmp_path,
-        [
-            {"check_runs": [{"id": 1}]},
-            {"check_runs": [{"id": 2}, {"id": 3}]},
-        ],
+        {"check_runs": [{"id": 1}, {"id": 2}, {"id": 3}]},
     )
     client = GitHubCLIClient(
         GitHubRepositoryBinding(303, "acme/widgets"),
@@ -168,17 +175,16 @@ async def test_paged_items_flattens_successive_json_pages_without_slurp(tmp_path
         {"id": 3},
     ]
     invocation = json.loads(capture.read_text())
-    assert invocation["argv"][-2:] == ["repos/acme/widgets/check-runs", "--paginate"]
+    assert invocation["argv"][-1] == "repos/acme/widgets/check-runs"
+    assert "--paginate" not in invocation["argv"]
+    assert "--slurp" not in invocation["argv"]
 
 
 @pytest.mark.asyncio
 async def test_repository_helpers_and_installation_token_use_cli_contract(tmp_path):
     executable, capture = _fake_gh(
         tmp_path,
-        [
-            [{"body": "unrelated"}],
-            [{"body": "delivery marker"}],
-        ],
+        [{"body": "unrelated"}, {"body": "delivery marker"}],
     )
     client = GitHubCLIClient(
         GitHubRepositoryBinding(303, "acme/widgets"),

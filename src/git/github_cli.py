@@ -1,9 +1,8 @@
-"""Isolated GitHub CLI execution and the staged repository client adapter."""
+"""Isolated GitHub CLI execution and existing-login client construction."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import shutil
@@ -13,9 +12,9 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Protocol
+from typing import ClassVar, Protocol
 
-from src.git.github_app import MAX_RESPONSE_BYTES, GitHubAppClient
+from src.git.github import MAX_PAGINATION_BYTES, MAX_RESPONSE_BYTES, GitHubClient
 from src.git.github_contracts import (
     GitHubAccessError as GitHubAppError,
     GitHubCredentialIdentity,
@@ -590,13 +589,8 @@ class GhRunner:
             raise _ProcessCleanupError
 
 
-class GitHubCLIClient(GitHubAppClient):
-    """Staged repository client backed by :class:`GhRunner`.
-
-    Repository operations move to ``GitHubClient`` in the next migration
-    package. Until then this compatibility adapter keeps the old surface while
-    ensuring it cannot launch a second, less-contained ``gh`` process.
-    """
+class GitHubCLIClient(GitHubClient):
+    """Compatibility constructor for the daemon user's existing ``gh`` login."""
 
     auth_mode: ClassVar[str] = "gh"
 
@@ -608,25 +602,25 @@ class GitHubCLIClient(GitHubAppClient):
         env: Mapping[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
         runner: GhRunner | None = None,
     ) -> None:
-        self.repository = repository
         self.executable = executable
         self._env = dict(os.environ if env is None else env)
         self.timeout = timeout
-        self.max_response_bytes = max_response_bytes
-        self._runner = runner or GhRunner(
+        selected_runner = runner or GhRunner(
             ExistingLoginCredentials(),
             executable=executable,
             env=self._env,
             timeout=timeout,
-            max_stdout_bytes=max_response_bytes,
+            max_stdout_bytes=max_response_bytes + MAX_DIAGNOSTIC_BYTES,
         )
-
-    @property
-    def credential_identity(self) -> GitHubCredentialIdentity:
-        """Return the non-secret daemon-login identity used by this client."""
-        return self._runner.credential_identity
+        super().__init__(
+            repository,
+            runner=selected_runner,
+            max_response_bytes=max_response_bytes,
+            max_pagination_bytes=max_pagination_bytes,
+        )
 
     @classmethod
     async def bind_repository(
@@ -637,6 +631,7 @@ class GitHubCLIClient(GitHubAppClient):
         env: Mapping[str, str] | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
     ) -> GitHubCLIClient:
         provisional = GitHubRepositoryBinding(1, full_name)
         client = cls(
@@ -645,6 +640,7 @@ class GitHubCLIClient(GitHubAppClient):
             env=env,
             timeout=timeout,
             max_response_bytes=max_response_bytes,
+            max_pagination_bytes=max_pagination_bytes,
         )
         payload = await client.request_json("GET", f"repos/{full_name}")
         repository_id = payload.get("id")
@@ -658,106 +654,10 @@ class GitHubCLIClient(GitHubAppClient):
         client.repository = GitHubRepositoryBinding(repository_id, full_name)
         return client
 
-    async def request_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_body: dict[str, Any] | None = None,
-        expected_statuses: set[int] | None = None,
-    ) -> dict[str, Any]:
-        del expected_statuses  # Framed status handling moves to the common client.
-        payload = await self._api_json(method, path, json_body=json_body)
-        if not isinstance(payload, dict):
-            raise GitHubAppError("conflict_or_invalid", "GitHub response was not an object")
-        return payload
-
-    async def paged_items(
-        self, path: str, *, key: str, max_pages: int = 20
-    ) -> list[dict[str, Any]]:
-        pages = await self._api_json("GET", path, paginate=True)
-        if not isinstance(pages, list) or len(pages) > max_pages:
-            raise GitHubAppError("transient", "GitHub pagination exceeded page limit")
-        items: list[dict[str, Any]] = []
-        for payload in pages:
-            page = payload.get(key) if isinstance(payload, dict) else None
-            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
-            items.extend(page)
-        return items
-
-    async def paged_list(self, path: str, *, max_pages: int = 20) -> list[dict[str, Any]]:
-        pages = await self._api_json("GET", path, paginate=True)
-        if not isinstance(pages, list) or len(pages) > max_pages:
-            raise GitHubAppError("transient", "GitHub pagination exceeded page limit")
-        items: list[dict[str, Any]] = []
-        for page in pages:
-            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
-            items.extend(page)
-        return items
-
     async def installation_token(self, *, force_refresh: bool = False) -> None:
         """Signal that Git must use the existing ``gh`` credential, not a token."""
         del force_refresh
         return None
-
-    async def _api_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_body: dict[str, Any] | None = None,
-        paginate: bool = False,
-    ) -> Any:
-        method = method.upper()
-        if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
-            raise ValueError("unsupported GitHub API method")
-        if (
-            not isinstance(path, str)
-            or not path
-            or path.startswith(("-", "//", "http://", "https://"))
-            or any(character in path for character in ("\n", "\r", "\x00"))
-        ):
-            raise ValueError("GitHub API path must be a repository-bound endpoint")
-        endpoint = path[1:] if path.startswith("/") else path
-        resource_path = endpoint.partition("?")[0]
-        allowed_roots = (
-            f"repos/{self.repository.full_name}",
-            f"repositories/{self.repository.repository_id}",
-        )
-        if not any(
-            resource_path == root or resource_path.startswith(f"{root}/") for root in allowed_roots
-        ):
-            raise ValueError("GitHub API path must be a repository-bound endpoint")
-        if json_body is not None and not isinstance(json_body, dict):
-            raise ValueError("GitHub API JSON body must be an object")
-        args = ["api", "--method", method, endpoint]
-        if json_body is not None:
-            args.extend(["--input", "-"])
-        if paginate:
-            args.append("--paginate")
-        stdin = (
-            json.dumps(json_body, separators=(",", ":")).encode() if json_body is not None else None
-        )
-        result = await self._runner.run(args, repository=self.repository, stdin=stdin)
-        stdout = result.stdout
-        try:
-            if not paginate:
-                return json.loads(stdout)
-            # gh 2.45 emits successive JSON documents and has no --slurp.
-            remaining = stdout.decode("utf-8").lstrip()
-            decoder = json.JSONDecoder()
-            pages = []
-            while remaining:
-                page, end = decoder.raw_decode(remaining)
-                pages.append(page)
-                remaining = remaining[end:].lstrip()
-            return pages
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise GitHubAppError(
-                "conflict_or_invalid", "GitHub response was not valid JSON"
-            ) from exc
 
 
 def _scrub_diagnostic(diagnostic: bytes, *, secrets: Sequence[str] = ()) -> str:
