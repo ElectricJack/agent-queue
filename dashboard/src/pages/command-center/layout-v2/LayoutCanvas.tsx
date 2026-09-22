@@ -462,10 +462,6 @@ function Inner(props: LayoutCanvasProps) {
   // there is no box to fit and no title to show until it lands.
   const { data: focusData } = useLayoutNode(focusId ? focusProject : undefined, focusId);
   const focusNode = focusData && !("pending" in focusData) ? focusData : undefined;
-  const { data: runningData } = useLayoutNode(
-    runningTarget?.project_id, runningTarget?.task_id ?? null,
-  );
-  const runningNode = runningData && !("pending" in runningData) ? runningData : undefined;
   // What the daemon actually served, which is not always what was asked for:
   // entering a container the active layout stubbed or dropped is answered
   // from `all`. That condition is the LAYOUT's (a container every one of
@@ -527,8 +523,23 @@ function Inner(props: LayoutCanvasProps) {
       clearRunningWorkJump();
       return;
     }
-    if (!runningNode || runningHandled.current === runningTarget) return;
-    // Selection and the later node lookup are necessarily separate reads. A
+    if (runningHandled.current === runningTarget) return;
+    // The node lookup uses the persisted "all" layout. The active canvas
+    // compacts finished work away, so those coordinates can be far outside
+    // the viewport. Fit the card that this scope actually drew instead.
+    const visibleId = !focusId && runningTarget.ancestors.length > 0
+      ? runningTarget.ancestors[0]!
+      : runningTarget.task_id;
+    const layer = layers.get(runningTarget.project_id);
+    const visible = layer?.loaded && !layer.pending
+      ? layer.nodes.find((node) => node.id === visibleId)
+      : undefined;
+    if (!visible) return;
+    const box = {
+      x: visible.position.x, y: visible.position.y,
+      width: visible.width ?? NODE_WIDTH, height: visible.height ?? NODE_HEIGHT,
+    };
+    // Selection and the later tile load are necessarily separate reads. A
     // task may finish in that gap, so confirm the target once before moving
     // the viewport. A vanished or replaced target leaves this navigation
     // scope alone and gives the toolbar its normal empty-state notice.
@@ -542,30 +553,21 @@ function Inner(props: LayoutCanvasProps) {
           publishRunningWorkNotice(current ? "Running work changed. Try again." : "No running work");
           return;
         }
-        const position = toPx(runningNode.node.x, runningNode.node.y + (offsets.get(runningTarget.project_id) ?? 0), density);
-        const box = sizePx(runningNode.node.w, runningNode.node.h, density);
         runningHandled.current = runningTarget;
         setKbFocusId(runningTarget.task_id);
-        fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, { padding: 0.4, duration: 300 });
+        fitBounds(box, { padding: 0.4, duration: 300 });
       }).catch(() => {
         if (!cancelled) publishRunningWorkNotice("Could not find running work. Try again.");
       });
       return () => { cancelled = true; };
     }
-    const ancestors = runningNode.ancestors ?? [];
-    const target = !focusId && ancestors.length > 0
-      ? ancestors[0]!
-      : runningNode.node;
-    const offset = offsets.get(runningTarget.project_id) ?? 0;
-    const position = toPx(target.x, target.y + offset, density);
-    const box = sizePx(target.w, target.h, density);
     runningHandled.current = runningTarget;
     setKbFocusId(runningTarget.task_id);
-    fitBounds({ x: position.x, y: position.y, width: box.width, height: box.height }, {
+    fitBounds(box, {
       padding: 0.2,
       duration: 0,
     });
-  }, [runningTarget, manualRunningTarget, focusId, runningNode, offsets, density, fitBounds]);
+  }, [runningTarget, manualRunningTarget, focusId, layers, fitBounds]);
 
   // Jumping to a search result in THIS scope only needs the hit's box: the
   // tiles covering it load from the viewport change like any other pan. A hit

@@ -777,27 +777,32 @@ describe("LayoutCanvas", () => {
     });
   });
 
-  it("pans a root graph to the visible ancestor of its running work", () => {
+  it("pans a root graph to the visible ancestor in the drawn layout", () => {
     layoutNode.data = {
-      node: n("g0", "card", 4, 5),
-      ancestors: [{ id: "e", title: "Epic", x: 1, y: 2, w: 3, h: 2 }],
+      node: n("g0", "card", 4, 50),
+      ancestors: [{ id: "e", title: "Epic", x: 1, y: 40, w: 3, h: 2 }],
       layout_version: 1,
     };
     const target = { task_id: "g0", project_id: "p1", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
     render(<MemoryRouter><LayoutCanvas {...base} runningTarget={target} /></MemoryRouter>);
     expect(fitBounds).toHaveBeenCalledWith(
-      { ...toPx(1, 2), ...sizePx(3, 2) },
+      { ...toPx(0, 0), ...sizePx(1, 1) },
       expect.objectContaining({ padding: 0.2, duration: 0 }),
     );
   });
 
   it("pans the running leaf after entering its parent frame", () => {
+    tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("pkg", "container", 0, 0), n("g0", "card", 2, 3)],
+      edges: [], stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      variant_applied: "active",
+    } as unknown as TilesResponse);
     layoutNode.data = { node: n("g0", "card", 4, 5), ancestors: [], layout_version: 1 };
     const target = { task_id: "g0", project_id: "p1", parent_task_id: "pkg", ancestors: ["e", "pkg"], observed_at: 1, layout_version: 1 };
     currentRunningTarget.value = target;
     render(<MemoryRouter><LayoutCanvas {...base} focusId="pkg" runningTarget={target} manualRunningTarget /></MemoryRouter>);
     return waitFor(() => expect(fitBounds).toHaveBeenCalledWith(
-      { ...toPx(4, 5), ...sizePx(1, 1) },
+      { ...toPx(2, 3), ...sizePx(1, 1) },
       expect.objectContaining({ padding: 0.4, duration: 300 }),
     ));
   });
