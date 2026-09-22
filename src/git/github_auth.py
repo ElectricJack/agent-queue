@@ -224,6 +224,15 @@ class GitHubAuth:
         """Compatibility adapter while Git transfer consumers migrate."""
         return (await self.credential_for(repository, force_refresh=force_refresh)).token
 
+    async def token_for(self, repository: GitHubRepositoryBinding) -> str | None:
+        """Supply the fresh per-operation token expected by :class:`GhRunner`.
+
+        The runner intentionally receives only this narrow adapter.  Callers
+        which need generation-aware authentication recovery use
+        :meth:`credential_for` through the composed GitHub access service.
+        """
+        return (await self.credential_for(repository)).token
+
     def _fresh(self, credential: GitHubCredential | None) -> bool:
         return (
             credential is not None

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from src.git.github_app import AppTokenCandidate
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -258,6 +259,75 @@ async def test_concurrent_app_calls_use_distinct_config_and_selected_tokens(tmp_
         key: os.environ.get(key)
         for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_CONFIG_DIR", "GH_HOST", "GH_REPO")
     } == parent_environment
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_bypasses_provider_and_unused_personal_tokens(tmp_path):
+    executable = _capture_executable(tmp_path)
+    credentials = FakeAppCredentials({REPOSITORY.full_name: "must-not-be-resolved"})
+    runner = GhRunner(
+        credentials,
+        executable=str(executable),
+        env={
+            "GH_TOKEN": "available-personal-token",
+            "GITHUB_TOKEN": "available-secondary-token",
+            "GH_CONFIG_DIR": "/operator/gh-config",
+        },
+        cwd=tmp_path,
+    )
+    candidate = AppTokenCandidate(
+        identity=credentials.credential_identity,
+        repository=REPOSITORY,
+        token="ghs_new_candidate_secret",
+        expires_at=1_900_000_000.0,
+    )
+
+    result = await runner.run(
+        ["api", "repos/acme/widgets"],
+        repository=REPOSITORY,
+        credential=candidate,
+    )
+
+    capture = json.loads(result.stdout)
+    assert credentials.calls == []
+    assert capture["env"]["GH_TOKEN"] == "ghs_new_candidate_secret"
+    assert "GITHUB_TOKEN" not in capture["env"]
+    assert capture["env"]["GH_CONFIG_DIR"] != "/operator/gh-config"
+
+
+@pytest.mark.asyncio
+async def test_explicit_candidate_is_fenced_to_runner_identity_and_repository(tmp_path):
+    executable = _capture_executable(tmp_path)
+    credentials = FakeAppCredentials({REPOSITORY.full_name: "unused"})
+    runner = GhRunner(credentials, executable=str(executable), env={}, cwd=tmp_path)
+    foreign_repository = GitHubRepositoryBinding(404, "acme/gadgets")
+    foreign_identity = AppTokenCandidate(
+        identity=GitHubCredentialIdentity.app(999, 202),
+        repository=REPOSITORY,
+        token="foreign-identity",
+        expires_at=1_900_000_000.0,
+    )
+    foreign_binding = AppTokenCandidate(
+        identity=credentials.credential_identity,
+        repository=foreign_repository,
+        token="foreign-repository",
+        expires_at=1_900_000_000.0,
+    )
+
+    with pytest.raises(ValueError, match="identity"):
+        await runner.run(
+            ["api", "repos/acme/widgets"],
+            repository=REPOSITORY,
+            credential=foreign_identity,
+        )
+    with pytest.raises(ValueError, match="repository"):
+        await runner.run(
+            ["api", "repos/acme/widgets"],
+            repository=REPOSITORY,
+            credential=foreign_binding,
+        )
+
+    assert credentials.calls == []
 
 
 @pytest.mark.asyncio

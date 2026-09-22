@@ -103,6 +103,20 @@ class GhCredentialProvider(Protocol):
     async def token_for(self, repository: GitHubRepositoryBinding) -> str | None: ...
 
 
+class GhSelectedCredential(Protocol):
+    """One already-selected credential supplied by trusted composition code.
+
+    This seam lets App repository bootstrap verify a newly minted candidate
+    through the shared runner without asking the still-unbound provider for a
+    token recursively.  The runner fences the identity and repository before
+    reading the secret.
+    """
+
+    identity: GitHubCredentialIdentity
+    repository: GitHubRepositoryBinding
+    token: str | None
+
+
 class ExistingLoginCredentials:
     """Credential provider that deliberately leaves discovery to ``gh``."""
 
@@ -192,12 +206,23 @@ class GhRunner:
             raise ValueError("GitHub credential identity is unavailable")
         return identity
 
+    def cli_available(self) -> bool:
+        """Report executable availability without consulting any credential."""
+        try:
+            self._resolve_executable()
+        except GitHubAppError as exc:
+            if exc.category == "cli_missing":
+                return False
+            raise
+        return True
+
     async def run(
         self,
         args: Sequence[str],
         *,
         repository: GitHubRepositoryBinding | None = None,
         hostname: str | None = None,
+        credential: GhSelectedCredential | None = None,
         stdin: bytes | str | None = None,
         timeout: float | None = None,
         max_stdout_bytes: int | None = None,
@@ -228,7 +253,15 @@ class GhRunner:
         executable = self._resolve_executable()
         identity = self.credential_identity
         token: str | None = None
-        if identity.mode is GitHubCredentialMode.APP:
+        if credential is not None:
+            if repository is None or credential.repository != repository:
+                raise ValueError("selected GitHub credential repository did not match")
+            if credential.identity != identity:
+                raise ValueError("selected GitHub credential identity did not match")
+            token = credential.token
+            if identity.mode is GitHubCredentialMode.EXISTING_LOGIN and token is not None:
+                raise ValueError("existing-login credentials cannot supply an App token")
+        elif identity.mode is GitHubCredentialMode.APP:
             if repository is None:
                 raise ValueError("App-backed GitHub commands require a repository binding")
             try:
@@ -763,5 +796,6 @@ __all__ = [
     "GhCredentialProvider",
     "GhResult",
     "GhRunner",
+    "GhSelectedCredential",
     "GitHubCLIClient",
 ]
