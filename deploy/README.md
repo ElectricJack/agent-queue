@@ -460,46 +460,82 @@ you need a real API key in `llm.api_key`.
 
 ### GitHub access
 
-AQ uses GitHub two ways, and they need separate thinking. **Plain git** handles
-clone, fetch, branch, commit and push — run with `GIT_TERMINAL_PROMPT=0` and
-`GIT_ASKPASS=/bin/false` so it can never prompt or silently pick up a stray
-credential, with pushes served by a one-shot credential broker
-(`src/git/askpass_broker.py`) that pins the whole git → remote-helper →
-askpass chain by path, device, inode and owner. **The `gh` CLI** handles
-everything PR-shaped: `gh pr merge`, `gh pr view --json statusCheckRollup` for
-CI gating, and repository search during project onboarding.
+AQ reaches GitHub two ways. **Plain git** handles clone, fetch, branch, commit
+and push, run with `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS=/bin/false` so it
+can never prompt or silently pick up a stray credential, with pushes served by a
+one-shot credential broker (`src/git/askpass_broker.py`) that pins the whole
+git → remote-helper → askpass chain by path, device, inode and owner. **The `gh`
+CLI** handles everything PR-shaped: `gh pr merge`, `gh pr view --json
+statusCheckRollup` for CI gating, and repository search during onboarding.
 
-Three ways to authenticate `gh`, with very different blast radii:
+#### Use a GitHub App
 
-| | Who ends up holding it | Lifetime |
-|---|---|---|
-| `GH_TOKEN` / `GITHUB_TOKEN` | **every agent session** — it is in `HARNESS_CREDENTIAL_ALLOWLIST` | until revoked |
-| `gh auth login` (device flow) | `hosts.yml` on the `…_aq-gh` volume, readable by anything running as `aq` | until revoked |
-| GitHub App | **the daemon only** — `env.py` strips `AQ_INTEGRATION_GITHUB_APP_*` from every child env | ~1 hour, auto-refreshed |
+`src/git/github_app.py`'s `bind_repository()` — *"resolve one configured
+repository name into a least-privilege client"* — mints an installation token
+scoped to **exactly one repository**, valid about an hour, with a fixed
+permission set (`contents: write`, `pull_requests: write`, `checks: write`,
+`issues: write`, and three reads). It then verifies the response actually
+matched, rejecting anything that came back with more than one repository or a
+different name.
 
-**Recommended: a fine-grained PAT** for agent forge access, scoped to exactly
-the repositories AQ works on, with only `contents: write` and
-`pull_requests: write`. Set it in `.env` as `GH_TOKEN`.
+Configure it under `integration.github_app`: `app_id`, `client_id`,
+`installation_id`, `private_key_path`.
 
-The reasoning is the allowlist entry, which is deliberate and comments itself
-as *"Forge access — agents open PRs from inside their worktree"*. Agents run
-LLM-authored code, so **whatever you put there is a credential that
-LLM-authored code holds**. A classic account-wide PAT gives a confused or
-compromised agent your whole account; a fine-grained one gives it a bad PR on a
-known repository — annoying, and revocable.
+These credentials are **daemon-only by construction**. `src/sessions/env.py`
+strips the `AQ_INTEGRATION_GITHUB_APP_*` prefix from every child environment,
+commented so that a worker-controlled harness "cannot opt them back in". That is
+the point, not a limitation: the daemon publishes, agents do not.
 
-Note the asymmetry this creates: the most secure option is the one agents
-cannot use. The GitHub App path is short-lived and daemon-only by construction,
-which is exactly why it is unavailable to a worker. Use the App for the
-daemon's own integration and merge path
-(`integration.github_app`: `app_id`, `client_id`, `installation_id`,
-`private_key_path`) and a fine-grained PAT for agents, rather than trying to
-make one credential serve both.
+#### Why not a personal access token
 
-**Scope the token as if it will leak.** Anything with execution on the daemon
-container can read its environment — and per [Security posture](#security-posture)
-the web layer currently offers no resistance to that. The network boundary is
-doing all the work; the token's scope is the second line.
+`GH_TOKEN` / `GITHUB_TOKEN` sits in `HARNESS_CREDENTIAL_ALLOWLIST`, commented
+*"Forge access — agents open PRs from inside their worktree"*. It works, and it
+is the wrong default for most setups:
+
+| | Scope | Lifetime | Who holds it |
+|---|---|---|---|
+| GitHub App | **one repository, per operation** | ~1 hour | **daemon only** |
+| `GH_TOKEN` | whatever you granted — **every project** | until revoked | **every agent, every project** |
+
+An agent working on one project holds a credential that reaches every other
+project's repository, and agents run LLM-authored code. There is also no
+per-project credential storage to fall back on: `projects` carries `repo_url`
+and `integration_repository_id`, `repos` carries url, branch and paths, and
+**neither has a credential column**. Per-repository scoping comes from the App's
+per-call binding, not from anything stored.
+
+If you do use a PAT, make it fine-grained, scoped to exactly the repositories AQ
+works on, with only `contents: write` and `pull_requests: write` — and scope it
+as if it will leak, because anything with execution on the daemon container can
+read its environment.
+
+#### Open question: can agents push with no token?
+
+Unverified, and worth settling on your first real repository rather than
+assuming. `GitManager` runs git and `gh` **daemon-side** with the full daemon
+environment (`src/git/manager.py`, which says so in a comment), and the
+credential broker pins its binary chain in a way that suggests an agent's own
+`git push` is meant to be served a brokered credential it never holds. Whether
+that covers every push path has not been tested here.
+
+So: configure the App, leave `GH_TOKEN` unset, run one task, and see whether the
+push succeeds. Add a fine-grained PAT only if it does not.
+
+#### The layer that actually holds
+
+Neither credential model stops an agent that has `Bash` from running `gh pr
+merge` with whatever token it can reach. **Branch protection on the default
+branch, requiring an approving review, with bypass disabled**, is what survives
+that — see [Restricting what agents may do](#restricting-what-agents-may-do).
+Note that a fine-grained PAT acts with the granting user's permissions, so if
+you are a repository admin you must enable "do not allow bypassing" or your own
+admin rights flow straight through it.
+
+#### One App, one installation
+
+`integration.github_app` holds a single `installation_id`, so a single App
+installation. Repositories across several GitHub organisations are not
+expressible in this configuration.
 
 ### Restricting what agents may do
 
