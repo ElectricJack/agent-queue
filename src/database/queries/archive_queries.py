@@ -5,20 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, exists, func, literal, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.blocked_state import _development_delivery_pending
-from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     archived_tasks,
     development_deliveries,
-    integration_repair_operations,
-    integration_repair_stages,
+    projects,
     sessions,
     task_comments,
     task_completion_records,
@@ -126,70 +124,89 @@ class ArchiveBlockedRoots:
 class ArchiveQueryMixin:
     """Query mixin for archived task operations.  Expects ``self._engine``."""
 
-    async def archive_task(self, task_id: str, *, hold_undelivered: bool = False) -> bool:
+    async def archive_task(
+        self,
+        task_id: str,
+        *,
+        hold_undelivered: bool = False,
+        abandon_undelivered: bool = False,
+        abandon_reason: str | None = None,
+        abandoned_by: str = "operator",
+    ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
-        *hold_undelivered* is for the sweeps (the hourly auto-archive and the
-        bulk "archive everything completed" paths): they refuse a subtree
-        holding a COMPLETED task whose development delivery has not landed on
-        the default branch (``delivery_pending``).  The publisher only
-        collects tasks from ``tasks``, so archiving one of those is how
-        ``fleet-meadow`` and ``nimble-nexus`` lost their delivery and needed
-        re-delivery tasks.  An explicit single-task archive stays the
-        operator's call.
+        Every archive protects undelivered development work. ``hold_undelivered``
+        remains accepted for old sweep callers but is now redundant. A human or
+        elevated supervisor can intentionally bypass only that delivery rule
+        with ``abandon_undelivered`` and a durable reason.
 
         Refuses live sessions or non-terminal tasks anywhere in the subtree.
         Deepest first, root last, so the subtree moves together.
         """
         from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES, HierarchyError
 
+        if abandon_undelivered and not (abandon_reason or "").strip():
+            raise ValueError("abandon_undelivered requires a reason")
         terminal = TERMINAL_STATUSES
         async with self.immediate() as conn:
             # Archiving moves a task out of the active view; it never destroys
             # work, so the branch always stays on the remote.  Retiring the
             # origin is what lets a task whose branch was materialized leave the
             # queue at all (deletion-with-materialized-branches §2 decision 2).
-            hierarchical = await self.guard_integration_mutation(
-                task_id, "archive", conn=conn, retire_pending=True, branch_policy="keep"
+            await self.guard_integration_mutation(
+                task_id,
+                "archive",
+                conn=conn,
+                retire_pending=True,
+                branch_policy="keep",
+                abandon_undelivered=abandon_undelivered,
             )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
                 return False
-            if not hierarchical:
-                # The guard checks integration bookkeeping only for a project
-                # that is *currently* in hierarchy/train mode; a project that
-                # has since been switched back still holds those rows, and
-                # they still RESTRICT the delete.  Nothing has been written
-                # yet at this point, so the refusal is clean either way.
-                await assert_no_integration_task_references(conn, ids, "archive")
             # Read once: the integration guards below scope their reads to this
             # project, and the layout mark needs it before the rows leave
             # ``tasks``.  A task never changes project.
             project_id = (
                 await conn.execute(select(tasks.c.project_id).where(tasks.c.id == task_id))
             ).scalar_one_or_none()
-            repair = (await conn.execute(
-                select(integration_repair_operations.c.id)
-                .join(integration_repair_stages,
-                      integration_repair_stages.c.operation_id == integration_repair_operations.c.id)
-                .where(integration_repair_stages.c.repair_task_id.in_(ids),
-                       integration_repair_operations.c.state.in_(
-                           ("active", "escalated", "human_required")))
-                .limit(1)
-            )).scalar_one_or_none()
-            if repair is not None:
-                raise HierarchyError("integration_owned", f"active repair operation {repair}")
-            held = await self._development_integration_hold(ids, project_id, conn=conn)
-            if held is not None:
-                raise HierarchyError("integration_owned", held)
-            if hold_undelivered:
-                undelivered = await self._undelivered_development_work(ids, conn=conn)
-                if undelivered:
-                    raise HierarchyError(
-                        "delivery_pending",
-                        "development delivery has not landed "
-                        f"{', '.join(undelivered)} on the default branch",
+            if abandon_undelivered:
+                from src.integration.removal_guard import undelivered_removal_holders
+
+                mode = (
+                    await conn.execute(
+                        select(projects.c.hierarchical_integration_mode).where(
+                            projects.c.id == project_id
+                        )
                     )
+                ).scalar_one_or_none()
+                _branch, abandoned = await undelivered_removal_holders(
+                    conn,
+                    root_id=task_id,
+                    ids=ids,
+                    project_id=project_id,
+                    mode=mode,
+                )
+                named_holders = ", ".join(
+                    f"{row['task_id']} ({row['holder']})" for row in abandoned
+                ) or "none pending at archive time"
+                await conn.execute(
+                    pg_insert(task_comments).values(
+                        id="comment-" + uuid.uuid4().hex,
+                        task_id=task_id,
+                        project_id=project_id,
+                        body=(
+                            "Delivery abandoned before archive by "
+                            f"{abandoned_by}: {abandon_reason.strip()}\n"
+                            f"Affected delivery holders: {named_holders}\n"
+                            f"Affected subtree: {', '.join(sorted(ids))}"
+                        ),
+                        author_kind="supervisor",
+                        author_id=abandoned_by,
+                        kind="note",
+                        created_at=time.time(),
+                    )
+                )
             # Follow the existing sessions-before-tasks lock order. A task
             # can be terminal while its worker is still draining.
             live = await self.live_descendant_sessions(task_id, conn=conn)
@@ -331,28 +348,6 @@ class ArchiveQueryMixin:
                     f"{', '.join(named)} as a source"
                 )
         return None
-
-    @staticmethod
-    async def _undelivered_development_work(ids, *, conn) -> list[str]:
-        """COMPLETED tasks among *ids* whose work has not reached the default branch.
-
-        Asked with foreign repository ids included: a task that names another
-        project's repository is never collected, so it is undelivered for
-        good, and archiving it would hide that for good too.
-        """
-        return list(
-            (
-                await conn.execute(
-                    select(tasks.c.id)
-                    .where(
-                        tasks.c.id.in_(ids),
-                        tasks.c.status == TaskStatus.COMPLETED.value,
-                        _development_delivery_pending(tasks, include_foreign_repos=True),
-                    )
-                    .order_by(tasks.c.id)
-                )
-            ).scalars()
-        )
 
     @staticmethod
     def _named_task_ids(manifest, wanted: set[str]) -> list[str]:
@@ -589,7 +584,24 @@ class ArchiveQueryMixin:
                 ", ".join(shown),
                 "..." if count > len(shown) else "",
             )
+        # A root can become ineligible (reopened, edited, or gain an open
+        # descendant) between sweeps. Its old refusal is no longer a fact the
+        # operator should see, so remove it rather than merely filtering it
+        # from the report forever.
+        await self._clear_ineligible_archive_refusals(statuses, cutoff)
         return archived
+
+    async def _clear_ineligible_archive_refusals(self, statuses: list[str], cutoff: float) -> None:
+        eligible = self._eligible_archive_roots_stmt(statuses, cutoff).subquery()
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.key == ARCHIVE_REFUSAL_KEY,
+                    ~exists(
+                        select(literal(1)).where(eligible.c.id == task_metadata.c.task_id)
+                    ),
+                )
+            )
 
     async def _note_archive_refusal(self, task_id: str, code: str, detail: str) -> None:
         """:meth:`_record_archive_refusal`, but it can never stop the sweep.
@@ -630,9 +642,10 @@ class ArchiveQueryMixin:
         """Remember why the sweep last refused *task_id*, if that has changed.
 
         Writes only ``task_metadata`` — never ``tasks`` — so the eligibility
-        cutoff (``tasks.updated_at``) is untouched, and only when the *code*
-        differs from what is stored, so a permanently blocked root does not
-        generate an hourly write.
+        cutoff (``tasks.updated_at``) is untouched. Both the code and detail
+        are compared: a narrower post-upgrade refusal must replace a stale
+        blanket ``integration_owned`` record while an unchanged refusal costs
+        no hourly write.
         """
         async with self._engine.begin() as conn:
             stored = (
@@ -647,7 +660,8 @@ class ArchiveQueryMixin:
             ).scalar_one_or_none()
             if stored is not None:
                 try:
-                    if json.loads(stored).get("code") == code:
+                    existing = json.loads(stored)
+                    if existing.get("code") == code and existing.get("detail") == detail:
                         return
                 except (TypeError, ValueError):
                     pass
@@ -784,6 +798,12 @@ class ArchiveQueryMixin:
 
     async def delete_archived_task(self, task_id: str) -> bool:
         """Permanently delete an archived task. Returns *True* if deleted."""
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.database.queries.task_references import (
+            describe_integration_references,
+            find_integration_task_references,
+        )
+
         async with self._engine.begin() as conn:
             result = await conn.execute(
                 select(archived_tasks.c.project_id).where(archived_tasks.c.id == task_id)
@@ -791,6 +811,15 @@ class ArchiveQueryMixin:
             archived_project_id = result.scalar_one_or_none()
             if archived_project_id is None:
                 return False
+            found = await find_integration_task_references(conn, [task_id])
+            if found:
+                raise HierarchyError(
+                    "integration_history_retained",
+                    f"delete is refused: {len(found)} integration audit record(s) name {task_id} "
+                    f"({describe_integration_references(found)}) and audit history is append-only. "
+                    "Archive the task instead; its history stays readable by id.",
+                    {"references": found},
+                )
             await conn.execute(
                 delete(task_completion_records).where(
                     task_completion_records.c.task_id == task_id,

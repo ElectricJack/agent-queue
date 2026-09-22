@@ -120,6 +120,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "digest_status",
             "delete_task",
             "archive_task",
+            "delete_project",
         }
     )
     | DASHBOARD_STATE_COMMANDS
@@ -127,7 +128,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
 
 #: The subset of :data:`DETAILED_ERROR_COMMANDS` that documents its 422 body
 #: with :class:`~src.api.models.task.HierarchyRefusalResponse`.
-HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset({"delete_task", "archive_task"})
+HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
+    {"delete_task", "archive_task", "delete_project"}
+)
 
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {

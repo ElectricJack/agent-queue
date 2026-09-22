@@ -554,5 +554,17 @@ class ProjectCommandsMixin:
                 "Stop them first."
             }
 
-        await self.db.delete_project(pid)
+        try:
+            await self.db.delete_project(pid)
+        except Exception as exc:
+            from src.database.queries.hierarchy_queries import HierarchyError
+
+            if isinstance(exc, HierarchyError):
+                return {
+                    "success": False,
+                    "code": f"hierarchy.{exc.code}",
+                    "error": f"hierarchy.{exc.code}: {exc.detail}",
+                    **(exc.context or {}),
+                }
+            raise
         return {"deleted": pid, "name": project.name}

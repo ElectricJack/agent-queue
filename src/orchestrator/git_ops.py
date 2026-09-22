@@ -153,14 +153,21 @@ class GitOpsMixin:
             )
 
         parent = await self.db.get_task(parent_id)
+        parent_identity = None
+        if parent is None:
+            from src.database.queries.task_identity import resolve_task_identity_on
+
+            async with self.db._engine.connect() as conn:
+                parent_identity = await resolve_task_identity_on(conn, parent_id)
         checkpoint = await self.db.get_integration_checkpoint(parent_id)
         repo = await self.db.get_repo(task.repo_id or "")
         if (
-            parent is None
+            (parent is None and parent_identity is None)
             or checkpoint is None
             or repo is None
-            or parent.repo_id != task.repo_id
-            or parent.branch_name != task.branch_name
+            or (parent.repo_id if parent is not None else parent_identity.repo_id) != task.repo_id
+            or (parent.branch_name if parent is not None else parent_identity.branch_name)
+            != task.branch_name
             or checkpoint.get("episode_id") != operation.get("episode_id")
             or checkpoint.get("repository_id") != task.repo_id
             or checkpoint.get("branch") != task.branch_name

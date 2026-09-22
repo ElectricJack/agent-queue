@@ -14,12 +14,9 @@ history tables referenced ``tasks.id`` with ``RESTRICT``/``NO ACTION``, and both
 ``archive_task`` and ``delete_task`` remove the ``tasks`` row -- so the operator
 got ``ForeignKeyViolationError`` with no subject, no cause and no remedy.
 
-Those foreign keys are kept for now: dropping them is the schema change
-docs/superpowers/specs/2026-09-20-archive-tasks-with-integration-history-design.md
-holds pending its review findings B1–B3, and until then
-``src.database.queries.task_references`` refuses the removal up front with
-``integration_owned`` rather than letting it reach the ``DELETE``.  What this
-module adds is the *live* half:
+The archive-history revision drops those four foreign keys: archive preserves
+the id in ``archived_tasks`` while hard delete remains refused by
+``src.integration.removal_guard``. What this module adds is the *live* half:
 :meth:`~src.database.queries.hierarchy_queries.HierarchyQueryMixin.guard_integration_mutation`
 refuses a removal while a running operation owns the task, naming the
 operation, its state and the command that releases it, and the release itself
@@ -188,7 +185,7 @@ async def stranded_delegates(
 
     Read-only, and deliberately narrow: a task is *not* listed merely because
     integration history still names it.  That history is a separate question
-    (``assert_no_integration_task_references``), and listing every historical
+    (the integration-history removal guard), and listing every historical
     verifier forever would bury the ones that are actually stuck.
     """
     if conn is None:
@@ -389,20 +386,25 @@ async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | 
     stage = integration_repair_stages
     resolution = integration_candidate_resolutions
 
-    for role, condition in (
-        ("verifier", operation.c.verifier_task_id.in_(task_ids)),
-        ("parent", operation.c.parent_task_id.in_(task_ids)),
+    for role, task_column, condition in (
+        ("verifier", operation.c.verifier_task_id, operation.c.verifier_task_id.in_(task_ids)),
+        ("parent", operation.c.parent_task_id, operation.c.parent_task_id.in_(task_ids)),
     ):
         row = (
             await conn.execute(
-                select(operation.c.id, operation.c.state)
+                select(operation.c.id, operation.c.state, task_column.label("task_id"))
                 .where(operation.c.state.in_(LIVE_OPERATION_STATES), condition)
                 .order_by(operation.c.updated_at.desc(), operation.c.id)
                 .limit(1)
             )
         ).mappings().first()
         if row is not None:
-            return {"operation_id": row["id"], "state": row["state"], "role": role}
+            return {
+                "operation_id": row["id"],
+                "state": row["state"],
+                "role": role,
+                "task_id": row["task_id"],
+            }
 
     row = (
         await conn.execute(
@@ -417,21 +419,25 @@ async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | 
         )
     ).mappings().first()
     if row is not None:
-        return {"operation_id": row["id"], "state": row["state"], "role": "repair_stage"}
+        return {
+            "operation_id": row["id"],
+            "state": row["state"],
+            "role": "repair_stage",
+            "task_id": row["repair_task_id"],
+        }
 
     row = (
         await conn.execute(
-            select(operation.c.id, operation.c.state)
+            select(operation.c.id, operation.c.state, resolution.c.repair_task_id)
             .select_from(
                 resolution.join(operation, operation.c.id == resolution.c.operation_id)
             )
             .where(
                 and_(
                     resolution.c.repair_task_id.in_(task_ids),
-                    resolution.c.state.in_(LIVE_RESOLUTION_STATES),
-                    # An unfinished reservation whose operation already ended is
-                    # moot, not a live claim -- requiring both is what keeps the
-                    # release from re-wedging the very rows it exists to free.
+                    # The operation's state, not the resolution's local state,
+                    # owns authority. A rejected reservation under a live
+                    # operation still names the delegate it may inspect.
                     operation.c.state.in_(LIVE_OPERATION_STATES),
                 )
             )
@@ -440,5 +446,10 @@ async def live_integration_owner(conn, task_ids: list[str]) -> dict[str, Any] | 
         )
     ).mappings().first()
     if row is not None:
-        return {"operation_id": row["id"], "state": row["state"], "role": "candidate_member"}
+        return {
+            "operation_id": row["id"],
+            "state": row["state"],
+            "role": "candidate_member",
+            "task_id": row["repair_task_id"],
+        }
     return None

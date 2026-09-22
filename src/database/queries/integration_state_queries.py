@@ -7,9 +7,11 @@ from sqlalchemy import and_, func, or_, select
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
+    integration_parent_episodes,
     integration_operation_artifact_pins,
     integration_repair_operations,
     integration_repair_stages,
+    repos,
     sessions,
     task_integration_checkpoints,
     tasks,
@@ -143,6 +145,7 @@ class IntegrationStateQueriesMixin:
                 func.coalesce(
                     integration_batches.c.project_id,
                     tasks.c.project_id,
+                    repos.c.project_id,
                 ).label("project_id"),
                 integration_repair_operations.c.artifact_snapshot,
                 integration_operation_artifact_pins.c.artifact_sha256,
@@ -162,6 +165,15 @@ class IntegrationStateQueriesMixin:
                     tasks,
                     tasks.c.id == integration_repair_operations.c.parent_task_id,
                 )
+                .outerjoin(
+                    integration_parent_episodes,
+                    and_(
+                        integration_parent_episodes.c.parent_task_id
+                        == integration_repair_operations.c.parent_task_id,
+                        integration_parent_episodes.c.id == integration_repair_operations.c.episode_id,
+                    ),
+                )
+                .outerjoin(repos, repos.c.id == integration_parent_episodes.c.repository_id)
             )
             .where(integration_repair_operations.c.id == operation_id)
         )
@@ -257,17 +269,15 @@ class IntegrationStateQueriesMixin:
             if delegate is None:
                 return None
             if row["target_kind"] == "parent":
-                target = (
-                    await connection.execute(
-                        select(tasks).where(tasks.c.id == row["parent_task_id"])
-                    )
-                ).mappings().one_or_none()
+                from src.database.queries.task_identity import resolve_task_identity_on
+
+                target = await resolve_task_identity_on(connection, row["parent_task_id"])
                 if target is None:
                     return None
-                target_project_id = target["project_id"]
-                repository_id = target["repo_id"]
-                branch = target["branch_name"]
-                parent_task_id = target["id"]
+                target_project_id = target.project_id
+                repository_id = target.repo_id
+                branch = target.branch_name
+                parent_task_id = target.task_id
             elif row["target_kind"] == "batch":
                 target = (
                     await connection.execute(

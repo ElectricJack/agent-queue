@@ -868,7 +868,15 @@ class DatabaseBackend(Protocol):
 
     # --- Archived Tasks ---
 
-    async def archive_task(self, task_id: str, *, hold_undelivered: bool = False) -> bool: ...
+    async def archive_task(
+        self,
+        task_id: str,
+        *,
+        hold_undelivered: bool = False,
+        abandon_undelivered: bool = False,
+        abandon_reason: str | None = None,
+        abandoned_by: str = "operator",
+    ) -> bool: ...
     async def archive_completed_tasks(
         self,
         project_id: str | None = None,

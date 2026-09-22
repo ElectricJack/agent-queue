@@ -19,11 +19,16 @@ class ArchiveTaskRequest:
         project_id (None | str | Unset): Bulk-archive all completed tasks in this project (alternative to task_id)
         include_failed (bool | None | Unset): When bulk-archiving by project_id, also archive FAILED and BLOCKED tasks.
             Default false.
+        abandon_undelivered (bool | Unset): Single-task archive only: explicitly abandon completed work that has not
+            reached the default branch. Requires reason and an elevated/operator caller. Default: False.
+        reason (None | str | Unset): Required reason when abandon_undelivered is true.
     """
 
     task_id: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
     include_failed: bool | None | Unset = UNSET
+    abandon_undelivered: bool | Unset = False
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -45,6 +50,14 @@ class ArchiveTaskRequest:
         else:
             include_failed = self.include_failed
 
+        abandon_undelivered = self.abandon_undelivered
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -54,6 +67,10 @@ class ArchiveTaskRequest:
             field_dict["project_id"] = project_id
         if include_failed is not UNSET:
             field_dict["include_failed"] = include_failed
+        if abandon_undelivered is not UNSET:
+            field_dict["abandon_undelivered"] = abandon_undelivered
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -88,10 +105,23 @@ class ArchiveTaskRequest:
 
         include_failed = _parse_include_failed(d.pop("include_failed", UNSET))
 
+        abandon_undelivered = d.pop("abandon_undelivered", UNSET)
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         archive_task_request = cls(
             task_id=task_id,
             project_id=project_id,
             include_failed=include_failed,
+            abandon_undelivered=abandon_undelivered,
+            reason=reason,
         )
 
         archive_task_request.additional_properties = d

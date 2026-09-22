@@ -2310,6 +2310,18 @@ _ALL_TOOL_DEFINITIONS = [
                         "FAILED and BLOCKED tasks. Default false."
                     ),
                 },
+                "abandon_undelivered": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Single-task archive only: explicitly abandon completed work that has "
+                        "not reached the default branch. Requires reason and an elevated/operator caller."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Required reason when abandon_undelivered is true.",
+                },
             },
         },
     },

@@ -31,7 +31,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_queries import TransitionResult
-from src.database.queries.task_references import assert_no_integration_task_references
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -714,6 +713,7 @@ class HierarchyQueryMixin:
         conn,
         retire_pending: bool = False,
         branch_policy: str | None = None,
+        abandon_undelivered: bool = False,
     ) -> bool:
         """Fence canonical hierarchy/lifecycle writers for enabled projects.
 
@@ -756,10 +756,33 @@ class HierarchyQueryMixin:
                 )
             )
         ).scalar_one_or_none()
+        removal_ids = None
+        if mutation in {"delete", "archive"}:
+            # The removal half is mode-independent: audit rows and live repair
+            # authority survive a project's switch to development/disabled.
+            # The advisory lock is re-entrant when hierarchy work continues
+            # below, and preserves the existing project → sessions → tasks
+            # ordering for the new reads.
+            from src.integration.removal_guard import assert_integration_permits_removal
+
+            await self.lock_hierarchy_project(conn, task_row.project_id)
+            removal_ids = await self.subtree_ids(task_id, conn=conn)
+            if not removal_ids:
+                return mode in {"hierarchy", "train"}
+            await assert_integration_permits_removal(
+                self,
+                conn,
+                root_id=task_id,
+                ids=removal_ids,
+                mutation=mutation,
+                project_id=task_row.project_id,
+                mode=mode,
+                abandon_undelivered=abandon_undelivered,
+            )
         if mode not in {"hierarchy", "train"}:
             return False
         await self.lock_hierarchy_project(conn, task_row.project_id)
-        ids = await self.subtree_ids(task_id, conn=conn)
+        ids = removal_ids if removal_ids is not None else await self.subtree_ids(task_id, conn=conn)
         if not ids:
             return True
         active_batch_states = (
@@ -803,28 +826,6 @@ class HierarchyQueryMixin:
         ).first()
         if sealed:
             raise HierarchyError("sealed", f"{mutation} would change a sealed subtree")
-        if mutation in {"delete", "archive"}:
-            # A running operation refuses first, naming itself and the
-            # command that lets go.  This also covers
-            # ``integration_repair_stages.repair_task_id``, which has no
-            # foreign key and is not a ``refused`` reference.  Finished
-            # history is refused just below by
-            # ``assert_no_integration_task_references``.
-            from src.integration.delegate_release import RELEASE_COMMAND, live_integration_owner
-
-            owner = await live_integration_owner(conn, list(ids))
-            if owner is not None:
-                raise HierarchyError(
-                    "integration_owned",
-                    (
-                        f"integration operation {owner['operation_id']} is "
-                        f"{owner['state']} and owns this task as its {owner['role']}; "
-                        f"{mutation} is refused while it runs. Stop it with "
-                        f"`aq integration abort {owner['operation_id']} --reason \"...\"`, "
-                        f"then release its delegates with `{RELEASE_COMMAND}`"
-                    ),
-                    {"integration_operation": owner},
-                )
         rollover_operation = None
         if mutation == "reopen":
             checkpoint_episode = (
@@ -869,15 +870,6 @@ class HierarchyQueryMixin:
             raise HierarchyError(
                 "delivery_target_fixed", f"{mutation} would change delivered branch identity"
             )
-        if retire_pending:
-            # Removal paths only (``archive`` / ``delete``): the ``tasks`` row
-            # is about to go, and the integration subsystem's append-only
-            # bookkeeping holds RESTRICT foreign keys onto it that nothing may
-            # delete.  Refuse here — before the origins below are retired — so
-            # the caller never sees a raw ``IntegrityError`` from the final
-            # ``DELETE FROM tasks``.  ``reopen``/``disposition`` keep the row
-            # and are deliberately untouched.
-            await assert_no_integration_task_references(conn, ids, mutation)
         origins = (
             (
                 await conn.execute(

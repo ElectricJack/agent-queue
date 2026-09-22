@@ -14,12 +14,11 @@ walks ``src.database.tables.metadata`` and fails when a new one is missing.
 A future table with a RESTRICT foreign key onto ``tasks`` breaks that test
 instead of silently breaking the sweep again.
 
-The ``"refused"`` disposition is the integration subsystem's append-only
-bookkeeping: rows the archive path must not delete (a database trigger
-forbids it) and must not orphan (the foreign key is RESTRICT and the column
-is the audit row's own identity).  Those tasks are refused up front with a
-:class:`~src.database.queries.hierarchy_queries.HierarchyError`
-``integration_owned`` rather than being allowed to reach the ``DELETE``.
+Integration audit rows are durable history, not live foreign-key ownership.
+They retain a task id after archive, but still refuse a hard delete so the
+history never resolves to nothing. ``src.integration.removal_guard`` owns
+that policy; this module remains the compact registry and reader shared by
+the guard, doctor checks, and tests.
 """
 
 from __future__ import annotations
@@ -43,13 +42,14 @@ from src.database.tables import (
 #: * ``"released"`` — ``_delete_one`` clears the whole resource claim.
 #: * ``"db_cascade"`` — the foreign key is ``ON DELETE CASCADE``.
 #: * ``"subtree"``  — the hierarchy edge itself; the subtree goes deepest-first.
-#: * ``"refused"``  — durable integration audit; archive/delete is refused.
+#: * ``"history"``  — durable integration audit; archive retains it and a
+#:   hard delete is refused by ``src.integration.removal_guard``.
 TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("agents", "current_task_id"): "nulled",
-    ("integration_candidate_resolutions", "repair_task_id"): "refused",
-    ("integration_parent_episodes", "parent_task_id"): "refused",
-    ("integration_parent_verifications", "parent_task_id"): "refused",
-    ("integration_repair_operations", "verifier_task_id"): "refused",
+    ("integration_candidate_resolutions", "repair_task_id"): "history",
+    ("integration_parent_episodes", "parent_task_id"): "history",
+    ("integration_parent_verifications", "parent_task_id"): "history",
+    ("integration_repair_operations", "verifier_task_id"): "history",
     ("sessions", "task_id"): "nulled",
     ("task_assignment_routes", "task_id"): "db_cascade",
     ("task_context", "task_id"): "deleted",
@@ -71,14 +71,14 @@ TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
 
 @dataclass(frozen=True)
 class IntegrationTaskReference:
-    """One ``"refused"`` foreign key, with what writes it."""
+    """One durable history reference, with what writes it."""
 
     table: str
     column: str
     written_by: str
 
 
-#: The ``"refused"`` entries, in the order a refusal reports them.
+#: History entries, in the order a hard-delete refusal reports them.
 INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
     IntegrationTaskReference(
         "integration_parent_episodes",
@@ -132,27 +132,34 @@ async def find_integration_task_references(conn, ids: Sequence[str]) -> list[dic
     return sorted(found, key=lambda r: (r["task_id"], r["table"]))
 
 
+async def find_integration_repository_references(conn, ids: Sequence[str]) -> list[dict]:
+    """Return durable integration audit rows attached directly to repositories.
+
+    Project deletion also removes repositories. These rows are not task-id
+    history, but deleting their repository would orphan evidence exactly as
+    surely as deleting the task an episode names.
+    """
+    if not ids:
+        return []
+    columns = (
+        ("integration_parent_episodes", "repository_id", integration_parent_episodes.c.repository_id),
+        (
+            "integration_candidate_resolutions",
+            "repository_id",
+            integration_candidate_resolutions.c.repository_id,
+        ),
+    )
+    found: list[dict] = []
+    for table, column_name, column in columns:
+        rows = (await conn.execute(select(column).where(column.in_(list(ids))).distinct())).scalars().all()
+        found.extend(
+            {"repository_id": repository_id, "table": table, "column": column_name}
+            for repository_id in rows
+        )
+    return sorted(found, key=lambda r: (r["repository_id"], r["table"]))
+
+
 def describe_integration_references(found: Sequence[dict]) -> str:
     """One line naming the tables (and tasks) that hold a subtree back."""
-    parts = [f"{row['table']}({row['task_id']})" for row in found]
+    parts = [f"{row['table']}({row.get('task_id') or row['repository_id']})" for row in found]
     return ", ".join(parts)
-
-
-async def assert_no_integration_task_references(conn, ids: Sequence[str], mutation: str) -> None:
-    """Refuse *mutation* while integration bookkeeping still names the subtree.
-
-    Raised before anything is written, so the caller's transaction has not
-    touched a row when the refusal lands.  ``integration_owned`` is the same
-    code ``archive_task`` already uses for an active repair operation.
-    """
-    from src.database.queries.hierarchy_queries import HierarchyError
-
-    found = await find_integration_task_references(conn, ids)
-    if not found:
-        return
-    raise HierarchyError(
-        "integration_owned",
-        f"{mutation} would orphan {len(found)} integration record(s): "
-        f"{describe_integration_references(found)}",
-        {"references": found},
-    )

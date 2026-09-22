@@ -25,13 +25,16 @@ def _assert_schema(connection) -> None:
     assert {
         "fk_integration_candidate_resolutions_member",
         "fk_integration_candidate_resolutions_stage",
-        "fk_integration_candidate_resolutions_task",
         "fk_integration_candidate_resolutions_session",
         "fk_integration_candidate_resolutions_workspace",
     } <= resolution_fks
+    assert "fk_integration_candidate_resolutions_task" not in resolution_fks
     checks = {check["name"] for check in schema.get_check_constraints("integration_candidate_resolutions")}
     assert "ck_integration_candidate_resolutions_rejection" in checks
     assert "uq_integration_candidate_resolutions_current_member" in {
+        index["name"] for index in schema.get_indexes("integration_candidate_resolutions")
+    }
+    assert "idx_integration_candidate_resolutions_repair_task" in {
         index["name"] for index in schema.get_indexes("integration_candidate_resolutions")
     }
 

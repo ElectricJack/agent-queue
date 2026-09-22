@@ -4910,11 +4910,17 @@ async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_resto
         await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
     # The refusal names the operation, its state, the seat this task occupies
     # in it and what would let go -- not a bare code the operator has to guess at.
-    with pytest.raises(HierarchyError, match="operation is active and owns this task") as refusal:
+    with pytest.raises(
+        HierarchyError,
+        match=f"operation is active and owns {task_id} as its repair_stage",
+    ) as refusal:
         await db.archive_task(task_id)
     assert refusal.value.code == "integration_owned"
     assert refusal.value.context["integration_operation"] == {
-        "operation_id": "operation", "state": "active", "role": "repair_stage",
+        "operation_id": "operation",
+        "state": "active",
+        "role": "repair_stage",
+        "task_id": task_id,
     }
     # Reproduce the historical archive, before that guard existed.
     async with db.immediate() as conn:

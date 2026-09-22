@@ -1,9 +1,9 @@
 # Archiving finished tasks that carry integration audit history
 
-> **Status (2026-09-21): revised, awaiting approval.** The 2026-09-20 draft was rejected by an adversarial review (§12, kept verbatim). This revision answers every blocking and should-change finding; the table below says where. **Nothing here is implemented, and nothing may be until the operator approves it** — it gates a schema change on a production database.
+> **Status (2026-09-22): approved by Jack.** The 2026-09-20 draft was rejected by an adversarial review (§12, kept verbatim); this revision answers every blocking and should-change finding. Decisions D1, D2, D3 and D5 were approved; D4 was completed separately by `aq integration release-owner`.
 
 **Date:** 2026-09-20, revised 2026-09-21
-**Status:** revised, awaiting approval
+**Status:** approved (Jack, 2026-09-22)
 **Revised by:** task `swift-orbit.1` (epic `swift-orbit`), against `origin/main` `6bc84ba7d`
 **Follows:** PR #612 (`keen-crest.3`: the live-owner guard, delegate release, revision `a00000000011`), which deliberately kept the four foreign keys; `2026-09-20-integration-delegate-release-design.md`
 **Touches:** `2026-09-04-hierarchical-integration-trains-design.md` §11.4, `2026-09-08-task-deletion-with-materialized-branches-design.md` §2

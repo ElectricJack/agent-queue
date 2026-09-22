@@ -4637,6 +4637,21 @@ class TaskCommandsMixin:
         """
         task_id = args.get("task_id")
         project_id = args.get("project_id")
+        abandon_undelivered = bool(args.get("abandon_undelivered"))
+        abandon_reason = args.get("reason")
+
+        if abandon_undelivered:
+            scope = self._current_scope or {}
+            if scope.get("kind") == "session" and not scope.get("elevated"):
+                return {
+                    "success": False,
+                    "code": "hierarchy.abandon_not_for_sessions",
+                    "error": "--abandon-undelivered is an operator decision; a worker session cannot make it.",
+                }
+            if not task_id:
+                return {"error": "--abandon-undelivered is available only with task_id."}
+            if not isinstance(abandon_reason, str) or not abandon_reason.strip():
+                return {"error": "--abandon-undelivered requires --reason."}
 
         if task_id:
             # --- Single-task mode ---
@@ -4658,7 +4673,12 @@ class TaskCommandsMixin:
             await self._write_archive_note(task, result, deps)
 
             try:
-                success = await self.db.archive_task(task_id)
+                success = await self.db.archive_task(
+                    task_id,
+                    abandon_undelivered=abandon_undelivered,
+                    abandon_reason=abandon_reason,
+                    abandoned_by=(self._current_scope or {}).get("session_id") or "operator",
+                )
             except HierarchyError as exc:
                 # Same renderer as delete: an ``integration_owned`` refusal
                 # carries the operation it names, so a surface can act on it
@@ -4672,6 +4692,12 @@ class TaskCommandsMixin:
                 project_id=task.project_id,
                 task_id=task_id,
             )
+            if abandon_undelivered:
+                await self.db.log_event(
+                    "task.delivery_abandoned",
+                    project_id=task.project_id,
+                    task_id=task_id,
+                )
             await self._emit_task_graph_change("task.archived", task)
             return {
                 "archived": task_id,
@@ -4714,8 +4740,8 @@ class TaskCommandsMixin:
         skipped: list[dict] = []
         for task, result, deps in task_data:
             try:
-                # A bulk sweep never archives work the development publisher
-                # has not delivered yet (``hierarchy.delivery_pending``).
+                # Every archive, including bulk, refuses work the development
+                # publisher has not delivered yet (integration_undelivered).
                 success = await self.db.archive_task(task.id, hold_undelivered=True)
             except HierarchyError as exc:
                 skipped.append(

@@ -1937,17 +1937,13 @@ class DevelopmentIntegration:
                 # is intentionally left to the old recovery service; development uses its own
                 # publisher exclusion and will not mutate those targets.
             if operation["parent_task_id"]:
-                parent = (
-                    (
-                        await conn.execute(
-                            select(tasks).where(tasks.c.id == operation["parent_task_id"])
-                        )
-                    )
-                    .mappings()
-                    .one()
-                )
-                project_id, repository_id = parent["project_id"], parent["repo_id"]
-                target_ref = parent["branch_name"] or ""
+                from src.database.queries.task_identity import resolve_task_identity_on
+
+                parent = await resolve_task_identity_on(conn, operation["parent_task_id"])
+                if parent is None:
+                    raise ValueError("operation parent identity is missing")
+                project_id, repository_id = parent.project_id, parent.repo_id
+                target_ref = parent.branch_name or ""
             else:
                 batch = (
                     (

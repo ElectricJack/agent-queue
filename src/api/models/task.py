@@ -355,12 +355,13 @@ class DeletedBranch(BaseModel):
 
 
 class HierarchyRefusalResponse(BaseModel):
-    """The 422 body ``delete_task`` / ``archive_task`` answer a refusal with.
+    """The 422 body a task/project removal answers a refusal with.
 
     These refusals are contracts, not prose: a surface branches on ``code``
     and renders the detail keys. ``branch_discard_required`` names the
-    ``branches`` it wants a choice about, and ``integration_owned`` names the
-    audit ``references`` that make the task permanent. ``extra: allow`` keeps
+    ``branches`` it wants a choice about, and integration removal refusals
+    name their owner, cleanup blockers, undelivered work, or retained history.
+    ``extra: allow`` keeps
     the rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and
     ``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic
     envelope from discarding all of them.

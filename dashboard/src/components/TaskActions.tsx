@@ -24,7 +24,7 @@ import {
 } from "../api/hooks";
 import { sendChatMessage } from "../api/chat";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../api/branchDiscard";
-import { integrationHistoryRefusal } from "../api/deleteRefusals";
+import { integrationRemovalRefusal } from "../api/deleteRefusals";
 import Modal from "./Modal";
 import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
@@ -93,9 +93,9 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     deleteTask.isPending ||
     provideInput.isPending;
 
-  // Integration history is a permanent record, so this delete will never
-  // succeed: explain it and take the button away instead of inviting a retry.
-  const historyRefusal = deleteTask.isError ? integrationHistoryRefusal(deleteTask.error) : null;
+  // Each integration removal refusal includes its actionable remedy from the
+  // server (settle an operation, release a resource, deliver, or archive).
+  const historyRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const s = task.status?.toUpperCase() ?? "";
 

@@ -20,6 +20,7 @@ from src.database.tables import (
     archived_tasks,
     events,
     gates,
+    integration_branch_owners,
     integration_repair_operations,
     integration_repair_stages,
     projects,
@@ -1618,19 +1619,13 @@ class TaskQueryMixin:
         """The transactional body of :meth:`delete_task`, on a supplied ``conn``."""
         from src.database.queries.hierarchy_queries import HierarchyError
 
-        from src.database.queries.task_references import assert_no_integration_task_references
-
-        hierarchical = await self.guard_integration_mutation(
+        await self.guard_integration_mutation(
             task_id, "delete", conn=conn, retire_pending=True, branch_policy=branch_policy
         )
         parent = (
             await conn.execute(select(tasks.c.parent_task_id).where(tasks.c.id == task_id))
         ).scalar()
         ids = await self.subtree_ids(task_id, conn=conn)
-        if not hierarchical:
-            # See ``archive_task``: a project no longer in hierarchy/train mode
-            # can still hold integration audit rows the guard skipped.
-            await assert_no_integration_task_references(conn, ids, "delete")
         if len(ids) > 1 and not cascade:
             raise HierarchyError("has_children", f"{task_id} has {len(ids) - 1} descendant(s)")
         affected = await self._collect_affected(set(ids), conn)
@@ -1776,7 +1771,25 @@ class TaskQueryMixin:
         await conn.execute(
             update(workspaces)
             .where(workspaces.c.locked_by_task_id == task_id)
-            .values(locked_by_task_id=None, locked_by_agent_id=None, locked_at=None)
+            .values(
+                locked_by_task_id=None,
+                locked_by_agent_id=None,
+                locked_at=None,
+                lock_mode=None,
+            )
+        )
+        # A detached reservation has no session or checkout to preserve and
+        # cannot issue a write. Release it regardless of owner role; attached
+        # owners are refused by the removal guard before this point.
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(
+                integration_branch_owners.c.owner_id == task_id,
+                integration_branch_owners.c.handoff_state == "reserved",
+                integration_branch_owners.c.session_id.is_(None),
+                integration_branch_owners.c.workspace_id.is_(None),
+            )
+            .values(handoff_state="released", updated_at=time.time())
         )
 
         await conn.execute(delete(tasks).where(tasks.c.id == task_id))

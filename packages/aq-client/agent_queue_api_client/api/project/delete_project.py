@@ -7,7 +7,7 @@ from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.delete_project_request import DeleteProjectRequest
 from ...models.delete_project_response import DeleteProjectResponse
-from ...models.delete_project_response_422 import DeleteProjectResponse422
+from ...models.hierarchy_refusal_response import HierarchyRefusalResponse
 from ...types import Response
 
 
@@ -32,14 +32,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> DeleteProjectResponse | DeleteProjectResponse422 | None:
+) -> DeleteProjectResponse | HierarchyRefusalResponse | None:
     if response.status_code == 200:
         response_200 = DeleteProjectResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 422:
-        response_422 = DeleteProjectResponse422.from_dict(response.json())
+        response_422 = HierarchyRefusalResponse.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[DeleteProjectResponse | DeleteProjectResponse422]:
+) -> Response[DeleteProjectResponse | HierarchyRefusalResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -64,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteProjectRequest,
-) -> Response[DeleteProjectResponse | DeleteProjectResponse422]:
+) -> Response[DeleteProjectResponse | HierarchyRefusalResponse]:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
     task is IN_PROGRESS. Historical Discord content is left untouched.
 
@@ -79,7 +79,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[DeleteProjectResponse | DeleteProjectResponse422]
+        Response[DeleteProjectResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -97,7 +97,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteProjectRequest,
-) -> DeleteProjectResponse | DeleteProjectResponse422 | None:
+) -> DeleteProjectResponse | HierarchyRefusalResponse | None:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
     task is IN_PROGRESS. Historical Discord content is left untouched.
 
@@ -112,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        DeleteProjectResponse | DeleteProjectResponse422
+        DeleteProjectResponse | HierarchyRefusalResponse
     """
 
     return sync_detailed(
@@ -125,7 +125,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteProjectRequest,
-) -> Response[DeleteProjectResponse | DeleteProjectResponse422]:
+) -> Response[DeleteProjectResponse | HierarchyRefusalResponse]:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
     task is IN_PROGRESS. Historical Discord content is left untouched.
 
@@ -140,7 +140,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[DeleteProjectResponse | DeleteProjectResponse422]
+        Response[DeleteProjectResponse | HierarchyRefusalResponse]
     """
 
     kwargs = _get_kwargs(
@@ -156,7 +156,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: DeleteProjectRequest,
-) -> DeleteProjectResponse | DeleteProjectResponse422 | None:
+) -> DeleteProjectResponse | HierarchyRefusalResponse | None:
     """Delete a project and all associated data (tasks, repos, results, token ledger). Cannot delete if any
     task is IN_PROGRESS. Historical Discord content is left untouched.
 
@@ -171,7 +171,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        DeleteProjectResponse | DeleteProjectResponse422
+        DeleteProjectResponse | HierarchyRefusalResponse
     """
 
     return (

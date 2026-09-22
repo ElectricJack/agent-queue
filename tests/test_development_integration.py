@@ -1400,7 +1400,7 @@ async def _repair_chain(db, service, depth):
     return previous
 
 
-async def test_archived_repair_source_does_not_wedge_the_publisher(setup, monkeypatch):
+async def test_archived_repair_source_does_not_wedge_the_publisher(setup):
     """The exact incident: manifest -> source closes -> source archived -> tick.
 
     ``development-repair-8d6e0c872accc17c1d65`` was a generation-3 repair that
@@ -1426,11 +1426,13 @@ async def test_archived_repair_source_does_not_wedge_the_publisher(setup, monkey
     # ... but the incident's repair was archived by a daemon that predated that
     # guard, and such rows are still in installs, so the publisher must survive
     # them.  Archive it the way that daemon did.
-    async def _no_hold(ids, project_id, *, conn):
-        return None
-
-    monkeypatch.setattr(db, "_development_integration_hold", _no_hold)
-    assert await db.archive_task(previous)
+    # Go straight through the historical row move. The current public
+    # archive path additionally refuses this task as undelivered, which is
+    # the deliberate D2 protection; monkeypatching only the old development
+    # manifest hold would no longer recreate a pre-guard archive.
+    async with db.immediate() as conn:
+        task = await db._get_task_conn(previous, conn=conn)
+        await db._archive_one(task, conn=conn)
     assert await db.get_task(previous) is None
     assert (await db.get_archived_task(previous))["status"] == TaskStatus.COMPLETED.value
 
@@ -1469,7 +1471,11 @@ async def test_archived_terminal_source_is_satisfied_without_a_schema_impossible
     db, service, _source, _remote, _repo = setup
     await feature(setup, "original")
     await db.update_task("original", status=TaskStatus.COMPLETED.value)
-    assert await db.archive_task("original")
+    # This models legacy data written before D2 made undelivered development
+    # work unarchivable through the public archive command.
+    async with db.immediate() as conn:
+        task = await db._get_task_conn("original", conn=conn)
+        await db._archive_one(task, conn=conn)
     assert await db.get_task("original") is None
 
     with caplog.at_level(logging.INFO, logger="src.integration.development"):
@@ -1575,7 +1581,11 @@ async def test_archived_repair_is_not_resurrected_as_a_fresh_ready_task(setup):
         "p", "r", manifest, "b" * 40, reason="validation failed"
     )
     await db.update_task(identity, status=TaskStatus.COMPLETED.value)
-    assert await db.archive_task(identity)
+    # Existing archives must never be recreated as READY, even though the
+    # current D2 archive guard would retain this undelivered repair.
+    async with db.immediate() as conn:
+        task = await db._get_task_conn(identity, conn=conn)
+        await db._archive_one(task, conn=conn)
     assert await db.get_task(identity) is None
 
     assert (

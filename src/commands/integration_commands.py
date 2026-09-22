@@ -1053,8 +1053,13 @@ class IntegrationCommandsMixin:
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:
         if operation["target_kind"] == "parent":
-            task = await self.db.get_task(operation.get("parent_task_id") or "")
-            return task.project_id if task is not None else None
+            from src.database.queries.task_identity import resolve_task_identity_on
+
+            async with self.db._engine.connect() as conn:
+                identity = await resolve_task_identity_on(
+                    conn, operation.get("parent_task_id") or ""
+                )
+            return identity.project_id if identity is not None else None
         if operation["target_kind"] == "batch":
             batch = await self.db.get_integration_batch(operation.get("batch_id") or "")
             return str(batch["project_id"]) if batch is not None else None
@@ -1801,7 +1806,10 @@ class IntegrationCommandsMixin:
             parsed = DeliveryReceiptsArgs.model_validate(args)
         except ValidationError as exc:
             return _failure("runtime_error", f"invalid receipt query: {exc}")
-        task = await self.db.get_task(parsed.source_task_id)
+        from src.database.queries.task_identity import resolve_task_identity_on
+
+        async with self.db._engine.connect() as conn:
+            task = await resolve_task_identity_on(conn, parsed.source_task_id)
         repository = await self.db.get_repo(parsed.repository_id)
         if (
             task is None
