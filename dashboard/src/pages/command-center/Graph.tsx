@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { usePlaybooks } from "../../api/hooks";
 import { useShellPaneStore } from "../../panes/store";
 import { projectPlaybooks } from "./playbooks";
-import { useLayoutExtents } from "../../api/graphLayout";
+import { useLayoutExtents, useRunningTarget } from "../../api/graphLayout";
 import LayoutCanvas from "./layout-v2/LayoutCanvas";
 import { MobileLayoutLists } from "./layout-v2/MobileLayoutList";
 import { useJumpTarget } from "./layout-v2/useJumpToResult";
+import { useRunningWorkJump } from "./layout-v2/runningWork";
 import { useTaskWorkspace } from "./TaskWorkspace";
 import { useTaskSelection } from "./useTaskSelection";
 import type { SelectableTask } from "./types";
@@ -110,6 +111,13 @@ export default function CommandCenterGraph() {
     [projects],
   );
   const jumpTarget = useJumpTarget();
+  const manualRunningTarget = useRunningWorkJump();
+  const { data: initialRunningTarget } = useRunningTarget(projectId);
+  // A filter is an explicit reader intent.  The default root viewport may
+  // follow live work, but it must not pan away from a searched result.
+  const runningTarget = manualRunningTarget ?? (
+    !focusId && !filters.query.trim() && !filters.status ? initialRunningTarget : null
+  );
 
   return (
     <GraphShell clearSelection={chrome.clearSelection}
@@ -123,6 +131,7 @@ export default function CommandCenterGraph() {
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
             focusId={focusId} setFocus={setFocus} setShowCompleted={setShowCompleted} jumpTarget={jumpTarget}
+            runningTarget={runningTarget} manualRunningTarget={!!manualRunningTarget}
             selectedTaskId={chrome.selectedTaskId} onTaskClick={selectTaskById} onBackgroundClick={chrome.clearSelection}
             playbooks={chrome.playbooks} selectedPlaybookId={chrome.selectedPlaybookId}
             onPlaybookClick={chrome.openPlaybook} />}

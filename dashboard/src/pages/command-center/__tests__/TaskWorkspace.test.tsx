@@ -21,12 +21,15 @@ vi.mock("../useGraphHierarchy", async (importOriginal) => ({
 }));
 
 function Probe() {
-  const { setFocus, setQuery, filters, focusId } = useTaskWorkspace();
+  const { setFocus, setQuery, filters, focusId, goToRunningWork } = useTaskWorkspace();
   const navigate = useNavigate();
   return <>
     <button type="button" onClick={() => setFocus("pkg")}>enter pkg</button>
     <button type="button" onClick={() => setFocus("g0")}>enter g0</button>
     <button type="button" onClick={() => setQuery("needle")}>search</button>
+    <button type="button" onClick={() => goToRunningWork({
+      task_id: "g0", project_id: "alpha", parent_task_id: "pkg", ancestors: ["pkg"], observed_at: 1, layout_version: 1,
+    })}>running work</button>
     <button type="button" onClick={() => navigate(-1)}>back</button>
     <output data-testid="nav">{useNavigationType()}</output>
     <output data-testid="search">{useLocation().search}</output>
@@ -62,6 +65,18 @@ describe("entering a container", () => {
     mount();
     fireEvent.click(screen.getByRole("button", { name: "search" }));
     expect(screen.getByTestId("nav")).toHaveTextContent("REPLACE");
+    expect(screen.getByTestId("search")).toHaveTextContent("q=needle");
+  });
+
+  it("pushes one running-work entry, so Back restores the prior scope and filters", () => {
+    mount("/projects/alpha/graph?q=needle&focus=previous");
+    fireEvent.click(screen.getByRole("button", { name: "running work" }));
+    expect(screen.getByTestId("nav")).toHaveTextContent("PUSH");
+    expect(screen.getByTestId("focus")).toHaveTextContent("pkg");
+    expect(screen.getByTestId("search")).not.toHaveTextContent("needle");
+
+    fireEvent.click(screen.getByRole("button", { name: "back" }));
+    expect(screen.getByTestId("focus")).toHaveTextContent("previous");
     expect(screen.getByTestId("search")).toHaveTextContent("q=needle");
   });
 

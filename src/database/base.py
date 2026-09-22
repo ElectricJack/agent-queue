@@ -479,6 +479,9 @@ class DatabaseBackend(Protocol):
     async def list_live_task_workers(
         self, project_id: str, *, now: float | None = None, stale_after: float = 480.0
     ) -> list[dict]: ...
+    async def get_running_task_target(
+        self, project_ids: list[str], *, now: float | None = None, stale_after: float = 480.0
+    ) -> dict | None: ...
     async def list_live_attempt_agent_ids(
         self, *, now: float | None = None, stale_after: float = 480.0
     ) -> set[str]: ...

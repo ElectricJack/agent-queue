@@ -109,6 +109,10 @@ async def workers(db, project_id="p"):
     return await db.list_live_task_workers(project_id, now=NOW)
 
 
+async def running_target(db, project_ids=("p",)):
+    return await db.get_running_task_target(list(project_ids), now=NOW)
+
+
 async def test_a_running_session_and_open_attempt_on_an_in_progress_task_is_returned(db):
     await make_task(db, "t1", status=TaskStatus.IN_PROGRESS)
     await add_session(db, "s1", task_id="t1")
@@ -160,6 +164,25 @@ async def test_task_assigned_status_is_also_returned(db):
     await add_session(db, "s1", task_id="t1")
     await add_attempt(db, "t1", session_id="s1")
     assert await workers(db) == [{"id": "a1", "name": "Worker", "current_task_id": "t1"}]
+
+
+async def test_running_target_breaks_priority_and_start_ties_by_task_id(db):
+    for task_id in ("b-task", "a-task"):
+        await db.create_task(
+            Task(
+                id=task_id, project_id="p", title=task_id, description="",
+                status=TaskStatus.IN_PROGRESS, priority=80,
+            )
+        )
+    await add_session(db, "s-a", task_id="a-task")
+    await add_session(db, "s-b", task_id="b-task")
+    await add_attempt(db, "a-task", session_id="s-a", started_at=NOW - 90)
+    await add_attempt(db, "b-task", session_id="s-b", started_at=NOW - 90)
+
+    assert await running_target(db) == {
+        "task_id": "a-task", "project_id": "p", "parent_task_id": None,
+        "started_at": NOW - 90,
+    }
 
 
 async def test_no_agent_id_on_the_attempt_is_not_returned(db):

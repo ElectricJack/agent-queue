@@ -39,13 +39,14 @@ def client_factory(db):
     return _make
 
 
-async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot"):
+async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot", started_at=None):
     """A running session + open attempt, the thing that now docks a marker.
 
     ``agents.current_task_id`` is no longer read for markers, so a test that
     wants a worker to dock has to create the live attempt directly.
     """
     now = time.time()
+    started_at = now - 60 if started_at is None else started_at
     session_id = f"sess-{agent_id}"
     await db.create_session(
         SessionRecord(
@@ -59,7 +60,7 @@ async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot"
             work_dir="/w",
             epoch="e",
             instance_token=session_id,
-            started_at=now - 60,
+            started_at=started_at,
             task_id=task_id,
             state="running",
             last_activity=now - 5,
@@ -82,8 +83,8 @@ async def dock_live_worker(db, agent_id, task_id, *, project_id="p1", name="bot"
                 provider="tmux",
                 state="running",
                 work_dir="/w",
-                started_at=now - 60,
-                session_started_at=now - 60,
+                started_at=started_at,
+                session_started_at=started_at,
                 ended_at=None,
             )
         )
@@ -158,6 +159,68 @@ class _RecordingHandler:
         variants = [args["variant"]] if args.get("variant") else ["all", "active"]
         jobs = [await self.db.enqueue_layout_job(args["project_id"], v, "tidy") for v in variants]
         return {"success": True, "jobs": jobs}
+
+
+async def test_running_target_ranks_live_leaves_and_returns_the_nested_path(db, client_factory):
+    await seed(db)
+    now = time.time()
+    for agent_id in ("a2", "a3", "a4"):
+        await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="p", state=AgentState.BUSY))
+    # An in-progress container is deliberately not a destination, even with a
+    # newer/higher-priority worker marker of its own.
+    await db.create_task(Task(id="container", project_id="p1", title="container", description="", status=TaskStatus.IN_PROGRESS, priority=100))
+    await db.create_task(Task(id="inside", project_id="p1", title="inside", description=""))
+    async with db._engine.begin() as conn:
+        await db.set_parent("inside", "container", conn=conn)
+    await dock_live_worker(db, "a2", "container", started_at=now - 200)
+    # The two root leaves tie on priority.  The oldest live attempt wins.
+    await db.create_task(Task(id="newer", project_id="p1", title="newer", description="", status=TaskStatus.IN_PROGRESS, priority=80))
+    await db.create_task(Task(id="older", project_id="p1", title="older", description="", status=TaskStatus.IN_PROGRESS, priority=80))
+    await dock_live_worker(db, "a3", "newer", started_at=now - 20)
+    await dock_live_worker(db, "a4", "older", started_at=now - 120)
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["task_id"] == "older"
+    assert r.json()["parent_task_id"] is None
+    assert r.json()["ancestors"] == []
+
+    # Once the root leaves are no longer running, the existing nested g0
+    # target includes the path the root canvas uses to pan to its outer tile.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks_table).where(tasks_table.c.id.in_(["newer", "older"])).values(status="COMPLETED"))
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["task_id"] == "g0"
+    assert r.json()["parent_task_id"] == "pkg"
+    assert r.json()["ancestors"] == ["e", "pkg"]
+
+
+async def test_running_target_is_null_when_no_live_leaf_exists(db, client_factory):
+    async with client_factory() as ac:
+        r = await ac.get("/api/projects/p1/graph/running-target")
+    assert r.status_code == 200
+    assert r.json() is None
+
+
+async def test_dashboard_running_target_ranks_across_projects(db, client_factory):
+    await db.create_project(Project(id="p2", name="P2"))
+    await db.create_agent(Agent(id="a2", name="a2", profile_id="p", state=AgentState.BUSY))
+    await db.create_task(
+        Task(
+            id="p2-running", project_id="p2", title="p2-running", description="",
+            status=TaskStatus.IN_PROGRESS, priority=90,
+        )
+    )
+    await dock_live_worker(db, "a2", "p2-running", project_id="p2")
+
+    async with client_factory() as ac:
+        r = await ac.get("/api/graph/running-target")
+    assert r.status_code == 200
+    assert r.json()["project_id"] == "p2"
+    assert r.json()["task_id"] == "p2-running"
 
 
 async def test_extent_pending_then_ready(db, client_factory):

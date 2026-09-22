@@ -1565,6 +1565,79 @@
         }
       }
     },
+    "/api/projects/{project_id}/graph/running-target": {
+      "get": {
+        "summary": "Get Project Running Target",
+        "operationId": "get_project_running_target_api_projects__project_id__graph_running_target_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RunningTargetResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Project Running Target Api Projects  Project Id  Graph Running Target Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph/running-target": {
+      "get": {
+        "summary": "Get Running Target",
+        "operationId": "get_running_target_api_graph_running_target_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/RunningTargetResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Running Target Api Graph Running Target Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/projects/{project_id}/graph/tiles": {
       "post": {
         "summary": "Post Tiles",
@@ -42709,6 +42782,60 @@
           "status"
         ],
         "title": "RunPlaybookResponse"
+      },
+      "RunningTargetResponse": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "parent_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Task Id"
+          },
+          "ancestors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ancestors",
+            "default": []
+          },
+          "observed_at": {
+            "type": "number",
+            "title": "Observed At"
+          },
+          "layout_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Layout Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "project_id",
+          "observed_at"
+        ],
+        "title": "RunningTargetResponse",
+        "description": "The live leaf task a graph should navigate to, if one exists.\n\n``ancestors`` is ordered from the project root to the task's immediate\nparent when a published layout is available.  It lets the root graph pan\nto the visible enclosing tile while the toolbar enters ``parent_task_id``\nto reveal the task itself."
       },
       "SamplerMetrics": {
         "properties": {

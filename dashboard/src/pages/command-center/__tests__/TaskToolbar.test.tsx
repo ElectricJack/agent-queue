@@ -8,9 +8,11 @@ import { TaskWorkspaceProvider, useTaskWorkspace } from "../TaskWorkspace";
 import TaskToolbar from "../TaskToolbar";
 import { resetGraphStateFallback, useGraphState } from "../useGraphHierarchy";
 import { publishAppliedVariant } from "../layout-v2/appliedVariant";
+import { clearRunningWorkJump, publishRunningWorkNotice } from "../layout-v2/runningWork";
 
 const mocks = vi.hoisted(() => ({
   create: vi.fn(), open: vi.fn(), live: vi.fn(), tidy: vi.fn(), tidyFailed: false,
+  running: vi.fn(async () => ({ task_id: "g0", project_id: "alpha", parent_task_id: "pkg", ancestors: ["pkg"], observed_at: 1, layout_version: 1 })),
   locate: vi.fn(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })),
   error: null as Error | null,
   projects: [{ id: "alpha", name: "Alpha" }, { id: "beta", name: "Beta" }],
@@ -35,6 +37,7 @@ vi.mock("../../../api/hooks", () => ({
 }));
 vi.mock("../../../api/graphLayout", () => ({
   useTidyLayout: () => ({ mutate: mocks.tidy, isPending: false, isError: mocks.tidyFailed }),
+  fetchRunningTarget: mocks.running,
   locate: mocks.locate,
 }));
 vi.mock("../../../panes/store", () => ({ useShellPaneStore: () => ({ open: mocks.open }) }));
@@ -64,6 +67,8 @@ afterEach(cleanup);
 beforeEach(() => { vi.clearAllMocks(); mocks.error = null; mocks.tidyFailed = false;
   resetGraphStateFallback();
   publishAppliedVariant(null);
+  clearRunningWorkJump();
+  publishRunningWorkNotice(null);
   mocks.locate.mockImplementation(async () => ({ hits: [{ id: "t1", x: 1, y: 2, w: 1, h: 1 }] })); });
 
 describe("shared Command Center task controls", () => {
@@ -217,6 +222,31 @@ describe("layout-aware task controls", () => {
   it("offers no Focus active button: there is no inline expansion to re-open", () => {
     mount("/projects/alpha/graph");
     expect(screen.queryByRole("button", { name: "Focus active" })).not.toBeInTheDocument();
+  });
+
+  it("enters running work in one URL navigation and clears the old filters", async () => {
+    mount("/projects/alpha/graph?q=needle&status=READY&completed=1&window=24h&held=1&focus=old");
+
+    await userEvent.click(screen.getByRole("button", { name: "Running work" }));
+
+    await waitFor(() => expect(mocks.running).toHaveBeenCalledWith("alpha"));
+    const query = screen.getByTestId("query");
+    expect(query).toHaveTextContent("focus=pkg");
+    expect(query).not.toHaveTextContent("needle");
+    expect(query).not.toHaveTextContent("status");
+    expect(query).not.toHaveTextContent("completed");
+    expect(query).not.toHaveTextContent("window");
+    expect(query).not.toHaveTextContent("held");
+  });
+
+  it("leaves navigation stable and reports a clear notice when no work is running", async () => {
+    mocks.running.mockResolvedValueOnce(null as never);
+    mount("/projects/alpha/graph?focus=old");
+
+    await userEvent.click(screen.getByRole("button", { name: "Running work" }));
+
+    await waitFor(() => expect(screen.getByText("No running work")).toBeInTheDocument());
+    expect(screen.getByTestId("query")).toHaveTextContent("focus=old");
   });
 
   it("puts Density in the toolbar, immediately left of Tidy layout", () => {

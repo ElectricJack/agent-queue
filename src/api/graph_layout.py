@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import math
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -47,6 +48,7 @@ from src.api.models.graph_layout import (
     LocateRequest,
     LocateResponse,
     NodeResponse,
+    RunningTargetResponse,
     StubOverflow,
     TidyRequest,
     TidyResponse,
@@ -230,6 +232,36 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             return "all"
         return "all" if any(row.kind == "stub" for row in rows.values()) else variant
 
+    async def _running_target(project_ids: list[str]) -> RunningTargetResponse | None:
+        """Project (or dashboard) running-work target without creating a layout.
+
+        A target remains useful while a layout is rebuilding: the client keeps
+        it pending until the ordinary tiles request publishes, rather than
+        making this read enqueue a second backfill just to decorate the
+        response with coordinates.
+        """
+        observed_at = time.time()
+        target = await db.get_running_task_target(project_ids, now=observed_at)
+        if target is None:
+            return None
+        meta = await db.get_layout_meta(target["project_id"], "all")
+        ancestors: list[str] = []
+        if meta is not None:
+            rows = await db.load_layout_rows(
+                target["project_id"], "all", [target["task_id"]]
+            )
+            row = rows.get(target["task_id"])
+            if row is not None:
+                ancestors = ancestors_of(row.path)
+        return RunningTargetResponse(
+            task_id=target["task_id"],
+            project_id=target["project_id"],
+            parent_task_id=target["parent_task_id"],
+            ancestors=ancestors,
+            observed_at=observed_at,
+            layout_version=meta["layout_version"] if meta is not None else None,
+        )
+
     @router.get(
         "/api/projects/{project_id}/graph/extent",
         response_model=ExtentResponse,
@@ -257,6 +289,22 @@ def build_graph_layout_router(*, db, command_handler=None) -> APIRouter:
             node_count=meta["node_count"],
             job=job,
         )
+
+    @router.get(
+        "/api/projects/{project_id}/graph/running-target",
+        response_model=RunningTargetResponse | None,
+    )
+    async def get_project_running_target(project_id: str):
+        await _project_or_404(project_id)
+        return await _running_target([project_id])
+
+    @router.get("/api/graph/running-target", response_model=RunningTargetResponse | None)
+    async def get_running_target():
+        # Graph reads are deliberately unscoped, like the existing tiles and
+        # list routes.  The dashboard already has permission to render the
+        # same project set; this endpoint merely ranks that visible work.
+        projects = await db.list_projects()
+        return await _running_target([project.id for project in projects])
 
     async def _geometry(project_id: str, variant: str, req, *, status: str) -> _Geometry:
         """Visible kinds and compacted boxes for one request.
@@ -930,6 +978,21 @@ def _build_default_router() -> APIRouter:
             project_id=project_id,
             variant=variant,
         )
+
+    @router.get(
+        "/api/projects/{project_id}/graph/running-target",
+        response_model=RunningTargetResponse | None,
+    )
+    async def get_project_running_target(project_id: str):
+        return await _call(
+            "/api/projects/{project_id}/graph/running-target",
+            "GET",
+            project_id=project_id,
+        )
+
+    @router.get("/api/graph/running-target", response_model=RunningTargetResponse | None)
+    async def get_running_target():
+        return await _call("/api/graph/running-target", "GET")
 
     @router.post(
         "/api/projects/{project_id}/graph/tiles",
