@@ -269,6 +269,97 @@ async def restore_seed(dsn: str, seed: dict[str, list[dict]]) -> None:
         await conn.close()
 
 
+async def seed_task_session_attempt(
+    db,
+    *,
+    task_id: str,
+    project_id: str,
+    task_status=None,
+    session_id: str | None = None,
+    agent_id: str | None = "a1",
+    agent_name: str = "Worker",
+    profile_id: str = "worker",
+    session_state: str = "running",
+    attempt_state: str = "running",
+    heartbeat_age: float = 30.0,
+    now: float | None = None,
+    session_started_at: float | None = None,
+    attempt_started_at: float | None = None,
+    session_ended_at: float | None = None,
+    attempt_ended_at: float | None = None,
+    create_task: bool = True,
+) -> dict[str, str]:
+    """Create the task/session/live-attempt shape used by marker tests.
+
+    Graph markers are derived from a live session attempt, never from
+    ``Agent.current_task_id``.  Centralising this otherwise verbose setup
+    keeps endpoint, query, and doctor tests honest while leaving the relevant
+    liveness controls explicit: status, both states, heartbeat age, and end
+    times all remain fixture arguments.
+    """
+    import time
+
+    from sqlalchemy import insert
+
+    from src.database.tables import task_session_attempts
+    from src.models import SessionRecord, Task, TaskStatus
+
+    if task_status is None:
+        task_status = TaskStatus.IN_PROGRESS
+    if create_task:
+        await db.create_task(
+            Task(id=task_id, project_id=project_id, title=task_id, description="", status=task_status)
+        )
+
+    timestamp = time.time() if now is None else now
+    session_started_at = timestamp - 60 if session_started_at is None else session_started_at
+    attempt_started_at = session_started_at if attempt_started_at is None else attempt_started_at
+    session_id = session_id or f"session-{agent_id or 'unowned'}-{task_id}"
+    attempt_id = uuid.uuid4().hex
+    await db.create_session(
+        SessionRecord(
+            id=session_id,
+            project_id=project_id,
+            profile_id=profile_id,
+            harness="claude",
+            provider="tmux",
+            name=session_id,
+            lifecycle="pool",
+            work_dir="/w",
+            epoch="e",
+            instance_token=session_id,
+            started_at=session_started_at,
+            task_id=task_id,
+            state=session_state,
+            last_activity=timestamp - heartbeat_age,
+            ended_at=session_ended_at,
+        )
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(task_session_attempts).values(
+                id=attempt_id,
+                session_id=session_id,
+                task_id=task_id,
+                project_id=project_id,
+                agent_id=agent_id,
+                agent_name=agent_name,
+                profile_id=profile_id,
+                name=agent_name,
+                lifecycle="pool",
+                model="claude-opus-5",
+                harness="claude",
+                provider="tmux",
+                state=attempt_state,
+                work_dir="/w",
+                started_at=attempt_started_at,
+                session_started_at=session_started_at,
+                ended_at=attempt_ended_at,
+            )
+        )
+    return {"task_id": task_id, "session_id": session_id, "attempt_id": attempt_id}
+
+
 class LeasePool:
     """Per-worker pool of template-cloned databases, truncated on release.
 

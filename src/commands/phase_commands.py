@@ -18,9 +18,14 @@ a phase that has already settled refuses it through the existing
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import dataclass
+
+from sqlalchemy import and_, select
 
 from src.database.queries.hierarchy_queries import PHASE_KEY, HierarchyError
+from src.database.tables import task_metadata, tasks
 from src.models import DepType, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -28,29 +33,75 @@ logger = logging.getLogger(__name__)
 __all__ = ["PHASE_KEY", "PhaseCommandsMixin"]
 
 
+@dataclass(frozen=True)
+class _PhaseSibling:
+    """The narrow task/metadata projection phase commands actually need."""
+
+    id: str
+    title: str
+    status: str
+    is_blocked: bool
+    meta: dict
+
+
 class PhaseCommandsMixin:
     """``phase_create`` / ``phase_list`` — operator and planner surfaces."""
 
-    async def _phase_siblings(self, project_id: str, parent_id: str | None) -> list[tuple]:
-        """``(task, phase_meta)`` for every phase directly under *parent_id*.
+    async def _phase_siblings(
+        self, project_id: str, parent_id: str | None, *, conn=None
+    ) -> list[_PhaseSibling]:
+        """Return the narrow projection for phases directly under *parent_id*.
 
         Ordered by the recorded ``order``, then by id so a hand-written
         duplicate order is still deterministic.  ``parent_id`` of ``None``
-        means the project root.
+        means the project root.  This is one scope-filtered join rather than
+        hydrating every project task and issuing one metadata query per phase.
         """
-        siblings = [
-            task
-            for task in await self.db.list_tasks(project_id=project_id)
-            if (task.parent_task_id or None) == parent_id
-        ]
-        flagged = await self.db.task_ids_with_meta([task.id for task in siblings], PHASE_KEY)
+        stmt = (
+            select(
+                tasks.c.id,
+                tasks.c.title,
+                tasks.c.status,
+                tasks.c.is_blocked,
+                task_metadata.c.value,
+            )
+            .select_from(
+                tasks.join(
+                    task_metadata,
+                    and_(
+                        task_metadata.c.task_id == tasks.c.id,
+                        task_metadata.c.key == PHASE_KEY,
+                    ),
+                )
+            )
+            .where(tasks.c.project_id == project_id)
+        )
+        stmt = stmt.where(
+            tasks.c.parent_task_id == parent_id
+            if parent_id is not None
+            else tasks.c.parent_task_id.is_(None)
+        )
+        if conn is None:
+            async with self.db._engine.connect() as read_conn:
+                raw_rows = (await read_conn.execute(stmt)).mappings().all()
+        else:
+            raw_rows = (await conn.execute(stmt)).mappings().all()
         rows = []
-        for task in siblings:
-            if task.id not in flagged:
-                continue
-            meta = await self.db.get_task_meta(task.id, PHASE_KEY)
-            rows.append((task, meta if isinstance(meta, dict) else {}))
-        rows.sort(key=lambda row: (int(row[1].get("order") or 0), row[0].id))
+        for row in raw_rows:
+            try:
+                meta = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError):
+                meta = {}
+            rows.append(
+                _PhaseSibling(
+                    id=row["id"],
+                    title=row["title"],
+                    status=row["status"],
+                    is_blocked=bool(row["is_blocked"]),
+                    meta=meta if isinstance(meta, dict) else {},
+                )
+            )
+        rows.sort(key=lambda row: (int(row.meta.get("order") or 0), row.id))
         return rows
 
     async def _phase_scope(self, args: dict) -> tuple[str, str | None, dict | None]:
@@ -135,7 +186,48 @@ class PhaseCommandsMixin:
         else:
             create_args["root"] = True
 
-        created = await self._cmd_create_task(create_args)
+        phase_state: dict[str, object] = {}
+
+        async def initialise_phase_on(conn, task_id: str, actual_parent: str | None) -> None:
+            """Write the phase flag, order metadata and all gates atomically.
+
+            ``_create_task`` invokes this inside the same transaction that
+            inserts the task and its parent edge.  The hierarchy lock is
+            already held by each creation path before this point, so sibling
+            order allocation cannot race another create/reparent/delete.
+            """
+            siblings = await self._phase_siblings(project_id, actual_parent, conn=conn)
+            order = max((int(row.meta.get("order") or 0) for row in siblings), default=0) + 1
+            previous = siblings[-1].id if siblings else None
+            gates = [row.id for row in siblings if row.status != TaskStatus.COMPLETED.value]
+            await self.db.mark_container(task_id, conn=conn)
+            await self.db._upsert_meta(
+                task_id, PHASE_KEY, {"order": order, "label": label}, conn=conn
+            )
+            for gate in gates:
+                await self.db.add_dependency(
+                    task_id,
+                    gate,
+                    DepType.BLOCKS.value,
+                    description="phase order",
+                    conn=conn,
+                )
+            phase_state.update(
+                order=order,
+                previous=previous,
+                gates=gates,
+                parent_id=actual_parent,
+            )
+
+        create_args["_after_create_on"] = initialise_phase_on
+        try:
+            created = await self._cmd_create_task(create_args)
+        except HierarchyError as exc:
+            return {
+                "success": False,
+                "code": f"hierarchy.{exc.code}",
+                "error": f"hierarchy.{exc.code}: {exc.detail}; phase creation was rolled back",
+            }
         task_id = created.get("created")
         if created.get("error") or not task_id:
             # Hand back the filing path's own refusal — ``idle_session_cannot_file``,
@@ -149,63 +241,23 @@ class PhaseCommandsMixin:
             if not refusal.get("code") and not refusal.get("error"):
                 refusal["code"] = "phase.create_failed"
                 refusal["error"] = "the phase task could not be created"
-            return refusal
-
-        # Order and the gate edge follow the *written* placement.  The filing
-        # path may legitimately land the task somewhere other than requested
-        # (a naming-depth cap, a repair writer's re-selected parent), and a
-        # phase ordered against a parent it does not live under would gate
-        # nothing.
-        created_task = await self.db.get_task(task_id)
-        actual_parent = created_task.parent_task_id if created_task is not None else parent_id
-        siblings = await self._phase_siblings(project_id, actual_parent)
-        order = max((int(meta.get("order") or 0) for _, meta in siblings), default=0) + 1
-        previous = siblings[-1][0].id if siblings else None
-        # A gate onto EVERY earlier phase that has not completed, not only the
-        # immediate predecessor.  With one edge per phase, deleting an
-        # abandoned middle phase dropped the only edge its successor had and
-        # released it while an earlier phase was still open (final review I4).
-        # Redundant-looking edges are the point: they are what survives a
-        # deletion.  A COMPLETED phase gates nothing, so it is left out — the
-        # projection would resolve such an edge immediately anyway.
-        gates = [
-            task.id for task, _ in siblings if task.status is not TaskStatus.COMPLETED
-        ]
-
-        # One transaction: a crash between the flag and the metadata would
-        # leave a claimable unflagged phase behind.
-        async with self.db.immediate() as conn:
-            await self.db.mark_container(task_id, conn=conn)
-            await self.db._upsert_meta(
-                task_id, PHASE_KEY, {"order": order, "label": label}, conn=conn
-            )
-
-        for gate in gates:
-            try:
-                await self.db.add_dependency(
-                    task_id, gate, DepType.BLOCKS.value, description="phase order"
+            if str(refusal.get("code") or "").startswith("hierarchy."):
+                refusal["error"] = (
+                    f"{refusal['error']}; phase creation was rolled back"
                 )
-            except HierarchyError as exc:
-                return {
-                    "success": False,
-                    "code": f"hierarchy.{exc.code}",
-                    "error": (
-                        f"hierarchy.{exc.code}: {exc.detail} (phase '{task_id}' was created "
-                        f"but is not gated behind '{gate}'; add the edge with 'aq task deps')"
-                    ),
-                }
+            return refusal
 
         return {
             "success": True,
             "phase": {
                 "id": task_id,
-                "order": order,
+                "order": phase_state["order"],
                 "label": label,
-                "parent_id": actual_parent,
+                "parent_id": phase_state["parent_id"],
                 # The immediate predecessor, unchanged: what a caller shows as
                 # "this comes after". ``blocked_by_all`` is the full gate set.
-                "blocked_by": previous,
-                "blocked_by_all": gates,
+                "blocked_by": phase_state["previous"],
+                "blocked_by_all": phase_state["gates"],
             },
         }
 
@@ -216,15 +268,15 @@ class PhaseCommandsMixin:
             return refusal
 
         phases = []
-        for task, meta in await self._phase_siblings(project_id, parent_id):
+        for task in await self._phase_siblings(project_id, parent_id):
             summary = await self.db.get_children_summary(task.id) or {}
             phases.append({
                 "id": task.id,
                 "title": task.title,
-                "label": meta.get("label") or task.title,
-                "order": int(meta.get("order") or 0),
-                "status": task.status.value,
-                "is_blocked": bool(task.is_blocked),
+                "label": task.meta.get("label") or task.title,
+                "order": int(task.meta.get("order") or 0),
+                "status": task.status,
+                "is_blocked": task.is_blocked,
                 "total": int(summary.get("total") or 0),
                 "done": int(summary.get("done") or 0),
             })

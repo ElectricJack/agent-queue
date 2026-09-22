@@ -1285,6 +1285,7 @@ class ExecutionMixin:
         session_live: bool = False,
         session_id: str | None = None,
         review_evidence_snapshot: dict | None = None,
+        skip_open_subtasks: bool = False,
     ) -> dict:
         """Run the completion pipeline for a session-closed task.
 
@@ -1741,6 +1742,7 @@ class ExecutionMixin:
                         context=context,
                         assigned_agent_id=None,
                         expect_claim_epoch=expect_claim_epoch,
+                        skip_open_subtasks=skip_open_subtasks,
                         **pr_kwargs,
                     )
                 await self.db.log_blocked_flips(transition.flipped)
@@ -1754,6 +1756,7 @@ class ExecutionMixin:
                     retry_count=new_retry,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
                     **pr_kwargs,
                 )
             else:
@@ -1763,6 +1766,7 @@ class ExecutionMixin:
                     context=context,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
                     **pr_kwargs,
                 )
         except HierarchyError as exc:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.database import Database
@@ -38,6 +40,19 @@ async def test_add_two_batches_yields_contiguous_ordinals(db):
     assert [row["id"] for row in first] == ["t#s1", "t#s2"]
     second = await db.add_task_subtasks("t", PROJECT_ID, [{"title": "three"}])
     assert [row["ordinal"] for row in second] == [3]
+
+
+async def test_concurrent_appends_allocate_distinct_ordinals(db):
+    """The parent-row lock serialises concurrent max-ordinal allocation."""
+    await mktask(db, "t")
+
+    first, second = await asyncio.gather(
+        db.add_task_subtasks("t", PROJECT_ID, [{"title": "one"}]),
+        db.add_task_subtasks("t", PROJECT_ID, [{"title": "two"}]),
+    )
+
+    assert sorted(row["ordinal"] for row in [*first, *second]) == [1, 2]
+    assert [row["ordinal"] for row in await db.list_task_subtasks("t")] == [1, 2]
 
 
 async def test_list_is_ordinal_ordered_and_omits_context(db):
@@ -107,6 +122,13 @@ async def test_add_past_limit_raises_subtask_limit(db):
         await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one too many"}])
 
 
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.BLOCKED])
+async def test_add_to_terminal_task_is_refused(db, status):
+    await mktask(db, "t", status=status)
+    with pytest.raises(ValueError, match="subtask_task_terminal"):
+        await db.add_task_subtasks("t", PROJECT_ID, [{"title": "too late"}])
+
+
 async def test_add_with_a_caller_connection_joins_that_transaction(db):
     """The graph creator seeds subtasks inside ``write_plan``'s one transaction,
     so a rollback there must leave no checklist behind."""
@@ -170,16 +192,20 @@ async def test_hard_delete_removes_subtasks(db):
 
 
 async def test_archive_keeps_subtasks(db):
-    await mktask(db, "t", status=TaskStatus.COMPLETED)
+    await mktask(db, "t")
     await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one"}])
+    await db.update_task_subtask("t", 1, status="done")
+    await db.transition_task("t", TaskStatus.COMPLETED, context="test")
     assert await db.archive_task("t") is True
     rows = await db.list_task_subtasks("t")
     assert [r["title"] for r in rows] == ["one"]
 
 
 async def test_permanent_archive_delete_removes_subtasks(db):
-    await mktask(db, "t", status=TaskStatus.COMPLETED)
+    await mktask(db, "t")
     await db.add_task_subtasks("t", PROJECT_ID, [{"title": "one"}])
+    await db.update_task_subtask("t", 1, status="done")
+    await db.transition_task("t", TaskStatus.COMPLETED, context="test")
     await db.archive_task("t")
     assert await db.list_task_subtasks("t") != []
     assert await db.delete_archived_task("t") is True

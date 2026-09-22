@@ -5,8 +5,8 @@ from src.task_graph.layout.model import ContainerScope, SnapTask
 from src.task_graph.layout.constants import CARD_H, CARD_W
 
 
-def task(i, created=0.0, status="READY"):
-    return SnapTask(id=i, parent_id=None, is_container=False, status=status, created_at=created)
+def task(i, created=0.0, status="READY", *, container=False):
+    return SnapTask(id=i, parent_id=None, is_container=container, status=status, created_at=created)
 
 
 def scope(children, edges, aggregates=None):
@@ -67,6 +67,74 @@ def test_tidy_puts_running_work_first_and_finished_last():
     ]
     res = layout_container(scope(kids, []), mode="tidy")
     assert reading_order(res) == ["run0", "ready0", "ready1", "ready2", "done0", "done1"]
+
+
+def test_tidy_container_aggregate_order_is_deterministic_across_input_permutations():
+    """Aggregate-map order must not leak into ranks, keys, or coordinates.
+
+    The old test only shuffled fields for one container and compared one seed
+    key.  This drives the full engine with several containers whose rollups
+    produce distinct activity classes, varies both outer and inner dictionary
+    insertion order, and preserves a deterministic same-class tie.
+    """
+    children = {
+        "running": task("running", created=9.0, status="COMPLETED", container=True),
+        "active-a": task("active-a", created=3.0, container=True),
+        "active-b": task("active-b", created=3.0, container=True),
+        "finished": task("finished", created=1.0, status="COMPLETED", container=True),
+    }
+    aggregate_values = {
+        "running": {"descendants": 4, "running": 1, "active": 3},
+        "active-a": {"descendants": 3, "running": 0, "active": 2},
+        "active-b": {"descendants": 2, "running": 0, "active": 1},
+        "finished": {"descendants": 2, "running": 0, "active": 0},
+    }
+
+    def run(child_order, field_order):
+        aggregates = {
+            child_id: {field: aggregate_values[child_id][field] for field in field_order}
+            for child_id in child_order
+        }
+        result = layout_container(
+            scope([children[child_id] for child_id in child_order], [], aggregates), mode="tidy", seed=17
+        )
+        return {
+            child_id: (
+                row.rank,
+                row.order_key,
+                row.rel_x,
+                row.rel_y,
+                row.abs_x,
+                row.abs_y,
+            )
+            for child_id, row in result.rows.items()
+        }
+
+    snapshots = {
+        tuple(sorted(run(order, fields).items()))
+        for order, fields in (
+            (("running", "active-a", "active-b", "finished"), ("descendants", "running", "active")),
+            (("finished", "active-b", "running", "active-a"), ("active", "descendants", "running")),
+            (("active-a", "finished", "active-b", "running"), ("running", "active", "descendants")),
+        )
+    }
+    assert len(snapshots) == 1
+    baseline = dict(next(iter(snapshots)))
+    assert [child_id for child_id, _ in sorted(baseline.items(), key=lambda item: (item[1][3], item[1][2]))] == [
+        "running",
+        "active-a",
+        "active-b",
+        "finished",
+    ]
+
+    # This control proves aggregates participate in the sort: making the
+    # formerly-running container finished moves both active containers ahead.
+    changed = dict(aggregate_values)
+    changed["running"] = {"descendants": 4, "running": 0, "active": 0}
+    result = layout_container(
+        scope(list(children.values()), [], changed), mode="tidy", seed=17
+    )
+    assert reading_order(result) == ["active-a", "active-b", "finished", "running"]
 
 
 def test_tidy_output_is_unchanged_when_every_sibling_is_one_class(monkeypatch):

@@ -11,13 +11,23 @@ import time
 
 from sqlalchemy import case, func, select, update
 
-from src.database.tables import task_subtasks
+from src.database.tables import task_subtasks, tasks
 
 #: Row states a subtask can be in. ``skip_open_task_subtasks`` and the
 #: "settled" half of ``count_task_subtasks`` both key off this split.
 SUBTASK_STATUSES = ("pending", "in_progress", "done", "skipped")
 OPEN_SUBTASK_STATUSES = ("pending", "in_progress")
 SETTLED_SUBTASK_STATUSES = ("done", "skipped")
+
+
+class SubtasksOpenError(ValueError):
+    """A terminal transition was refused because its checklist is unfinished."""
+
+    def __init__(self, task_id: str, ordinals: list[int]) -> None:
+        self.task_id = task_id
+        self.ordinals = ordinals
+        super().__init__(f"{task_id} has open subtasks: {', '.join(map(str, ordinals))}")
+
 
 #: The durable per-task ceiling — what ``add_task_subtasks`` refuses to cross.
 MAX_SUBTASKS_PER_TASK = 200
@@ -81,7 +91,25 @@ class TaskSubtaskQueriesMixin:
     async def _add_task_subtasks_on(
         self, conn, task_id: str, project_id: str, items: list[dict]
     ) -> list[dict]:
-        """The append itself, on an already-open connection."""
+        """The append itself, serialised by the owning task row lock.
+
+        The ordinal is a per-task allocation, so locking the parent before
+        reading the current maximum makes concurrent appenders take turns.
+        The unique constraints remain the final invariant, rather than the
+        mechanism that reports ordinary capacity contention to callers.
+        """
+        task_status = (
+            await conn.execute(
+                select(tasks.c.status)
+                .where(tasks.c.id == task_id, tasks.c.project_id == project_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if task_status is None:
+            raise ValueError("subtask_task_not_found")
+        if task_status in ("COMPLETED", "FAILED", "BLOCKED"):
+            raise ValueError("subtask_task_terminal")
+
         now = time.time()
         current_max = (
             await conn.execute(
@@ -173,7 +201,26 @@ class TaskSubtaskQueriesMixin:
             ).mappings().first()
             return dict(row) if row else None
 
-    async def skip_open_task_subtasks(self, task_id: str, note: str) -> int:
+    async def _skip_open_task_subtasks_on(self, conn, task_id: str, note: str) -> int:
+        """Flip open rows using the caller's task-terminal transaction."""
+        result = await conn.execute(
+            update(task_subtasks)
+            .where(
+                task_subtasks.c.task_id == task_id,
+                task_subtasks.c.status.in_(OPEN_SUBTASK_STATUSES),
+            )
+            .values(
+                status="skipped",
+                note=case(
+                    (func.coalesce(task_subtasks.c.note, "") == "", note),
+                    else_=task_subtasks.c.note,
+                ),
+                updated_at=time.time(),
+            )
+        )
+        return result.rowcount
+
+    async def skip_open_task_subtasks(self, task_id: str, note: str, *, conn=None) -> int:
         """Flip every open (``pending``/``in_progress``) subtask to ``skipped``.
 
         *note* is a default, not an overwrite: a row that already carries a
@@ -183,23 +230,10 @@ class TaskSubtaskQueriesMixin:
 
         Returns the number of rows flipped.
         """
-        async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(task_subtasks)
-                .where(
-                    task_subtasks.c.task_id == task_id,
-                    task_subtasks.c.status.in_(OPEN_SUBTASK_STATUSES),
-                )
-                .values(
-                    status="skipped",
-                    note=case(
-                        (func.coalesce(task_subtasks.c.note, "") == "", note),
-                        else_=task_subtasks.c.note,
-                    ),
-                    updated_at=time.time(),
-                )
-            )
-            return result.rowcount
+        if conn is not None:
+            return await self._skip_open_task_subtasks_on(conn, task_id, note)
+        async with self._engine.begin() as owned:
+            return await self._skip_open_task_subtasks_on(owned, task_id, note)
 
     async def count_task_subtasks(self, task_ids: list[str]) -> dict[str, tuple[int, int]]:
         """``{task_id: (total, settled)}`` via one ``GROUP BY``.

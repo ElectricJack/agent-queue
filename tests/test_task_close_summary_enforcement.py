@@ -48,7 +48,12 @@ class _StubOrchestrator:
 
     async def complete_session_task(self, task, **kwargs):
         status = TaskStatus.COMPLETED if kwargs.get("outcome") == "pass" else TaskStatus.FAILED
-        await self.db.transition_task(task.id, status, context="session_close")
+        await self.db.transition_task(
+            task.id,
+            status,
+            context="session_close",
+            skip_open_subtasks=kwargs.get("skip_open_subtasks", False),
+        )
         return {"status": status.value, "pr_url": None, "pipeline_ok": True}
 
 
@@ -90,7 +95,7 @@ async def test_close_rejects_missing_summary_for_workspace_profile(handler, db):
 
     result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
 
-    assert result["success"] is False
+    assert result.get("success") is not True
     assert "summary" in result["error"].lower()
     assert await db.get_task_completion(tid) is None
 
@@ -571,6 +576,30 @@ async def test_close_with_skip_open_subtasks_flag_settles_and_succeeds(handler, 
     assert ("task.subtasks_updated", {
         "task_id": "t1", "project_id": "p", "total": 2, "settled": 2,
     }) in handler.orchestrator.bus.events
+
+
+@pytest.mark.asyncio
+async def test_close_skip_rolls_back_with_the_terminal_transition_on_database_error(
+    handler, db, monkeypatch
+):
+    """A checklist write failure cannot leave a completed task with open rows."""
+    await db.create_project(Project(id="p", name="P"))
+    await db.create_task(Task(id="t1", project_id="p", title="t", description="d"))
+    await db.transition_task("t1", TaskStatus.IN_PROGRESS, context="test")
+    await db.add_task_subtasks("t1", "p", [{"title": "First"}, {"title": "Second"}])
+
+    async def fail_skip(*_args, **_kwargs):
+        raise RuntimeError("injected checklist write failure")
+
+    monkeypatch.setattr(db, "_skip_open_task_subtasks_on", fail_skip)
+    result = await handler.execute(
+        "task_close", {"task_id": "t1", "outcome": "pass", "skip_open_subtasks": True}
+    )
+
+    assert result.get("success") is not True
+    assert "injected checklist write failure" in result["error"]
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert [row["status"] for row in await db.list_task_subtasks("t1")] == ["pending", "pending"]
 
 
 @pytest.mark.asyncio

@@ -52,6 +52,7 @@ from src.models import (
     WorkspaceMode,
 )
 from src.state_machine import is_valid_status_transition
+from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +213,9 @@ class TransitionResult:
     #: Whether a claim-release operation actually owned and cleared the
     #: session hold.  Ordinary task transitions leave this false.
     released: bool = False
+    #: Open checklist rows flipped by an explicitly authorised successful
+    #: completion.  The event is emitted by the close surface after commit.
+    subtasks_skipped: int = 0
 
 
 class TaskQueryMixin:
@@ -955,6 +959,7 @@ class TaskQueryMixin:
         context: str = "",
         event=None,
         force: bool = False,
+        skip_open_subtasks: bool = False,
         _settle_depth: int = 0,
         expect_claim_epoch: int | None = None,
         projection_stable: bool = False,
@@ -1051,10 +1056,15 @@ class TaskQueryMixin:
         if assume_pre_state is not None:
             current_status, pre_blocked = assume_pre_state
         else:
+            pre_state = select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
+            # A terminal transition must serialize against checklist appends
+            # before it reads the state that determines whether the transition
+            # is legal.  Appenders take the same parent-row lock before
+            # allocating their ordinal.
+            if new_status == TaskStatus.COMPLETED:
+                pre_state = pre_state.with_for_update()
             row = (
-                await conn.execute(
-                    select(tasks.c.status, tasks.c.is_blocked).where(tasks.c.id == task_id)
-                )
+                await conn.execute(pre_state)
             ).fetchone()
 
             if row is None:
@@ -1066,6 +1076,33 @@ class TaskQueryMixin:
 
             current_status = TaskStatus(row[0])
             pre_blocked = bool(row[1])
+
+        # Checklist state is part of terminal completion, not a follow-up
+        # write.  The terminal pre-state read above locks the parent before
+        # observing either its status or its rows; appenders take this same
+        # lock before allocating an ordinal, so a close cannot slip past a
+        # concurrent append.  Any later refusal in this transition rolls the
+        # explicitly requested skip back with it.
+        if current_status != TaskStatus.COMPLETED and new_status == TaskStatus.COMPLETED:
+            open_ordinals = [
+                row[0]
+                for row in (
+                    await conn.execute(
+                        select(task_subtasks.c.ordinal)
+                        .where(
+                            task_subtasks.c.task_id == task_id,
+                            task_subtasks.c.status.in_(OPEN_SUBTASK_STATUSES),
+                        )
+                        .order_by(task_subtasks.c.ordinal)
+                    )
+                ).fetchall()
+            ]
+            if open_ordinals:
+                if not skip_open_subtasks:
+                    raise SubtasksOpenError(task_id, open_ordinals)
+                result.subtasks_skipped = await self._skip_open_task_subtasks_on(
+                    conn, task_id, "skipped at close"
+                )
 
         if (
             current_status not in {TaskStatus.READY, TaskStatus.IN_PROGRESS}
@@ -1420,6 +1457,7 @@ class TaskQueryMixin:
         event=None,
         force: bool = False,
         expect_claim_epoch: int | None = None,
+        skip_open_subtasks: bool = False,
         **kwargs,
     ) -> set[str]:
         """Public status write: one transaction, then post-commit emission.
@@ -1441,6 +1479,7 @@ class TaskQueryMixin:
                 event=event,
                 force=force,
                 expect_claim_epoch=expect_claim_epoch,
+                skip_open_subtasks=skip_open_subtasks,
                 **kwargs,
             )
         await self.log_blocked_flips(result.flipped)

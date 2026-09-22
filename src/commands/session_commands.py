@@ -29,7 +29,7 @@ from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
 from src.database.queries.task_queries import StaleClaim
-from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES
+from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 from src.models import TaskCompletion, TaskStatus
 from src.sessions.provider import (
     Cap,
@@ -1042,8 +1042,21 @@ class SessionCommandsMixin:
                 session_live=session_live,
                 session_id=session.id if session is not None else None,
                 review_evidence_snapshot=review_evidence_snapshot,
+                skip_open_subtasks=skip_open_subtasks_at_close,
             )
             retry_in_session = bool(result.get("verification_retry"))
+        except SubtasksOpenError as exc:
+            return {
+                "success": False,
+                "code": "subtasks.open",
+                "error": (
+                    f"{len(exc.ordinals)} subtask(s) are still open: "
+                    f"{', '.join(map(str, exc.ordinals))}. Mark each with "
+                    "`aq task subtask-done N` / `aq task subtask-skip N --note …`, "
+                    "or close with --skip-open-subtasks."
+                ),
+                "open_subtasks": exc.ordinals,
+            }
         except StaleClaim as exc:
             # The up-front fence (``_assert_session_owns``) makes this a
             # narrow race — only a concurrent claim between that check and
@@ -1111,18 +1124,18 @@ class SessionCommandsMixin:
                 "error": f"{lead}:\n{bullets}\n{tail}",
             }
 
-        # Past the last refusal point: ``complete_session_task`` has
-        # transitioned the task and neither the stale-claim nor the
-        # git-verification path can return from here on. Only now is it safe
-        # to settle the checklist the closing agent asked to skip.
-        if skip_open_subtasks_at_close:
-            flipped = await self.db.skip_open_task_subtasks(task_id, "skipped at close")
-            if flipped:
-                counts = await self.db.count_task_subtasks([task_id])
-                total, settled = counts.get(task_id, (0, 0))
-                await self._emit_task_subtasks_updated(task, total, settled)
-
         final_task = await self.db.get_task(task_id)
+        # The terminal transition performed an authorised checklist skip in
+        # its own transaction.  Emit its refresh event only after that commit;
+        # this is deliberately not a second checklist write.
+        if (
+            skip_open_subtasks_at_close
+            and final_task is not None
+            and final_task.status == TaskStatus.COMPLETED
+        ):
+            counts = await self.db.count_task_subtasks([task_id])
+            total, settled = counts.get(task_id, (0, 0))
+            await self._emit_task_subtasks_updated(task, total, settled)
         # Capture the final branch tip after verification/integration. The
         # pipeline may auto-commit dirty work, so a pre-pipeline SHA describes
         # the input state rather than the commit that actually closed the task.
