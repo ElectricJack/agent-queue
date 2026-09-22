@@ -142,6 +142,23 @@ daemon refused to boot until an operator hand-wrote a merge revision.
 See [docs/guides/migrations.md](docs/guides/migrations.md) and
 `src/database/migration_guard.py`.
 
+## Restarting after an update
+
+For an authorized operator or supervisor update, use `aq restart --no-dashboard`
+to restart the daemon and dashboard server. It preserves agent sessions so the
+daemon can re-adopt them, including the supervisor performing the update.
+
+**Do not use plain `aq stop` followed by `aq start` for an update.** `aq stop`
+also terminates AQ's agent tmux sessions. On 2026-09-22, the supervisor stopped
+its own session this way (exit 137), leaving the daemon offline before it could
+apply the update or run the start command. If the update requires a separate
+stopped phase, use `aq stop --keep-sessions`, then `aq start --no-dashboard`.
+
+Verify daemon health/readiness and the supervisor's live terminal after the
+restart; a stored session status alone can be stale. These commands do not
+grant worker sessions permission to manage the daemon or bypass the database
+scope restrictions above.
+
 ## Key Subsystems
 
 - **Self-Improvement Loop:** Reflection engine → knowledge extraction → memory consolidation → prompt builder delivery. Autonomous — no manual intervention needed. See `docs/specs/design/self-improvement.md`.
