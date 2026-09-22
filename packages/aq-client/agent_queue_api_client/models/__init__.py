@@ -654,6 +654,9 @@ from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
 from .phase_create_response_422 import PhaseCreateResponse422
+from .phase_hold_child import PhaseHoldChild
+from .phase_hold_detail import PhaseHoldDetail
+from .phase_hold_remedy import PhaseHoldRemedy
 from .phase_list_request import PhaseListRequest
 from .phase_list_response import PhaseListResponse
 from .phase_list_response_422 import PhaseListResponse422
@@ -1933,6 +1936,9 @@ __all__ = (
     "PhaseCreateRequest",
     "PhaseCreateResponse",
     "PhaseCreateResponse422",
+    "PhaseHoldChild",
+    "PhaseHoldDetail",
+    "PhaseHoldRemedy",
     "PhaseListRequest",
     "PhaseListResponse",
     "PhaseListResponse422",

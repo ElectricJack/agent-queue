@@ -39,6 +39,7 @@ PLAYBOOK_IDS = (
     "default-assignment-routing",
     "ci-main-sentinel",
     "blocked-task-escalation",
+    "supervisor-failure-triage",
 )
 
 

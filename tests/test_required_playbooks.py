@@ -192,10 +192,10 @@ async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path)
         row = next(
             activation
             for activation in await db.list_playbook_activations()
-            if activation["playbook_id"] == "blocked-task-escalation"
+            if activation["playbook_id"] == "supervisor-failure-triage"
         )
         await db.set_playbook_activation(
-            playbook_id="blocked-task-escalation",
+            playbook_id="supervisor-failure-triage",
             scope="system",
             scope_identifier="",
             artifact_sha256=row["active_artifact_sha256"],
@@ -213,10 +213,10 @@ async def test_a_default_playbook_the_operator_disabled_stays_disabled(tmp_path)
         after = next(
             activation
             for activation in await db.list_playbook_activations()
-            if activation["playbook_id"] == "blocked-task-escalation"
+            if activation["playbook_id"] == "supervisor-failure-triage"
         )
         assert after["enabled"] is False
-        assert result["defaults"]["blocked-task-escalation"]["activated"] is False
+        assert result["defaults"]["supervisor-failure-triage"]["activated"] is False
     finally:
         await db.close()
 
@@ -225,13 +225,33 @@ async def test_a_default_that_cannot_be_imported_does_not_fail_readiness(tmp_pat
     import shutil
 
     db, _handler, reconciler = await _reconciler(tmp_path)
-    shutil.rmtree(tmp_path / "vault" / "reviewed-playbooks" / "blocked-task-escalation")
+    shutil.rmtree(tmp_path / "vault" / "reviewed-playbooks" / "supervisor-failure-triage")
     try:
         result = await reconciler.reconcile()
 
         assert result["ok"] is True
-        assert result["defaults"]["blocked-task-escalation"]["activated"] is False
-        assert "error" in result["defaults"]["blocked-task-escalation"]
+        assert result["defaults"]["supervisor-failure-triage"]["activated"] is False
+        assert "error" in result["defaults"]["supervisor-failure-triage"]
+    finally:
+        await db.close()
+
+
+async def test_failure_triage_retires_the_old_blocked_task_subscription(tmp_path):
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        imported = await handler._cmd_playbook_v2_import(
+            {"path": "reviewed-playbooks/blocked-task-escalation"}
+        )
+        assert imported["success"] is True
+        await _activate(db, "blocked-task-escalation", imported["artifact_sha256"])
+
+        await reconciler.reconcile()
+
+        old = await _system_row(db, "blocked-task-escalation")
+        successor = await _system_row(db, "supervisor-failure-triage")
+        assert old["enabled"] is False
+        assert old["health"] == "disabled"
+        assert successor["enabled"] is True
     finally:
         await db.close()
 
@@ -464,13 +484,13 @@ async def test_a_healthy_operator_activation_is_kept(tmp_path):
 async def test_a_stale_default_activation_is_repointed_too(tmp_path):
     db, handler, reconciler = await _reconciler(tmp_path)
     try:
-        stale = _shipped_variant("blocked-task-escalation", _compiled_before_the_grants_moved)
+        stale = _shipped_variant("supervisor-failure-triage", _compiled_before_the_grants_moved)
         stale_sha = await _store_variant(db, handler, stale)
-        await _activate(db, "blocked-task-escalation", stale_sha)
+        await _activate(db, "supervisor-failure-triage", stale_sha)
 
         result = await reconciler.reconcile()
 
-        escalation = result["defaults"]["blocked-task-escalation"]
+        escalation = result["defaults"]["supervisor-failure-triage"]
         assert escalation["health"] == "ready"
         assert escalation["activated"] is False
         assert escalation["repointed_from"] == stale_sha

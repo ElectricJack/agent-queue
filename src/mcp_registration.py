@@ -71,11 +71,11 @@ DEFAULT_EXCLUDED_COMMANDS = {
     # that backs it; an LLM has no reason to hand-write its own subagent
     # telemetry, and exposing it would only invite fabricated counts.
     "subagent_event",
-    # The failure-event half of the durable recovery incident, called by the
-    # ``blocked-task-escalation`` playbook inside the daemon.  The supervisor
-    # decides incidents with ``task_recover``; nothing outside the daemon
-    # needs to file one.
+    # Internal failure-event hooks for the durable recovery incident. The
+    # reviewed supervisor-failure-triage playbook calls the successor; the
+    # supervisor decides incidents with ``task_recover``.
     "task_recovery_notify",
+    "task_failure_triage_notify",
     # Provider state-change notice (provider-failover D19): fired by the
     # daemon on every half change and by the provider-failover playbook.
     "provider_availability_notify",

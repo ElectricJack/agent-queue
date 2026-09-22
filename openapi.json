@@ -23777,6 +23777,16 @@
                 "type": "null"
               }
             ]
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -29722,6 +29732,16 @@
               }
             ],
             "title": "Phase Label"
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -33718,6 +33738,82 @@
         ],
         "title": "PhaseCreateResponse"
       },
+      "PhaseHoldChild": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "PhaseHoldChild",
+        "description": "One failed direct child retaining a phase's strict completion hold."
+      },
+      "PhaseHoldDetail": {
+        "properties": {
+          "phase_id": {
+            "type": "string",
+            "title": "Phase Id"
+          },
+          "failed_children": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseHoldChild"
+            },
+            "type": "array",
+            "title": "Failed Children"
+          },
+          "failed_children_total": {
+            "type": "integer",
+            "title": "Failed Children Total",
+            "default": 0
+          },
+          "descendant_blocker_count": {
+            "type": "integer",
+            "title": "Descendant Blocker Count",
+            "default": 0
+          },
+          "remedies": {
+            "items": {
+              "$ref": "#/components/schemas/PhaseHoldRemedy"
+            },
+            "type": "array",
+            "title": "Remedies"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phase_id"
+        ],
+        "title": "PhaseHoldDetail",
+        "description": "Bounded evidence for a phase retained by failed child work."
+      },
+      "PhaseHoldRemedy": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "detail"
+        ],
+        "title": "PhaseHoldRemedy",
+        "description": "A guarded remedy; this never promises that a lifecycle guard is bypassed."
+      },
       "PhaseListRequest": {
         "properties": {
           "project_id": {
@@ -33862,6 +33958,16 @@
             "type": "integer",
             "title": "Done",
             "default": 0
+          },
+          "phase_hold": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhaseHoldDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",

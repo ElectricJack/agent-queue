@@ -464,12 +464,11 @@ done
 # 4. Config
 # ---------------------------------------------------------------------------
 #
-# One switch decides the tier.  `AQ_E2E_SESSION_PROVIDER=tmux` means real
-# `claude` processes, and a live agent needs playbooks plus named supervisor
-# sessions.  Under `fake` those stay off because both need an LLM.  The
-# durable message queue remains enabled in both tiers; with
-# `messaging_platform: none` it is a local database sink for S11, not an
-# external messaging provider.
+# One switch decides the tier. `AQ_E2E_SESSION_PROVIDER=tmux` means real
+# `claude` processes and a named supervisor session. Command-only reviewed
+# playbooks also run under `fake` for S18; neither that route nor the durable
+# message queue needs an LLM. With `messaging_platform: none` the latter is a
+# local database sink, never an external messaging provider.
 
 if [ "$AQ_E2E_SESSION_PROVIDER" = "fake" ]; then
     TIER=1
@@ -478,6 +477,13 @@ else
     TIER=2
     LIVE_SUBSYSTEMS=true
 fi
+
+# Command-only reviewed playbooks are deterministic under the fake provider:
+# S18 uses that tier to exercise a durable task.failed subscription without a
+# model process or a named supervisor.  Keep the switch explicit for a caller
+# diagnosing a playbook issue, but make the isolated kit cover the shipped
+# path by default.
+PLAYBOOKS_ENABLED="${AQ_E2E_PLAYBOOKS_ENABLED:-true}"
 
 # Both fake providers start healthy; S16 rewrites this file mid-run.
 printf '{"prova": "ok", "provb": "ok"}\n' > "$E2E_FAKE_SCRIPT"
@@ -569,13 +575,13 @@ work_graph:
 state_machine:
   enforce: false
 
-# Tier 2 only: playbooks provide worker-filed triage and supervisor_agent
-# launches the named chat sessions.  The durable message queue itself is on
-# in both tiers so S11 can use a synthetic user recipient as a database-only
-# sink.  messaging_platform:none means no Discord/webhook/external send is
-# possible, and fake sessions mean there is no model process to wake.
+# Command-only reviewed playbooks run in both tiers; the fake tier's S18
+# verifies their durable event/command path without an LLM.  The supervisor
+# agent itself stays Tier 2 because it launches a named chat session. The
+# durable message queue remains on in both tiers so S11 and S18 use a local
+# database-only sink; messaging_platform:none prevents external delivery.
 playbooks:
-  enabled: $LIVE_SUBSYSTEMS
+  enabled: $PLAYBOOKS_ENABLED
 
 messages:
   enabled: true
