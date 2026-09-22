@@ -197,6 +197,26 @@ def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
     _execute(ctx, "integration_retry_cleanup", {"batch_id": batch_id})
 
 
+@integration.command("release-owner")
+@click.option("--task-id")
+@click.option("--owner-row-id")
+@click.option("--dry-run", is_flag=True)
+@click.pass_context
+@_handle_errors
+def integration_release_owner(
+    ctx: click.Context, task_id: str | None, owner_row_id: str | None, dry_run: bool
+) -> None:
+    """Release a stranded branch owner after proving its writer and branch safe."""
+    if (task_id is None) == (owner_row_id is None):
+        raise click.UsageError("provide exactly one of --task-id or --owner-row-id")
+    args: dict[str, Any] = {"dry_run": dry_run}
+    if task_id is not None:
+        args["task_id"] = task_id
+    else:
+        args["owner_row_id"] = owner_row_id
+    _execute(ctx, "integration_release_owner", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

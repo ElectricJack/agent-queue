@@ -12,7 +12,7 @@ from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.tables import gates, projects, task_gates, tasks
 from src.event_bus import EventBus
 from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
 
 
@@ -994,6 +994,114 @@ async def test_cancel_retires_verifier_with_stop_proof(setup, operation_state, v
     before_rows = await service.rows("p")
     assert (await service.cancel_preserving("op", reason="replay"))["outcome"] == "already_terminal"
     assert await service.rows("p") == before_rows
+
+
+async def test_cancel_preserving_recovers_attached_operation_owners(setup):
+    from unittest.mock import AsyncMock
+
+    from src.database.tables import (
+        integration_branch_owners,
+        integration_owner_recoveries,
+        integration_parent_episodes,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    from src.git.manager import GitManager
+    from src.integration.owner_recovery import OwnerRecovery
+
+    db, development, source, _remote, _repo = setup
+    await feature(setup, "parent")
+    await db.create_task(
+        Task(
+            id="delegate",
+            project_id="p",
+            title="delegate",
+            description="",
+            status=TaskStatus.BLOCKED,
+        )
+    )
+    await db.create_workspace(
+        Workspace(
+            id="base",
+            project_id="p",
+            workspace_path=str(source),
+            source_type=RepoSourceType.CLONE,
+            enabled=True,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_parent_episodes).values(
+                id="episode",
+                parent_task_id="parent",
+                repository_id="r",
+                generation=0,
+                pre_collection_checkpoint_sha="a" * 40,
+                created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_operations).values(
+                id="operation",
+                target_kind="parent",
+                parent_task_id="parent",
+                episode_id="episode",
+                active_stage=0,
+                state="active",
+                policy_snapshot={},
+                artifact_snapshot={},
+                required_check_version="checks-v1",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_repair_stages).values(
+                operation_id="operation",
+                ordinal=0,
+                policy={},
+                starting_sha="a" * 40,
+                repair_task_id="delegate",
+                writer_kind="repair_delegate",
+                attempts=0,
+                state="active",
+            )
+        )
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="r",
+                ref="parent",
+                owner_id="delegate",
+                owner_role="repair",
+                fence_token=1,
+                handoff_state="attached",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+
+    development.owner_recovery = OwnerRecovery(
+        db, GitManager(), None, confirm_stopped=AsyncMock(return_value=True)
+    )
+    result = await development.cancel_preserving("operation", reason="operator cancellation")
+
+    assert result["outcome"] == "cancelled"
+    async with db._engine.connect() as conn:
+        owner = (
+            await conn.execute(
+                select(integration_branch_owners).where(integration_branch_owners.c.id == "owner")
+            )
+        ).mappings().one()
+        audit = (
+            await conn.execute(
+                select(integration_owner_recoveries).where(
+                    integration_owner_recoveries.c.owner_row_id == "owner"
+                )
+            )
+        ).mappings().one()
+    assert owner["handoff_state"] == "released"
+    assert audit["principal"] == "cancel_preserving"
 
 
 async def test_repair_generation_budget_stops_recursive_dispatch(setup):

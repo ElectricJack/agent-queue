@@ -21,7 +21,7 @@ from src.doctor.integration_checks import run_check
 from src.doctor.models import Severity
 from src.doctor.models import DoctorContext
 from src.doctor.runner import run_doctor
-from src.models import Project, Task, TaskStatus
+from src.models import Project, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -456,10 +456,9 @@ async def test_branch_discards_fix_re_arms_rather_than_deleting(db):
 # ``_integration_owner_fence`` with "canonical branch is not reserved by this
 # task".  Nothing surfaces except a pool worker burning a claim each time.
 #
-# The check is report-only on purpose, and these tests hold that line: doctor
-# sees a database snapshot, which cannot prove a provider stopped or a checkout
-# clean and published, so it must never write an ownership row back to
-# ``reserved`` for the next claim to take.
+# The check reports candidates from the database snapshot, but its fix delegates
+# every release decision to ``OwnerRecovery``, which takes the provider and
+# checkout proofs doctor itself cannot.
 
 
 async def _held_owner(
@@ -560,20 +559,21 @@ async def test_stranded_fences_leaves_a_held_workspace_alone(db):
 
 
 @pytest.mark.asyncio
-async def test_stranded_fences_is_report_only(db):
-    """No ``--fix``: the repair needs proof a database snapshot cannot give."""
-    from src.doctor import integration_checks as integration_checks_module
+async def test_stranded_fences_registers_the_guarded_recovery_fix(db):
+    """Doctor delegates every actual release to the guarded recovery service."""
+    from importlib import import_module
+
     from src.doctor.integration_checks import integration_checks
 
     check = next(c for c in integration_checks() if c.id == "integration.stranded_fences")
 
-    assert check.fix is None
-    assert not hasattr(integration_checks_module, "_fix_stranded_fences")
+    assert check.fix is import_module("src.doctor.integration_checks")._fix_stranded_fences
+    assert check.timeout_s == 60.0
 
 
 @pytest.mark.asyncio
-async def test_stranded_fences_never_writes_the_ownership_row(db):
-    """Reporting a wedged row must leave the fence exactly as it found it.
+async def test_stranded_fences_check_never_writes_the_ownership_row(db):
+    """The check phase leaves the fence exactly as it found it.
 
     Bumping the fence or clearing the attachment on a snapshot alone would
     hand the branch to the next claim while a stopped-looking writer may still
@@ -606,11 +606,42 @@ async def test_stranded_fences_never_writes_the_ownership_row(db):
     after = await _row()
 
     assert result.severity is Severity.WARN
-    assert result.fixable is False
+    assert result.fixable is True
     assert after == before
     assert after["handoff_state"] == "attached"
     assert int(after["fence_token"]) == 27
     assert after["session_id"] == "dead-session"
+
+
+@pytest.mark.asyncio
+async def test_stranded_fences_keeps_a_stopping_writer_that_is_still_wanted(db):
+    """A stopped process with desired_state=running can still be restarted to write."""
+    await db.create_task(
+        Task(id="verify-5", project_id="p", title="Verify", description="", status=TaskStatus.READY)
+    )
+    await db.create_session(
+        SessionRecord(
+            id="stopping-writer",
+            project_id="p",
+            task_id="verify-5",
+            profile_id="test",
+            harness="test",
+            provider="test",
+            name="stopping-writer",
+            lifecycle="task",
+            work_dir="/tmp/stopping-writer",
+            epoch="epoch",
+            instance_token="token",
+            started_at=time.time(),
+            state="stopped",
+            desired_state="running",
+        )
+    )
+    await _held_owner(db, task_id="verify-5")
+
+    result = await run_check(db, "integration.stranded_fences")
+
+    assert result.severity is Severity.OK
 
 
 @pytest.mark.asyncio

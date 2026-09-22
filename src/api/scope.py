@@ -105,18 +105,24 @@ PROJECT_ONBOARDING_COMMANDS: frozenset[str] = frozenset(
     }
 )
 PROJECT_ONBOARDING_SCOPE_ERROR = "out of scope: project onboarding requires global admin"
-LOCAL_INTEGRATION_CONTROLS = frozenset(
+OPERATOR_INTEGRATION_CONTROLS = frozenset(
     {
         "integration_enable",
         "integration_waive_history",
+        "integration_reconcile_unmaterialized",
         "integration_resume",
         "integration_abort",
+        "integration_retry_cleanup",
+        "integration_release_delegates",
+        "integration_recover_candidate_member",
+        "integration_recover_unwritten_resolution",
         "integration_develop",
         "integration_adopt",
         "integration_cancel_preserving",
         "integration_development_sweep",
-        "integration_retry_cleanup",
-        "integration_release_delegates",
+        "integration_release_owner",
+        "integration_flush",
+        "integration_transfer_owner",
     }
 )
 LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
@@ -148,8 +154,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
-    if command in LOCAL_INTEGRATION_CONTROLS:
-        return "out of scope: integration control requires local operator"
+    if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
+        return "out of scope: integration control requires local operator or supervisor"
     if command in LOCAL_REVIEW_CONTROLS:
         return "out of scope: review control requires local operator"
     if command == "edit_project" and INTEGRATION_ROLLOUT_FIELDS.intersection(args):

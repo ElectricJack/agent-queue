@@ -26,12 +26,14 @@ from __future__ import annotations
 
 import time
 
+from src.database.queries.integration_state_queries import session_attached_clause
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.integration.live_operations import (
     cancel_preserving_command,
     describe_live_operation,
     live_operations_on,
 )
+from src.integration.owner_recovery import owner_recovery_for
 from src.models import TaskStatus
 from src.review_keys import review_task_dedup_key
 
@@ -518,7 +520,7 @@ async def _find_stranded_fences(ctx: DoctorContext) -> list[dict]:
             live_session = (
                 await conn.execute(
                     select(sessions.c.id)
-                    .where(sessions.c.task_id == row["owner_id"], sessions.c.state != "stopped")
+                    .where(sessions.c.task_id == row["owner_id"], session_attached_clause())
                     .limit(1)
                 )
             ).scalar_one_or_none()
@@ -571,16 +573,34 @@ async def _check_stranded_fences(ctx: DoctorContext) -> CheckResult:
             f"writer that no longer exists — e.g. {first['ref']} for task "
             f"{first['task_id']} ({first['owner_role']}, task status "
             f"{first['task_status'] or 'gone'}). Every claim of that task fails "
-            "'canonical branch is not reserved by this task'. Report only: recovering an "
-            "ownership row needs proof this check cannot take (the writer's provider stopped, "
-            "its checkout clean and published), so the repair belongs to the guarded "
-            "integration recovery path, not to doctor. A row whose task finished or is gone, "
-            "outside the hierarchy modes, is released with that proof by "
-            "`aq doctor --check integration.finished_branch_owners --fix`"
+            "'canonical branch is not reserved by this task'. Recover it with "
+            "`aq doctor --check integration.stranded_fences --fix`; the guarded recovery "
+            "path re-proves the writer stopped and the checkout is safe before releasing it."
         ),
-        fixable=False,
+        fixable=True,
         data={"count": len(stranded), "fences": stranded},
     )
+
+
+async def _fix_stranded_fences(ctx: DoctorContext) -> CheckResult:
+    """Run guarded recovery for every row currently diagnosed as stranded."""
+    recovery = owner_recovery_for(getattr(ctx.handler, "orchestrator", None))
+    if recovery is None:
+        result = await _check_stranded_fences(ctx)
+        result.data["fix_unavailable"] = "orchestrator not available"
+        return result
+
+    stranded = await _find_stranded_fences(ctx)
+    outcomes = await recovery.recover_many(
+        [row["owner_row_id"] for row in stranded], principal="doctor"
+    )
+    result = await _check_stranded_fences(ctx)
+    result.fixable = True
+    result.fix_applied = any(
+        outcome.outcome in {"released", "preserved_and_released"} for outcome in outcomes
+    )
+    result.data["outcomes"] = [outcome.to_dict() for outcome in outcomes]
+    return result
 
 
 async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
@@ -964,20 +984,16 @@ def integration_checks() -> list[DoctorCheck]:
             fix=_fix_branch_discards,
             owner=OWNER,
         ),
-        # Report-only, deliberately.  Everything doctor can see about a
-        # stranded row is a database snapshot, and the database is not where
-        # the danger is: an owner row can look dead while the writer's
-        # provider is still running against the checkout, or while the
-        # checkout holds work no remote has.  Returning the row to
-        # ``reserved`` from here would hand the branch to the next claim on a
-        # snapshot alone, and would race any guarded rebind that touches the
-        # attachment without changing the owner fields a CAS could see.  The
-        # write belongs to the integration recovery path, which takes the
-        # proofs doctor cannot.
+        # Fixable through OwnerRecovery, not by mutating the diagnostic
+        # snapshot.  The recovery service proves the writer stopped and the
+        # checkout safe under its own guarded transaction before it releases
+        # any ownership row.
         DoctorCheck(
             id="integration.stranded_fences",
             run=_check_stranded_fences,
+            fix=_fix_stranded_fences,
             owner=OWNER,
+            timeout_s=60.0,
         ),
         # Report-only.  Both symptoms are durable publisher state, and the
         # repairs they call for — resolving a parked batch, cancelling one,

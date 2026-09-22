@@ -2077,6 +2077,10 @@ class IntegrationConfig:
     #: re-runs on a busy queue, which is why it is a separate knob.
     merge_require_up_to_date: bool = True
 
+    #: Whether to periodically release branch owners whose writers are proven gone.
+    #: Starts disabled so the operator can observe the first backlog releases.
+    owner_recovery_sweep: bool = False
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
@@ -4269,6 +4273,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             github_app=github_app,
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
+            owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

@@ -33,6 +33,7 @@ class IntegrationService:
         branch_materialization_handler: DrainHandler | None = None,
         collection_handler: DrainHandler | None = None,
         development_handler: DrainHandler | None = None,
+        owner_recovery_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -55,6 +56,7 @@ class IntegrationService:
         self._branch_discard_handler = branch_discard_handler
         self._branch_materialization_handler = branch_materialization_handler
         self._collection_handler = collection_handler
+        self._owner_recovery_handler = owner_recovery_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -77,6 +79,8 @@ class IntegrationService:
             retire = getattr(self._repair, "retire_terminal_delegates", None)
             if callable(retire):
                 await self._source("terminal repair delegates", retire, now)
+            if self._owner_recovery_handler is not None:
+                await self._source("owner recovery", self._owner_recovery_handler, now)
             if self._development_handler is not None and (
                 self._development_task is None or self._development_task.done()
             ):

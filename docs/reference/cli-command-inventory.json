@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 370,
+    "leaf_commands": 371,
     "registration": {
       "generated": 260,
-      "handwritten": 110
+      "handwritten": 111
     },
     "ownership": {
-      "core": 331,
+      "core": 332,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 369
+      "supported": 370
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 260,
-      "registration": 96
+      "registration": 97
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 310
+      "untested": 311
     }
   },
   "commands": [
@@ -3360,6 +3360,37 @@
           "operation_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration release-owner",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_release_owner",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--task-id",
+          "--owner-row-id",
+          "--dry-run",
           "--json",
           "--brief",
           "--api-url"
@@ -11141,6 +11172,7 @@
           "--affinity-agent-id",
           "--affinity-reason",
           "--workspace-mode",
+          "--after-review",
           "--needs-attention",
           "--clear-needs-attention",
           "--json",

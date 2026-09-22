@@ -68,6 +68,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cancel_preserving",
         "integration_retry_cleanup",
         "integration_release_delegates",
+        "integration_release_owner",
         "integration_resolve_candidate_member",
     }
 )
@@ -114,6 +115,18 @@ class IntegrationAbortArgs(IntegrationOperationControlArgs):
 
 class IntegrationRetryCleanupArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
+
+
+class IntegrationReleaseOwnerArgs(CommandArgs):
+    task_id: str | None = Field(default=None, min_length=1)
+    owner_row_id: str | None = Field(default=None, min_length=1)
+    dry_run: bool = False
+
+    @model_validator(mode="after")
+    def exactly_one_target(self) -> "IntegrationReleaseOwnerArgs":
+        if (self.task_id is None) == (self.owner_row_id is None):
+            raise ValueError("exactly one of task_id or owner_row_id is required")
+        return self
 
 
 class IntegrationRecoverCandidateMemberArgs(CommandArgs):
@@ -196,6 +209,7 @@ class IntegrationOperationalValue(CommandValue):
     deadline_at: float | None = None
     reason: str | None = None
     count: int | None = None
+    outcomes: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationScheduleDueValue(CommandValue):
@@ -658,6 +672,14 @@ INTEGRATION_RELEASE_DELEGATES = _operational_contract(
     IntegrationOperationControlArgs,
     ("released", "nothing_to_release", "invalid_state", "not_found"),
     successes=frozenset({"released", "nothing_to_release"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RELEASE_OWNER = _operational_contract(
+    "integration_release_owner",
+    IntegrationReleaseOwnerArgs,
+    ("released", "preserved_and_released", "not_eligible", "not_found"),
+    successes=frozenset({"released", "preserved_and_released"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -1949,6 +1971,16 @@ async def _release_delegates_adapter(
     )
 
 
+async def _release_owner_adapter(args: IntegrationReleaseOwnerArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_release_owner",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"released", "preserved_and_released", "not_eligible", "not_found"},
+    )
+
+
 async def _recover_candidate_member_adapter(
     args: IntegrationRecoverCandidateMemberArgs, ctx: CommandContext | None
 ):
@@ -2009,6 +2041,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_ABORT, _abort_adapter),
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
+        (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),

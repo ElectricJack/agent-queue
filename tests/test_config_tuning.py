@@ -255,6 +255,7 @@ def test_integration_defaults_never_merge_unreviewed_work_to_the_default_branch(
     # with no CI yet means nothing would ever merge.
     assert tuned["merge_ci_policy"] == "warn"
     assert tuned["merge_require_up_to_date"] is True
+    assert tuned["owner_recovery_sweep"] is False
 
 
 # ── The rationale ────────────────────────────────────────────────────────────

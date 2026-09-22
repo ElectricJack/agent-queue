@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:799d526580798309522c7bb57f0f86062ceaf2def7fe00e3c9dc49f242eeecaa` |
+| Contract fingerprint | `sha256:69d73752282fc34731f56837f2b36663286a35d21ff02fd53c70d0105964a855` |
 
 ## Parameters
 
@@ -78,8 +78,9 @@ Redacted in receipts and explanations: `reason`.
 | `deadline_at` | `number \| null` | — |
 | `reason` | `string \| null` | — |
 | `count` | `integer \| null` | — |
+| `outcomes` | `object[]` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`.
+Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`.
 
 ## Outcomes
 

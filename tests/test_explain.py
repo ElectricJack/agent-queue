@@ -240,6 +240,11 @@ class TestExplainCommand:
         cleanup = [r for r in res["reasons"] if r["code"] == "integration_cleanup_blocked"]
         assert [r["ref"] for r in cleanup] == ["aq/parent", "ws"]
         assert all("not released automatically" in r["detail"] for r in cleanup)
+        owner_reason = cleanup[0]["detail"]
+        assert "owner-recovery sweep every 5 min" in owner_reason
+        assert "integration.owner_recovery_sweep" in owner_reason
+        assert "aq integration release-owner --task-id t" in owner_reason
+        assert "(LOCAL operator)" not in owner_reason
         db.get_integration_delegate_cleanup.assert_awaited_once_with("t")
 
     async def test_open_recovery_incident_shows_owner_budget_and_next_action(self, handler, db):

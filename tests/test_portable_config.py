@@ -237,6 +237,7 @@ def test_integration_travels_as_merge_policy_only(tmp_path):
         "merge_ci_policy": "warn",
         "merge_required_checks": ["Tests (default)"],
         "merge_require_up_to_date": True,
+        "owner_recovery_sweep": True,
         "github_app": {"app_id": 12345, "installation_id": 999},
         "scratch_probe": {"repository": "someone/private-scratch"},
     }
@@ -248,6 +249,7 @@ def test_integration_travels_as_merge_policy_only(tmp_path):
         "merge_ci_policy": "warn",
         "merge_required_checks": ["Tests (default)"],
         "merge_require_up_to_date": True,
+        "owner_recovery_sweep": True,
     }
     # Dropped, and *reported* — an operator can see what did not travel.
     assert "integration.github_app" in preview["excluded_sections"]

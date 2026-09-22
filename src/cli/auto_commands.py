@@ -108,6 +108,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_development_sweep",
     "integration_cancel_preserving",
     "integration_retry_cleanup",
+    "integration_release_owner",
     "integration_release_delegates",
     "integration_resolve_candidate_member",
     "integration_recover_candidate_member",
