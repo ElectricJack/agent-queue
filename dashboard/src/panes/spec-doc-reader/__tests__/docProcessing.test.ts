@@ -37,6 +37,33 @@ describe("parseFrontmatter", () => {
     expect(content.trim()).toBe("## Body");
   });
 
+  it("parses fenced YAML without a Node Buffer global", () => {
+    const globals = globalThis as typeof globalThis & { Buffer?: unknown };
+    const originalBuffer = globals.Buffer;
+    globals.Buffer = undefined;
+
+    try {
+      expect(parseFrontmatter("---\ntitle: Browser safe\n---\nbody")).toEqual({
+        data: { title: "Browser safe" },
+        content: "body",
+      });
+    } finally {
+      globals.Buffer = originalBuffer;
+    }
+  });
+
+  it("removes an empty fenced YAML block", () => {
+    expect(parseFrontmatter("---\n---\n## Body\n")).toEqual({
+      data: null,
+      content: "## Body\n",
+    });
+  });
+
+  it("does not treat a later thematic break as frontmatter", () => {
+    const raw = "# Intro\n\n---\ntitle: later\n---\nbody";
+    expect(parseFrontmatter(raw)).toEqual({ data: null, content: raw });
+  });
+
   it("returns null data when there is no frontmatter of either kind", () => {
     const { data, content } = parseFrontmatter("## Just a body\n");
     expect(data).toBeNull();

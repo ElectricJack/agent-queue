@@ -4,7 +4,7 @@ import remarkGfm from "remark-gfm";
 import { visit } from "unist-util-visit";
 import { toString as mdastToString } from "mdast-util-to-string";
 import GithubSlugger from "github-slugger";
-import matter from "gray-matter";
+import { parse as parseYaml } from "yaml";
 import type { Root, Heading } from "mdast";
 
 export interface TocEntry {
@@ -42,16 +42,14 @@ export function extractToc(markdownSource: string): TocEntry[] {
 const BOLD_LABEL_LINE = /^\*\*([^*]+):\*\*\s*(.+)$/;
 
 /**
- * Split frontmatter from body. Prefers a fenced ---/--- YAML block
- * (gray-matter). When none is present, falls back to a heuristic scan of
+ * Split frontmatter from body. Prefers a fenced ---/--- YAML block. When none
+ * is present, falls back to a heuristic scan of
  * the preamble (everything before the first `##` heading) for
  * `**Label:** value` lines — this repo's own specs use that convention
  * instead of fenced YAML.
  */
 function normalizeYamlValue(value: unknown): unknown {
-  // js-yaml (via gray-matter) auto-parses bare dates (e.g. `date: 2026-08-22`)
-  // into JS Date objects. Convert back to a plain ISO string so the meta
-  // card renders "2026-08-22" instead of a Date's default toString().
+  // Keep this normalization in case a custom YAML tag produces a Date.
   if (value instanceof Date) {
     const iso = value.toISOString();
     return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
@@ -59,11 +57,30 @@ function normalizeYamlValue(value: unknown): unknown {
   return value;
 }
 
+const YAML_FRONTMATTER = /^---[ \t]*\r?\n([\s\S]*?)^---[ \t]*\r?(?:\n|$)/m;
+
+function splitYamlFrontmatter(raw: string): {
+  data: Record<string, unknown>;
+  content: string;
+} | null {
+  const match = YAML_FRONTMATTER.exec(raw);
+  if (!match || match.index !== 0 || match[1] === undefined) return null;
+
+  const parsed: unknown = parseYaml(match[1]);
+  const data =
+    parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  return { data, content: raw.slice(match[0].length) };
+}
+
 export function parseFrontmatter(raw: string): {
   data: Record<string, unknown> | null;
   content: string;
 } {
-  const { data, content } = matter(raw);
+  const frontmatter = splitYamlFrontmatter(raw);
+  const data = frontmatter?.data ?? {};
+  const content = frontmatter?.content ?? raw;
   if (data && Object.keys(data).length > 0) {
     const normalized = Object.fromEntries(
       Object.entries(data).map(([k, v]) => [k, normalizeYamlValue(v)]),
