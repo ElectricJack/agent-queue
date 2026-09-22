@@ -157,8 +157,8 @@ The shape, as of the files in this checkout:
 | Class | `anthropic` | `openai` / `codex` | `google` |
 |---|---|---|---|
 | `fast-*` | `claude-sonnet-5` | `gpt-5.6-luna` | `gemini-2.5-flash` |
-| `standard-*` | `claude-opus-5` | `gpt-5.6-terra` | `gemini-2.5-pro` |
-| `deep-*` | `claude-fable-5` | `gpt-5.6-sol` | `gemini-2.5-pro` |
+| `standard-*` | `claude-opus-5` | `gpt-5.6-terra` | `gemini-2.5-flash` |
+| `deep-*` | `claude-fable-5` | `gpt-5.6-sol` | *no `google` slice* |
 
 The `-off` / `-low` / `-medium` / `-high` suffix sets the thinking or reasoning
 field, not the model. `google` expresses it as a `thinking_budget` in tokens

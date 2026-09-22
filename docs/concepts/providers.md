@@ -104,7 +104,7 @@ slice. This is the shipped `standard-high`
   "anthropic": {"model": "claude-opus-5", "thinking": "high"},
   "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
   "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "high"},
-  "google":    {"model": "gemini-2.5-pro", "thinking_budget": 24576}
+  "google":    {"model": "gemini-2.5-flash", "thinking_budget": 24576}
 }
 ```
 
@@ -165,7 +165,7 @@ standard-high  anthropic -> 'claude-opus-5' extras={'thinking': 'xhigh'}
 standard-high/anthropic -> {'model': 'claude-opus-5', 'thinking': 'xhigh'}
 standard-high/openai    -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'xhigh'}
 standard-high/codex     -> {'model': 'gpt-5.6-terra', 'reasoning_effort': 'xhigh'}
-standard-high/google    -> {'model': 'gemini-2.5-pro', 'thinking_budget': 24576}
+standard-high/google    -> {'model': 'gemini-2.5-flash', 'thinking_budget': 24576}
 ```
 
 `spark-low` in that listing is not a shipped class: it is one this box's
