@@ -151,6 +151,12 @@ async def test_running_target_ranks_live_leaves_and_returns_the_nested_path(db, 
         create_task=False,
     )
     # The two root leaves tie on priority.  The oldest live attempt wins.
+    # ``seed`` gives ``g0`` the model-default priority (100), which would
+    # outrank this pair and hide the tie break: pin it below them.
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks_table).where(tasks_table.c.id == "g0").values(priority=50)
+        )
     await db.create_task(
         Task(
             id="newer",
