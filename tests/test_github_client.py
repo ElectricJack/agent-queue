@@ -15,6 +15,11 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
+from src.integration.ci import (
+    AuthenticatedGitHubObserver,
+    IntegrationCITrust,
+    TrustedCIObservation,
+)
 
 
 REPOSITORY = GitHubRepositoryBinding(303, "acme/widgets")
@@ -74,6 +79,32 @@ def _response(
     header_lines.extend(f"{name}: {value}" for name, value in (headers or {}).items())
     framed = "\r\n".join(header_lines).encode() + b"\r\n\r\n" + body
     return FakeResult(returncode, framed, stderr)
+
+
+def _audit_pull(
+    *,
+    key: str,
+    head_sha: str = "a" * 40,
+    head_branch: str = "aq/integration/batch",
+    base_branch: str = "main",
+    body: str | None = None,
+    state: str = "open",
+) -> dict[str, Any]:
+    return {
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "number": 7,
+        "state": state,
+        "body": body or f"<!-- aq-integration-audit:{key} -->",
+        "head": {
+            "sha": head_sha,
+            "ref": head_branch,
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {
+            "ref": base_branch,
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+    }
 
 
 @pytest.fixture(params=["app", "existing_login"])
@@ -423,3 +454,209 @@ async def test_composed_app_write_invalidates_rejection_without_replaying_mutati
     assert len(runner.calls) == 1
     assert len(runner.results) == 1
     assert await auth.invalidate(REPOSITORY, generation=1) is False
+
+
+@pytest.mark.asyncio
+async def test_exact_pull_request_validates_canonical_base_repository(credential_identity):
+    payload = {
+        "html_url": "https://github.com/acme/widgets/pull/7",
+        "number": 7,
+        "state": "open",
+        "head": {
+            "sha": "a" * 40,
+            "repo": {"id": 303, "full_name": "acme/widgets"},
+        },
+        "base": {"repo": {"id": 303, "full_name": "acme/widgets"}},
+    }
+    runner = FakeRunner(credential_identity, [_response(200, payload)])
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    assert await client.exact_pull_request(number=7) == {
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "head_sha": "a" * 40,
+        "state": "open",
+    }
+
+    payload["base"] = {"repo": {"id": 404, "full_name": "other/widgets"}}
+    runner.results.append(_response(200, payload))
+    with pytest.raises(GitHubAccessError, match="PR identity") as caught:
+        await client.exact_pull_request(number=7)
+    assert caught.value.category == "conflict_or_invalid"
+
+
+@pytest.mark.asyncio
+async def test_audit_lookup_rechecks_requested_branch_identity(credential_identity):
+    key = "b" * 64
+    payload = _audit_pull(key=key, head_branch="aq/integration/other")
+    runner = FakeRunner(credential_identity, [_response(200, [payload])])
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    with pytest.raises(GitHubAccessError, match="branch identity") as caught:
+        await client.lookup_audit_pr(
+            idempotency_key=key,
+            branch="aq/integration/batch",
+        )
+
+    assert caught.value.category == "conflict_or_invalid"
+    assert runner.calls[0]["args"][-1].endswith("&head=acme%3Aaq%2Fintegration%2Fbatch")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["head", "base", "repository", "base_repository"])
+async def test_audit_create_confirms_head_base_and_repository_identity(
+    credential_identity, mismatch
+):
+    key = "b" * 64
+    payload = _audit_pull(key=key)
+    if mismatch == "head":
+        payload["head"]["sha"] = "c" * 40
+    elif mismatch == "base":
+        payload["base"]["ref"] = "other"
+    elif mismatch == "repository":
+        payload["head"]["repo"] = {"id": 404, "full_name": "other/widgets"}
+    else:
+        payload["base"]["repo"] = {"id": 404, "full_name": "other/widgets"}
+    runner = FakeRunner(
+        credential_identity,
+        [_response(200, []), _response(201, payload)],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.create_audit_pr(
+            repository_id="repo",
+            branch="aq/integration/batch",
+            head_sha="a" * 40,
+            base_branch="main",
+            batch_id="batch",
+            idempotency_key=key,
+            repository_numeric_id=303,
+            repository_full_name="acme/widgets",
+        )
+
+    assert caught.value.category == "conflict_or_invalid"
+    assert [call["args"][call["args"].index("--method") + 1] for call in runner.calls] == [
+        "GET",
+        "POST",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uncertain_audit_revision_write_reconciles_without_replay(credential_identity):
+    old_key = "a" * 64
+    new_key = "b" * 64
+    old_body = f"<!-- aq-integration-audit:{old_key} -->\nRoot integration batch `batch`."
+    new_body = old_body + f"\n<!-- aq-integration-audit:{new_key} -->"
+    existing = _audit_pull(key=old_key, body=old_body)
+    reconciled = _audit_pull(key=new_key, body=new_body)
+    runner = FakeRunner(
+        credential_identity,
+        [
+            _response(200, [existing]),
+            _response(500, {"message": "ambiguous"}, returncode=1),
+            _response(200, [reconciled]),
+        ],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+    arguments = {
+        "repository_id": "repo",
+        "branch": "aq/integration/batch",
+        "head_sha": "a" * 40,
+        "base_branch": "main",
+        "batch_id": "batch",
+        "idempotency_key": new_key,
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+    }
+
+    with pytest.raises(GitHubAccessError) as caught:
+        await client.create_audit_pr(**arguments)
+    assert caught.value.category == "transient"
+
+    result = await client.create_audit_pr(**arguments)
+
+    assert result.idempotency_key == new_key
+    assert result.head_sha == "a" * 40
+    methods = [call["args"][call["args"].index("--method") + 1] for call in runner.calls]
+    assert methods == ["GET", "PATCH", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_uncertain_comment_write_is_reconciled_by_marker(credential_identity):
+    marker = "<!-- aq-delivery:receipt:head -->"
+    body = f"{marker}\nDelivered once."
+    runner = FakeRunner(
+        credential_identity,
+        [
+            _response(500, {"message": "ambiguous"}, returncode=1),
+            _response(200, [{"id": 91, "body": body}]),
+        ],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+
+    with pytest.raises(GitHubAccessError):
+        await client.comment_pull_request(number=7, marker=marker, body=body)
+
+    assert await client.has_comment_marker(number=7, marker=marker) is True
+    methods = [call["args"][call["args"].index("--method") + 1] for call in runner.calls]
+    assert methods == ["POST", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_ci_observation_uses_shared_repository_client(credential_identity):
+    head = "a" * 40
+    check = {
+        "id": 11,
+        "name": "Tests",
+        "app": {"id": 404, "slug": "github-actions"},
+        "head_sha": head,
+        "status": "completed",
+        "conclusion": "success",
+        "check_suite": {"id": 21},
+    }
+    workflow = {
+        "id": 31,
+        "workflow_id": 301,
+        "run_attempt": 2,
+        "check_suite_id": 21,
+        "head_sha": head,
+        "status": "completed",
+        "conclusion": "success",
+        "repository": {"id": 303, "full_name": "acme/widgets"},
+        "head_repository": {"id": 303, "full_name": "acme/widgets"},
+    }
+    job = {
+        "id": 101,
+        "name": "Tests",
+        "run_id": 31,
+        "run_attempt": 2,
+        "head_sha": head,
+        "status": "completed",
+        "conclusion": "success",
+        "check_run_url": "https://api.github.com/repos/acme/widgets/check-runs/11",
+    }
+    runner = FakeRunner(
+        credential_identity,
+        [
+            _response(200, {"check_runs": [check]}),
+            _response(200, {"workflow_runs": [workflow]}),
+            _response(200, {"jobs": [job]}),
+        ],
+    )
+    client = GitHubClient(REPOSITORY, runner=runner)
+    trust = IntegrationCITrust(
+        canonical_repository_id="repo",
+        repository_id=303,
+        full_name="acme/widgets",
+        producer_id="github-actions",
+        required_checks={"version": "checks-v1", "names": ["Tests"]},
+    )
+
+    observation = await AuthenticatedGitHubObserver(client).observe(trust, head)
+
+    assert isinstance(observation, TrustedCIObservation)
+    assert observation.payload.head_sha == head
+    assert observation.payload.checks[0].check_run_id == 11
+    assert all(call["repository"] == REPOSITORY for call in runner.calls)
+    assert all(call["args"][0] == "api" for call in runner.calls)
