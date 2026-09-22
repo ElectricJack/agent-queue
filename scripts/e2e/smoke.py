@@ -38,6 +38,7 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -56,6 +57,7 @@ PROJECT = "e2e"
 OTHER_PROJECT = "other"
 POOL_PROFILE = "worker"
 POOL_CLASS = "fast-high"
+PLANNER_PROFILE = "planner"
 
 #: How long a scenario waits for the 5s cascade to converge before failing.
 CONVERGE_TIMEOUT = float(os.environ.get("AQ_E2E_CONVERGE_TIMEOUT", "60"))
@@ -308,15 +310,23 @@ def session_token(session_id: str) -> str:
     return aq("session", "token", session_id)["token"]
 
 
-def create_task(title: str, *, project_id: str = PROJECT, profile: str | None = None) -> str:
+def create_task(
+    title: str,
+    *,
+    project_id: str = PROJECT,
+    profile: str | None = None,
+    intelligence_class: str | None = None,
+) -> str:
     """``create_task`` over REST — ``aq task create`` has no JSON envelope yet."""
     args = {"project_id": project_id, "title": title, "description": f"e2e: {title}"}
     if profile:
         args["profile_id"] = profile
-    if profile == POOL_PROFILE:
+    if intelligence_class is None and profile == POOL_PROFILE:
         # Tier 1 has no assignment-playbook LLM. Explicit classification is
         # therefore the fixture's deterministic assignment decision.
-        args["intelligence_class"] = POOL_CLASS
+        intelligence_class = POOL_CLASS
+    if intelligence_class is not None:
+        args["intelligence_class"] = intelligence_class
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
@@ -2391,6 +2401,177 @@ def s18_supervisor_failure_triage(state: dict) -> str:
     )
 
 
+def s19_scoped_planner_graph(state: dict) -> str:
+    """File a planner graph as an authenticated scoped session, not a handler call."""
+    del state
+    worker = fresh_workers(1)[0]
+    held_task = create_task(
+        "S19 planner graph parent", profile=PLANNER_PROFILE, intelligence_class=POOL_CLASS,
+    )
+    planner_session = wait_for(
+        lambda: next(
+            (row for row in live_sessions_for(PLANNER_PROFILE) if not row.get("task_id")),
+            None,
+        ),
+        what="an idle planner pool session",
+    )
+    planner = Worker.adopt(planner_session["id"])
+    claimed = planner.claim_next()
+    check(claimed.get("result") == "claimed", f"S19 planner claim: {claimed}")
+    check(planner.task_id == held_task, f"planner claimed {planner.task_id}, not {held_task}")
+
+    home = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e")))
+    graph_path = home / "s19-scoped-planner-graph.json"
+    graph = {
+        "version": 1,
+        "nodes": [{
+            "key": "checklist",
+            "title": "S19 planner checklist child",
+            "acceptance": ["the planner-owned child closes only after its checklist settles"],
+            "subtasks": ["Read the scoped graph", "Record the filing result"],
+        }],
+    }
+    graph_path.write_text(json.dumps(graph), encoding="utf-8")
+    graph_args = (
+        "task", "create", "--project", PROJECT, "--graph", str(graph_path),
+        "--profile", POOL_PROFILE, "--intelligence-class", POOL_CLASS,
+        "--reason", "S19 verifies planner-scoped graph filing",
+    )
+
+    before = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(before.get("count") == 0, f"planner parent started with children: {before}")
+    dry_run = planner.aq(*graph_args, "--dry-run")
+    check(dry_run.get("parent_id") == held_task, f"scoped dry-run parent: {dry_run}")
+    after_dry_run = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(after_dry_run.get("count") == 0, f"scoped dry-run wrote children: {after_dry_run}")
+
+    created = planner.aq(*graph_args)
+    check(created.get("created") is True, f"scoped graph creation: {created}")
+    check(created.get("request_id"), f"scoped graph omitted request id: {created}")
+    child_id = created["nodes"][0]["task_id"]
+    child = task_show(child_id)
+    check(child.get("parent_task_id") == held_task, f"scoped child parent: {child}")
+    provenance = [
+        edge for edge in aq("task", "deps", "--task-id", child_id).get("provenance", [])
+        if edge.get("dep_type") == "discovered-from"
+    ]
+    check(
+        any(edge.get("id") == held_task for edge in provenance),
+        f"scoped child lost discovered-from provenance: {provenance}",
+    )
+
+    foreign_parent = create_task("S19 foreign parent", project_id=OTHER_PROJECT)
+    foreign = planner.aq(*graph_args, "--parent", foreign_parent, check_ok=False).get("_error")
+    check(
+        foreign is not None and "hierarchy.parent_out_of_scope" in f"{foreign.error} {foreign.details}",
+        f"foreign parent was not refused by the scoped graph route: {foreign}",
+    )
+    cross_project = planner.aq(
+        "task", "create", "--project", OTHER_PROJECT, "--graph", str(graph_path),
+        "--reason", "S19 must not cross projects",
+        check_ok=False,
+    ).get("_error")
+    check(
+        cross_project is not None and "project_id mismatch" in f"{cross_project.error} {cross_project.details}",
+        f"cross-project graph was not refused by token scope: {cross_project}",
+    )
+    cli_root = run_aq(*graph_args, "--root", token=planner.token, session_id=planner.session_id)
+    check(
+        cli_root.returncode == 2
+        and "--root only applies to single-task creation" in f"{cli_root.stdout} {cli_root.stderr}",
+        f"CLI root graph refusal: {cli_root}",
+    )
+    server_root = api(
+        "create_task_graph",
+        {
+            "project_id": PROJECT,
+            "graph": graph,
+            "root": True,
+            "reason": "S19 must not request root filing",
+        },
+        token=planner.token,
+    )
+    check(
+        server_root.get("code") == "hierarchy.parent_out_of_scope",
+        f"server root graph refusal: {server_root}",
+    )
+    after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
+
+    def child_ready() -> dict | None:
+        row = task_show(child_id)
+        return row if row.get("status") == "READY" else None
+
+    wait_for(child_ready, what="the scoped graph child to reach the claim frontier")
+    child_claim = worker.claim_next()
+    check(child_claim.get("result") == "claimed" and worker.task_id == child_id, f"S19 child claim: {child_claim}")
+    prime = run_aq("prime", json_mode=False, token=worker.token, session_id=worker.session_id)
+    check(prime.returncode == 0 and "## Subtasks" in prime.stdout, f"S19 checklist prime: {prime}")
+    check("- [ ] 1. Read the scoped graph" in prime.stdout, f"S19 checklist contents: {prime.stdout}")
+    open_close = worker.aq(
+        "task", "close", "--outcome", "pass", "--summary", "S19 open checklist refusal",
+        "--work-outcome", "no-op", "--claim-epoch", str(worker.claim_epoch), check_ok=False,
+    ).get("_error")
+    check(
+        open_close is not None and "subtasks.open" in f"{open_close.error} {open_close.details}",
+        f"open graph checklist close refusal: {open_close}",
+    )
+    closed_child = worker.aq(
+        "task", "close", "--outcome", "pass", "--summary", "S19 settle graph checklist",
+        "--work-outcome", "no-op", "--claim-epoch", str(worker.claim_epoch), "--skip-open-subtasks",
+    )
+    check(closed_child.get("success") is not False, f"S19 checklist close: {closed_child}")
+    worker.drain_ack()
+
+    batch_path = home / "s19-quota-batch.json"
+    batch = {
+        "version": 1,
+        "nodes": [
+            {
+                "key": f"batch-{index}",
+                "title": f"S19 quota child {index}",
+                "acceptance": ["the transaction either creates this complete batch or none"],
+            }
+            for index in range(10)
+        ],
+    }
+    batch_path.write_text(json.dumps(batch), encoding="utf-8")
+    batch_args = (
+        "task", "create", "--project", PROJECT, "--graph", str(batch_path),
+        "--profile", POOL_PROFILE, "--intelligence-class", POOL_CLASS,
+    )
+
+    def file_batch(reason: str) -> dict:
+        return planner.aq(*batch_args, "--reason", reason, check_ok=False)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = list(executor.map(file_batch, ("S19 quota batch one", "S19 quota batch two")))
+    outcomes = (first, second)
+    successful = [result for result in outcomes if "_error" not in result]
+    refused = [result.get("_error") for result in outcomes if "_error" in result]
+    check(len(successful) == 1, f"quota boundary did not admit exactly one graph: {outcomes}")
+    check(
+        len(refused) == 1 and "filing_quota_exceeded" in f"{refused[0].error} {refused[0].details}",
+        f"quota boundary refusal: {refused}",
+    )
+    children_after_quota = api("task_children", {"task_id": held_task}, token=planner.token)
+    check(
+        children_after_quota.get("count") == 11,
+        f"quota refusal left a partial graph: {children_after_quota}",
+    )
+
+    for node in successful[0]["nodes"]:
+        aq("task", "delete", "--task-id", node["task_id"])
+    aq("task", "delete", "--task-id", foreign_parent)
+    closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
+    check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
+    planner.drain_ack()
+    return (
+        f"planner {planner.session_id} filed {child_id} under {held_task}; root, cross-project, and "
+        f"foreign-parent requests were refused; one 10-node quota batch committed and one rolled back"
+    )
+
+
 @dataclass
 class Scenario:
     key: str
@@ -2429,6 +2610,7 @@ SCENARIOS: list[Scenario] = [
     ),
     Scenario("S17", "phased graph", s17_phased_graph, ("task graph/phases/subtasks",)),
     Scenario("S18", "supervisor failure triage", s18_supervisor_failure_triage, ("playbooks/failure triage",)),
+    Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
 ]
 
 # These exclusions are intentional properties of Tier 1, not silent omissions.
