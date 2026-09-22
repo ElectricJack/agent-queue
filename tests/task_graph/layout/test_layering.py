@@ -2,8 +2,15 @@ from src.task_graph.layout.layering import break_cycles, minimal_ranks
 from src.task_graph.layout.model import SnapTask
 
 
-def t(i, created=0.0):
-    return SnapTask(id=i, parent_id=None, is_container=False, status="READY", created_at=created)
+def t(i, created=0.0, phase_order=None):
+    return SnapTask(
+        id=i,
+        parent_id=None,
+        is_container=False,
+        status="READY",
+        created_at=created,
+        phase_order=phase_order,
+    )
 
 
 def test_chain_gets_increasing_ranks():
@@ -21,6 +28,21 @@ def test_longest_path_wins():
     kids = {i: t(i) for i in "abcd"}
     ranks = minimal_ranks(kids, [("d", "a"), ("b", "a"), ("c", "b"), ("d", "c")])
     assert ranks["d"] == 3
+
+
+def test_positive_phase_order_is_a_floor_without_a_gate_edge():
+    kids = {
+        "loose": t("loose"),
+        "phase": t("phase", phase_order=3),
+        "dependent": t("dependent"),
+        "zero": t("zero", phase_order=0),
+        "bool": t("bool", phase_order=True),
+    }
+    ranks = minimal_ranks(kids, [("dependent", "phase")])
+    # The unrelated loose task and invalid orders stay at the ordinary root
+    # rank.  The phase has no gate from earlier phases, but still starts at
+    # its declared order; an ordinary dependency can only move work lower.
+    assert ranks == {"bool": 0, "dependent": 4, "loose": 0, "phase": 3, "zero": 0}
 
 
 def test_cycle_drops_edge_with_newest_dependent():

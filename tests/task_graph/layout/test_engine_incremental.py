@@ -12,8 +12,15 @@ from src.task_graph.layout.engine import layout_container
 from src.task_graph.layout.model import ContainerScope, SnapTask
 
 
-def task(i, created=0.0, container=False, status="READY"):
-    return SnapTask(id=i, parent_id=None, is_container=container, status=status, created_at=created)
+def task(i, created=0.0, container=False, status="READY", phase_order=None):
+    return SnapTask(
+        id=i,
+        parent_id=None,
+        is_container=container,
+        status=status,
+        created_at=created,
+        phase_order=phase_order,
+    )
 
 
 def scope(children, edges=(), existing=None, sizes=None, origin=(0.0, 0.0)):
@@ -97,6 +104,20 @@ def test_new_edge_forces_rank_repair_of_dependent_chain_only():
     assert res.rows["d"].ordinal == first.rows["d"].ordinal
     assert res.rows["b"].rank == 1 and res.rows["c"].rank == 2
     assert res.changed_ordinals == {"b", "c"}
+
+
+def test_incremental_repairs_a_saved_rank_zero_phase_to_its_rank_floor():
+    first = layout_container(scope([task("late")]), mode="incremental")
+    assert first.rows["late"].rank == 0
+
+    # A phase can be created after predecessors are completed, leaving no
+    # sibling gate edge.  Incremental layout must still repair an old
+    # rank-zero row immediately rather than waiting for a Tidy.
+    repaired = layout_container(
+        scope([task("late", phase_order=2)], existing=first.rows), mode="incremental"
+    )
+    assert repaired.rows["late"].rank == 2
+    assert repaired.changed_ordinals == {"late"}
 
 
 def test_removed_node_closes_gap_without_changing_keys():
@@ -291,13 +312,12 @@ def test_incremental_ordering_ignores_activity_and_aggregates():
     plain = [task(f"n{i}", created=i) for i in range(6)]
     mixed = [
         SnapTask(
-            id=f"n{i}",
-            parent_id=None,
-            is_container=i % 2 == 0,
-            status=("COMPLETED", "IN_PROGRESS", "READY")[i % 3],
-            created_at=i,
-            phase_order=(None, 1, 2)[i % 3],
-        )
+                id=f"n{i}",
+                parent_id=None,
+                is_container=i % 2 == 0,
+                status=("COMPLETED", "IN_PROGRESS", "READY")[i % 3],
+                created_at=i,
+            )
         for i in range(6)
     ]
     aggs = {f"n{i}": {"descendants": 3, "running": i % 2, "active": 3} for i in range(6)}

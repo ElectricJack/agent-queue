@@ -14,7 +14,8 @@ class SnapTask:
     created_at: float
     title: str = ""
     #: ``task_metadata["phase"]["order"]`` when this task is a declared
-    #: phase, else ``None``. A tidy-seed input only (§3.2).
+    #: phase, else ``None``. A positive value is both a tidy-seed input and
+    #: the phase's minimum feasible rank.
     phase_order: int | None = None
 
 

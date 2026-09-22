@@ -72,7 +72,12 @@ def minimal_ranks(children: dict[str, SnapTask], edges: list[tuple[str, str]]) -
 def minimal_ranks_acyclic(
     children: dict[str, SnapTask], acyclic: list[tuple[str, str]]
 ) -> dict[str, int]:
-    """Longest-path layering: rank(dependent) >= rank(blocker) + 1.
+    """Longest-path layering with phase floors.
+
+    A dependency requires ``rank(dependent) >= rank(blocker) + 1``.  A
+    declared phase also keeps its positive ``phase_order`` as a floor, even
+    when it was created after earlier phases completed and therefore has no
+    gate edge to them.
 
     *acyclic* must already have come through :func:`break_cycles` (callers
     that need the broken edge list anyway pass it straight in rather than
@@ -86,7 +91,11 @@ def minimal_ranks_acyclic(
     def rank(x: str) -> int:
         if x in memo:
             return memo[x]
-        r = 0
+        order = children[x].phase_order
+        # Snapshot metadata can be hand-edited or stale.  Phase creation
+        # writes a positive integer, but layout must not turn an invalid
+        # value (including ``True``) into a logical rank.
+        r = order if isinstance(order, int) and not isinstance(order, bool) and order > 0 else 0
         for b in blockers.get(x, ()):
             r = max(r, rank(b) + 1)
         memo[x] = r
