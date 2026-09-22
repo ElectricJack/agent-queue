@@ -29,6 +29,7 @@ export function connectTerminal({ sessionId, cols, rows, write, onState }: {
   onState: (state: TerminalConnectionState) => void;
 }): TerminalConnection {
   let socket: WebSocket | undefined;
+  let connectTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false;
   let ended = false;
   let ready = false;
@@ -36,12 +37,33 @@ export function connectTerminal({ sessionId, cols, rows, write, onState }: {
   let size = terminalDimensions(cols, rows);
   let sentSize = size;
 
+  const cancelPendingConnect = () => {
+    if (connectTimer === undefined) return;
+    clearTimeout(connectTimer);
+    connectTimer = undefined;
+  };
+  const closeSocket = () => {
+    if (!socket) return;
+    const current = socket;
+    current.onopen = current.onmessage = current.onerror = current.onclose = null;
+    // Calling close() while CONNECTING is reported by browsers as an error. A
+    // later open is still promptly closed, but a StrictMode cleanup that runs
+    // before the macrotask below never creates a socket in the first place.
+    if (current.readyState === WebSocket.CONNECTING) {
+      current.onopen = () => {
+        current.onopen = null;
+        current.close();
+      };
+      return;
+    }
+    if (current.readyState === WebSocket.OPEN) current.close();
+  };
   const finish = (state: TerminalConnectionState) => {
     if (disposed || ended) return;
     ended = true;
     ready = false;
     onState(state);
-    socket?.close();
+    closeSocket();
   };
   const fail = (message: string) => finish({ status: "error", message });
   const writable = () => !disposed && !ended && ready && socket?.readyState === WebSocket.OPEN;
@@ -78,81 +100,86 @@ export function connectTerminal({ sessionId, cols, rows, write, onState }: {
     close() {
       disposed = true;
       ready = false;
-      if (!socket) return;
-      socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
-      socket.close();
+      cancelPendingConnect();
+      closeSocket();
     },
   };
 
   onState({ status: "connecting" });
-  try {
-    // The notification stream defaults to the page's own origin (VITE_WS_URL is
-    // opt-in and unset by default).
-    // Terminals must use the same-origin Vite proxy unless explicitly configured;
-    // a separate endpoint also requires api_auth.trusted_dashboard_origins.
-    const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;
-    const url = new URL(base, window.location.href);
-    url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
-    url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId);
-    url.search = new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString();
-    url.hash = "";
-    socket = new WebSocket(url.toString(), ["aq-terminal-v1"]);
-    socket.binaryType = "arraybuffer";
+  // A macrotask lets React StrictMode's development-only mount/cleanup/remount
+  // cycle cancel its throwaway connection before any browser or server work.
+  connectTimer = setTimeout(() => {
+    connectTimer = undefined;
+    if (disposed || ended) return;
+    try {
+      // The notification stream defaults to the page's own origin (VITE_WS_URL is
+      // opt-in and unset by default).
+      // Terminals must use the same-origin Vite proxy unless explicitly configured;
+      // a separate endpoint also requires api_auth.trusted_dashboard_origins.
+      const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;
+      const url = new URL(base, window.location.href);
+      url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
+      url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId);
+      url.search = new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString();
+      url.hash = "";
+      socket = new WebSocket(url.toString(), ["aq-terminal-v1"]);
+      socket.binaryType = "arraybuffer";
 
-    socket.onmessage = ({ data }: MessageEvent) => {
-      if (disposed || ended) return;
-      if (typeof data === "string") {
-        try {
-          const frame = JSON.parse(data);
-          if (frame.type === "ready") {
-            if (frame.session_id !== sessionId) {
-              fail("The terminal server announced a different session.");
-              return;
+      socket.onmessage = ({ data }: MessageEvent) => {
+        if (disposed || ended) return;
+        if (typeof data === "string") {
+          try {
+            const frame = JSON.parse(data);
+            if (frame.type === "ready") {
+              if (frame.session_id !== sessionId) {
+                fail("The terminal server announced a different session.");
+                return;
+              }
+              ready = true;
+              sentSize = { cols: frame.cols, rows: frame.rows };
+              sendSize();
+              if (!ended) onState({ status: "connected" });
+            } else if (frame.type === "error") {
+              fail(typeof frame.message === "string" ? frame.message : "Terminal unavailable.");
+            } else if (frame.type === "exit") {
+              finish({ status: "exited", message: "The terminal session has ended." });
+            } else {
+              fail("The terminal server sent an unsupported control message.");
             }
-            ready = true;
-            sentSize = { cols: frame.cols, rows: frame.rows };
-            sendSize();
-            if (!ended) onState({ status: "connected" });
-          } else if (frame.type === "error") {
-            fail(typeof frame.message === "string" ? frame.message : "Terminal unavailable.");
-          } else if (frame.type === "exit") {
-            finish({ status: "exited", message: "The terminal session has ended." });
-          } else {
-            fail("The terminal server sent an unsupported control message.");
-          }
-        } catch { fail("The terminal server sent an invalid control message."); }
-        return;
-      }
-      if (!ready || !(data instanceof ArrayBuffer)) {
-        fail("The terminal server sent invalid output.");
-        return;
-      }
-      const bytes = new Uint8Array(data);
-      if (!bytes.byteLength) return;
-      outputPending += bytes.byteLength;
-      if (outputPending > MAX_OUTPUT_BACKLOG) {
-        fail("Terminal output exceeded the render buffer. Reconnect to restore the screen.");
-        return;
-      }
-      let acknowledged = false;
-      try {
-        // Keep VT sequences and split UTF-8 intact. Flow control follows the
-        // renderer, never network arrival or a React update.
-        write(bytes, () => {
-          if (acknowledged) return;
-          acknowledged = true;
-          outputPending -= bytes.byteLength;
-          sendControl({ type: "ack", bytes: bytes.byteLength });
-        });
-      } catch { fail("Terminal output could not be rendered."); }
-    };
-    socket.onclose = () => {
-      if (disposed || ended) return;
-      ended = true;
-      ready = false;
-      onState({ status: "disconnected", message: "Terminal disconnected. Unsent input was discarded." });
-    };
-    socket.onerror = () => fail("Could not connect to the terminal. Check the daemon connection.");
-  } catch { fail("Could not open the terminal connection."); }
+          } catch { fail("The terminal server sent an invalid control message."); }
+          return;
+        }
+        if (!ready || !(data instanceof ArrayBuffer)) {
+          fail("The terminal server sent invalid output.");
+          return;
+        }
+        const bytes = new Uint8Array(data);
+        if (!bytes.byteLength) return;
+        outputPending += bytes.byteLength;
+        if (outputPending > MAX_OUTPUT_BACKLOG) {
+          fail("Terminal output exceeded the render buffer. Reconnect to restore the screen.");
+          return;
+        }
+        let acknowledged = false;
+        try {
+          // Keep VT sequences and split UTF-8 intact. Flow control follows the
+          // renderer, never network arrival or a React update.
+          write(bytes, () => {
+            if (acknowledged) return;
+            acknowledged = true;
+            outputPending -= bytes.byteLength;
+            sendControl({ type: "ack", bytes: bytes.byteLength });
+          });
+        } catch { fail("Terminal output could not be rendered."); }
+      };
+      socket.onclose = () => {
+        if (disposed || ended) return;
+        ended = true;
+        ready = false;
+        onState({ status: "disconnected", message: "Terminal disconnected. Unsent input was discarded." });
+      };
+      socket.onerror = () => fail("Could not connect to the terminal. Check the daemon connection.");
+    } catch { fail("Could not open the terminal connection."); }
+  }, 0);
   return connection;
 }

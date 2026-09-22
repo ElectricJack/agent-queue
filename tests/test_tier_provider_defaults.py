@@ -68,7 +68,7 @@ def test_all_bundled_provider_models_and_efforts(tmp_path, cid, tier, level, cla
     if tier == "deep":
         assert "google" not in cls.mapping
     else:
-        assert cls.mapping["google"]["model"] == ("gemini-2.5-flash" if tier == "fast" else "gemini-2.5-pro")
+        assert cls.mapping["google"]["model"] == "gemini-2.5-flash"
 
 
 @pytest.mark.parametrize("level", ["low", "high"])
@@ -79,6 +79,16 @@ def test_astra_is_openai_only(tmp_path, level):
         "openai": {"model": "gpt-6-astra", "reasoning_effort": EFFORT[level]},
         "codex": {"model": "gpt-6-astra", "reasoning_effort": EFFORT[level]},
     }
+
+
+def test_shipped_classes_never_default_google_to_pro(tmp_path):
+    """A Gemini slice on the user's Google API key must be Flash, never Pro."""
+    ensure_default_intelligence_classes(str(tmp_path))
+    for cid, cls in load_intelligence_classes(str(tmp_path)).items():
+        google = cls.mapping.get("google")
+        if google is None:
+            continue
+        assert "pro" not in google["model"].lower(), f"{cid} google slice: {google['model']}"
 
 
 @pytest.mark.parametrize(("cid", "tier", "level", "claude", "openai"), CLASSES)

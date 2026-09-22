@@ -412,6 +412,13 @@ def _make_auto_command(
         click_type = _schema_to_click_type(prop_schema)
         description = prop_schema.get("description", "")
         option_name = f"--{prop_name.replace('_', '-')}"
+        option_decls = [option_name]
+        # The terminal picker speaks in terms of a project, while the API's
+        # stable field remains ``project_id``.  Keep the conventional long
+        # option as an alias for scripts, and expose the concise documented
+        # spelling in ``aq agent start-terminal --project <id>``.
+        if cmd_name == "start_agent_terminal" and prop_name == "project_id":
+            option_decls = ["--project", option_name, "project_id"]
 
         if isinstance(click_type, type) and click_type is bool:
             params.append(
@@ -425,7 +432,7 @@ def _make_auto_command(
         else:
             params.append(
                 click.Option(
-                    [option_name],
+                    option_decls,
                     type=click_type,
                     required=prop_name in required,
                     **({} if prop_name in required else {"default": None}),

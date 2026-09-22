@@ -2031,7 +2031,13 @@ _ALL_TOOL_DEFINITIONS = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"agent_id": {"type": "string"}},
+            "properties": {
+                "agent_id": {"type": "string"},
+                "project_id": {
+                    "type": "string",
+                    "description": "Optional active project to attach to the terminal",
+                },
+            },
             "required": ["agent_id"],
         },
     },

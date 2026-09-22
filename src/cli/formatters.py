@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 
 from rich.console import Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -388,6 +389,101 @@ def format_status_overview(
 # ---------------------------------------------------------------------------
 # Generic formatters — reusable across many commands
 # ---------------------------------------------------------------------------
+
+
+def _review_value(value: Any, key: str, default: Any = None) -> Any:
+    """Read a review field from dict or generated-client response shapes."""
+    if isinstance(value, dict):
+        result = value.get(key, default)
+    else:
+        result = getattr(value, key, default)
+        if result is default:
+            extras = getattr(value, "additional_properties", None)
+            if isinstance(extras, dict):
+                result = extras.get(key, default)
+    return default if type(result).__name__ == "Unset" else result
+
+
+def _review_text(value: Any, key: str, default: str = "—") -> str:
+    result = _review_value(value, key)
+    return default if result is None or result == "" else str(result)
+
+
+def format_review_detail(data: Any) -> Group:
+    """Render a review's selected revision and, when requested, its comments."""
+    review = _review_value(data, "review", {})
+    revision = _review_value(data, "revision", {})
+    current_revision = _review_text(review, "current_revision")
+    shown_revision = _review_text(revision, "revision", current_revision)
+
+    header = Table.grid(padding=(0, 1))
+    header.add_column(style="bold bright_cyan", no_wrap=True)
+    header.add_column()
+    header.add_column(style="bold bright_cyan", no_wrap=True)
+    header.add_column()
+    header.add_row("ID", _review_text(review, "id"), "Title", _review_text(review, "title"))
+    header.add_row("Kind", _review_text(review, "kind"), "State", _review_text(review, "state"))
+    header.add_row(
+        "Revision",
+        f"{shown_revision} / {current_revision}",
+        "Vault state",
+        _review_text(data, "vault_state"),
+    )
+
+    content = _review_text(revision, "content", "")
+    renderables: list[Any] = [
+        Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
+        Markdown(content),
+    ]
+    comments = _review_value(data, "comments", []) or []
+    for index, comment in enumerate(comments, 1):
+        heading_path = _review_value(comment, "heading_path", []) or []
+        heading = " / ".join(str(part) for part in heading_path) or "—"
+        resolved = _review_value(comment, "resolved_in_revision")
+        resolved_text = f"revision {resolved}" if resolved is not None else "open"
+        metadata = Text()
+        metadata.append("Quote: ", style="bold")
+        metadata.append(_review_text(comment, "quote"))
+        metadata.append("\nHeading: ", style="bold")
+        metadata.append(heading)
+        metadata.append("\nRevision: ", style="bold")
+        metadata.append(_review_text(comment, "revision"))
+        metadata.append("\nResolved: ", style="bold")
+        metadata.append(resolved_text)
+        renderables.append(
+            Panel(
+                Group(metadata, Text(), Text(_review_text(comment, "body", ""))),
+                title=f"[bold]Comment {index}[/]",
+                border_style="bright_black",
+            )
+        )
+    return Group(*renderables)
+
+
+def format_review_table(reviews: list[Any]) -> Table:
+    """Render review rows returned by ``aq review list``."""
+    table = Table(
+        title="Document reviews",
+        title_style="bold bright_white",
+        border_style="bright_black",
+        expand=True,
+    )
+    table.add_column("ID", style="bold bright_cyan", no_wrap=True)
+    table.add_column("Title", ratio=1)
+    table.add_column("Kind", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Rev", justify="right", no_wrap=True)
+    table.add_column("Relation", no_wrap=True)
+    for review in reviews:
+        table.add_row(
+            _review_text(review, "id"),
+            _review_text(review, "title"),
+            _review_text(review, "kind"),
+            _review_text(review, "state"),
+            _review_text(review, "current_revision"),
+            _review_text(review, "relation"),
+        )
+    return table
 
 
 def format_confirmation(data: dict) -> Text:

@@ -11,6 +11,7 @@ vi.mock("../../api/client", () => api);
 
 let frames: FrameRequestCallback[] = [];
 beforeEach(() => {
+  vi.useFakeTimers();
   TerminalMock.instances = []; FitAddonMock.instances = []; TerminalSocketMock.instances = []; ResizeObserverMock.instances = [];
   frames = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -19,10 +20,11 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 400 } as DOMRect);
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 function terminal() {
   const view = render(<InteractiveTerminal name="Builder" sessionId="session-b" />);
+  act(() => vi.runOnlyPendingTimers());
   return { view, term: TerminalMock.instances[0]!, socket: TerminalSocketMock.instances[0]! };
 }
 function inputs(socket: TerminalSocketMock) { return socket.inputs().map((bytes) => new TextDecoder().decode(bytes)); }
@@ -82,6 +84,7 @@ describe("Interactive live terminal", () => {
     expect(screen.getByRole("button", { name: "Interrupt Builder" })).toBeDisabled();
     expect(TerminalSocketMock.instances).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Reconnect terminal" }));
+    act(() => vi.runOnlyPendingTimers());
     const next = TerminalSocketMock.instances[1]!;
     expect(term.disposed).toBe(true);
     expect(ResizeObserverMock.instances[0]!.disconnect).toHaveBeenCalled();
@@ -98,6 +101,7 @@ describe("Interactive live terminal", () => {
     act(() => socket.ready());
     act(() => socket.message(new TextEncoder().encode("old output")));
     view.rerender(<InteractiveTerminal name="Reviewer" sessionId="session-c" />);
+    act(() => vi.runOnlyPendingTimers());
     act(() => term.flushWrites());
     expect(socket.closed).toBe(true);
     expect(socket.controls()).toEqual([]);
@@ -181,7 +185,10 @@ describe("Interactive live terminal", () => {
 
   it("leaves only one live viewer after StrictMode re-mount and closes it on unmount", () => {
     const view = render(<StrictMode><InteractiveTerminal name="Builder" sessionId="session-b" /></StrictMode>);
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    act(() => vi.runOnlyPendingTimers());
     expect(TerminalSocketMock.instances.filter((socket) => !socket.closed)).toHaveLength(1);
+    act(() => TerminalSocketMock.instances[0]!.open());
     view.unmount();
     expect(TerminalSocketMock.instances.every((socket) => socket.closed)).toBe(true);
     expect(TerminalMock.instances.every((term) => term.disposed)).toBe(true);

@@ -261,6 +261,11 @@ def _create_task_graph(
     ),
 )
 @click.option(
+    "--after-review",
+    default=None,
+    help="Attach the task to this document review's gate until it is approved",
+)
+@click.option(
     "--root",
     is_flag=True,
     default=False,
@@ -328,6 +333,7 @@ def task_create(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None,
+    after_review: str | None,
     root: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
@@ -391,6 +397,8 @@ def task_create(
             "--pin/--provider-intent apply to single-task creation; in a graph put "
             "'pin: true' on the nodes to pin"
         )
+    if after_review and (graph_file or from_spec):
+        raise click.UsageError("--after-review only applies to single-task creation")
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -481,6 +489,8 @@ def task_create(
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id
+    if after_review:
+        params["after_review"] = after_review
     if root:
         params["root"] = True
     if reason and "reason" not in params:

@@ -11,6 +11,6 @@ thinking: xhigh
   "anthropic": {"model": "claude-opus-5", "thinking": "xhigh"},
   "openai":    {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
   "codex":     {"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"},
-  "google":    {"model": "gemini-2.5-pro",    "thinking_budget": 24576}
+  "google":    {"model": "gemini-2.5-flash",  "thinking_budget": 24576}
 }
 ```

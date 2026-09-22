@@ -20,11 +20,11 @@ type OpenPane = { kind: "closed" } | { kind: "open"; view: string; args: unknown
 
 /**
  * Why the pane last changed: the server restoring the user's last pane when
- * the dashboard loads, or a call to `open` / `close` / `setArgs`. Navigation
- * history records the first against the current entry and lets only the
- * second create one.
+ * the dashboard loads, a local call to `open` / `close` / `setArgs`, or an
+ * agent push. Navigation history records restores against the current entry
+ * and lets the two deliberate changes create one.
  */
-export type PaneChangeOrigin = "restore" | "call";
+export type PaneChangeOrigin = "restore" | "call" | "agent";
 
 type Snapshot = { pane: OpenPane; origin: PaneChangeOrigin };
 
@@ -51,6 +51,7 @@ interface StoreShape {
   state: PaneState;
   origin: PaneChangeOrigin;
   open: (view: string, args: unknown) => void;
+  openFromAgent: (view: string, args: unknown) => void;
   close: () => void;
   setArgs: (next: unknown) => void;
   setWidth: (n: number) => void;
@@ -114,8 +115,8 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
     emit();
   }, [status, prefs.right_surface, registry, emit]);
 
-  const open = useCallback(
-    (view: string, args: unknown) => {
+  const openPane = useCallback(
+    (view: string, args: unknown, origin: Extract<PaneChangeOrigin, "call" | "agent">) => {
       const entry = registry[view];
       if (!entry) {
         console.error(`ShellPane: unknown view id "${view}"`);
@@ -133,11 +134,23 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
         args = parsed.data;
       }
       touched.current = true;
-      stateRef.current = { pane: { kind: "open", view, args }, origin: "call" };
+      stateRef.current = { pane: { kind: "open", view, args }, origin };
       emit();
-      persistPane({ view, args: storedArgs(args) });
+      // A user action changes the roaming restore preference. An agent push is
+      // a transient notification in each open dashboard, never a cross-tab
+      // preference write that races with the other dashboards receiving it.
+      if (origin === "call") persistPane({ view, args: storedArgs(args) });
     },
     [registry, emit, persistPane],
+  );
+
+  const open = useCallback(
+    (view: string, args: unknown) => openPane(view, args, "call"),
+    [openPane],
+  );
+  const openFromAgent = useCallback(
+    (view: string, args: unknown) => openPane(view, args, "agent"),
+    [openPane],
   );
 
   const close = useCallback(() => {
@@ -186,8 +199,8 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
   );
 
   const value = useMemo<StoreShape>(
-    () => ({ state, origin, open, close, setArgs, setWidth, registry }),
-    [state, origin, open, close, setArgs, setWidth, registry],
+    () => ({ state, origin, open, openFromAgent, close, setArgs, setWidth, registry }),
+    [state, origin, open, openFromAgent, close, setArgs, setWidth, registry],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

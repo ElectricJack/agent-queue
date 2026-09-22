@@ -227,6 +227,8 @@ def _register_all():
         format_profile_list,
         format_prompt_list,
         format_project_table,
+        format_review_detail,
+        format_review_table,
         format_task_deps,
         format_task_detail,
         format_task_table,
@@ -513,6 +515,21 @@ def _register_all():
         render=format_entity_detail,
         extract=None,
         many=False,
+    )
+
+    # -- Document reviews ----------------------------------------------------
+
+    FORMATTERS["review_show"] = FormatterSpec(
+        render=format_review_detail,
+        extract=None,
+        many=False,
+    )
+    FORMATTERS["review_list"] = FormatterSpec(
+        render=format_review_table,
+        extract="reviews",
+        many=True,
+        empty_message="No reviews found.",
+        entity="review",
     )
 
     # Project confirmations

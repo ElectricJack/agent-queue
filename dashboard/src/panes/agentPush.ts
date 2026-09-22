@@ -4,7 +4,7 @@ import type { NotifyEvent } from "../ws/types";
 import { useShellPaneStore } from "./store";
 
 export function useAgentPushBridge(): void {
-  const { open, registry } = useShellPaneStore();
+  const { openFromAgent, registry } = useShellPaneStore();
   useEventStream({
     onEvent: useCallback(
       (event: NotifyEvent) => {
@@ -23,9 +23,9 @@ export function useAgentPushBridge(): void {
           console.debug(`agent-push: view "${paneOpen.view}" not pushable, ignoring`);
           return;
         }
-        open(paneOpen.view, paneOpen.args);
+        openFromAgent(paneOpen.view, paneOpen.args);
       },
-      [open, registry],
+      [openFromAgent, registry],
     ),
   });
 }

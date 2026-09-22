@@ -1,4 +1,5 @@
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
+import { beforeEach } from "vitest";
 import { z } from "zod";
 import type { ReactNode } from "react";
 import { ShellPaneProvider, useShellPaneStore } from "../store";
@@ -10,13 +11,14 @@ import {
   TestDashboardState,
   testQueryClient,
 } from "../../testUtils/dashboardState";
+import { useShellPreferences } from "../../shell/useShellPreferences";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let fakeEventCb: ((e: any) => void) | null = null;
+let fakeEventCbs: ((e: any) => void)[] = [];
 vi.mock("../../ws/useEventStream", () => ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useEventStream: ({ onEvent }: { onEvent: (e: any) => void }) => {
-    fakeEventCb = onEvent;
+    fakeEventCbs.push(onEvent);
   },
 }));
 
@@ -52,9 +54,19 @@ function BridgeHost() {
   return null;
 }
 
+function useProbe() {
+  return { pane: useShellPaneStore(), preferences: useShellPreferences() };
+}
+
+let server = createFakeDashboardStateServer();
+beforeEach(() => {
+  server = createFakeDashboardStateServer();
+  fakeEventCbs = [];
+});
+
 const wrapper = ({ children }: { children: ReactNode }) => (
   <QueryClientProvider client={testQueryClient()}>
-    <TestDashboardState server={createFakeDashboardStateServer()}>
+    <TestDashboardState server={server}>
       <ShellPaneProvider registryOverride={registry}>
         <BridgeHost />
         {children}
@@ -66,11 +78,11 @@ const wrapper = ({ children }: { children: ReactNode }) => (
 test("valid pane_open frame opens the pane", () => {
   const { result } = renderHook(() => useShellPaneStore(), { wrapper });
   act(() => {
-    fakeEventCb?.({
+    fakeEventCbs.forEach((callback) => callback({
       event_type: "message.sent",
       to_kind: "user",
       pane_open: { view: "mock-view", args: { taskId: "t1" } },
-    });
+    }));
   });
   expect(result.current.state).toMatchObject({
     kind: "open",
@@ -82,11 +94,11 @@ test("valid pane_open frame opens the pane", () => {
 test("pane_open frame for non-pushable view is ignored", () => {
   const { result } = renderHook(() => useShellPaneStore(), { wrapper });
   act(() => {
-    fakeEventCb?.({
+    fakeEventCbs.forEach((callback) => callback({
       event_type: "message.sent",
       to_kind: "user",
       pane_open: { view: "locked-view", args: { taskId: "t1" } },
-    });
+    }));
   });
   expect(result.current.state).toEqual({ kind: "closed" });
 });
@@ -94,11 +106,32 @@ test("pane_open frame for non-pushable view is ignored", () => {
 test("pane_open frame not addressed to user is ignored", () => {
   const { result } = renderHook(() => useShellPaneStore(), { wrapper });
   act(() => {
-    fakeEventCb?.({
+    fakeEventCbs.forEach((callback) => callback({
       event_type: "message.sent",
       to_kind: "session",
       pane_open: { view: "mock-view", args: { taskId: "t1" } },
-    });
+    }));
   });
   expect(result.current.state).toEqual({ kind: "closed" });
+});
+
+test("agent pushes open transient panes in every dashboard without right-surface writes", async () => {
+  const first = renderHook(useProbe, { wrapper });
+  const second = renderHook(useProbe, { wrapper });
+  await waitFor(() => expect(first.result.current.preferences.status).toBe("ready"));
+  await waitFor(() => expect(second.result.current.preferences.status).toBe("ready"));
+
+  act(() => {
+    fakeEventCbs.forEach((callback) => callback({
+      event_type: "message.sent",
+      to_kind: "user",
+      pane_open: { view: "mock-view", args: { taskId: "t1" } },
+    }));
+  });
+
+  for (const result of [first.result, second.result]) {
+    expect(result.current.pane.state).toMatchObject({ kind: "open", view: "mock-view", args: { taskId: "t1" } });
+    expect(result.current.pane.origin).toBe("agent");
+  }
+  expect(server.calls.filter((call) => call.op === "put")).toEqual([]);
 });

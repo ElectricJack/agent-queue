@@ -141,6 +141,11 @@ class TestRequestForwarding:
         assert result.exit_code == 0, result.output
         assert "requires_kinds" not in captured
 
+    def test_after_review_is_forwarded(self, runner):
+        result, captured = self._invoke(runner, ["--after-review", "review-42"])
+        assert result.exit_code == 0, result.output
+        assert captured["after_review"] == "review-42"
+
     def test_malformed_value_fails_before_any_request(self, runner):
         result, captured = self._invoke(runner, ["--requires-kind", "game-repo="])
         assert result.exit_code != 0
@@ -386,6 +391,7 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "intelligence_class": "intelligence_class",
     "integration_mode": "integration_mode",
     "parent_id": "parent_id",
+    "after_review": "after_review",
     "root": "root",
     "reason": "reason",
     "deliverables": "deliverables",
