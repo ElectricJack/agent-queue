@@ -1,4 +1,10 @@
-"""Daemon-only GitHub App authentication and narrowly bound REST access."""
+"""GitHub App bootstrap plus a temporary repository-client compatibility layer.
+
+``AppTokenProvider`` is the permanent part of this module.  It can identify the
+configured App and mint one repository-scoped installation token; it cannot
+perform repository operations.  ``GitHubAppClient`` remains while downstream
+repository operations migrate to the shared ``gh`` client.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import os
 import re
 import stat
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
@@ -37,6 +43,8 @@ _PERMISSIONS = {
     "issues": "write",
     "variables": "read",
 }
+
+
 @dataclass(frozen=True)
 class HttpResponse:
     status: int
@@ -96,7 +104,11 @@ class AiohttpTransport:
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
-                    method, url, headers=headers, json=json_body
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    allow_redirects=False,
                 ) as response:
                     body = await response.content.read(max_bytes + 1)
                     if len(body) > max_bytes:
@@ -108,6 +120,173 @@ class AiohttpTransport:
 
 # Compatibility name retained until the transport-specific client is removed.
 GitHubAppError = GitHubAccessError
+
+
+@dataclass(frozen=True, slots=True)
+class AppTokenCandidate:
+    """A not-yet-exposed repository credential minted by the configured App.
+
+    The candidate is handed to the shared ``gh`` binding path for repository
+    identity verification before ``GitHubAuth`` accepts it into its ready
+    cache.  The secret is deliberately omitted from representations.
+    """
+
+    identity: GitHubCredentialIdentity
+    repository: GitHubRepositoryBinding
+    token: str = field(repr=False)
+    expires_at: float
+
+
+class AppTokenProvider:
+    """Sign App JWTs and mint fixed-permission, single-repository tokens."""
+
+    def __init__(
+        self,
+        config: GitHubAppConfig,
+        *,
+        key_provider: PrivateKeyProvider,
+        transport: HttpTransport | None = None,
+        clock=time.time,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
+    ) -> None:
+        if config.validate():
+            raise ValueError("invalid GitHub App configuration")
+        self.config = config
+        self.key_provider = key_provider
+        self.transport = transport or AiohttpTransport()
+        self.clock = clock
+        self.max_response_bytes = max_response_bytes
+
+    @property
+    def credential_identity(self) -> GitHubCredentialIdentity:
+        return GitHubCredentialIdentity.app(
+            self.config.app_id,
+            self.config.installation_id,
+        )
+
+    async def mint(self, repository: GitHubRepositoryBinding) -> AppTokenCandidate:
+        """Mint a fresh token for an already validated repository binding."""
+        payload = await self._mint_payload(repository_ids=[repository.repository_id])
+        selected = _single_repository(payload)
+        if _strict_positive_int(selected.get("id")) != repository.repository_id:
+            raise GitHubAppError("permission", "installation repository selection did not match")
+        if selected.get("full_name") != repository.full_name:
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        return self._candidate(payload, repository)
+
+    async def mint_for_repository(self, full_name: str) -> AppTokenCandidate:
+        """Mint a candidate token while resolving a canonical repository name.
+
+        This is bootstrap only: the returned numeric/name binding still needs
+        verification through the shared ``gh`` runner before it becomes ready.
+        """
+        provisional = GitHubRepositoryBinding(1, full_name)
+        repository_name = provisional.full_name.split("/", 1)[1]
+        payload = await self._mint_payload(repository_names=[repository_name])
+        selected = _single_repository(payload)
+        repository_id = _strict_positive_int(selected.get("id"))
+        if (
+            repository_id is None
+            or selected.get("name") != repository_name
+            or selected.get("full_name") != provisional.full_name
+        ):
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        return self._candidate(
+            payload,
+            GitHubRepositoryBinding(repository_id, provisional.full_name),
+        )
+
+    async def _mint_payload(
+        self,
+        *,
+        repository_ids: list[int] | None = None,
+        repository_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if (repository_ids is None) == (repository_names is None):
+            raise ValueError("exactly one repository selector is required")
+        app_jwt = self._app_jwt()
+        app = await self._bootstrap_json("GET", "/app", credential=app_jwt)
+        if _strict_positive_int(app.get("id")) != self.config.app_id:
+            raise GitHubAppError("credentials", "authenticated App identity did not match")
+        selector: dict[str, Any]
+        if repository_ids is not None:
+            selector = {"repository_ids": repository_ids}
+        else:
+            selector = {"repositories": repository_names}
+        return await self._bootstrap_json(
+            "POST",
+            f"/app/installations/{self.config.installation_id}/access_tokens",
+            credential=app_jwt,
+            json_body=selector | {"permissions": dict(_PERMISSIONS)},
+            expected_statuses={201},
+        )
+
+    def _candidate(
+        self,
+        payload: dict[str, Any],
+        repository: GitHubRepositoryBinding,
+    ) -> AppTokenCandidate:
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise GitHubAppError("credentials", "installation token response was malformed")
+        _validate_permissions(payload.get("permissions"))
+        expires_at = _parse_timestamp(payload.get("expires_at"))
+        if expires_at - self.clock() <= 300:
+            raise GitHubAppError("credentials", "installation token expiry was invalid")
+        return AppTokenCandidate(
+            identity=self.credential_identity,
+            repository=repository,
+            token=token,
+            expires_at=expires_at,
+        )
+
+    def _app_jwt(self) -> str:
+        now = int(self.clock())
+        private_key = self.key_provider.read_private_key(self.config.private_key_path)
+        if len(private_key) > MAX_RESPONSE_BYTES:
+            raise GitHubAppError("credentials", "private key exceeded size limit")
+        try:
+            return jwt.encode(
+                {"iat": now - 60, "exp": now + 540, "iss": self.config.client_id},
+                private_key,
+                algorithm="RS256",
+            )
+        except Exception as exc:
+            raise GitHubAppError("credentials", "private key could not sign App JWT") from exc
+
+    async def _bootstrap_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        credential: str,
+        json_body: dict[str, Any] | None = None,
+        expected_statuses: set[int] | None = None,
+    ) -> dict[str, Any]:
+        token_path = f"/app/installations/{self.config.installation_id}/access_tokens"
+        if (method, path) not in {("GET", "/app"), ("POST", token_path)}:
+            raise ValueError("GitHub App bootstrap endpoint is not allowed")
+        response = await self.transport.request(
+            method,
+            API_BASE + path,
+            headers={
+                "Accept": ACCEPT,
+                "X-GitHub-Api-Version": API_VERSION,
+                "Authorization": f"Bearer {credential}",
+            },
+            json_body=json_body,
+            max_bytes=self.max_response_bytes,
+        )
+        if len(response.body) > self.max_response_bytes:
+            raise GitHubAppError("transient", "GitHub response exceeded size limit")
+        if 300 <= response.status < 400:
+            raise GitHubAppError(
+                "conflict_or_invalid", "GitHub App bootstrap redirect was rejected"
+            )
+        allowed = expected_statuses or {200}
+        if response.status not in allowed:
+            raise _http_error(response.status, response.headers, self.clock())
+        return _decode_object(response.body)
 
 
 class GitHubAppClient:
@@ -129,6 +308,13 @@ class GitHubAppClient:
         self.transport = transport or AiohttpTransport()
         self.clock = clock
         self.max_response_bytes = max_response_bytes
+        self._token_provider = AppTokenProvider(
+            config,
+            key_provider=key_provider,
+            transport=self.transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+        )
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
@@ -152,61 +338,25 @@ class GitHubAppClient:
         clock=time.time,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> "GitHubAppClient":
-        """Resolve one configured repository name into a least-privilege client."""
-        provisional = GitHubRepositoryBinding(1, full_name)
-        repository_name = full_name.split("/", 1)[1]
-        bootstrap = cls(
+        """Compatibility adapter for staged repository-client migration."""
+        provider = AppTokenProvider(
             config,
-            provisional,
             key_provider=key_provider,
             transport=transport,
             clock=clock,
             max_response_bytes=max_response_bytes,
         )
-        app_jwt = bootstrap._app_jwt()
-        app = await bootstrap._raw_json("GET", "/app", credential=app_jwt)
-        if _strict_positive_int(app.get("id")) != config.app_id:
-            raise GitHubAppError("credentials", "authenticated App identity did not match")
-        token_body = await bootstrap._raw_json(
-            "POST",
-            f"/app/installations/{config.installation_id}/access_tokens",
-            credential=app_jwt,
-            json_body={"repositories": [repository_name], "permissions": _PERMISSIONS},
-            expected_statuses={201},
-        )
-        token = token_body.get("token")
-        repositories = token_body.get("repositories")
-        permissions = token_body.get("permissions")
-        if not isinstance(token, str) or not token:
-            raise GitHubAppError("credentials", "installation token response was malformed")
-        if not isinstance(repositories, list) or len(repositories) != 1:
-            raise GitHubAppError("permission", "installation repository selection did not match")
-        repository = repositories[0]
-        repository_id = (
-            _strict_positive_int(repository.get("id")) if isinstance(repository, dict) else None
-        )
-        if (
-            repository_id is None
-            or repository.get("name") != repository_name
-            or repository.get("full_name") != full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        if (
-            not isinstance(permissions, dict)
-            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
-            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
-        ):
-            raise GitHubAppError("permission", "installation permissions did not match")
+        candidate = await provider.mint_for_repository(full_name)
         client = cls(
             config,
-            GitHubRepositoryBinding(repository_id, full_name),
+            candidate.repository,
             key_provider=key_provider,
-            transport=bootstrap.transport,
+            transport=provider.transport,
             clock=clock,
             max_response_bytes=max_response_bytes,
         )
-        client._token = token
-        client._token_expires_at = _parse_timestamp(token_body.get("expires_at"))
+        client._token = candidate.token
+        client._token_expires_at = candidate.expires_at
         return client
 
     @property
@@ -214,18 +364,7 @@ class GitHubAppClient:
         return {"Accept": ACCEPT, "X-GitHub-Api-Version": API_VERSION}
 
     def _app_jwt(self) -> str:
-        now = int(self.clock())
-        private_key = self.key_provider.read_private_key(self.config.private_key_path)
-        if len(private_key) > MAX_RESPONSE_BYTES:
-            raise GitHubAppError("credentials", "private key exceeded size limit")
-        try:
-            return jwt.encode(
-                {"iat": now - 60, "exp": now + 540, "iss": self.config.client_id},
-                private_key,
-                algorithm="RS256",
-            )
-        except Exception as exc:
-            raise GitHubAppError("credentials", "private key could not sign App JWT") from exc
+        return self._token_provider._app_jwt()
 
     async def exact_head_ref(self, branch: str) -> str | None:
         """Read one repository-bound head through the installation identity."""
@@ -356,7 +495,8 @@ class GitHubAppClient:
         marker = self._audit_marker(idempotency_key)
         pulls = await self.paged_list(
             f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
-            + "&head=" + quote(f"{self.repository.full_name.split('/', 1)[0]}:{branch}", safe="")
+            + "&head="
+            + quote(f"{self.repository.full_name.split('/', 1)[0]}:{branch}", safe="")
         )
         matches = [
             pull
@@ -475,48 +615,8 @@ class GitHubAppClient:
             return token
 
     async def _mint_installation_token(self) -> tuple[str, float]:
-        app_jwt = self._app_jwt()
-        app = await self._raw_json("GET", "/app", credential=app_jwt)
-        if _strict_positive_int(app.get("id")) != self.config.app_id:
-            raise GitHubAppError("credentials", "authenticated App identity did not match")
-        token_body = await self._raw_json(
-            "POST",
-            f"/app/installations/{self.config.installation_id}/access_tokens",
-            credential=app_jwt,
-            json_body={
-                "repository_ids": [self.repository.repository_id],
-                "permissions": _PERMISSIONS,
-            },
-            expected_statuses={201},
-        )
-        token = token_body.get("token")
-        if not isinstance(token, str) or not token:
-            raise GitHubAppError("credentials", "installation token response was malformed")
-        repositories = token_body.get("repositories")
-        if not isinstance(repositories, list) or [
-            _strict_positive_int(repo.get("id")) if isinstance(repo, dict) else None
-            for repo in repositories
-        ] != [self.repository.repository_id]:
-            raise GitHubAppError("permission", "installation repository selection did not match")
-        permissions = token_body.get("permissions")
-        if (
-            not isinstance(permissions, dict)
-            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
-            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
-        ):
-            raise GitHubAppError("permission", "installation permissions did not match")
-        expiry = _parse_timestamp(token_body.get("expires_at"))
-        repository = await self._raw_json(
-            "GET",
-            f"/repositories/{self.repository.repository_id}",
-            credential=token,
-        )
-        if (
-            _strict_positive_int(repository.get("id")) != self.repository.repository_id
-            or repository.get("full_name") != self.repository.full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        return token, expiry
+        candidate = await self._token_provider.mint(self.repository)
+        return candidate.token, candidate.expires_at
 
     async def request_json(
         self,
@@ -637,6 +737,27 @@ class GitHubAppClient:
         return response
 
 
+def _single_repository(payload: dict[str, Any]) -> dict[str, Any]:
+    repositories = payload.get("repositories")
+    if (
+        not isinstance(repositories, list)
+        or len(repositories) != 1
+        or not isinstance(repositories[0], dict)
+    ):
+        raise GitHubAppError("permission", "installation repository selection did not match")
+    return repositories[0]
+
+
+def _validate_permissions(value: Any) -> None:
+    if not isinstance(value, dict) or any(
+        value.get(name) != level for name, level in _PERMISSIONS.items()
+    ):
+        raise GitHubAppError("permission", "installation permissions did not match")
+    extras = set(value) - set(_PERMISSIONS)
+    if extras - {"metadata"} or ("metadata" in value and value["metadata"] != "read"):
+        raise GitHubAppError("permission", "installation permissions did not match")
+
+
 def _strict_positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
@@ -655,8 +776,11 @@ def _parse_timestamp(value: Any) -> float:
     if not isinstance(value, str):
         raise GitHubAppError("credentials", "installation token expiry was malformed")
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timezone is required")
+        return parsed.timestamp()
+    except (OSError, OverflowError, ValueError) as exc:
         raise GitHubAppError("credentials", "installation token expiry was malformed") from exc
 
 

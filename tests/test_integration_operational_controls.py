@@ -1104,7 +1104,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
                 body = {
                     "token": "installation-secret",
                     "expires_at": "2030-01-01T00:00:00Z",
-                    "repositories": [{"id": 303}],
+                    "repositories": [{"id": 303, "full_name": "acme/widgets"}],
                     "permissions": self.token_permissions,
                 }
                 return HttpResponse(201, {}, json.dumps(body).encode())
@@ -1141,7 +1141,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
         transport=transport,
         clock=lambda: 1_800_000_000.0,
     )
-    monkeypatch.setattr(client, "_app_jwt", lambda: "app-jwt")
+    monkeypatch.setattr(client._token_provider, "_app_jwt", lambda: "app-jwt")
     loaded = SimpleNamespace(
         id="hierarchical-delivery",
         scope=SimpleNamespace(type="project", project_id="p"),
