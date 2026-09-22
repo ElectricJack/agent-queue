@@ -9,10 +9,10 @@ import re
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from src.git.github_app import (
-    MAX_RESPONSE_BYTES,
-    GitHubAppClient,
-    GitHubAppError,
+from src.git.github_app import MAX_RESPONSE_BYTES, GitHubAppClient
+from src.git.github_contracts import (
+    GitHubAccessError as GitHubAppError,
+    GitHubCredentialIdentity,
     GitHubRepositoryBinding,
 )
 
@@ -36,6 +36,11 @@ class GitHubCLIClient(GitHubAppClient):
         self._env = dict(os.environ if env is None else env)
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
+
+    @property
+    def credential_identity(self) -> GitHubCredentialIdentity:
+        """Return the non-secret daemon-login identity used by this client."""
+        return GitHubCredentialIdentity.existing_login()
 
     @classmethod
     async def bind_repository(

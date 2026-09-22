@@ -9,6 +9,7 @@ to understand what a group of tickets is trying to achieve; read
 
 | Plan | State | What it covers |
 |---|---|---|
+| [`github-access/`](github-access/implementation-notes.md) | In flight (AQ epic `smart-beacon`) | The source inventory, dependency layout, ownership and staged handoffs for the unified GitHub access migration. |
 | [`documentation-overhaul/`](documentation-overhaul/README.md) | In flight (AQ epic `solid-grove`) | This documentation overhaul: the beginner hierarchy, page ownership, the module coverage manifest and the known-inaccuracies ledger. |
 | [`install-onboarding/`](install-onboarding/README.md) | Proposed (AQ epic `noble-apex`) | A seamless install and first-project onboarding path. Not yet built. |
 

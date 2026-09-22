@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 
 from src.database.tables import integration_branch_owners, task_branch_origins
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
 
 logger = logging.getLogger(__name__)

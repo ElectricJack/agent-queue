@@ -25,7 +25,12 @@ from src.database.tables import (
     integration_repair_stages,
     projects,
 )
-from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+    credential_identity_from_client,
+)
 from src.git.manager import GitError
 from src.integration.ci import (
     TRUST_MANIFEST_PATH,
@@ -150,7 +155,7 @@ class IntegrationAttestationService:
                 )
 
             await AuthenticatedGitHubObserver(client).publish(trust, payload)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return AttestationPublicationResult(
                 outcome="configuration_blocked", subject=subject
             )
@@ -159,7 +164,7 @@ class IntegrationAttestationService:
         try:
             records = await self._attestation_records(client, trust, subject.candidate_sha)
             proof = self._proof_from_records(records, trust, subject, initial)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return AttestationPublicationResult(
                 outcome="configuration_blocked", subject=subject
             )
@@ -201,7 +206,7 @@ class IntegrationAttestationService:
                 return proof if rechecked == claim else None
             records = await self._attestation_records(client, trust, subject.candidate_sha)
             proof = self._proof_from_records(records, trust, subject, initial)
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return None
         if (
             proof is None
@@ -278,7 +283,7 @@ class IntegrationAttestationService:
                     else {}
                 ),
             }
-        except (AttestationError, GitHubAppError, GitError, OSError, ValueError, ValidationError):
+        except (AttestationError, GitHubAccessError, GitError, OSError, ValueError, ValidationError):
             return {"outcome": "configuration_blocked"}
 
     async def enablement_blockers(
@@ -322,7 +327,8 @@ class IntegrationAttestationService:
             state["repository_numeric_id"], state["repository_full_name"]
         )
         client = await self._client(binding)
-        if _client_auth_mode(client) == "gh":
+        identity = credential_identity_from_client(client)
+        if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
             return (
                 ci_trust_from_policy(
                     canonical_repository_id=state["canonical_repository_id"],
@@ -362,7 +368,7 @@ class IntegrationAttestationService:
             trust.canonical_repository_id != state["canonical_repository_id"]
             or trust.repository_id != binding.repository_id
             or trust.full_name != binding.full_name
-            or trust.attestation_app_id != client.config.app_id
+            or trust.attestation_app_id != identity.app_id
             or trust.required_checks.version != state["required_check_version"]
             or trust.required_checks.names != state["required_check_names"]
             or str(trust.ci_producer_app_id) != state["ci_producer_id"]
@@ -384,12 +390,10 @@ class IntegrationAttestationService:
             or value.repository.forge_host != "github.com"
         ):
             raise AttestationError("authenticated GitHub repository binding is invalid")
-        if _client_auth_mode(value) != "gh" and (
-            isinstance(value.config.app_id, bool)
-            or not isinstance(value.config.app_id, int)
-            or value.config.app_id <= 0
-        ):
-            raise AttestationError("trusted integration App binding is invalid")
+        try:
+            credential_identity_from_client(value)
+        except ValueError as exc:
+            raise AttestationError("trusted integration App binding is invalid") from exc
         self._clients[binding] = value
         return value
 
@@ -1080,13 +1084,6 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise AttestationError("candidate trust manifest contains duplicate fields")
         value[key] = item
     return value
-
-
-def _client_auth_mode(client: Any) -> str:
-    mode = getattr(client, "auth_mode", None)
-    if isinstance(mode, str):
-        return mode
-    return str(getattr(getattr(client, "config", None), "auth_mode", "app"))
 
 
 __all__ = [

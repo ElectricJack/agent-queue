@@ -41,7 +41,7 @@ from src.git.manager import (
     GitManager,
     is_valid_git_oid,
 )
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")

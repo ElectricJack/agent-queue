@@ -87,7 +87,7 @@ from src.git.askpass_broker import (
     zeroize,
 )
 from src.git.askpass_fd import answer_prompt
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus

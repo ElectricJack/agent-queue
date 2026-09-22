@@ -29,7 +29,7 @@ from src.database.tables import (
     task_delivery_receipts,
     workspaces,
 )
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
 
 
