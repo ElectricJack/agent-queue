@@ -435,6 +435,7 @@ from .git_remote_url_request import GitRemoteUrlRequest
 from .git_remote_url_response import GitRemoteUrlResponse
 from .git_remote_url_response_422 import GitRemoteUrlResponse422
 from .github_auth_status_response import GithubAuthStatusResponse
+from .github_auth_status_response_credential_mode import GithubAuthStatusResponseCredentialMode
 from .github_owner import GithubOwner
 from .github_owner_kind import GithubOwnerKind
 from .github_repository import GithubRepository
@@ -1709,6 +1710,7 @@ __all__ = (
     "GitDiffResponse",
     "GitDiffResponse422",
     "GithubAuthStatusResponse",
+    "GithubAuthStatusResponseCredentialMode",
     "GithubOwner",
     "GithubOwnerKind",
     "GithubRepository",

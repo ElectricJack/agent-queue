@@ -791,6 +791,65 @@ async def test_pool_status_includes_live_instance_detail(pool_handler):
     }
 
 
+async def test_pool_status_marks_stable_interactive_prompt_as_blocked(pool_handler):
+    """A matched prompt is visible as input-blocked, never merely idle."""
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.models import SessionRecord
+    from src.sessions.harness_parser import Harness
+    from src.sessions.input_prompts import InputPromptSignature
+
+    now = time.time()
+    await pool_handler.db.create_session(
+        SessionRecord(
+            id="pool-blocked",
+            project_id=PROJECT_ID,
+            profile_id="worker",
+            harness="codex",
+            provider="fake",
+            name="p-worker--proj--blocked",
+            lifecycle="pool",
+            work_dir="/tmp/pool-blocked",
+            epoch="test",
+            instance_token="token-blocked",
+            started_at=now - 900,
+            last_activity=now - 600,
+            state="running",
+        )
+    )
+    pool_handler.orchestrator.harness_registry.upsert(
+        Harness(
+            id="codex",
+            command="codex",
+            input_prompts=(
+                InputPromptSignature(
+                    name="model-upgrade-menu",
+                    pattern="Try new model.*Use existing model",
+                    is_regex=True,
+                ),
+            ),
+        )
+    )
+    provider = SimpleNamespace(
+        supports=lambda _capability: True,
+        peek=AsyncMock(return_value="Try new model\nUse existing model\n"),
+    )
+    pool_handler.orchestrator.session_providers = SimpleNamespace(
+        create=lambda *_args: provider
+    )
+
+    row = (await pool_handler._cmd_pool_status({"project_id": PROJECT_ID}))["pools"][0]
+
+    assert row["running_idle"] == 0
+    assert row["blocked_on_input"] == 1
+    instance = row["instances"][0]
+    assert instance["state"] == "blocked_on_input"
+    assert instance["input_prompt"] == "model-upgrade-menu"
+    assert instance["unchanged_seconds"] == pytest.approx(600, abs=2)
+
+
 async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool_handler):
     """Unpooled work remains visible without inflating pool supply."""
     import time

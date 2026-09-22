@@ -33,7 +33,10 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding, HttpResponse
+from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_app import AppTokenProvider, GitHubRepositoryBinding, HttpResponse
+from src.git.github_auth import GitHubAuth
+from src.git.github_contracts import GitHubCredentialIdentity
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
 from src.integration.hierarchy import HierarchyIntegration
 
@@ -970,7 +973,9 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
 
     class Client:
         repository = GitHubRepositoryBinding(303, "acme/widgets")
-        config = SimpleNamespace(app_id=101)
+        # Transport is gh in both modes; trust follows credential identity.
+        auth_mode = "gh"
+        credential_identity = GitHubCredentialIdentity.app(101, 202)
 
         async def request_json(self, _method, path):
             if "/contents/" in path:
@@ -995,8 +1000,8 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     runtime = SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded))
     orchestrator = SimpleNamespace(
         db=db,
-        integration_app_client_factory=lambda _binding: Client(),
-        integration_repository_binding_resolver=lambda _repository: Client.repository,
+        github_client_factory=lambda _binding: Client(),
+        github_repository_binding_resolver=lambda _repository: Client.repository,
         playbook_manager=runtime,
         integration_attestation_service=object(),
         root_promotion_service=object(),
@@ -1046,7 +1051,7 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
 ])
 async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables(db, remote, expected):
     class Client:
-        auth_mode = "gh"
+        credential_identity = GitHubCredentialIdentity.existing_login()
         repository = GitHubRepositoryBinding(303, "acme/widgets")
 
         async def request_json(self, method, path):
@@ -1064,8 +1069,8 @@ async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables
         contract_fingerprint=lambda: "sha256:" + "2" * 64,
     )
     orchestrator = SimpleNamespace(
-        db=db, integration_app_client_factory=lambda _binding: Client(),
-        integration_repository_binding_resolver=lambda _repository: Client.repository,
+        db=db, github_client_factory=lambda _binding: Client(),
+        github_repository_binding_resolver=lambda _repository: Client.repository,
         playbook_manager=SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded)),
         integration_attestation_service=object(), root_promotion_service=object(),
         integration_cleanup_service=object(), git=object(),
@@ -1104,7 +1109,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
                 body = {
                     "token": "installation-secret",
                     "expires_at": "2030-01-01T00:00:00Z",
-                    "repositories": [{"id": 303}],
+                    "repositories": [{"id": 303, "full_name": "acme/widgets"}],
                     "permissions": self.token_permissions,
                 }
                 return HttpResponse(201, {}, json.dumps(body).encode())
@@ -1134,14 +1139,41 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
 
     transport = PermissionAwareTransport()
     binding = GitHubRepositoryBinding(303, "acme/widgets")
-    client = GitHubAppClient(
-        GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem"),
-        binding,
+    app_config = GitHubAppConfig("Iv1.client", 101, 202, "/daemon/key.pem")
+    provider = AppTokenProvider(
+        app_config,
         key_provider=SimpleNamespace(read_private_key=lambda _path: b"unused"),
         transport=transport,
         clock=lambda: 1_800_000_000.0,
     )
-    monkeypatch.setattr(client, "_app_jwt", lambda: "app-jwt")
+    monkeypatch.setattr(provider, "_app_jwt", lambda: "app-jwt")
+    auth = GitHubAuth(
+        app_config,
+        app_provider=provider,
+        clock=lambda: 1_800_000_000.0,
+    )
+
+    class Runner:
+        credential_identity = auth.credential_identity
+
+        async def run(self, args, **kwargs):
+            assert kwargs["credential"].token == "installation-secret"
+            endpoint = args[-1]
+            if "/contents/" in endpoint:
+                body = {
+                    "encoding": "base64",
+                    "content": base64.b64encode(json.dumps(trust).encode()).decode(),
+                }
+            elif "/actions/variables/" in endpoint:
+                name = endpoint.rsplit("/", 1)[-1]
+                value = "101" if name == "AQ_INTEGRATION_ATTESTATION_APP_ID" else "checks-v1"
+                body = {"name": name, "value": value}
+            else:  # pragma: no cover - test contract guard
+                raise AssertionError(endpoint)
+            output = b"HTTP/2.0 200 OK\r\n\r\n" + json.dumps(body).encode()
+            return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    client = GitHubClient(binding, access=GitHubAccess(auth, Runner()))
     loaded = SimpleNamespace(
         id="hierarchical-delivery",
         scope=SimpleNamespace(type="project", project_id="p"),
@@ -1152,8 +1184,8 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
     )
     orchestrator = SimpleNamespace(
         db=db,
-        integration_app_client_factory=lambda _binding: client,
-        integration_repository_binding_resolver=lambda _repository: binding,
+        github_client_factory=lambda _binding: client,
+        github_repository_binding_resolver=lambda _repository: binding,
         playbook_manager=SimpleNamespace(
             _store=SimpleNamespace(load=lambda _sha: loaded)
         ),
@@ -1222,7 +1254,7 @@ async def test_public_control_authority_keeps_enable_local_and_status_project_sc
         interval_seconds=600,
         expected_generation=0,
         reason="operator requested",
-        operator_id="local:-",
+        operator_id="human:local-operator",
         waiver_id=None,
     )
 

@@ -29,7 +29,7 @@ from src.database.tables import (
     task_delivery_receipts,
     workspaces,
 )
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
 
 
@@ -62,14 +62,14 @@ class IntegrationCleanupService:
         *,
         data_dir: str | Path,
         git_manager: Any | None = None,
-        app_client_factory: Any | None = None,
+        github_client_factory: Any | None = None,
         forge_provider: Any | None = None,
         clock=time.time,
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
         self.git = git_manager
-        self.app_client_factory = app_client_factory
+        self.github_client_factory = github_client_factory
         self.forge_provider = forge_provider
         self.clock = clock
 
@@ -201,7 +201,7 @@ class IntegrationCleanupService:
     async def _cleanup_pr(
         self, row: dict[str, Any], binding: GitHubRepositoryBinding
     ) -> tuple[str, str | None]:
-        provider = self.forge_provider or await self._app_client(binding)
+        provider = self.forge_provider or await self._github_client(binding)
         if provider is None:
             return "retryable", "cleanup forge provider is unavailable"
         current = await provider.exact_pull_request(number=int(row["target_pr_number"]))
@@ -284,10 +284,10 @@ class IntegrationCleanupService:
         row["irreversible_prewrite_at"] = now
         return "owner"
 
-    async def _app_client(self, binding: GitHubRepositoryBinding):
-        if self.app_client_factory is None:
+    async def _github_client(self, binding: GitHubRepositoryBinding):
+        if self.github_client_factory is None:
             return None
-        client = self.app_client_factory(binding)
+        client = self.github_client_factory(binding)
         if inspect.isawaitable(client):
             client = await client
         if client is None or client.repository != binding:
@@ -315,7 +315,7 @@ class IntegrationCleanupService:
                 )
             if owner is not None:
                 return "conflict", "source ref has an active branch owner"
-        app = await self._app_client(binding)
+        app = await self._github_client(binding)
         if app is None or self.git is None:
             return "retryable", "authenticated cleanup transport is unavailable"
         current = await app.exact_head_ref(short)

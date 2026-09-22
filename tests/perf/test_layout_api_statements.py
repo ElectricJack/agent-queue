@@ -737,7 +737,14 @@ async def test_crossing_edge_read_uses_the_dependency_indexes(pg_small):
         "the crossing-edge read fell back to a sequential scan of every project's "
         f"dependencies:\n{plan}"
     )
-    assert "idx_task_deps_task_type" in plan and "idx_task_deps_depson_type" in plan, (
+    # The source-side lookup may use either its dedicated (task_id, dep_type)
+    # index or the primary key, whose leading task_id column is equally
+    # selective for this fixture. The reverse lookup must use its dedicated
+    # depends_on index. The no-sequential-scan assertion above is the invariant.
+    source_indexed = (
+        "idx_task_deps_task_type" in plan or "task_dependencies_pkey" in plan
+    )
+    assert source_indexed and "idx_task_deps_depson_type" in plan, (
         f"expected both dependency indexes in the plan:\n{plan}"
     )
 

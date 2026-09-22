@@ -624,23 +624,23 @@ class TestHierarchyRefusalsOverHTTP:
 
         assert response.status_code == 422, response.text
         body = response.json()
-        assert body["code"] == "hierarchy.integration_owned"
+        assert body["code"] == "hierarchy.integration_history_retained"
         assert body["success"] is False
-        assert body["error"].startswith("hierarchy.integration_owned:")
+        assert body["error"].startswith("hierarchy.integration_history_retained:")
         assert [r["table"] for r in body["references"]] == ["integration_parent_episodes"]
         assert await db.get_task("owned") is not None
 
-    async def test_archive_refused_by_integration_history_keeps_its_code_on_the_wire(
+    async def test_archive_with_integration_history_succeeds_on_the_wire(
         self, db, typed_routes
     ):
         await self._integration_owned_task(db, "owned")
 
         response = await typed_routes.post("/api/task/archive", json={"task_id": "owned"})
 
-        assert response.status_code == 422, response.text
+        assert response.status_code == 200, response.text
         body = response.json()
-        assert body["code"] == "hierarchy.integration_owned"
-        assert body["error"].startswith("hierarchy.integration_owned:")
+        assert body["archived"] == "owned"
+        assert await db.get_task("owned") is None
 
     async def test_branch_discard_refusal_keeps_its_branch_list_on_the_wire(
         self, db, typed_routes
@@ -702,7 +702,7 @@ class TestDeleteIntegrationOwned:
         res = await handler.execute("delete_task", {"task_id": "p", "cascade": True})
 
         assert res["success"] is False
-        assert res["code"] == "hierarchy.integration_owned"
+        assert res["code"] == "hierarchy.integration_history_retained"
         assert "integration_repair_operations(c)" in res["error"]
         assert await db.get_task("p") is not None
         assert await db.get_task("c") is not None

@@ -72,6 +72,75 @@ def _status_text(status: str) -> Text:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dependency grouping helpers
+# ---------------------------------------------------------------------------
+
+# Display labels per dep type. "blocking" is the bucket for every edge type
+# that gates scheduling (blocks / waits-for / conditional-blocks); provenance
+# types are edges that document relationships without gating.
+_DEP_LABELS = {
+    "blocks": "blocked-by",
+    "waits-for": "blocked-by",
+    "conditional-blocks": "blocked-by",
+    "parent-child": "part-of",
+    "discovered-from": "discovered-from",
+    "related": "related",
+    "duplicates": "duplicates",
+    "supersedes": "supersedes",
+}
+
+_DEP_LABEL_ORDER = [
+    ("blocked-by", "Blocked by"),
+    ("part-of", "Part of"),
+    ("discovered-from", "Discovered from"),
+    ("related", "Related"),
+    ("duplicates", "Duplicates"),
+    ("supersedes", "Supersedes"),
+]
+
+
+# Display label per bucket key, including the "untyped" fallback. Used by
+# every render site that needs to pick a label from a bucket key.
+_DEP_BUCKET_LABELS = dict(_DEP_LABEL_ORDER)
+_DEP_BUCKET_LABELS["untyped"] = "Depends on"
+
+
+def _group_deps_by_type(entries: list[str | dict] | None) -> list[tuple[str, list[str]]]:
+    """Group dependency entries by dep_type into labelled buckets.
+
+    Accepts either plain IDs (strings) or dicts with at least ``id`` and,
+    optionally, ``dep_type``. Returns an ordered list of
+    ``(bucket_key, [id, ...])`` pairs ready to render. Plain strings are
+    grouped under the ``"untyped"`` bucket. Buckets follow the canonical
+    order:  blocked-by, part-of, discovered-from, related, duplicates,
+    supersedes, untyped.
+    """
+    buckets: dict[str, list[str]] = {}
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            dep_id = entry.get("id") or entry.get("depends_on_task_id") or ""
+            dep_type = entry.get("dep_type") or "untyped"
+            label = _DEP_LABELS.get(dep_type, dep_type)
+        else:
+            dep_id = str(entry)
+            label = "untyped"
+        if not dep_id:
+            continue
+        buckets.setdefault(label, []).append(str(dep_id))
+    result: list[tuple[str, list[str]]] = []
+    for key, _display in _DEP_LABEL_ORDER + [("untyped", "Depends on")]:
+        ids = buckets.pop(key, None)
+        if ids:
+            result.append((key, ids))
+    # Preserve unknown labels (forward-compat) after known buckets.
+    for key, ids in buckets.items():
+        if ids:
+            result.append((key, ids))
+    return result
+
+
+# ---------------------------------------------------------------------------
 def format_task_table(
     tasks: list[Any],
     title: str = "Tasks",
@@ -126,8 +195,8 @@ def format_task_table(
 
 def format_task_detail(
     task: Any,
-    deps_on: list[str] | None = None,
-    dependents: list[str] | None = None,
+    deps_on: list[str | dict] | None = None,
+    dependents: list[str | dict] | None = None,
     subtask_stats: tuple[int, int] | None = None,
 ) -> Panel:
     """Format a single task as a detailed Rich panel."""
@@ -179,19 +248,29 @@ def format_task_detail(
         line.append(value, style="white")
         lines.append(line)
 
-    # Dependencies
+    # Dependencies — grouped by edge type so a parent-child edge is
+    # never mistaken for a real blocker (see format_task_detail docstring).
     if deps_on:
         lines.append("")
-        dep_line = Text()
-        dep_line.append("  Depends on: ", style="bold cyan")
-        dep_line.append(", ".join(deps_on), style="bright_cyan")
-        lines.append(dep_line)
+        for _key, _ids in _group_deps_by_type(deps_on):
+            dep_line = Text()
+            dep_line.append(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}: ", style="bold cyan")
+            dep_line.append(", ".join(_ids), style="bright_cyan")
+            lines.append(dep_line)
 
     if dependents:
-        dep_line = Text()
-        dep_line.append("  Blocks: ", style="bold cyan")
-        dep_line.append(", ".join(dependents), style="bright_yellow")
-        lines.append(dep_line)
+        lines.append("")
+        # Downstream edges are always blocking by definition (see blocked_predicate):
+        # a task that depends on the parent cannot be READY until the parent completes.
+        # So we render the raw IDs under "Blocks:", not by edge type.
+        lines.append(Text("  Blocks: ", style="bold cyan") + Text(
+            ", ".join(
+                item.get("id") if isinstance(item, dict) else str(item)
+                for item in dependents
+                if (item.get("id") if isinstance(item, dict) else item) is not None
+            ),
+            style="bright_yellow",
+        ))
 
     # Subtask progress bar
     if subtask_stats and subtask_stats[1] > 0:
@@ -687,37 +766,57 @@ def format_task_deps(data: dict) -> Group:
         header.append(f"  {icon} {status}", style="dim")
     lines.append(header)
 
-    deps = data.get("depends_on", [])
-    if deps:
-        lines.append(Text("  Depends on:", style="bold"))
-        for d in deps:
-            did = d.get("id", d) if isinstance(d, dict) else str(d)
-            dtitle = d.get("title", "") if isinstance(d, dict) else ""
-            dstatus = d.get("status", "") if isinstance(d, dict) else ""
+    def _entry_id(e):
+        return e.get("id", e) if isinstance(e, dict) else str(e)
+
+    def _entry_field(e, key):
+        return e.get(key, "") if isinstance(e, dict) else ""
+
+    def _render(rows, arrow):
+        for e in rows:
             line = Text()
-            line.append(f"    ← {did}", style="bright_cyan")
-            if dtitle:
-                line.append(f" {dtitle}", style="white")
-            if dstatus:
-                line.append(f"  ({dstatus})", style="dim")
+            line.append(f"    {arrow} {_entry_id(e)}", style="bright_cyan")
+            title = _entry_field(e, "title")
+            if title:
+                line.append(f" {title}", style="white")
+            status = _entry_field(e, "status")
+            if status:
+                line.append(f"  ({status})", style="dim")
             lines.append(line)
 
-    blocks = data.get("blocks", [])
+    # Incoming (upstream) edges. Group by edge type so a parent-child edge to
+    # the epic is never mistaken for a real blocker (see _group_deps_by_type).
+    deps = data.get("depends_on") or []
+    if deps:
+        for _key, _ids in _group_deps_by_type(deps):
+            lines.append(Text(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}:", style="bold"))
+            _render([x for x in deps if _entry_id(x) in _ids], "←")
+
+    # Downstream edges a task blocks are always blocking by definition, so they
+    # render flat under "Blocks:" rather than being split by edge type.
+    blocks = data.get("blocks") or []
     if blocks:
         lines.append(Text("  Blocks:", style="bold"))
-        for b in blocks:
-            bid = b.get("id", b) if isinstance(b, dict) else str(b)
-            btitle = b.get("title", "") if isinstance(b, dict) else ""
-            bstatus = b.get("status", "") if isinstance(b, dict) else ""
-            line = Text()
-            line.append(f"    → {bid}", style="bright_cyan")
-            if btitle:
-                line.append(f" {btitle}", style="white")
-            if bstatus:
-                line.append(f"  ({bstatus})", style="dim")
-            lines.append(line)
+        _render(blocks, "→")
 
-    if not deps and not blocks:
+    # Provenance edges (discovered-from, related, ...) never gate scheduling;
+    # render them last, dimmed, to keep them visually distinct from blockers.
+    provenance = data.get("provenance") or []
+    if provenance:
+        for _key, _ids in _group_deps_by_type(provenance):
+            lines.append(Text(f"  {_DEP_BUCKET_LABELS.get(_key, _key)}:", style="bold dim"))
+            for e in [x for x in provenance if _entry_id(x) in _ids]:
+                line = Text()
+                line.append(f"    ← {_entry_id(e)}", style="dim")
+                title = _entry_field(e, "title")
+                if title:
+                    line.append(f" {title}", style="dim")
+                status = _entry_field(e, "status")
+                if status:
+                    line.append(f"  ({status})", style="dim")
+                lines.append(line)
+
+    if not deps and not blocks and not provenance:
         lines.append(Text("  No dependencies.", style="dim"))
     return Group(*lines)
 
@@ -1389,8 +1488,35 @@ def format_pool_table(pools: list[dict]):
             _pool_project_summary(row),
         )
 
-    notes = [n for n in (_pool_provider_notes(pools), _pool_quarantine_notes(pools)) if n]
+    notes = [
+        n
+        for n in (
+            _pool_input_notes(pools),
+            _pool_provider_notes(pools),
+            _pool_quarantine_notes(pools),
+        )
+        if n
+    ]
     return table if not notes else Group(table, *(part for n in notes for part in (Text(), n)))
+
+
+def _pool_input_notes(pools: list[dict]) -> Text | None:
+    """Named prompt matches for workers that need a human decision."""
+    notes = Text()
+    for row in pools:
+        for instance in row.get("instances", []):
+            if instance.get("state") != "blocked_on_input":
+                continue
+            if not notes:
+                notes.append("Blocked on input\n", style="bold yellow")
+            seconds = float(instance.get("unchanged_seconds") or 0)
+            notes.append(
+                f"  {row.get('profile_id', '?')}: {instance.get('name', '?')} — "
+                f"{instance.get('input_prompt', 'interactive prompt')} "
+                f"(unchanged {seconds:.0f}s)\n",
+                style="yellow",
+            )
+    return notes if notes else None
 
 
 def _pool_provider_notes(pools: list[dict]) -> Text | None:

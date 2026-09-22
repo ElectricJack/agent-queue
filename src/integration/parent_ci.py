@@ -47,10 +47,10 @@ async def publish_parent_snapshot(git, client, store, branch, head_sha, current)
 
 
 class ParentCIService:
-    def __init__(self, attestation, repository_binding_resolver):
+    def __init__(self, attestation, github_repository_binding_resolver):
         self.attestation = attestation
         self.db = attestation.db
-        self.resolve_binding = repository_binding_resolver
+        self.resolve_binding = github_repository_binding_resolver
         self.after = ''
         self.next_poll = 0.0
 

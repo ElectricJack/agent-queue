@@ -20,6 +20,7 @@ from src.database.tables import (
     integration_outbox,
 )
 from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
+from src.git.github_contracts import GitHubCredentialIdentity
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.main_promotion import RootAttestationSubject
@@ -253,8 +254,12 @@ class ExactTreeGit:
 
 
 class ProviderClient:
+    # API transport is always gh; App trust comes only from this explicit
+    # credential identity, never from the historical transport-shaped flag.
+    auth_mode = "gh"
+
     def __init__(self):
-        self.config = SimpleNamespace(app_id=101)
+        self.credential_identity = GitHubCredentialIdentity.app(101, 202)
         self.repository = GitHubRepositoryBinding(303, "acme/widgets")
         self.records: list[dict] = []
         self.published = 0
@@ -346,7 +351,7 @@ class ProviderClient:
 class GitHubCLIProviderClient(ProviderClient):
     def __init__(self):
         super().__init__()
-        self.config = SimpleNamespace(auth_mode="gh")
+        self.credential_identity = GitHubCredentialIdentity.existing_login()
 
     async def installation_token(self):
         return None
@@ -422,7 +427,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: 10.0,
     )
     row = {
@@ -481,7 +486,7 @@ async def test_gh_candidate_green_receipt_is_durable_and_latest_rerun_fenced(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: 10.0,
     )
     row = {
@@ -528,7 +533,7 @@ async def test_gh_receipt_restart_finishes_reserved_db_write_without_lease_wait(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         crash_hook=crash,
         clock=lambda: 10.0,
     )
@@ -547,7 +552,7 @@ async def test_gh_receipt_restart_finishes_reserved_db_write_without_lease_wait(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: 10.0,
     )
     result = await restarted.publish(subject())
@@ -565,7 +570,7 @@ async def test_publish_reads_trust_from_authenticated_exact_candidate_oid(attest
         attestation_db,
         data_dir=tmp_path,
         git_manager=git,
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: 10.0,
     )
 
@@ -597,7 +602,7 @@ async def test_publish_fails_closed_for_untrusted_candidate_tree(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(manifest),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
     )
 
     result = await service.publish(subject())
@@ -620,7 +625,7 @@ async def test_publish_revalidates_subject_after_provider_io(attestation_db, tmp
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=change_current_subject,
+        github_client_factory=change_current_subject,
     )
     original = client.request_json
 
@@ -653,7 +658,7 @@ async def test_publish_crash_replays_existing_record_without_duplicate(attestati
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         crash_hook=crash,
         clock=lambda: now[0],
     )
@@ -664,7 +669,7 @@ async def test_publish_crash_replays_existing_record_without_duplicate(attestati
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
     assert (await restarted.publish(subject())).outcome == "configuration_blocked"
@@ -692,7 +697,7 @@ async def test_lost_publication_response_reconciles_without_duplicate(attestatio
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
     assert (await first.publish(subject())).outcome == "configuration_blocked"
@@ -702,7 +707,7 @@ async def test_lost_publication_response_reconciles_without_duplicate(attestatio
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
     assert (await restarted.publish(subject())).outcome == "configuration_blocked"
@@ -726,7 +731,7 @@ async def test_marked_publication_freezes_execution_nonce(attestation_db, tmp_pa
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: 10.0,
     )
     assert (await service.publish(subject())).outcome == "configuration_blocked"
@@ -747,7 +752,7 @@ async def test_newest_invalid_trusted_record_blocks_older_success(attestation_db
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
     )
     assert (await service.publish(subject())).outcome == "published"
     invalid = dict(client.records[0])
@@ -771,7 +776,7 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: ProviderClient(),
+        github_client_factory=lambda binding: ProviderClient(),
         protection_reader=reader,
         probe_reader=reader,
         debug_class_reader=reader,
@@ -780,7 +785,7 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=None,
+        github_client_factory=None,
     )
 
     assert (await ready.enablement_blockers("repo-config-1")).ready is True
@@ -801,7 +806,7 @@ async def test_enablement_projection_is_read_only_and_fail_closed(attestation_db
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: ProviderClient(),
+        github_client_factory=lambda binding: ProviderClient(),
         protection_reader=unavailable,
         probe_reader=unavailable,
         debug_class_reader=unavailable,
@@ -857,7 +862,7 @@ async def test_two_fresh_services_reserve_one_provider_publication(attestation_d
             attestation_db,
             data_dir=tmp_path,
             git_manager=ExactTreeGit(trust_document()),
-            app_client_factory=lambda binding: client,
+            github_client_factory=lambda binding: client,
             clock=lambda: 10.0,
         )
 
@@ -899,7 +904,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: old_client,
+        github_client_factory=lambda binding: old_client,
         clock=lambda: now[0],
     )
     finish = old._finish_publication
@@ -927,7 +932,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: successor_client,
+        github_client_factory=lambda binding: successor_client,
         clock=lambda: now[0],
     )
     successor_task = asyncio.create_task(successor.publish(subject()))
@@ -965,7 +970,7 @@ async def test_expired_unmarked_reservation_can_be_taken_over(attestation_db, tm
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         crash_hook=crash,
         clock=lambda: now[0],
     )
@@ -976,7 +981,7 @@ async def test_expired_unmarked_reservation_can_be_taken_over(attestation_db, tm
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
 
@@ -1003,7 +1008,7 @@ async def test_expired_marked_reservation_reconciles_but_never_reposts(attestati
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
     assert (await first.publish(subject())).outcome == "configuration_blocked"
@@ -1012,7 +1017,7 @@ async def test_expired_marked_reservation_reconciles_but_never_reposts(attestati
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: client,
+        github_client_factory=lambda binding: client,
         clock=lambda: now[0],
     )
 
@@ -1039,7 +1044,7 @@ async def test_live_publication_reservation_blocks_stage_expiry(attestation_db, 
         attestation_db,
         data_dir=tmp_path,
         git_manager=ExactTreeGit(trust_document()),
-        app_client_factory=lambda binding: ProviderClient(),
+        github_client_factory=lambda binding: ProviderClient(),
         clock=lambda: 900.0,
         crash_hook=pause_after_reservation,
     )

@@ -102,6 +102,36 @@ describe("GitHub onboarding wizard panels", () => {
     expect(screen.getByText(/Will use GitHub repository acme\/widgets/)).toBeInTheDocument();
   });
 
+  it("shows App capability guidance and keeps explicit URL entry available", async () => {
+    authStatus
+      .mockResolvedValueOnce({ installed: true, authenticated: true, credential_mode: "app", account_operations_available: false })
+      .mockResolvedValueOnce({ installed: true, authenticated: true, credential_mode: "app", repository_access: true });
+    const user = userEvent.setup();
+    render(<Harness />);
+    await selectSource(user, /Clone from GitHub/);
+    expect(await screen.findByText(/GitHub App selected/)).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("textbox", { name: "Search GitHub repositories" })).not.toBeInTheDocument();
+    await user.type(screen.getByRole("textbox", { name: "Paste a GitHub repository URL" }), "https://github.com/acme/widgets");
+    expect(screen.getByText(/Will use GitHub repository acme\/widgets/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Check repository access" }));
+    expect(await screen.findByText("GitHub App can access this repository.")).toHaveAttribute("role", "status");
+    expect(authStatus).toHaveBeenLastCalledWith("https://github.com/acme/widgets");
+  });
+
+  it("disables account repository creation for an App", async () => {
+    authStatus.mockResolvedValue({ installed: true, authenticated: true, credential_mode: "app", account_operations_available: false });
+    const user = userEvent.setup();
+    render(<Harness />);
+    await selectSource(user, /New repository/);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("checkbox", { name: "Create GitHub repository" }));
+    expect(await screen.findByText(/This GitHub App cannot create repositories/)).toHaveAttribute("role", "status");
+    expect(screen.getByRole("checkbox", { name: "Create GitHub repository" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Create GitHub repository" })).not.toBeChecked();
+    expect(owners).not.toHaveBeenCalled();
+  });
+
   it("defaults init options safely and carries owner, name, and visibility to review", async () => {
     authStatus.mockResolvedValue({ installed: true, authenticated: true });
     owners.mockResolvedValue([{ login: "acme", name: "Acme" }]);

@@ -41,7 +41,7 @@ from src.git.manager import (
     GitManager,
     is_valid_git_oid,
 )
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
@@ -108,7 +108,7 @@ CrashHook = Callable[[str], Awaitable[None] | None]
 AttestationResolver = Callable[
     [RootAttestationSubject], Awaitable[RootAttestationProof | None] | RootAttestationProof | None
 ]
-AppClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
+GitHubClientFactory = Callable[[GitHubRepositoryBinding], Awaitable[Any] | Any]
 
 
 class RootPromotionService:
@@ -119,20 +119,20 @@ class RootPromotionService:
         db: Any,
         *,
         data_dir: str | Path,
-        git_manager: GitManager | None = None,
+        git_manager: GitManager,
         repository_resolver: RepositoryResolver | None = None,
         app_client: Any | None = None,
-        app_client_factory: AppClientFactory | None = None,
+        github_client_factory: GitHubClientFactory | None = None,
         attestation_resolver: AttestationResolver | None = None,
         crash_hook: CrashHook | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
-        self.git = git_manager or GitManager()
+        self.git = git_manager
         self.repository_resolver = repository_resolver
         self.app_client = app_client
-        self.app_client_factory = app_client_factory
+        self.github_client_factory = github_client_factory
         self._clients: dict[GitHubRepositoryBinding, Any] = {}
         if app_client is not None:
             repository = app_client.repository
@@ -1575,9 +1575,9 @@ class RootPromotionService:
         cached = self._clients.get(binding)
         if cached is not None:
             return cached
-        if self.app_client_factory is None:
+        if self.github_client_factory is None:
             return None
-        client = self.app_client_factory(binding)
+        client = self.github_client_factory(binding)
         if inspect.isawaitable(client):
             client = await client
         if client is None or client.repository != binding:

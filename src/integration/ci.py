@@ -24,6 +24,10 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.git.github_contracts import (
+    GitHubCredentialMode,
+    credential_identity_from_client,
+)
 
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
@@ -430,13 +434,21 @@ class CIService:
             raise TypeError("CIService requires an authenticated or explicit fixture observer")
         if isinstance(observer, AuthenticatedGitHubObserver):
             client = observer.client
+            identity = credential_identity_from_client(client)
             if (
                 client.repository.repository_id != trust.repository_id
                 or client.repository.full_name != trust.full_name
                 or client.repository.forge_host != "github.com"
                 or (
                     isinstance(trust, IntegrationTrustManifest)
-                    and client.config.app_id != trust.attestation_app_id
+                    and (
+                        identity.mode is not GitHubCredentialMode.APP
+                        or identity.app_id != trust.attestation_app_id
+                    )
+                )
+                or (
+                    isinstance(trust, IntegrationCITrust)
+                    and identity.mode is not GitHubCredentialMode.EXISTING_LOGIN
                 )
             ):
                 raise ValueError("authenticated provider identity does not match CI trust")

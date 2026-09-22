@@ -11,6 +11,9 @@ from typing import Any
 
 import yaml
 
+from src.git.github_contracts import GitHubAccessError
+from src.projects.github import scrub_secrets
+
 logger = logging.getLogger(__name__)
 
 _AUTONOMOUS_PERMISSION_HARNESSES = {
@@ -952,43 +955,13 @@ class ProfileCommandsMixin:
 
         # Optionally create a GitHub gist
         if args.get("create_gist"):
-            import tempfile
-
             try:
-                with tempfile.NamedTemporaryFile(
-                    mode="w",
-                    suffix=".yaml",
-                    delete=False,
-                    prefix=f"agent-profile-{profile_id}-",
-                ) as f:
-                    f.write(yaml_text)
-                    tmp_path = f.name
-
-                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
-                proc = await asyncio.create_subprocess_exec(
-                    "gh",
-                    "gist",
-                    "create",
-                    "--public",
-                    "--desc",
-                    f"Agent Profile: {profile.name}",
-                    tmp_path,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
+                result["gist_url"] = await self.orchestrator.github_access.create_profile_gist(
+                    profile_id, profile.name, yaml_text
                 )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode == 0:
-                    result["gist_url"] = stdout.decode().strip()
-                else:
-                    result["gist_error"] = stderr.decode().strip()
-            except FileNotFoundError:
-                result["gist_error"] = "gh CLI not found — install GitHub CLI"
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+            except GitHubAccessError as exc:
+                result["gist_error"] = scrub_secrets(str(exc))
+                result["gist_error_code"] = exc.category
 
         return result
 
@@ -1006,28 +979,16 @@ class ProfileCommandsMixin:
         if not source:
             return {"error": "source is required (YAML text or gist URL)"}
 
-        # If source looks like a URL, fetch via gh gist
+        # If source looks like a URL, fetch through the shared account operation.
         yaml_text = source
         if source.startswith("http://") or source.startswith("https://"):
-            gist_id = source.rstrip("/").split("/")[-1]
             try:
-                env = {**os.environ, "GH_PROMPT_DISABLED": "1"}
-                proc = await asyncio.create_subprocess_exec(
-                    "gh",
-                    "gist",
-                    "view",
-                    gist_id,
-                    "--raw",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    return {"error": f"Failed to fetch gist: {stderr.decode().strip()}"}
-                yaml_text = stdout.decode()
-            except FileNotFoundError:
-                return {"error": "gh CLI not found — install GitHub CLI to import from URLs"}
+                yaml_text = await self.orchestrator.github_access.read_profile_gist(source)
+            except GitHubAccessError as exc:
+                return {
+                    "error": f"Failed to fetch gist: {scrub_secrets(str(exc))}",
+                    "error_code": exc.category,
+                }
 
         try:
             data = _yaml.safe_load(yaml_text)

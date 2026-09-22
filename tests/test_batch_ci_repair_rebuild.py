@@ -16,6 +16,7 @@ from tests.test_integration_candidates import (
     _AuditForge,
 )
 from src.git.github_app import GitHubRepositoryBinding
+from src.git.manager import GitManager
 from src.integration.candidates import CandidateService
 from src.integration.hierarchy import resolve_repair_commit_proof
 from src.integration.models import BranchKey, Fence
@@ -435,6 +436,6 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
     # A successful repair close creates a new untested candidate. Even with
     # the exact merge published, root promotion cannot proceed on old CI.
     promotion = await RootPromotionService(
-        db, data_dir=tmp_path / "promotion-data"
+        db, data_dir=tmp_path / "promotion-data", git_manager=GitManager()
     ).prepare("batch", 2)
     assert promotion.outcome == "ci_missing"

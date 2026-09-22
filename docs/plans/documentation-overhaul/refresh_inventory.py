@@ -374,6 +374,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "`aq task explain` — why a task is or is not runnable."),
     ("src/review_keys.py", "tasks", "docs/concepts/tasks.md", PRODUCTION,
      "Recognises a task whose work product is a review verdict."),
+    ("src/reviews/**", "tasks", "docs/guides/reviews.md", PRODUCTION,
+     "Document review revisions, gates, vault copies and notifications."),
 
     ("src/orchestrator/workspace.py", "workspaces",
      "docs/concepts/projects-and-workspaces.md", PRODUCTION,
@@ -459,6 +461,9 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Source completion, validation, publication and recovery."),
     ("src/integrations/**", "integration", "docs/concepts/integration.md",
      PRODUCTION, "External integration adapters."),
+
+    ("src/reviews/**", "tasks", "docs/concepts/tasks.md", PRODUCTION,
+     "Document review diffing, notification, persistence and vault copies."),
 
     ("src/playbooks/executors/**", "playbooks", "docs/concepts/playbooks.md",
      PRODUCTION, "Playbook step executor."),

@@ -271,18 +271,31 @@ class OpsCommandsMixin:
         top-level counters stay fleet-wide whether or not one is passed,
         because filtering them would misreport the pool the sizer acts on.
         """
+        from src.pool_claims import pool_claim_loop_stall_seconds
         from src.scheduler import PoolProjectSupply
+        from src.sessions.input_prompts import find_awaiting_input_sessions
 
         view = (args.get("project_id") or "").strip() or None
         measurement = await self.orchestrator._measure_pools()
         now = time.time()
         sessions_by_profile: dict[str, list] = {}
-        for session in await self.db.list_sessions(lifecycle="pool"):
+        pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        for session in pool_sessions:
             if session.project_id is None or session.state == "stopped":
                 continue
             if view is not None and session.project_id != view:
                 continue
             sessions_by_profile.setdefault(session.profile_id, []).append(session)
+
+        awaiting_input = await find_awaiting_input_sessions(
+            pool_sessions,
+            now=now,
+            stall_seconds=pool_claim_loop_stall_seconds(self.config.swarm),
+            harness_registry=self.orchestrator.harness_registry,
+            providers=self.orchestrator.session_providers,
+            config=self.config,
+        )
+        awaiting_by_session = {finding.session.id: finding for finding in awaiting_input}
 
         # Task-lifecycle sessions are intentionally excluded from sizing, but
         # silently omitting a live session that consumes the same class and
@@ -372,27 +385,32 @@ class OpsCommandsMixin:
             for session in sessions_by_profile.get(key.profile_id, []):
                 task = await self.db.get_task(session.task_id) if session.task_id else None
                 idle_since = session.last_activity or session.started_at
-                instances.append(
-                    {
-                        "session_id": session.id,
-                        # A worker's workspace fixes its project at launch, so
-                        # this is the only place the binding stays visible.
-                        "project_id": session.project_id,
-                        "name": session.name,
-                        "state": session.state,
-                        "task_id": session.task_id,
-                        "task_title": task.title if task is not None else None,
-                        "idle_seconds": (
-                            max(0.0, now - idle_since)
-                            if session.task_id is None and session.claim_phase is None
-                            else None
-                        ),
-                        "started_at": session.started_at,
-                        "quarantine_reason": (
-                            session.end_reason if session.state == "quarantined" else None
-                        ),
-                    }
-                )
+                blocked = awaiting_by_session.get(session.id)
+                instance = {
+                    "session_id": session.id,
+                    # A worker's workspace fixes its project at launch, so
+                    # this is the only place the binding stays visible.
+                    "project_id": session.project_id,
+                    "name": session.name,
+                    "state": "blocked_on_input" if blocked is not None else session.state,
+                    "task_id": session.task_id,
+                    "task_title": task.title if task is not None else None,
+                    "idle_seconds": (
+                        max(0.0, now - idle_since)
+                        if session.task_id is None and session.claim_phase is None
+                        else None
+                    ),
+                    "started_at": session.started_at,
+                    "quarantine_reason": (
+                        session.end_reason if session.state == "quarantined" else None
+                    ),
+                }
+                if blocked is not None:
+                    instance.update(
+                        input_prompt=blocked.signature.name,
+                        unchanged_seconds=round(blocked.unchanged_seconds, 1),
+                    )
+                instances.append(instance)
 
             pools.append(
                 {
@@ -410,6 +428,10 @@ class OpsCommandsMixin:
                     "starting": sup.starting,
                     "draining": sup.draining,
                     "ready": ready,
+                    "blocked_on_input": sum(
+                        finding.session.profile_id == key.profile_id
+                        for finding in awaiting_input
+                    ),
                     "projects": projects,
                     "instances": instances,
                     "outside_pools": outside_by_profile.get(key.profile_id, []),
@@ -444,6 +466,7 @@ class OpsCommandsMixin:
                         "starting": 0,
                         "draining": 0,
                         "ready": 0,
+                        "blocked_on_input": 0,
                         "projects": [],
                         "instances": [],
                         "outside_pools": [],

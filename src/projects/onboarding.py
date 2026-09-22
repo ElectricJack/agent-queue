@@ -29,6 +29,8 @@ from src.commands.contracts.project_onboarding import (
 )
 from src.config import AppConfig, resolve_project_root
 from src.database.base import DatabaseBackend
+from src.git.github import GitHubAccess
+from src.git.github_contracts import GitHubCredentialMode
 from src.git.manager import GitError, GitManager, _validate_ref
 from src.models import Project, RepoSourceType, Workspace
 from src.profiles.default_selection import select_default_profile_id
@@ -127,7 +129,9 @@ class ProjectOnboardingService:
         self.db = db
         self.config = config
         self.git = git_manager or GitManager()
-        self.gh = gh_client or GhClient()
+        self.gh = gh_client or GhClient(
+            access=GitHubAccess.from_config(config.integration.github_app)
+        )
 
     async def onboard_project(self, request: Any) -> OnboardProjectResult | GetProjectOnboardingResult:
         """Run or replay one project onboarding request."""
@@ -197,6 +201,17 @@ class ProjectOnboardingService:
 
                 await self.db.update_onboarding_phase(request.request_id, "preflight")
                 await self._preflight(request, root, destination, record or {})
+                if github_clone is not None:
+                    try:
+                        await self.gh.validate_repository(github_clone[0].html_url)
+                    except GitHubError as exc:
+                        raise self._map_github_error(exc, phase="preflight") from exc
+                    if self.gh.access.credential_identity.mode is GitHubCredentialMode.APP:
+                        raise ProjectOnboardingError(
+                            ProjectOnboardingErrorCode.GITHUB_OPERATION_UNSUPPORTED,
+                            "The GitHub App can access this repository, but cloning with App credentials is unavailable",
+                            phase="preflight",
+                        )
 
                 actions: list[str]
                 remote_url: str | None = None
@@ -1004,6 +1019,9 @@ class ProjectOnboardingService:
         code = {
             GitHubErrorCode.CLI_MISSING: ProjectOnboardingErrorCode.GITHUB_CLI_MISSING,
             GitHubErrorCode.AUTH_REQUIRED: ProjectOnboardingErrorCode.GITHUB_AUTH_REQUIRED,
+            GitHubErrorCode.OPERATION_UNSUPPORTED: (
+                ProjectOnboardingErrorCode.GITHUB_OPERATION_UNSUPPORTED
+            ),
             GitHubErrorCode.REPOSITORY_INACCESSIBLE: (
                 ProjectOnboardingErrorCode.GITHUB_REPOSITORY_INACCESSIBLE
             ),

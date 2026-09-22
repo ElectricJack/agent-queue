@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import or_, select, update
 
 from src.database.tables import integration_branch_owners, task_branch_origins
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
 
 logger = logging.getLogger(__name__)
@@ -139,15 +139,15 @@ class BranchDiscardService:
         *,
         data_dir: str | Path,
         git_manager: Any | None = None,
-        app_client_factory: Any | None = None,
-        repository_binding_resolver: Any | None = None,
+        github_client_factory: Any | None = None,
+        github_repository_binding_resolver: Any | None = None,
         clock=time.time,
     ) -> None:
         self.db = db
         self.data_dir = Path(data_dir)
         self.git = git_manager
-        self.app_client_factory = app_client_factory
-        self.repository_binding_resolver = repository_binding_resolver
+        self.github_client_factory = github_client_factory
+        self.github_repository_binding_resolver = github_repository_binding_resolver
         self.clock = clock
 
     # -- draining -------------------------------------------------------
@@ -258,7 +258,7 @@ class BranchDiscardService:
         binding = await self._binding(repository)
         if binding is None:
             return "retryable", "repository binding is unavailable"
-        client = await self._app_client(binding)
+        client = await self._github_client(binding)
         if client is None or self.git is None:
             return "retryable", "authenticated discard transport is unavailable"
         token = await client.installation_token()
@@ -312,17 +312,17 @@ class BranchDiscardService:
             )
 
     async def _binding(self, repository) -> GitHubRepositoryBinding | None:
-        if self.repository_binding_resolver is None:
+        if self.github_repository_binding_resolver is None:
             return None
-        binding = self.repository_binding_resolver(repository)
+        binding = self.github_repository_binding_resolver(repository)
         if inspect.isawaitable(binding):
             binding = await binding
         return binding
 
-    async def _app_client(self, binding: GitHubRepositoryBinding):
-        if self.app_client_factory is None:
+    async def _github_client(self, binding: GitHubRepositoryBinding):
+        if self.github_client_factory is None:
             return None
-        client = self.app_client_factory(binding)
+        client = self.github_client_factory(binding)
         if inspect.isawaitable(client):
             client = await client
         if client is None or client.repository != binding:

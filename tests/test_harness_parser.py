@@ -69,6 +69,9 @@ class TestBasicParsing:
                   "hook_files": {".aq/hooks/claude.json": "hooks/claude.json"},
                   "instructions_file": "CLAUDE.md",
                   "transcript_paths": ["~/.claude/projects/x/*.jsonl"],
+                  "input_prompts": [
+                    {"name": "continue", "pattern": "press enter to continue"}
+                  ],
                   "env": {"FOO": "bar"},
                   "max_argv_prompt_bytes": 2048
                 }
@@ -83,6 +86,7 @@ class TestBasicParsing:
         assert h.process_names == ("claude", "node")
         assert h.skip_escape_before_enter is False
         assert h.hook_files == ((".aq/hooks/claude.json", "hooks/claude.json"),)
+        assert h.input_prompts[0].name == "continue"
         assert h.env_map == {"FOO": "bar"}
         assert h.max_argv_prompt_bytes == 2048
 
@@ -167,6 +171,22 @@ class TestValidationRefusesRatherThanGuesses:
         )
         assert not parsed.is_valid
         assert any("'pattern'" in e for e in parsed.errors)
+
+    def test_input_prompt_requires_a_valid_named_pattern(self):
+        missing = parse_harness_markdown(
+            _md('{"command": "x", "input_prompts": [{"name": "n"}]}')
+        )
+        assert not missing.is_valid
+        assert any("input_prompts[0]" in error and "pattern" in error for error in missing.errors)
+
+        invalid = parse_harness_markdown(
+            _md(
+                '{"command": "x", "input_prompts": '
+                '[{"name": "n", "pattern": "([", "is_regex": true}]}'
+            )
+        )
+        assert not invalid.is_valid
+        assert any("invalid regex" in error for error in invalid.errors)
 
     def test_unknown_key_is_a_warning_not_an_error(self):
         """A file authored against a newer daemon must still load."""
@@ -525,6 +545,44 @@ class TestShippedDialogRulesMatchTheirScreens:
         harness = self._shipped(harness_id)
         unflagged = [r.name for r in harness.dialogs if "|" in r.pattern and not r.is_regex]
         assert unflagged == []
+
+
+class TestShippedInputPromptSignatures:
+    """Every shipped observation-only prompt signature has a pinned example."""
+
+    @pytest.mark.parametrize(
+        ("harness_id", "signature_name", "screen"),
+        [
+            ("codex", "model-upgrade-menu", "Try new model\nUse existing model\n"),
+            ("codex", "numbered-menu", "› 1. Keep current model\n"),
+            ("codex", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("codex", "login-required", "Run codex login to authenticate\n"),
+            ("codex", "usage-limit", "You've hit your usage limit\n"),
+            ("codex", "trust-or-permission", "Hooks need review\n"),
+            ("codex", "press-enter-to-continue", "Press Enter to continue\n"),
+            ("claude", "numbered-menu", "❯ 1. Continue\n"),
+            ("claude", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("claude", "login-required", "Authentication required\n"),
+            ("claude", "usage-limit", "You are approaching your usage limit\n"),
+            ("claude", "trust-or-permission", "Permission required\n"),
+            ("claude", "press-enter-to-continue", "Press Enter to continue\n"),
+            ("gemini", "numbered-menu", "> 1. Authenticate\n"),
+            ("gemini", "menu-navigation", "Use ↑/↓ to move, press enter to confirm\n"),
+            ("gemini", "login-required", "Please sign in to continue\n"),
+            ("gemini", "usage-limit", "Quota exceeded\n"),
+            ("gemini", "trust-or-permission", "Do you trust this workspace?\n"),
+            ("gemini", "press-enter-to-continue", "Press Enter to continue\n"),
+        ],
+    )
+    def test_signature_matches_its_harness_example(
+        self, harness_id, signature_name, screen
+    ):
+        from src.sessions.input_prompts import match_input_prompt
+
+        harness = TestShippedDialogRulesMatchTheirScreens._shipped(harness_id)
+        matched = match_input_prompt(harness.input_prompts, screen)
+        assert matched is not None
+        assert matched.name == signature_name
 
 
 class TestProviderField:

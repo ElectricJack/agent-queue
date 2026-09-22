@@ -481,7 +481,10 @@ async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_name
     assert open_incident["owner"]["kind"] == "integration_operation"
 
     cancelled = await DevelopmentIntegration(
-        db, data_dir=str(tmp_path), confirm_stopped=AsyncMock(return_value=True)
+        db,
+        data_dir=str(tmp_path),
+        git=GitManager(),
+        confirm_stopped=AsyncMock(return_value=True),
     ).cancel_preserving("operation", reason="operator abort")
     assert cancelled["outcome"] == "cancelled"
     assert cancelled["preserved_owners"] == ["aq/parent"]
@@ -526,9 +529,7 @@ async def test_replayed_cancellation_with_attached_owner_retires_ticket_and_name
     assert superseded["decision"] == "superseded"
     assert "retired" in superseded["decision_reason"]
     assert (await db.get_message("msg-" + open_incident["id"])).archived_at is not None
-    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == (
-        "not_actionable"
-    )
+    assert (await db.notify_task_recovery("delegate", project_id="p"))["outcome"] == "retired"
     async with db._engine.connect() as conn:
         assert len((await conn.execute(select(messages))).all()) == 1
     with pytest.raises(ValueError, match="no longer required"):

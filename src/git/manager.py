@@ -87,10 +87,11 @@ from src.git.askpass_broker import (
     zeroize,
 )
 from src.git.askpass_fd import answer_prompt
-from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubRepositoryBinding
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
+    from src.git.github import GitHubAccess
 
 logger = logging.getLogger(__name__)
 
@@ -374,7 +375,12 @@ class GitManager:
     )
     _MAX_STDIN_BYTES = 1024 * 1024
 
-    def __init__(self) -> None:
+    def __init__(self, *, github_access: GitHubAccess | None = None) -> None:
+        # The daemon injects its startup-composed credential authority here.
+        # Standalone local-only uses may omit it, but daemon services must
+        # share this exact object so App configuration cannot be bypassed by
+        # constructing an ambient-login GitHub transport.
+        self.github_access = github_access
         # Optional lock provider for serializing shared git operations
         # across branch-isolated worktrees.  When set, ``_arun`` acquires
         # the returned lock before executing serialized subcommands.

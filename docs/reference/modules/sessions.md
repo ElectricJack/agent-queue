@@ -1,6 +1,6 @@
 # Module catalog — sessions
 
-Worker sessions, harnesses, terminals and claims: the 30 production modules
+Worker sessions, harnesses, terminals and claims: the 31 production modules
 that turn a routed task into a coding-agent CLI running in a terminal, and keep
 the daemon's picture of it honest.
 
@@ -23,6 +23,7 @@ Prose for everything here lives on four pages:
 | [`src/sessions/reconciler.py`](../../../src/sessions/reconciler.py) | The cascade step that owns session lifecycle: observe, drain-ack, exits, orphans, stall ladder, named convergence, backstop. | [concepts/sessions.md](../../concepts/sessions.md) | The module's governing rule is "unknown is not dead". `tests/test_session_reconciler.py`, `tests/test_pool_reconciler.py` |
 | [`src/sessions/exit_classifier.py`](../../../src/sessions/exit_classifier.py) | Turns a dead process with an open task into one of four typed verdicts. | [concepts/sessions.md](../../concepts/sessions.md) | Rate-limit detection reads pane text — a hint, used only to choose between two safe outcomes. `tests/test_session_reconciler.py` |
 | [`src/sessions/usage_limit_screen.py`](../../../src/sessions/usage_limit_screen.py) | Recognises a live CLI parked on its provider's usage-limit screen from a pane capture, so the stall ladder can take it out as a `RATE_LIMIT` exit instead of nudging it. | [concepts/sessions.md](../../concepts/sessions.md) | Deliberately strict, the opposite of the exit classifier's patterns: the CLI's own `⎿`/`■` gutter at the margin, then one of the CLIs' blocking wordings. `tests/test_usage_limit_screen.py`, `tests/test_session_reconciler.py` |
+| [`src/sessions/input_prompts.py`](../../../src/sessions/input_prompts.py) | Detects an unclaimed pool session parked on a harness-declared interactive prompt, for doctor and pool-status visibility. | [guides/worker-pools.md](../../guides/worker-pools.md) | Observation-only and fenced by the claim-loop inactivity threshold; it never sends input. `tests/test_pool_doctor.py`, `tests/test_swarm_surface.py` |
 
 ## Providers
 

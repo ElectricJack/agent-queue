@@ -33,8 +33,16 @@ from tests.test_dashboard_server_app import stage_bundle
 
 
 @pytest.fixture(autouse=True)
-def _pg_backend():
-    """Process lifecycle only; never allocate a real test database."""
+def _pg_backend(monkeypatch):
+    """Process lifecycle only; never allocate a real test database.
+
+    These are operator-shell lifecycle tests. A pool worker's inherited
+    markers must not replace the behavior under test with the worker safety
+    refusal; that refusal has its own coverage in ``test_cli_daemon.py``.
+    """
+    monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+    monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+    monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
 
 
 @pytest.fixture

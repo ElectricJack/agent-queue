@@ -123,6 +123,7 @@ it. The launcher emits them only when the corresponding value resolves.
 | `ready_prompt_prefix` | string | — | The composer's prompt prefix, matched against the pane capture. |
 | `process_names` | list of strings | `[]` | Which processes in the pane's subtree count as "the agent". |
 | `transcript_paths` | list of strings | `[]` | Globs for the CLI's on-disk conversation log. `{work_dir_slug}` is substituted. |
+| `input_prompts` | list of objects | `[]` | Named `pattern` signatures for interactive screens that block an unclaimed pool session; set `is_regex: true` for regular expressions. Used only for observation and reporting, never automatic input. |
 
 > **Warning.** `ready_prompt_prefix` characters are exact and are not
 > interchangeable: Claude uses `❯` (U+276F) followed by a **non-breaking**

@@ -227,9 +227,10 @@ class DashboardServerApp:
             await send({
                 "type": "websocket.http.response.start",
                 "status": denial.status,
+                # The ASGI WebSocket server derives Content-Type and
+                # Content-Length from the denial body. Supplying another copy
+                # here makes strict clients reject the HTTP response itself.
                 "headers": [
-                    (b"content-type", b"application/json"),
-                    (b"content-length", str(len(body)).encode()),
                     self._own_header,
                 ],
             })

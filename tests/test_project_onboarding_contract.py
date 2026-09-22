@@ -13,10 +13,13 @@ import os
 import shutil
 import stat
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
+from src.api.models.project_onboarding import GetGithubAuthStatusRequest, GithubAuthStatusResponse
 from src.api.scope import check_command_scope
 from src.commands.contracts.project_onboarding import (
     ONBOARDING_COMMANDS,
@@ -31,6 +34,7 @@ from src.commands.contracts.project_onboarding import (
     parse_onboard_project_request,
     parse_request,
 )
+from src.projects.github import GitHubAuthStatus
 
 COMMON = {
     "request_id": "req-1",
@@ -341,8 +345,43 @@ async def test_github_auth_status_reports_an_authenticated_identity_not_credenti
         "authenticated": True,
         "host": "github.com",
         "login": "octocat",
+        "credential_mode": "existing_login",
+        "repository_access": None,
+        "account_operations_available": True,
+        "configuration_changes_require_restart": True,
+        "app_id": None,
+        "installation_id": None,
     }
     assert "gho_" not in repr(result)
+
+
+async def test_app_health_contract_accepts_repository_url_and_reports_capability(
+    command_handler_factory, monkeypatch: pytest.MonkeyPatch
+):
+    handler = await command_handler_factory()
+    status = GitHubAuthStatus(
+        installed=True,
+        authenticated=True,
+        login=None,
+        credential_mode="app",
+        repository_access=True,
+        account_operations_available=False,
+        app_id=101,
+        installation_id=202,
+    )
+    check = AsyncMock(return_value=status)
+    monkeypatch.setattr(handler, "_github_client", lambda: SimpleNamespace(auth_status=check))
+    request = GetGithubAuthStatusRequest(repository_url="https://github.com/acme/widgets")
+
+    result = await handler.execute("get_github_auth_status", request.model_dump())
+
+    check.assert_awaited_once_with("https://github.com/acme/widgets")
+    parsed = GithubAuthStatusResponse.model_validate(result)
+    assert parsed.credential_mode == "app"
+    assert parsed.repository_access is True
+    assert parsed.account_operations_available is False
+    assert parsed.login is None
+    assert (parsed.app_id, parsed.installation_id) == (101, 202)
 
 
 @pytest.mark.parametrize(
@@ -354,7 +393,11 @@ async def test_github_auth_status_reports_an_authenticated_identity_not_credenti
     ],
 )
 async def test_github_discovery_reports_auth_setup_when_unauthed(
-    command_handler_factory, fake_gh: Path, monkeypatch: pytest.MonkeyPatch, command: str, args: dict
+    command_handler_factory,
+    fake_gh: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    args: dict,
 ):
     monkeypatch.setenv("FAKE_GH_STATE", "unauthed")
     handler = await command_handler_factory()
@@ -375,7 +418,11 @@ async def test_github_discovery_reports_auth_setup_when_unauthed(
     ],
 )
 async def test_github_discovery_reports_cli_setup_when_gh_is_missing(
-    command_handler_factory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, args: dict
+    command_handler_factory,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    args: dict,
 ):
     empty_path = tmp_path / "empty-path"
     empty_path.mkdir()
@@ -411,9 +458,7 @@ async def test_github_search_returns_paged_safe_repository_details(
 ):
     handler = await command_handler_factory()
 
-    result = await handler.execute(
-        "search_github_repositories", {"query": "widgets", "limit": 2}
-    )
+    result = await handler.execute("search_github_repositories", {"query": "widgets", "limit": 2})
 
     assert result["success"] is True
     assert result["next_cursor"] == "CURSOR-PAGE-2"
@@ -470,9 +515,7 @@ async def test_github_discovery_scrubs_credentialed_gh_stderr_from_response_and_
 
 async def test_invalid_arguments_are_rejected_before_command_execution(command_handler_factory):
     handler = await command_handler_factory()
-    result = await handler.execute(
-        "onboard_project", {**COMMON, "source_mode": "github_clone"}
-    )
+    result = await handler.execute("onboard_project", {**COMMON, "source_mode": "github_clone"})
     assert result["success"] is False
     assert result["error_code"] == "invalid_request"
     assert result["field_errors"]
@@ -528,7 +571,12 @@ def test_tool_definitions_exist_in_the_project_category():
         assert _TOOL_CATEGORIES[command] == "project"
     onboard = by_name["onboard_project"]["input_schema"]
     assert set(onboard["required"]) == {
-        "request_id", "source_mode", "root_id", "relative_path", "project_name", "project_id",
+        "request_id",
+        "source_mode",
+        "root_id",
+        "relative_path",
+        "project_name",
+        "project_id",
     }
     assert onboard["properties"]["source_mode"]["enum"] == ["link", "init", "github_clone"]
 
@@ -540,8 +588,15 @@ def test_the_seven_commands_have_response_models():
     for command in SEVEN:
         assert command in models, command
     assert models["onboard_project"].model_fields.keys() >= {
-        "project_id", "workspace_id", "source_type", "root_id", "relative_path",
-        "canonical_path", "default_branch", "remote_url", "actions",
+        "project_id",
+        "workspace_id",
+        "source_type",
+        "root_id",
+        "relative_path",
+        "canonical_path",
+        "default_branch",
+        "remote_url",
+        "actions",
     }
 
 

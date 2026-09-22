@@ -56,9 +56,10 @@ or linking never changes that repository.
 
 ## GitHub on the daemon host
 
-GitHub discovery and optional repository creation use the `gh` login on the
-machine where the daemon runs. Authenticate there, under the account that should
-be able to view, clone, or create repositories:
+Install `gh` on the daemon host for either GitHub credential mode. With no
+GitHub App configured, discovery and optional repository creation use the
+daemon user's existing `gh` login or environment token (`GH_TOKEN` before
+`GITHUB_TOKEN` before stored login). Authenticate that user if needed:
 
 ```bash
 gh auth login
@@ -66,10 +67,18 @@ gh auth status
 ```
 
 The wizard can then search accessible repositories and list owners that can
-create repositories. Pasting a GitHub URL avoids discovery, but private clones
-still need host credentials. AQ never returns, logs, or stores GitHub tokens,
-credential-helper output, or `gh auth token` output; subprocess errors are
-scrubbed for credential-bearing URLs.
+create repositories. Pasting a GitHub URL avoids discovery. When a GitHub App
+is configured, AQ uses its installation credential to verify an explicit
+repository URL without a personal login. Account search, owner selection and
+repository creation are unavailable in App mode. This staged release validates
+App repository access but does not yet clone with the App credential; that
+transfer will be enabled with the Git transport migration. AQ does not use a
+personal login for an App clone. Changing the effective App configuration
+requires a daemon restart; ordinary token refresh does not.
+
+AQ never returns, logs, or stores GitHub tokens, credential-helper output, or
+`gh auth token` output; subprocess errors are scrubbed for credential-bearing
+URLs.
 
 ## Choose a mode
 
@@ -120,6 +129,7 @@ stable error code to take the matching recovery action:
 | `root_unavailable` | Restore the root's existence, readability, and required write access on the daemon host, then run the doctor check and retry. |
 | `github_cli_missing` | Install GitHub CLI on the daemon host and retry. |
 | `github_auth_required` | Run `gh auth login` on the daemon host for an account with the needed access, then retry. |
+| `github_operation_unsupported` | In App mode, use an explicit existing repository URL for access checks; cloning with App credentials and account creation are unavailable in this staged release. |
 | `github_repository_inaccessible` | Confirm the owner/repository and host account permissions, or paste/select a repository the host can access with a new request ID. |
 | `github_repository_conflict` | Pick a different GitHub owner or repository name, or use the existing repository through clone/link mode; use a new request ID when changing those inputs. |
 | `clone_failed` | Check host network and GitHub access, remove only an AQ-reported request-owned staging directory if recovery asks for it, then retry unchanged with the same request ID. |

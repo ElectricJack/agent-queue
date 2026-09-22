@@ -813,8 +813,24 @@ class DaemonProxy:
         status, headers, body = generated
         with contextlib.suppress(OSError):
             if "websocket.http.response" in (scope.get("extensions") or {}):
+                # WebSocket servers build the denial response around the ASGI
+                # body and own its entity headers.  In particular, uvicorn's
+                # websockets-sansio implementation starts with
+                # ``ServerProtocol.reject()`` (which already supplies these)
+                # before adding application headers.  Sending our HTTP-path
+                # copies as well produces duplicate Content-Length values and
+                # makes strict WebSocket clients reject the response itself.
+                denial_headers = [
+                    (name, value)
+                    for name, value in headers
+                    if name.lower() not in {b"content-length", b"content-type"}
+                ]
                 await send(
-                    {"type": "websocket.http.response.start", "status": status, "headers": headers}
+                    {
+                        "type": "websocket.http.response.start",
+                        "status": status,
+                        "headers": denial_headers,
+                    }
                 )
                 await send({"type": "websocket.http.response.body", "body": body})
             else:

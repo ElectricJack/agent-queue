@@ -531,7 +531,10 @@ async def test_root_promotion_caches_authenticated_clients_per_repository_bindin
         return clients[binding]
 
     service = _RootPromotionService(
-        SimpleNamespace(), data_dir=tmp_path, app_client_factory=factory
+        SimpleNamespace(),
+        data_dir=tmp_path,
+        git_manager=GitManager(),
+        github_client_factory=factory,
     )
 
     assert await service._client_for(first_binding) is clients[first_binding]
@@ -961,7 +964,7 @@ async def test_root_command_constructs_exact_repository_bound_app_client(prepare
     handler.config = SimpleNamespace(data_dir=data_dir)
     handler.orchestrator = SimpleNamespace(
         git=git,
-        integration_app_client_factory=factory,
+        github_client_factory=factory,
         integration_attestation_resolver=ExactAttestationResolver(),
     )
     async with db.immediate() as conn:
@@ -995,7 +998,7 @@ async def test_gh_live_candidate_receipt_allows_exact_oid_main_promotion(prepare
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda binding: provider,
+        github_client_factory=lambda binding: provider,
         clock=lambda: 10.0,
     )
     observed = await receipt_service.handle_candidate_ci(
@@ -1037,7 +1040,7 @@ async def test_exact_green_ci_reclaims_only_unclaimed_delegate_and_promotes(prep
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda _binding: provider,
+        github_client_factory=lambda _binding: provider,
         clock=lambda: 10.0,
     )
     row = {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD}
@@ -1047,7 +1050,7 @@ async def test_exact_green_ci_reclaims_only_unclaimed_delegate_and_promotes(prep
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda _binding: provider,
+        github_client_factory=lambda _binding: provider,
         clock=lambda: 10.0,
     ).handle_candidate_ci(row, 10.0)
     async with db._engine.connect() as conn:
@@ -1144,7 +1147,7 @@ async def test_already_green_candidate_retry_reclaims_unclaimed_delegate_and_pro
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda _binding: provider,
+        github_client_factory=lambda _binding: provider,
         clock=lambda: 10.0,
     )
     observed = await retry.handle_candidate_ci(
@@ -1191,7 +1194,7 @@ async def test_exact_green_ci_never_reclaims_attached_or_assigned_delegate(
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda _binding: provider,
+        github_client_factory=lambda _binding: provider,
         clock=lambda: 10.0,
     )
 
@@ -1232,7 +1235,7 @@ async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcom
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda _binding: provider,
+        github_client_factory=lambda _binding: provider,
         clock=lambda: 10.0,
     ).handle_candidate_ci(
         {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": HEAD},
@@ -1337,7 +1340,7 @@ async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda binding: provider,
+        github_client_factory=lambda binding: provider,
         crash_hook=pause_after_reservation,
         clock=lambda: 10.0,
     )
@@ -1380,7 +1383,7 @@ async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
         db,
         data_dir=data_dir,
         git_manager=RootTrustGit(),
-        app_client_factory=lambda binding: provider,
+        github_client_factory=lambda binding: provider,
         clock=lambda: 10.0,
     ).publish(published.subject)
     assert after_main_started.outcome == "stale"

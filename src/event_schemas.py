@@ -247,6 +247,13 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
         "required": ["task_id", "project_id", "title"],
         "optional": ["old_parent", "new_parent"],
     },
+    # Durable checklist invalidation. Subtask titles and context stay in the
+    # database; the shared event carries only the parent task identity and
+    # aggregate counts.
+    "task.subtasks_updated": {
+        "required": ["task_id", "project_id", "title", "total", "settled"],
+        "optional": [],
+    },
     # Committed command edits: refresh dashboard snapshots without re-routing.
     "task.updated": {
         "required": ["task_id", "project_id", "title"],
@@ -1215,9 +1222,8 @@ _PROVIDER_SCHEMAS: dict[str, EventSchema] = {
     },
     # provider-failover D19: one per task moved, forced or undone.
     "task.rerouted": {
-        "required": ["task_id", "project_id", "reason_code"],
+        "required": ["task_id", "project_id", "title", "reason_code"],
         "optional": [
-            "title",
             "from_profile_id",
             "to_profile_id",
             "from_provider",

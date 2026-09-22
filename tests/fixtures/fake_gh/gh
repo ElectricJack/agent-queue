@@ -31,6 +31,9 @@ if [ -n "${FAKE_GH_FAIL_STDERR:-}" ]; then
 fi
 
 state="${FAKE_GH_STATE:-authed}"
+if [ -n "${GH_CONFIG_DIR:-}" ] && [ -n "${GH_TOKEN:-}" ]; then
+  state="authed"
+fi
 login="${FAKE_GH_LOGIN:-octocat}"
 
 not_logged_in() {
@@ -65,7 +68,23 @@ while [ "$i" -lt "${#args[@]}" ]; do
   i=$((i + 1))
 done
 
-case "${1:-} ${2:-}" in
+# The shared runner supplies an explicit host and JSON GraphQL body on stdin.
+command_pair="${1:-} ${2:-}"
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  command_pair="api ${4:-}"
+fi
+if [[ " $* " == *" --input - "* ]]; then
+  payload="$(cat)"
+  if [ -n "${FAKE_GH_STDIN_LOG:-}" ]; then
+    printf '%s\n' "$payload" >>"$FAKE_GH_STDIN_LOG"
+  fi
+  field_query="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("query", ""))')"
+  field_after="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("after", ""))')"
+  field_first="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("first", ""))')"
+  field_q="$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("variables", {}).get("q", ""))')"
+fi
+
+case "$command_pair" in
   "auth status")
     if [ "$state" = "authed" ]; then
       echo "github.com"
@@ -127,6 +146,12 @@ JSON
     esac
     echo "unsupported graphql query" >&2
     exit 1
+    ;;
+  "api --method")
+    [ "$state" = "authed" ] || not_logged_in 4
+    full="${6#repos/}"
+    printf '{"id":42,"full_name":"%s"}\n' "$full"
+    exit 0
     ;;
   "repo create")
     [ "$state" = "authed" ] || not_logged_in 4

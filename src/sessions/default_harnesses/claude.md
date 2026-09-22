@@ -105,6 +105,37 @@ vault watcher; no restart, no release.
       "signal": "usage"
     }
   ],
+  "input_prompts": [
+    {
+      "name": "numbered-menu",
+      "pattern": "(?m)^[ \\t]*[›>❯]?[ \\t]*[0-9]+[.)][ \\t]+.+$",
+      "is_regex": true
+    },
+    {
+      "name": "menu-navigation",
+      "pattern": "Use .* to move, press enter to confirm",
+      "is_regex": true
+    },
+    {
+      "name": "login-required",
+      "pattern": "Please sign in|authentication required|not authenticated|claude login",
+      "is_regex": true
+    },
+    {
+      "name": "usage-limit",
+      "pattern": "usage limit|limit reached|you.ve hit your .* limit",
+      "is_regex": true
+    },
+    {
+      "name": "trust-or-permission",
+      "pattern": "Do you trust|project you created or one you trust|permission required|Allow this",
+      "is_regex": true
+    },
+    {
+      "name": "press-enter-to-continue",
+      "pattern": "press enter to continue"
+    }
+  ],
   "tools_flag": "--allowedTools"
 }
 ```
@@ -171,6 +202,12 @@ line. Empty this list to make the provider leave the text alone instead.
 **Dialogs share one budget** (`sessions.dialog_budget_seconds`, default 8 s)
 across the whole table, not 8 s each. Nine per-dialog budgets is how the
 Gas City runtime blew its start deadline.
+
+**`input_prompts` is observation-only.** AQ checks these signatures only on
+an unclaimed pool worker whose pane has stayed unchanged past the claim-loop
+stall window. A match is reported by doctor and `aq pool status`; no listed
+prompt is ever answered automatically. Add a named substring or regex here
+when a new Claude interactive chooser appears.
 
 **`SubagentStart` / `SubagentStop` are wired** to `aq subagent event
 --hook-json`, which is where native sub-agent counts come from. Claude

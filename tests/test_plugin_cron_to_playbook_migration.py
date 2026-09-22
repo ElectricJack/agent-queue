@@ -306,7 +306,9 @@ class TestVaultInstallation:
             "blocked-task-escalation.md",
             "default-assignment-routing.md",
             "default-pipeline.md",
+            "provider-failover.md",
             "provider-usage-probe.md",
+            "supervisor-failure-triage.md",
         }
         installed = set(result["created"])
         assert expected == installed, (

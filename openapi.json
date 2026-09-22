@@ -25952,7 +25952,19 @@
         "title": "GetGitStatusResponse"
       },
       "GetGithubAuthStatusRequest": {
-        "properties": {},
+        "properties": {
+          "repository_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Url"
+          }
+        },
         "type": "object",
         "title": "GetGithubAuthStatusRequest"
       },
@@ -28031,6 +28043,58 @@
             "type": "boolean",
             "title": "Authenticated",
             "default": false
+          },
+          "credential_mode": {
+            "type": "string",
+            "enum": [
+              "app",
+              "existing_login"
+            ],
+            "title": "Credential Mode",
+            "default": "existing_login"
+          },
+          "repository_access": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Access"
+          },
+          "account_operations_available": {
+            "type": "boolean",
+            "title": "Account Operations Available",
+            "default": true
+          },
+          "configuration_changes_require_restart": {
+            "type": "boolean",
+            "title": "Configuration Changes Require Restart",
+            "default": true
+          },
+          "app_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "installation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installation Id"
           },
           "host": {
             "anyOf": [
@@ -36818,6 +36882,28 @@
               }
             ],
             "title": "Quarantine Reason"
+          },
+          "input_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Prompt"
+          },
+          "unchanged_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unchanged Seconds"
           }
         },
         "type": "object",
@@ -37384,6 +37470,11 @@
           "ready": {
             "type": "integer",
             "title": "Ready"
+          },
+          "blocked_on_input": {
+            "type": "integer",
+            "title": "Blocked On Input",
+            "default": 0
           },
           "projects": {
             "items": {

@@ -1,3 +1,12 @@
+---
+project: agent-queue
+status: draft
+source_repository_path: docs/specs/github-access.md
+issue: https://github.com/ElectricJack/agent-queue/issues/615
+---
+
+<!-- Execution snapshot for the explicitly filed GitHub access epics. Relative source links refer to the repository copy. Do not approve this snapshot through the spec-ingest pipeline: its tasks are filed directly with aq task create --graph. -->
+
 # Unified GitHub access through `gh`
 
 Date: 2026-09-22

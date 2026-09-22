@@ -41,9 +41,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from src.profiles.parser import parse_frontmatter
+from src.sessions.input_prompts import InputPromptSignature
 from src.sessions.provider import PROMPT_MODES, DialogRule
 
 logger = logging.getLogger(__name__)
@@ -85,6 +87,7 @@ HARNESS_KNOWN_KEYS: frozenset[str] = frozenset(
         "instructions_file",
         "transcript_paths",
         "dialogs",
+        "input_prompts",
         "env",
         "max_argv_prompt_bytes",
     }
@@ -169,6 +172,9 @@ class Harness:
     instructions_file: str = ""
     transcript_paths: tuple[str, ...] = ()
     dialogs: tuple[DialogRule, ...] = ()
+    #: Observation-only signatures for prompts that need a human decision.
+    #: Unlike ``dialogs``, these never carry keys and are never auto-answered.
+    input_prompts: tuple[InputPromptSignature, ...] = ()
     env: tuple[tuple[str, str], ...] = ()
     max_argv_prompt_bytes: int = DEFAULT_MAX_ARGV_PROMPT_BYTES
     #: The ``base:`` this file declared, before resolution.  Kept so the
@@ -277,6 +283,48 @@ def _parse_dialogs(raw, errors: list[str], warnings: list[str]) -> tuple[DialogR
     return tuple(rules)
 
 
+def _parse_input_prompts(
+    raw, errors: list[str], warnings: list[str]
+) -> tuple[InputPromptSignature, ...]:
+    """Parse observation-only interactive prompt signatures."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        errors.append("'input_prompts' must be a list of objects")
+        return ()
+    signatures: list[InputPromptSignature] = []
+    names: set[str] = set()
+    for i, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            errors.append(f"input_prompts[{i}] must be an object")
+            continue
+        pattern = entry.get("pattern")
+        if not pattern or not isinstance(pattern, str):
+            errors.append(f"input_prompts[{i}] requires a non-empty string 'pattern'")
+            continue
+        name = str(entry.get("name") or f"input-prompt-{i}")
+        if name in names:
+            errors.append(f"input_prompts[{i}] duplicates name '{name}'")
+            continue
+        names.add(name)
+        is_regex = bool(entry.get("is_regex", False))
+        if "|" in pattern and not is_regex:
+            warnings.append(
+                f"input_prompts[{i}] '{name}': pattern contains '|' but is_regex is not "
+                'set — set "is_regex": true'
+            )
+        if is_regex:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                errors.append(f"input_prompts[{i}] '{name}' has invalid regex: {exc}")
+                continue
+        signatures.append(
+            InputPromptSignature(name=name, pattern=pattern, is_regex=is_regex)
+        )
+    return tuple(signatures)
+
+
 def _str_tuple(raw, field_name: str, errors: list[str]) -> tuple[str, ...]:
     if raw is None:
         return ()
@@ -373,6 +421,7 @@ def parse_harness_markdown(
         max_argv = DEFAULT_MAX_ARGV_PROMPT_BYTES
 
     dialogs = _parse_dialogs(config.get("dialogs"), errors, warnings)
+    input_prompts = _parse_input_prompts(config.get("input_prompts"), errors, warnings)
 
     if errors:
         return ParsedHarness(errors=errors, warnings=warnings)
@@ -408,6 +457,7 @@ def parse_harness_markdown(
             config.get("transcript_paths"), "transcript_paths", errors
         ),
         dialogs=dialogs,
+        input_prompts=input_prompts,
         env=tuple(sorted((str(k), str(v)) for k, v in raw_env.items())),
         max_argv_prompt_bytes=max_argv,
         base=base,
@@ -435,6 +485,7 @@ _INHERITABLE = (
     "instructions_file",
     "transcript_paths",
     "dialogs",
+    "input_prompts",
     "hook_files",
     "hook_trust_flag",
     "composer_clear_keys",

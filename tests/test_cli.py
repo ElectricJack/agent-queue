@@ -225,6 +225,127 @@ class TestFormatterCompatibility:
         panel = format_task_detail(t, subtask_stats=(3, 5))
         assert panel is not None
 
+    def _render(self, renderable):
+        """Render a Panel/Group to a plain string so we can assert on labels."""
+        from rich.console import Console
+
+        console = Console(record=True, width=200, force_terminal=False)
+        console.print(renderable)
+        return console.export_text()
+
+    def test_format_task_detail_groups_edges_by_type(self):
+        # A parent-child edge and a real blocks edge must land in two
+        # separately labelled buckets ("Part of" ≠ "Blocked by").
+        t = task_proxy(
+            {
+                "id": "task-child",
+                "project_id": "proj",
+                "status": "QUEUED",
+                "title": "A child task",
+            }
+        )
+        panel = format_task_detail(
+            t,
+            deps_on=[
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+                {"id": "prereq-1", "title": "Prereq", "status": "IN_PROGRESS", "dep_type": "blocks"},
+            ],
+            dependents=[
+                {"id": "downstream-1", "title": "Downstream", "status": "QUEUED"},
+            ],
+        )
+        out = self._render(panel)
+        # Both buckets are present and distinguishable.
+        assert "Part of" in out
+        assert "Blocked by" in out
+        assert "Blocks" in out
+        # Each ID lands under the correct bucket: parent-child under "Part of",
+        # blocks under "Blocked by", dependent under "Blocks:".
+        part_of = out.index("Part of")
+        blocked_by = out.index("Blocked by")
+        # Label precedes ids in each section (Rich renders the Text in order).
+        assert out.index("parent-epic") > part_of
+        assert out.index("prereq-1") > blocked_by
+        assert out.index("downstream-1") > out.index("Blocks:")
+
+    def test_ready_task_with_parent_only_shows_part_of(self):
+        # A READY task whose only in-progress relation is its parent must
+        # never surface blocker language ("Blocked by"); the parent edge is
+        # "Part of", which is a relationship label, not a scheduling gate.
+        t = task_proxy(
+            {
+                "id": "task-ready",
+                "project_id": "proj",
+                "status": "READY",
+                "title": "Ready child",
+            }
+        )
+        panel = format_task_detail(
+            t,
+            deps_on=[
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+            ],
+            dependents=[],
+        )
+        out = self._render(panel)
+        assert "Part of" in out
+        assert "parent-epic" in out
+        assert "Blocked by" not in out
+        # Downstream "Blocks:" section is absent because the task blocks nothing.
+        # (The word "Blocks" may legitimately appear elsewhere — only assert
+        # that "Blocked by:" as a label does not.)
+
+    def test_format_task_detail_plain_string_backward_compat(self):
+        # Old-style plain string deps still render (as "Depends on"), so the
+        # formatter remains callable from legacy payloads or tests.
+        t = task_proxy(
+            {"id": "t", "project_id": "p", "status": "QUEUED", "title": "T"}
+        )
+        panel = format_task_detail(t, deps_on=["dep-1"], dependents=["block-1"])
+        out = self._render(panel)
+        assert "Depends on" in out
+        assert "Blocks" in out
+
+    def test_format_task_deps_groups_by_type(self):
+        # `aq task deps` (format_task_deps) must also split incoming edges by
+        # type and render provenance (discovered-from) dimmed and separate
+        # from blockers.
+        from src.cli.formatters import format_task_deps
+
+        data = {
+            "task_id": "task-1",
+            "title": "Demo",
+            "status": "QUEUED",
+            "depends_on": [
+                {"id": "parent-epic", "title": "Epic", "status": "IN_PROGRESS", "dep_type": "parent-child"},
+                {"id": "prereq", "title": "Prereq", "status": "IN_PROGRESS", "dep_type": "blocks"},
+            ],
+            "blocks": [
+                {"id": "downstream", "title": "D", "status": "QUEUED"},
+            ],
+            "provenance": [
+                {"id": "sibling", "title": "S", "status": "READY", "dep_type": "discovered-from"},
+            ],
+        }
+        out = self._render(format_task_deps(data))
+        assert "Part of" in out
+        assert "Blocked by" in out
+        assert "Discovered from" in out
+        # Provenance renders after blockers, so "sibling" must come after the
+        # "Discovered from" label.
+        assert out.index("sibling") > out.index("Discovered from")
+        # The parent-child id lives in the "Part of" bucket (label precedes
+        # id, then the "Blocks:" section begins). The blocks id lives in the
+        # "Blocked by" bucket.
+        assert out.index("Part of") < out.index("parent-epic") < out.index("Blocks:")
+        assert out.index("Blocked by") < out.index("prereq")
+
+    def test_format_task_deps_empty_when_no_edges(self):
+        from src.cli.formatters import format_task_deps
+
+        out = self._render(format_task_deps({"task_id": "t", "status": "READY"}))
+        assert "No dependencies." in out
+
     def test_format_agent_table(self):
         agents = [
             agent_proxy(
@@ -1163,13 +1284,16 @@ class TestDaemonCommands:
         with patch("src.cli.daemon._find_daemon_pid", return_value=12345):
             assert is_daemon_running() is True
 
-    def test_stop_not_running(self, runner):
+    def test_stop_not_running(self, runner, monkeypatch):
         from src.cli.app import cli
 
         # aq stop also reaps sessions when no daemon is running. Keep this
         # unit test away from the real tmux server (including its own worker).
         # Nor may it reach the dashboard server named by the real
         # ~/.agent-queue PID file: that one may be the operator's.
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
+        monkeypatch.delenv("AQ_DB_SCOPE", raising=False)
         with (
             patch("src.cli.daemon._find_daemon_pid", return_value=None),
             patch("src.cli.daemon.stop_agent_sessions", return_value=0) as stop_sessions,

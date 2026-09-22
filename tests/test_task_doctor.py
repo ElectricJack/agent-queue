@@ -32,8 +32,8 @@ async def test_stale_attention_check_reports_and_repairs_live_and_completed_rows
 
 
 @pytest.mark.asyncio
-async def test_archive_blocked_check_names_integration_tracked_roots():
-    """``tasks.archive_blocked`` reports the sweep's backlog without archiving."""
+async def test_archive_history_does_not_create_an_archive_blocker():
+    """Append-only integration history survives a successful archive by id."""
     from sqlalchemy import insert
 
     from src.config import AppConfig, ArchiveConfig
@@ -71,14 +71,11 @@ async def test_archive_blocked_check_names_integration_tracked_roots():
 
     finding = await run_check(db, "tasks.archive_blocked", config=config)
 
-    assert finding.severity is Severity.WARN
+    assert finding.severity is Severity.OK
     assert finding.fixable is False
-    assert [row["task_id"] for row in finding.data["roots"]] == ["tracked"]
-    assert finding.data["roots"][0]["reason"] == "integration_owned"
-    assert finding.data["count"] == 1
-    # Report-only: the tracked root is still there, and running the check
-    # archived nothing on its own.
-    assert await db.get_task("tracked") is not None
+    assert finding.data == {}
+    assert await db.get_task("tracked") is None
+    assert await db.get_task("plain") is None
     await db.close()
 
 

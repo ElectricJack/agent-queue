@@ -314,7 +314,8 @@ nothing launches against it afterwards (counted from the provider's own
 `startup_dialog` evidence, because a startup death leaves no session row);
 that `aq provider held-tasks` and `aq task explain` name every hold
 (`provider_pinned`, `no_equivalent_rung`, and `failover_inactive` for the rest,
-because Tier 1 does not activate the provider-failover policy); and that `aq provider reroute --dry-run`
+because S16 temporarily pauses the automatic provider-failover playbook while
+it exercises the same policy through the operator commands); and that `aq provider reroute --dry-run`
 plans exactly what the live sweep then does. The live sweep is the command the
 `provider-failover` playbook calls. The sweep moves one task at a time into
 `provb`'s `max_active: 1` — the runner works it as the `provb` session, and

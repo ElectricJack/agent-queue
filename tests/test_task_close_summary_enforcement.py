@@ -574,7 +574,7 @@ async def test_close_with_skip_open_subtasks_flag_settles_and_succeeds(handler, 
     assert [item["status"] for item in subtasks] == ["skipped", "skipped"]
     assert all(item["note"] == "skipped at close" for item in subtasks)
     assert ("task.subtasks_updated", {
-        "task_id": "t1", "project_id": "p", "total": 2, "settled": 2,
+        "task_id": "t1", "project_id": "p", "title": "t", "total": 2, "settled": 2,
     }) in handler.orchestrator.bus.events
 
 

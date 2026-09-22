@@ -593,8 +593,8 @@ class IntegrationCommandsMixin:
             data_dir=self.config.data_dir,
             git_manager=self.orchestrator.git,
             app_client=getattr(self.orchestrator, "integration_app_client", None),
-            app_client_factory=getattr(
-                self.orchestrator, "integration_app_client_factory", None
+            github_client_factory=getattr(
+                self.orchestrator, "github_client_factory", None
             ),
             attestation_resolver=getattr(
                 self.orchestrator, "integration_attestation_resolver", None
@@ -611,8 +611,8 @@ class IntegrationCommandsMixin:
             self.db,
             data_dir=self.config.data_dir,
             git_manager=self.orchestrator.git,
-            app_client_factory=getattr(
-                self.orchestrator, "integration_app_client_factory", None
+            github_client_factory=getattr(
+                self.orchestrator, "github_client_factory", None
             ),
             forge_provider=getattr(
                 self.orchestrator, "integration_cleanup_forge_provider", None
@@ -629,18 +629,18 @@ class IntegrationCommandsMixin:
 
         app_client = None
         binding_resolver = getattr(
-            self.orchestrator, "integration_repository_binding_resolver", None
+            self.orchestrator, "github_repository_binding_resolver", None
         )
-        app_client_factory = getattr(
-            self.orchestrator, "integration_app_client_factory", None
+        github_client_factory = getattr(
+            self.orchestrator, "github_client_factory", None
         )
         repository = await self.db.get_repo(batch["repository_id"])
-        if repository is not None and binding_resolver is not None and app_client_factory is not None:
+        if repository is not None and binding_resolver is not None and github_client_factory is not None:
             binding = binding_resolver(repository)
             if inspect.isawaitable(binding):
                 binding = await binding
             if binding is not None:
-                app_client = app_client_factory(binding)
+                app_client = github_client_factory(binding)
                 if inspect.isawaitable(app_client):
                     app_client = await app_client
         branch_ownership = None

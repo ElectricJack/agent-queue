@@ -81,8 +81,11 @@ async def _drain_running_tasks(orch: Orchestrator) -> None:
 async def test_orchestrator_owns_single_integration_service_loop(orch):
     service = orch.integration_service
     # No GitHub App config must not leave the entire integration transport unwired.
-    assert callable(orch.integration_app_client_factory)
-    assert callable(orch.integration_repository_binding_resolver)
+    assert callable(orch.github_client_factory)
+    assert callable(orch.github_repository_binding_resolver)
+    assert orch.github_auth is orch.github_access.auth
+    assert orch.github_runner is orch.github_access.runner
+    assert orch.git.github_access is orch.github_access
     assert service is not None
     assert service._task is not None
     assert service._task.get_name() == "integration-reconciliation-service"
@@ -255,30 +258,31 @@ async def test_branch_materialization_drain_is_not_reentrant():
 
 
 @pytest.mark.parametrize("use_app", [False, True])
-async def test_configured_orchestrator_installs_repository_bound_candidate_transport(
+async def test_configured_orchestrator_installs_shared_repository_client(
     tmp_path, monkeypatch, use_app
 ):
-    from src.git.github_app import GitHubAppClient, GitHubRepositoryBinding
-    from src.git.github_cli import GitHubCLIClient
+    from src.git.github import GitHubClient
+    from src.git.github_contracts import GitHubCredentialMode, GitHubRepositoryBinding
 
     config = AppConfig(
         database=DatabaseConfig(url=lease_dsn("test.db")),
         workspace_dir=str(tmp_path / "workspaces"),
         data_dir=str(tmp_path / "data"),
     )
-    config.integration.github_app = GitHubAppConfig(
-        client_id="Iv1.test",
-        app_id=101,
-        installation_id=202,
-        private_key_path="/daemon/key.pem",
-    ) if use_app else None
-    binding = GitHubRepositoryBinding(303, "acme/widgets")
-    bound_client = MagicMock(repository=binding)
-    bind_repository = AsyncMock(return_value=bound_client)
-    monkeypatch.setattr(
-        GitHubAppClient if use_app else GitHubCLIClient, "bind_repository", bind_repository
+    config.integration.github_app = (
+        GitHubAppConfig(
+            client_id="Iv1.test",
+            app_id=101,
+            installation_id=202,
+            private_key_path="/daemon/key.pem",
+        )
+        if use_app
+        else None
     )
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
     orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    bind_repository = AsyncMock(return_value=binding)
+    monkeypatch.setattr(orchestrator.github_access, "bind_repository", bind_repository)
     await orchestrator.initialize()
     try:
         repository = RepoConfig(
@@ -287,13 +291,54 @@ async def test_configured_orchestrator_installs_repository_bound_candidate_trans
             source_type=RepoSourceType.CLONE,
             url="https://github.com/acme/widgets.git",
         )
-        resolved = await orchestrator.integration_repository_binding_resolver(repository)
+        resolved = await orchestrator.github_repository_binding_resolver(repository)
+        client = orchestrator.github_client_factory(binding)
 
         assert resolved == binding
-        assert orchestrator.integration_app_client_factory(binding) is bound_client
-        bind_repository.assert_awaited_once()
+        assert isinstance(client, GitHubClient)
+        assert client.repository == binding
+        assert client.access is orchestrator.github_access
+        assert orchestrator.github_client_factory(binding) is client
+        assert orchestrator.github_access.credential_identity.mode is (
+            GitHubCredentialMode.APP if use_app else GitHubCredentialMode.EXISTING_LOGIN
+        )
+        bind_repository.assert_awaited_once_with("acme/widgets")
     finally:
         await orchestrator.shutdown()
+
+
+async def test_config_reload_does_not_swap_live_github_credential_provider(tmp_path):
+    from src.git.github_contracts import GitHubCredentialMode
+
+    config = AppConfig(
+        database=DatabaseConfig(url=lease_dsn("test.db")),
+        workspace_dir=str(tmp_path / "workspaces"),
+        data_dir=str(tmp_path / "data"),
+    )
+    orchestrator = Orchestrator(config, runtimes=MockAdapterFactory())
+    original_access = orchestrator.github_access
+    changed = copy.deepcopy(config)
+    changed.integration.github_app = GitHubAppConfig(
+        client_id="Iv1.changed",
+        app_id=501,
+        installation_id=502,
+        private_key_path="/daemon/changed.pem",
+    )
+
+    await orchestrator._on_config_reloaded(
+        {
+            "config": changed,
+            "previous_config": config,
+            "changed_sections": ["integration"],
+        }
+    )
+
+    assert orchestrator.config is changed
+    assert orchestrator.github_access is original_access
+    assert orchestrator.github_auth is original_access.auth
+    assert orchestrator.github_runner is original_access.runner
+    assert orchestrator.git.github_access is original_access
+    assert original_access.credential_identity.mode is GitHubCredentialMode.EXISTING_LOGIN
 
 
 @pytest.fixture

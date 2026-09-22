@@ -269,6 +269,27 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
 
 
+def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):
+    smoke = _load_smoke()
+    calls: list[tuple[str, ...]] = []
+    restored: list[bool] = []
+
+    def fake_aq(*args, **_kwargs):
+        calls.append(args)
+        return {"enabled": args[-1] == "--enabled"}
+
+    monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "_s16", lambda state: "manual sweep complete")
+    monkeypatch.setattr(smoke, "_restore_providers", lambda: restored.append(True))
+
+    assert smoke.s16_provider_failover({}) == "manual sweep complete"
+    assert calls == [
+        ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--no-enabled"),
+        ("playbook", "set-enabled", "--playbook-id", "provider-failover", "--enabled"),
+    ]
+    assert restored == [True]
+
+
 def test_e2e_env_generates_an_opt_in_plugin_entry_point_and_local_message_sink():
     text = E2E_ENV.read_text()
 

@@ -532,8 +532,8 @@ async def test_default_build_command_constructs_repository_bound_candidate_servi
     app = SimpleNamespace(repository=binding)
     resolver = AsyncMock(return_value=binding)
     factory = AsyncMock(return_value=app)
-    handler.orchestrator.integration_repository_binding_resolver = resolver
-    handler.orchestrator.integration_app_client_factory = factory
+    handler.orchestrator.github_repository_binding_resolver = resolver
+    handler.orchestrator.github_client_factory = factory
     handler.orchestrator.integration_candidate_service = None
 
     async def built(service, batch_id):

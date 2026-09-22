@@ -1,28 +1,38 @@
-"""Daemon-only GitHub App authentication and narrowly bound REST access."""
+"""GitHub App bootstrap plus its shared-client compatibility constructor.
+
+``AppTokenProvider`` owns the only direct GitHub HTTP calls: fixed App identity
+and installation-token bootstrap requests. ``GitHubAppClient`` combines that
+provider with the repository operations implemented in ``src.git.github``.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import re
 import stat
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
-from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 import jwt
 
 from src.config import GitHubAppConfig
+from src.git.github import MAX_PAGINATION_BYTES, MAX_RESPONSE_BYTES, GitHubClient
+from src.git.github_cli import DEFAULT_TIMEOUT_SECONDS, GhRunner
+from src.git.github_contracts import (
+    GitHubAccessError,
+    GitHubCredentialIdentity,
+    GitHubRepositoryBinding,
+)
 
 ACCEPT = "application/vnd.github+json"
 API_VERSION = "2022-11-28"
 API_BASE = "https://api.github.com"
-MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _PERMISSIONS = {
     "checks": "write",
     "actions": "read",
@@ -32,26 +42,6 @@ _PERMISSIONS = {
     "issues": "write",
     "variables": "read",
 }
-_FULL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
-
-
-@dataclass(frozen=True)
-class GitHubRepositoryBinding:
-    repository_id: int
-    full_name: str
-    forge_host: str = "github.com"
-
-    def __post_init__(self) -> None:
-        if (
-            isinstance(self.repository_id, bool)
-            or not isinstance(self.repository_id, int)
-            or self.repository_id <= 0
-        ):
-            raise ValueError("repository_id must be a positive integer")
-        if self.forge_host != "github.com":
-            raise ValueError("unsupported_host")
-        if _FULL_NAME.fullmatch(self.full_name) is None:
-            raise ValueError("full_name must be owner/repository")
 
 
 @dataclass(frozen=True)
@@ -113,7 +103,11 @@ class AiohttpTransport:
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.request(
-                    method, url, headers=headers, json=json_body
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_body,
+                    allow_redirects=False,
                 ) as response:
                     body = await response.content.read(max_bytes + 1)
                     if len(body) > max_bytes:
@@ -123,20 +117,31 @@ class AiohttpTransport:
             raise GitHubAppError("transient", "GitHub request failed") from exc
 
 
-class GitHubAppError(RuntimeError):
-    """Safe provider failure without response bodies or credentials."""
-
-    def __init__(self, category: str, message: str, *, retry_at: float | None = None):
-        self.category = category
-        self.retry_at = retry_at
-        super().__init__(message)
+# Compatibility name retained until the transport-specific client is removed.
+GitHubAppError = GitHubAccessError
 
 
-class GitHubAppClient:
+@dataclass(frozen=True, slots=True)
+class AppTokenCandidate:
+    """A not-yet-exposed repository credential minted by the configured App.
+
+    The candidate is handed to the shared ``gh`` binding path for repository
+    identity verification before ``GitHubAuth`` accepts it into its ready
+    cache.  The secret is deliberately omitted from representations.
+    """
+
+    identity: GitHubCredentialIdentity
+    repository: GitHubRepositoryBinding
+    token: str = field(repr=False)
+    expires_at: float
+
+
+class AppTokenProvider:
+    """Sign App JWTs and mint fixed-permission, single-repository tokens."""
+
     def __init__(
         self,
         config: GitHubAppConfig,
-        repository: GitHubRepositoryBinding,
         *,
         key_provider: PrivateKeyProvider,
         transport: HttpTransport | None = None,
@@ -146,87 +151,93 @@ class GitHubAppClient:
         if config.validate():
             raise ValueError("invalid GitHub App configuration")
         self.config = config
-        self.repository = repository
         self.key_provider = key_provider
         self.transport = transport or AiohttpTransport()
         self.clock = clock
         self.max_response_bytes = max_response_bytes
-        self._token: str | None = None
-        self._token_expires_at = 0.0
-        self._token_lock = asyncio.Lock()
-
-    @classmethod
-    async def bind_repository(
-        cls,
-        config: GitHubAppConfig,
-        full_name: str,
-        *,
-        key_provider: PrivateKeyProvider,
-        transport: HttpTransport | None = None,
-        clock=time.time,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-    ) -> "GitHubAppClient":
-        """Resolve one configured repository name into a least-privilege client."""
-        if _FULL_NAME.fullmatch(full_name) is None:
-            raise ValueError("full_name must be owner/repository")
-        repository_name = full_name.split("/", 1)[1]
-        bootstrap = cls(
-            config,
-            GitHubRepositoryBinding(1, full_name),
-            key_provider=key_provider,
-            transport=transport,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-        )
-        app_jwt = bootstrap._app_jwt()
-        app = await bootstrap._raw_json("GET", "/app", credential=app_jwt)
-        if _strict_positive_int(app.get("id")) != config.app_id:
-            raise GitHubAppError("credentials", "authenticated App identity did not match")
-        token_body = await bootstrap._raw_json(
-            "POST",
-            f"/app/installations/{config.installation_id}/access_tokens",
-            credential=app_jwt,
-            json_body={"repositories": [repository_name], "permissions": _PERMISSIONS},
-            expected_statuses={201},
-        )
-        token = token_body.get("token")
-        repositories = token_body.get("repositories")
-        permissions = token_body.get("permissions")
-        if not isinstance(token, str) or not token:
-            raise GitHubAppError("credentials", "installation token response was malformed")
-        if not isinstance(repositories, list) or len(repositories) != 1:
-            raise GitHubAppError("permission", "installation repository selection did not match")
-        repository = repositories[0]
-        repository_id = (
-            _strict_positive_int(repository.get("id")) if isinstance(repository, dict) else None
-        )
-        if (
-            repository_id is None
-            or repository.get("name") != repository_name
-            or repository.get("full_name") != full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        if (
-            not isinstance(permissions, dict)
-            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
-            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
-        ):
-            raise GitHubAppError("permission", "installation permissions did not match")
-        client = cls(
-            config,
-            GitHubRepositoryBinding(repository_id, full_name),
-            key_provider=key_provider,
-            transport=bootstrap.transport,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-        )
-        client._token = token
-        client._token_expires_at = _parse_timestamp(token_body.get("expires_at"))
-        return client
 
     @property
-    def _base_headers(self) -> dict[str, str]:
-        return {"Accept": ACCEPT, "X-GitHub-Api-Version": API_VERSION}
+    def credential_identity(self) -> GitHubCredentialIdentity:
+        return GitHubCredentialIdentity.app(
+            self.config.app_id,
+            self.config.installation_id,
+        )
+
+    async def mint(self, repository: GitHubRepositoryBinding) -> AppTokenCandidate:
+        """Mint a fresh token for an already validated repository binding."""
+        payload = await self._mint_payload(repository_ids=[repository.repository_id])
+        selected = _single_repository(payload)
+        if _strict_positive_int(selected.get("id")) != repository.repository_id:
+            raise GitHubAppError("permission", "installation repository selection did not match")
+        if selected.get("full_name") != repository.full_name:
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        return self._candidate(payload, repository)
+
+    async def mint_for_repository(self, full_name: str) -> AppTokenCandidate:
+        """Mint a candidate token while resolving a canonical repository name.
+
+        This is bootstrap only: the returned numeric/name binding still needs
+        verification through the shared ``gh`` runner before it becomes ready.
+        """
+        provisional = GitHubRepositoryBinding(1, full_name)
+        repository_name = provisional.full_name.split("/", 1)[1]
+        payload = await self._mint_payload(repository_names=[repository_name])
+        selected = _single_repository(payload)
+        repository_id = _strict_positive_int(selected.get("id"))
+        if (
+            repository_id is None
+            or selected.get("name") != repository_name
+            or selected.get("full_name") != provisional.full_name
+        ):
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        return self._candidate(
+            payload,
+            GitHubRepositoryBinding(repository_id, provisional.full_name),
+        )
+
+    async def _mint_payload(
+        self,
+        *,
+        repository_ids: list[int] | None = None,
+        repository_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if (repository_ids is None) == (repository_names is None):
+            raise ValueError("exactly one repository selector is required")
+        app_jwt = self._app_jwt()
+        app = await self._bootstrap_json("GET", "/app", credential=app_jwt)
+        if _strict_positive_int(app.get("id")) != self.config.app_id:
+            raise GitHubAppError("credentials", "authenticated App identity did not match")
+        selector: dict[str, Any]
+        if repository_ids is not None:
+            selector = {"repository_ids": repository_ids}
+        else:
+            selector = {"repositories": repository_names}
+        return await self._bootstrap_json(
+            "POST",
+            f"/app/installations/{self.config.installation_id}/access_tokens",
+            credential=app_jwt,
+            json_body=selector | {"permissions": dict(_PERMISSIONS)},
+            expected_statuses={201},
+        )
+
+    def _candidate(
+        self,
+        payload: dict[str, Any],
+        repository: GitHubRepositoryBinding,
+    ) -> AppTokenCandidate:
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise GitHubAppError("credentials", "installation token response was malformed")
+        _validate_permissions(payload.get("permissions"))
+        expires_at = _parse_timestamp(payload.get("expires_at"))
+        if expires_at - self.clock() <= 300:
+            raise GitHubAppError("credentials", "installation token expiry was invalid")
+        return AppTokenCandidate(
+            identity=self.credential_identity,
+            repository=repository,
+            token=token,
+            expires_at=expires_at,
+        )
 
     def _app_jwt(self) -> str:
         now = int(self.clock())
@@ -242,239 +253,147 @@ class GitHubAppClient:
         except Exception as exc:
             raise GitHubAppError("credentials", "private key could not sign App JWT") from exc
 
-    async def exact_head_ref(self, branch: str) -> str | None:
-        """Read one repository-bound head through the installation identity."""
-        if not isinstance(branch, str) or not branch or branch.startswith("refs/"):
-            raise ValueError("branch must be a short head name")
-        path = (
-            f"/repositories/{self.repository.repository_id}/git/ref/heads/{quote(branch, safe='')}"
-        )
-        try:
-            payload = await self.request_json("GET", path)
-        except GitHubAppError as exc:
-            if exc.category == "not_found_or_hidden":
-                return None
-            raise
-        obj = payload.get("object")
-        oid = obj.get("sha") if isinstance(obj, dict) else None
-        if payload.get("ref") != f"refs/heads/{branch}" or not isinstance(oid, str):
-            raise GitHubAppError("conflict_or_invalid", "GitHub ref identity was malformed")
-        if re.fullmatch(r"[0-9a-f]{40}", oid) is None:
-            raise GitHubAppError("conflict_or_invalid", "GitHub ref OID was malformed")
-        return oid
-
-    async def exact_pull_request(self, *, number: int) -> dict[str, Any] | None:
-        """Read one PR through this exact repository installation binding."""
-        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
-            raise ValueError("pull request number must be positive")
-        try:
-            payload = await self.request_json(
-                "GET", f"/repositories/{self.repository.repository_id}/pulls/{number}"
-            )
-        except GitHubAppError as exc:
-            if exc.category == "not_found_or_hidden":
-                return None
-            raise
-        head = payload.get("head")
-        repo = head.get("repo") if isinstance(head, dict) else None
-        sha = head.get("sha") if isinstance(head, dict) else None
-        if (
-            not isinstance(repo, dict)
-            or _strict_positive_int(repo.get("id")) is None
-            or not isinstance(repo.get("full_name"), str)
-            or not isinstance(sha, str)
-            or re.fullmatch(r"[0-9a-f]{40}", sha) is None
-            or payload.get("number") != number
-            or payload.get("state") not in {"open", "closed"}
-        ):
-            raise GitHubAppError("conflict_or_invalid", "GitHub PR identity was malformed")
-        return {
-            "repository_numeric_id": repo["id"],
-            "repository_full_name": repo["full_name"],
-            "head_sha": sha,
-            "state": payload["state"],
-        }
-
-    async def has_comment_marker(self, *, number: int, marker: str) -> bool:
-        if not marker or "\n" in marker:
-            raise ValueError("comment marker must be one non-empty line")
-        path = (
-            f"/repositories/{self.repository.repository_id}/issues/{number}/comments?per_page=100"
-        )
-        for comment in await self.paged_list(path):
-            if marker in str(comment.get("body") or ""):
-                return True
-        return False
-
-    async def comment_pull_request(self, *, number: int, marker: str, body: str) -> None:
-        if marker not in body:
-            raise ValueError("delivery comment must contain its stable marker")
-        await self.request_json(
-            "POST",
-            f"/repositories/{self.repository.repository_id}/issues/{number}/comments",
-            json_body={"body": body},
-            expected_statuses={201},
-        )
-
-    async def close_pull_request(self, *, number: int) -> None:
-        payload = await self.request_json(
-            "PATCH",
-            f"/repositories/{self.repository.repository_id}/pulls/{number}",
-            json_body={"state": "closed"},
-        )
-        if payload.get("number") != number or payload.get("state") != "closed":
-            raise GitHubAppError("conflict_or_invalid", "GitHub PR close was not confirmed")
-
-    async def lookup_audit_pr(self, *, idempotency_key: str, branch: str | None = None):
-        """Reconcile a candidate audit PR by its stable server-owned marker."""
-        marker = self._audit_marker(idempotency_key)
-        path = f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
-        if branch is not None:
-            owner = self.repository.full_name.split("/", 1)[0]
-            path += "&head=" + quote(f"{owner}:{branch}", safe="")
-        pulls = await self.paged_list(path)
-        matches = [pull for pull in pulls if marker in str(pull.get("body") or "")]
-        if not matches:
-            return None
-        if len(matches) != 1:
-            raise GitHubAppError("conflict_or_invalid", "audit PR marker was not unique")
-        return self._audit_pull_request(matches[0], idempotency_key)
-
-    async def create_audit_pr(
+    async def _bootstrap_json(
         self,
+        method: str,
+        path: str,
         *,
-        repository_id: str,
-        branch: str,
-        head_sha: str,
-        base_branch: str,
-        batch_id: str,
-        idempotency_key: str,
-        repository_numeric_id: int,
-        repository_full_name: str,
-    ):
-        """Create one exact repository-bound audit PR for CandidateService."""
-        if not repository_id or not batch_id:
-            raise ValueError("candidate audit identity must be non-empty")
-        if (
-            repository_numeric_id != self.repository.repository_id
-            or repository_full_name != self.repository.full_name
-        ):
-            raise GitHubAppError("credentials", "candidate repository binding did not match")
-        if (
-            not branch
-            or branch.startswith("refs/")
-            or not base_branch
-            or base_branch.startswith("refs/")
-            or re.fullmatch(r"[0-9a-f]{40}", head_sha) is None
-        ):
-            raise ValueError("candidate audit ref identity was malformed")
-        marker = self._audit_marker(idempotency_key)
-        pulls = await self.paged_list(
-            f"/repositories/{self.repository.repository_id}/pulls?state=all&per_page=100"
-            + "&head=" + quote(f"{self.repository.full_name.split('/', 1)[0]}:{branch}", safe="")
-        )
-        matches = [
-            pull
-            for pull in pulls
-            if isinstance(pull.get("head"), dict) and pull["head"].get("ref") == branch
-        ]
-        open_matches = [pull for pull in matches if pull.get("state") == "open"]
-        if open_matches:
-            matches = open_matches
-        if matches:
-            if len(matches) != 1:
-                raise GitHubAppError("conflict_or_invalid", "audit PR branch was not unique")
-            existing = matches[0]
-            body = str(existing.get("body") or "")
-            old_markers = re.findall(r"<!-- aq-integration-audit:([0-9a-f]{64}) -->", body)
-            if not old_markers or f"Root integration batch `{batch_id}`." not in body:
-                raise GitHubAppError("conflict_or_invalid", "existing PR belongs to another batch")
-            result = self._audit_pull_request(existing, old_markers[0])
-            if result.head_sha != head_sha or result.base_branch != base_branch:
-                raise GitHubAppError("conflict_or_invalid", "existing audit PR target moved")
-            if result.state == "closed":
-                if await self.exact_head_ref(base_branch) != head_sha:
-                    raise GitHubAppError("conflict_or_invalid", "closed audit PR is not exact base")
-            expected_state = result.state
-            if marker not in body:
-                existing = await self.request_json(
-                    "PATCH",
-                    f"/repositories/{self.repository.repository_id}/pulls/{result.number}",
-                    json_body={"body": f"{body}\n{marker}"},
-                )
-            result = self._audit_pull_request(existing, idempotency_key)
-            if (
-                result.head_sha != head_sha
-                or result.head_branch != branch
-                or result.base_branch != base_branch
-                or existing.get("state") != expected_state
-            ):
-                raise GitHubAppError(
-                    "conflict_or_invalid", "audit PR changed during revision update"
-                )
-            return result
-        payload = await self.request_json(
-            "POST",
-            f"/repositories/{self.repository.repository_id}/pulls",
-            json_body={
-                "title": f"Integration train {batch_id}",
-                "head": branch,
-                "base": base_branch,
-                "body": f"{marker}\nRoot integration batch `{batch_id}`.",
+        credential: str,
+        json_body: dict[str, Any] | None = None,
+        expected_statuses: set[int] | None = None,
+    ) -> dict[str, Any]:
+        token_path = f"/app/installations/{self.config.installation_id}/access_tokens"
+        if (method, path) not in {("GET", "/app"), ("POST", token_path)}:
+            raise ValueError("GitHub App bootstrap endpoint is not allowed")
+        response = await self.transport.request(
+            method,
+            API_BASE + path,
+            headers={
+                "Accept": ACCEPT,
+                "X-GitHub-Api-Version": API_VERSION,
+                "Authorization": f"Bearer {credential}",
             },
-            expected_statuses={201},
+            json_body=json_body,
+            max_bytes=self.max_response_bytes,
         )
-        result = self._audit_pull_request(payload, idempotency_key)
-        if result.head_sha != head_sha:
-            raise GitHubAppError("conflict_or_invalid", "audit PR head did not match candidate")
-        return result
+        if len(response.body) > self.max_response_bytes:
+            raise GitHubAppError("transient", "GitHub response exceeded size limit")
+        if 300 <= response.status < 400:
+            raise GitHubAppError(
+                "conflict_or_invalid", "GitHub App bootstrap redirect was rejected"
+            )
+        allowed = expected_statuses or {200}
+        if response.status not in allowed:
+            raise _http_error(response.status, response.headers, self.clock())
+        return _decode_object(response.body)
 
-    @staticmethod
-    def _audit_marker(idempotency_key: str) -> str:
-        if re.fullmatch(r"[0-9a-f]{64}", idempotency_key) is None:
-            raise ValueError("audit PR idempotency key must be a SHA-256 digest")
-        return f"<!-- aq-integration-audit:{idempotency_key} -->"
 
-    def _audit_pull_request(self, payload: dict[str, Any], idempotency_key: str):
-        from src.integration.candidates import AuditPullRequest
+class GitHubAppClient(GitHubClient):
+    """Compatibility constructor combining App bootstrap with the shared client."""
 
-        head = payload.get("head")
-        base = payload.get("base")
-        repository = head.get("repo") if isinstance(head, dict) else None
-        number = _strict_positive_int(payload.get("number"))
-        expected_url = (
-            f"https://github.com/{self.repository.full_name}/pull/{number}"
-            if number is not None
-            else None
+    def __init__(
+        self,
+        config: GitHubAppConfig,
+        repository: GitHubRepositoryBinding,
+        *,
+        key_provider: PrivateKeyProvider,
+        transport: HttpTransport | None = None,
+        clock=time.time,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
+        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
+        runner: GhRunner | None = None,
+        executable: str = "gh",
+        env: Mapping[str, str] | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> None:
+        if config.validate():
+            raise ValueError("invalid GitHub App configuration")
+        self.config = config
+        self.key_provider = key_provider
+        self.transport = transport or AiohttpTransport()
+        self._token_provider = AppTokenProvider(
+            config,
+            key_provider=key_provider,
+            transport=self.transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
         )
+        self._token: str | None = None
+        self._token_expires_at = 0.0
+        self._token_lock = asyncio.Lock()
+        selected_runner = runner or GhRunner(
+            self,
+            executable=executable,
+            env=env,
+            timeout=timeout,
+            max_stdout_bytes=max_response_bytes,
+        )
+        super().__init__(
+            repository,
+            runner=selected_runner,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+            max_pagination_bytes=max_pagination_bytes,
+        )
+
+    @property
+    def credential_identity(self) -> GitHubCredentialIdentity:
+        """Return non-secret App identity independently of the HTTP transport."""
+        return GitHubCredentialIdentity.app(
+            self.config.app_id,
+            self.config.installation_id,
+        )
+
+    @classmethod
+    async def bind_repository(
+        cls,
+        config: GitHubAppConfig,
+        full_name: str,
+        *,
+        key_provider: PrivateKeyProvider,
+        transport: HttpTransport | None = None,
+        clock=time.time,
+        max_response_bytes: int = MAX_RESPONSE_BYTES,
+        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
+        runner: GhRunner | None = None,
+        executable: str = "gh",
+        env: Mapping[str, str] | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> "GitHubAppClient":
+        """Mint, verify through ``gh``, and retain one exact repository binding."""
+        provider = AppTokenProvider(
+            config,
+            key_provider=key_provider,
+            transport=transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+        )
+        candidate = await provider.mint_for_repository(full_name)
+        client = cls(
+            config,
+            candidate.repository,
+            key_provider=key_provider,
+            transport=provider.transport,
+            clock=clock,
+            max_response_bytes=max_response_bytes,
+            max_pagination_bytes=max_pagination_bytes,
+            runner=runner,
+            executable=executable,
+            env=env,
+            timeout=timeout,
+        )
+        client._token = candidate.token
+        client._token_expires_at = candidate.expires_at
+        payload = await client.request_json("GET", f"repos/{candidate.repository.full_name}")
         if (
-            number is None
-            or payload.get("html_url") != expected_url
-            or not isinstance(head, dict)
-            or not isinstance(base, dict)
-            or not isinstance(repository, dict)
-            or _strict_positive_int(repository.get("id")) != self.repository.repository_id
-            or repository.get("full_name") != self.repository.full_name
-            or re.fullmatch(r"[0-9a-f]{40}", str(head.get("sha") or "")) is None
-            or not isinstance(head.get("ref"), str)
-            or not head["ref"]
-            or not isinstance(base.get("ref"), str)
-            or not base["ref"]
-            or payload.get("state") not in {"open", "closed"}
-            or self._audit_marker(idempotency_key) not in str(payload.get("body") or "")
+            _strict_positive_int(payload.get("id")) != candidate.repository.repository_id
+            or payload.get("full_name") != candidate.repository.full_name
         ):
-            raise GitHubAppError("conflict_or_invalid", "GitHub audit PR identity was malformed")
-        return AuditPullRequest(
-            url=expected_url,
-            number=number,
-            head_sha=head["sha"],
-            head_branch=head["ref"],
-            base_branch=base["ref"],
-            repository_numeric_id=self.repository.repository_id,
-            repository_full_name=self.repository.full_name,
-            idempotency_key=idempotency_key,
-            state=payload["state"],
-        )
+            raise GitHubAppError("credentials", "authenticated repository identity did not match")
+        return client
+
+    def _app_jwt(self) -> str:
+        return self._token_provider._app_jwt()
 
     async def installation_token(self, *, force_refresh: bool = False) -> str:
         async with self._token_lock:
@@ -490,166 +409,39 @@ class GitHubAppClient:
             return token
 
     async def _mint_installation_token(self) -> tuple[str, float]:
-        app_jwt = self._app_jwt()
-        app = await self._raw_json("GET", "/app", credential=app_jwt)
-        if _strict_positive_int(app.get("id")) != self.config.app_id:
-            raise GitHubAppError("credentials", "authenticated App identity did not match")
-        token_body = await self._raw_json(
-            "POST",
-            f"/app/installations/{self.config.installation_id}/access_tokens",
-            credential=app_jwt,
-            json_body={
-                "repository_ids": [self.repository.repository_id],
-                "permissions": _PERMISSIONS,
-            },
-            expected_statuses={201},
-        )
-        token = token_body.get("token")
-        if not isinstance(token, str) or not token:
-            raise GitHubAppError("credentials", "installation token response was malformed")
-        repositories = token_body.get("repositories")
-        if not isinstance(repositories, list) or [
-            _strict_positive_int(repo.get("id")) if isinstance(repo, dict) else None
-            for repo in repositories
-        ] != [self.repository.repository_id]:
-            raise GitHubAppError("permission", "installation repository selection did not match")
-        permissions = token_body.get("permissions")
-        if (
-            not isinstance(permissions, dict)
-            or any(permissions.get(name) != level for name, level in _PERMISSIONS.items())
-            or set(permissions) - (set(_PERMISSIONS) | {"metadata"})
-        ):
-            raise GitHubAppError("permission", "installation permissions did not match")
-        expiry = _parse_timestamp(token_body.get("expires_at"))
-        repository = await self._raw_json(
-            "GET",
-            f"/repositories/{self.repository.repository_id}",
-            credential=token,
-        )
-        if (
-            _strict_positive_int(repository.get("id")) != self.repository.repository_id
-            or repository.get("full_name") != self.repository.full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        return token, expiry
+        candidate = await self._token_provider.mint(self.repository)
+        return candidate.token, candidate.expires_at
 
-    async def request_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        json_body: dict[str, Any] | None = None,
-        expected_statuses: set[int] | None = None,
-    ) -> dict[str, Any]:
-        token = await self.installation_token()
-        try:
-            return await self._raw_json(
-                method,
-                path,
-                credential=token,
-                json_body=json_body,
-                expected_statuses=expected_statuses,
-            )
-        except GitHubAppError as exc:
-            if exc.category != "credentials":
-                raise
-        token = await self.installation_token(force_refresh=True)
-        return await self._raw_json(
-            method,
-            path,
-            credential=token,
-            json_body=json_body,
-            expected_statuses=expected_statuses,
-        )
+    async def token_for(self, repository: GitHubRepositoryBinding) -> str:
+        """Supply the runner only the token for this exact immutable binding."""
+        if repository != self.repository:
+            raise GitHubAppError("credentials", "GitHub repository binding did not match")
+        return await self.installation_token()
 
-    async def paged_items(self, path: str, *, key: str, max_pages: int = 20) -> list[dict]:
-        next_url = urljoin(API_BASE, path)
-        items: list[dict] = []
-        for _ in range(max_pages):
-            parsed = urlparse(next_url)
-            if parsed.scheme != "https" or parsed.netloc != "api.github.com":
-                raise GitHubAppError("conflict_or_invalid", "pagination escaped GitHub API host")
-            response = await self._authenticated_response("GET", next_url)
-            payload = _decode_object(response.body)
-            page = payload.get(key)
-            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
-            items.extend(page)
-            next_url = _next_link(response.headers.get("Link") or response.headers.get("link"))
-            if next_url is None:
-                return items
-        raise GitHubAppError("transient", "GitHub pagination exceeded page limit")
+    async def _refresh_rejected_credential(self) -> bool:
+        await self.installation_token(force_refresh=True)
+        return True
 
-    async def paged_list(self, path: str, *, max_pages: int = 20) -> list[dict]:
-        next_url = urljoin(API_BASE, path)
-        items: list[dict[str, Any]] = []
-        for _ in range(max_pages):
-            parsed = urlparse(next_url)
-            if parsed.scheme != "https" or parsed.netloc != "api.github.com":
-                raise GitHubAppError("conflict_or_invalid", "pagination escaped GitHub API host")
-            response = await self._authenticated_response("GET", next_url)
-            try:
-                page = json.loads(response.body)
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed") from exc
-            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                raise GitHubAppError("conflict_or_invalid", "GitHub page was malformed")
-            items.extend(page)
-            next_url = _next_link(response.headers.get("Link") or response.headers.get("link"))
-            if next_url is None:
-                return items
-        raise GitHubAppError("transient", "GitHub pagination exceeded page limit")
 
-    async def _authenticated_response(
-        self,
-        method: str,
-        url: str,
-        *,
-        json_body: dict[str, Any] | None = None,
-    ) -> HttpResponse:
-        token = await self.installation_token()
-        try:
-            return await self._request_response(method, url, credential=token, json_body=json_body)
-        except GitHubAppError as exc:
-            if exc.category != "credentials":
-                raise
-        token = await self.installation_token(force_refresh=True)
-        return await self._request_response(method, url, credential=token, json_body=json_body)
+def _single_repository(payload: dict[str, Any]) -> dict[str, Any]:
+    repositories = payload.get("repositories")
+    if (
+        not isinstance(repositories, list)
+        or len(repositories) != 1
+        or not isinstance(repositories[0], dict)
+    ):
+        raise GitHubAppError("permission", "installation repository selection did not match")
+    return repositories[0]
 
-    async def _raw_json(
-        self,
-        method: str,
-        path: str,
-        *,
-        credential: str,
-        json_body: dict[str, Any] | None = None,
-        expected_statuses: set[int] | None = None,
-    ) -> dict[str, Any]:
-        response = await self._request_response(
-            method, urljoin(API_BASE, path), credential=credential, json_body=json_body
-        )
-        allowed = expected_statuses or {200}
-        if response.status not in allowed:
-            raise _http_error(response.status, response.headers, self.clock())
-        return _decode_object(response.body)
 
-    async def _request_response(
-        self,
-        method: str,
-        url: str,
-        *,
-        credential: str,
-        json_body: dict[str, Any] | None = None,
-    ) -> HttpResponse:
-        headers = self._base_headers | {"Authorization": f"Bearer {credential}"}
-        response = await self.transport.request(
-            method, url, headers=headers, json_body=json_body, max_bytes=self.max_response_bytes
-        )
-        if len(response.body) > self.max_response_bytes:
-            raise GitHubAppError("transient", "GitHub response exceeded size limit")
-        if response.status >= 400:
-            raise _http_error(response.status, response.headers, self.clock())
-        return response
+def _validate_permissions(value: Any) -> None:
+    if not isinstance(value, dict) or any(
+        value.get(name) != level for name, level in _PERMISSIONS.items()
+    ):
+        raise GitHubAppError("permission", "installation permissions did not match")
+    extras = set(value) - set(_PERMISSIONS)
+    if extras - {"metadata"} or ("metadata" in value and value["metadata"] != "read"):
+        raise GitHubAppError("permission", "installation permissions did not match")
 
 
 def _strict_positive_int(value: Any) -> int | None:
@@ -670,8 +462,11 @@ def _parse_timestamp(value: Any) -> float:
     if not isinstance(value, str):
         raise GitHubAppError("credentials", "installation token expiry was malformed")
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError as exc:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timezone is required")
+        return parsed.timestamp()
+    except (OSError, OverflowError, ValueError) as exc:
         raise GitHubAppError("credentials", "installation token expiry was malformed") from exc
 
 

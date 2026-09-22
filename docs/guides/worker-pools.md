@@ -281,6 +281,35 @@ usage-limit screen ends with reason `usage_limit_screen` instead and records a
 rate-limit exit against the provider, so two such workers trip it and pool
 sizing stops relaunching into the limit (provider-failover D13).
 
+### Interactive prompts on idle workers
+
+`aq doctor --check pools.session_awaiting_input` distinguishes a silent claim
+loop from a CLI waiting for human input. It inspects only live pool sessions
+with no task and no claim in flight whose pane has been unchanged for the same
+`max(prepare_timeout, 2 × claim_wait_max)` fence above. A match is a warning
+that names the session, profile, harness signature, unchanged duration and
+the number of READY tasks waiting for that profile. `aq pool status` also
+reports a `blocked_on_input` count, labels each matching instance with that
+state, and prints a **Blocked on input** note; these workers are not idle supply.
+
+Prompt signatures are harness data. Add them to the harness markdown's Config
+block (system-wide in `vault/harnesses/<name>.md`, or in a project override):
+
+```json
+{
+  "input_prompts": [
+    {"name": "upgrade-menu", "pattern": "Try new model.*Use existing model", "is_regex": true},
+    {"name": "continue", "pattern": "press enter to continue"}
+  ]
+}
+```
+
+The table reloads with the harness registry. Matching is case-insensitive and
+limited to the pane tail; `is_regex` defaults to false. These rules are
+observation-only: AQ never sends keys, selects a model, signs in, or accepts a
+trust/permission prompt. A human or supervisor must inspect the pane and make
+that decision.
+
 **Scale-down** is deliberately reluctant. It only ever drains *idle* sessions,
 only after the pool has been continuously in surplus for
 `swarm.scale_down_grace` seconds (default 120), and at most

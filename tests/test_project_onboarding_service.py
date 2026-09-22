@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -22,6 +24,8 @@ from src.git.manager import GitError, GitManager
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from src.projects.github import GhClient
+from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
+from src.projects.github import parse_github_repository
 from src.projects.onboarding import ProjectOnboardingService
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -29,6 +33,18 @@ from tests.db_fixtures import lease_dsn
 
 FAKE_GH = Path(__file__).parent / "fixtures" / "fake_gh" / "gh"
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
+
+
+@pytest.fixture(autouse=True)
+def _stub_repository_access(monkeypatch: pytest.MonkeyPatch):
+    """Service tests use local Git remotes; repository access has its own suite."""
+
+    async def validate(self, reference: str) -> GitHubRepositoryBinding:
+        return GitHubRepositoryBinding(42, parse_github_repository(reference).full_name)
+
+    monkeypatch.setattr(GhClient, "validate_repository", validate)
+
+
 CREDENTIALED_GIT_ERROR = (
     "fatal: unable to access "
     "'https://alice:ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab@github.com/acme/widgets.git': "
@@ -610,6 +626,31 @@ async def test_github_clone_normalizes_source_and_registers_real_clone(
     assert not list(root.glob(".*aq-onboard*"))
 
 
+async def test_app_url_is_validated_without_falling_back_to_login_clone(onboarding):
+    _, database, config, root, _ = onboarding
+    validate = AsyncMock(return_value=GitHubRepositoryBinding(42, "acme/widgets"))
+    app_adapter = SimpleNamespace(
+        access=SimpleNamespace(credential_identity=GitHubCredentialIdentity.app(101, 202)),
+        validate_repository=validate,
+    )
+    service = ProjectOnboardingService(database, config, GitManager(), gh_client=app_adapter)
+
+    with pytest.raises(ProjectOnboardingError) as failure:
+        await service.onboard_project(
+            _request(
+                request_id="app-clone",
+                source_mode="github_clone",
+                relative_path="widgets",
+                project_id="widgets",
+                github_url="https://github.com/acme/widgets",
+            )
+        )
+
+    assert failure.value.code == "github_operation_unsupported"
+    validate.assert_awaited_once_with("https://github.com/acme/widgets")
+    assert not (root / "widgets").exists()
+
+
 @pytest.mark.parametrize("owner_entry_kind", ["file", "symlink"])
 async def test_github_clone_preserves_repository_owned_marker_path(
     onboarding, tmp_path, owner_entry_kind
@@ -1088,16 +1129,16 @@ async def test_retry_after_crash_post_create_reports_retained_remote(
         await service.onboard_project(request)
 
     monkeypatch.setattr(database, "append_onboarding_resource", append_resource)
-    assert gh._env is not None
-    gh._env["FAKE_GH_FAIL_STDERR"] = (
-        "GraphQL: Name already exists on this account (createRepository)"
+    retry_gh, _ = _fake_gh(
+        tmp_path,
+        fail_stderr="GraphQL: Name already exists on this account (createRepository)",
     )
     with pytest.raises(ProjectOnboardingError) as failure:
         await ProjectOnboardingService(
             database,
             config,
             GitManager(),
-            gh_client=gh,
+            gh_client=retry_gh,
         ).onboard_project(request)
 
     assert failure.value.code == "github_repository_conflict"
