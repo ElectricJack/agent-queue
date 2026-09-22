@@ -119,7 +119,7 @@ export default function CommandCenterGraph() {
       loadingPlaybooks={chrome.loadingPlaybooks} loading={loading}>
       {mobile
         ? <MobileLayoutLists projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
-            focusId={focusId} onFocus={setFocus}
+            focusId={focusId} onFocus={setFocus} setShowCompleted={setShowCompleted}
             onTaskClick={selectTaskById} selectedTaskId={chrome.selectedTaskId} />
         : <LayoutCanvas projectIds={projectIds} projectNames={projectNames} variant={variant} filters={filters}
             focusId={focusId} setFocus={setFocus} setShowCompleted={setShowCompleted} jumpTarget={jumpTarget}

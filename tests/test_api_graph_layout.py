@@ -550,6 +550,29 @@ async def test_list_validation_runs_before_any_backfill(db, client_factory):
     assert await db.next_layout_job() is None
 
 
+async def test_list_reports_empty_reasons_without_inferring_from_active_rows(db, client_factory):
+    """Phone clients distinguish no work, finished work, and an empty filter."""
+    driver = LayoutDriver(db)
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+    async with client_factory() as ac:
+        no_work = await ac.post("/api/projects/p1/graph/list", json={"variant": "active"})
+    assert no_work.json()["empty_reason"] == "no_work"
+
+    await db.create_task(
+        Task(id="done", project_id="p1", title="Done", description="", status=TaskStatus.COMPLETED)
+    )
+    await driver.full_layout("p1", "all")
+    await driver.full_layout("p1", "active")
+    async with client_factory() as ac:
+        all_finished = await ac.post("/api/projects/p1/graph/list", json={"variant": "active"})
+        filtered = await ac.post(
+            "/api/projects/p1/graph/list", json={"variant": "active", "q": "missing"}
+        )
+    assert all_finished.json()["empty_reason"] == "all_finished"
+    assert filtered.json()["empty_reason"] == "no_matches"
+
+
 async def test_node_returns_box_and_ancestors(db, client_factory):
     await seed(db)
     async with client_factory() as ac:
@@ -1763,6 +1786,20 @@ async def test_list_root_keeps_the_active_variant_and_reports_it(db, client_fact
     body = r.json()
     assert body["variant_applied"] == "active"
     assert {node["id"] for node in body["nodes"]} == {"e", "c0", "pkg"}
+
+
+async def test_list_reports_all_for_a_finished_entered_scope(db, client_factory):
+    """The phone list gets the same fallback signal as canvas tiles."""
+    await _finished_epic_project(db, anchored=False)
+    async with client_factory() as ac:
+        r = await ac.post(
+            "/api/projects/p1/graph/list",
+            json={"variant": "active", "expanded": [], "root": "done", "limit": 50},
+        )
+    body = r.json()
+    assert body["variant_applied"] == "all"
+    assert {node["id"] for node in body["nodes"]} == {"done", "child"}
+    assert body["empty_reason"] is None
 
 
 async def test_list_unknown_root_is_404(db, client_factory):

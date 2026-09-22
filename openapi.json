@@ -30646,6 +30646,22 @@
             "type": "string",
             "title": "Variant Applied",
             "default": "active"
+          },
+          "empty_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "no_work",
+                  "all_finished",
+                  "no_matches"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Empty Reason"
           }
         },
         "type": "object",

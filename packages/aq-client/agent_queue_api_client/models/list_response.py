@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
 
+from ..models.list_response_empty_reason_type_0 import ListResponseEmptyReasonType0
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -23,12 +24,14 @@ class ListResponse:
         nodes (list[LayoutNode] | Unset):
         next_cursor (None | str | Unset):
         variant_applied (str | Unset):  Default: 'active'.
+        empty_reason (ListResponseEmptyReasonType0 | None | Unset):
     """
 
     layout_version: int
     nodes: list[LayoutNode] | Unset = UNSET
     next_cursor: None | str | Unset = UNSET
     variant_applied: str | Unset = "active"
+    empty_reason: ListResponseEmptyReasonType0 | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,6 +52,14 @@ class ListResponse:
 
         variant_applied = self.variant_applied
 
+        empty_reason: None | str | Unset
+        if isinstance(self.empty_reason, Unset):
+            empty_reason = UNSET
+        elif isinstance(self.empty_reason, ListResponseEmptyReasonType0):
+            empty_reason = self.empty_reason.value
+        else:
+            empty_reason = self.empty_reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -62,6 +73,8 @@ class ListResponse:
             field_dict["next_cursor"] = next_cursor
         if variant_applied is not UNSET:
             field_dict["variant_applied"] = variant_applied
+        if empty_reason is not UNSET:
+            field_dict["empty_reason"] = empty_reason
 
         return field_dict
 
@@ -92,11 +105,29 @@ class ListResponse:
 
         variant_applied = d.pop("variant_applied", UNSET)
 
+        def _parse_empty_reason(data: object) -> ListResponseEmptyReasonType0 | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, str):
+                    raise TypeError()
+                empty_reason_type_0 = ListResponseEmptyReasonType0(data)
+
+                return empty_reason_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ListResponseEmptyReasonType0 | None | Unset, data)
+
+        empty_reason = _parse_empty_reason(d.pop("empty_reason", UNSET))
+
         list_response = cls(
             layout_version=layout_version,
             nodes=nodes,
             next_cursor=next_cursor,
             variant_applied=variant_applied,
+            empty_reason=empty_reason,
         )
 
         list_response.additional_properties = d

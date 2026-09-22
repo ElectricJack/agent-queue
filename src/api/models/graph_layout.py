@@ -9,6 +9,8 @@ no commands here.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api.models.graph import GraphGate, GraphTaskNode
@@ -190,6 +192,9 @@ class ListResponse(BaseModel):
     layout_version: int
     #: The variant this response was served from -- see ``TilesResponse``.
     variant_applied: str = "active"
+    #: Why an accepted first page has no displayed cards. ``None`` means the
+    #: response is non-empty or an older server cannot establish the reason.
+    empty_reason: Literal["no_work", "all_finished", "no_matches"] | None = None
 
 
 class AncestorRef(BaseModel):

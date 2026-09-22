@@ -8,6 +8,7 @@ import { useNavigate } from "react-router-dom";
 import Breadcrumbs from "./Breadcrumbs";
 import { taskNodeData } from "./flowNodes";
 import { registerLayoutRefetch } from "./liveRegistry";
+import GraphScopeNotice, { type EmptyReason } from "./GraphScopeNotice";
 
 const PAGE_SIZE = 50;
 const LAYOUT_POLL_MS = 2000;
@@ -23,6 +24,7 @@ interface Props {
   onTaskClick: (id: string, task?: SelectableTask) => void;
   onFocus?: (id: string | null) => void;
   selectedTaskId?: string | null;
+  setShowCompleted: (show: boolean) => void;
 }
 
 /**
@@ -34,15 +36,18 @@ interface Props {
  * never expanded in place, and its enter control goes INTO it.
  */
 export default function MobileLayoutList({
-  projectId, projectName, variant, filters, focusId, onTaskClick, onFocus, selectedTaskId,
+  projectId, projectName, variant, filters, focusId, onTaskClick, onFocus, selectedTaskId, setShowCompleted,
 }: Props) {
   const [nodes, setNodes] = useState<LayoutNode[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [building, setBuilding] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [appliedVariant, setAppliedVariant] = useState<Variant | null>(null);
+  const [emptyReason, setEmptyReason] = useState<EmptyReason | null>(null);
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
   const busy = useRef(false);
+  const appliedVariantRef = useRef<Variant | null>(null);
   // A page that lands after the filters changed describes the previous query.
   const generation = useRef(0);
   // The breadcrumbs' path; the SCOPE is the server's job -- `root` pages the
@@ -75,6 +80,25 @@ export default function MobileLayoutList({
       }
       setBuilding(false);
       const fetched = page.nodes ?? [];
+      const responseVariant: Variant = page.variant_applied === "all" ? "all" : "active";
+      // A changed response variant cannot safely share a pagination stream:
+      // the cursor belongs to the applied layout, not merely the requested one.
+      if (!reset && appliedVariantRef.current && responseVariant !== appliedVariantRef.current) {
+        generation.current += 1;
+        appliedVariantRef.current = null;
+        setAppliedVariant(null);
+        setEmptyReason(null);
+        setNodes([]);
+        setCursor(null);
+        setDone(false);
+        retry.current = setTimeout(() => { void loadPageRef.current(null, true); }, 0);
+        return;
+      }
+      if (reset) {
+        appliedVariantRef.current = responseVariant;
+        setAppliedVariant(responseVariant);
+        setEmptyReason((page.empty_reason as EmptyReason | undefined) ?? null);
+      }
       setNodes((previous) => reset ? fetched : [...previous, ...fetched]);
       setCursor(page.next_cursor ?? null);
       setDone(!page.next_cursor);
@@ -97,6 +121,9 @@ export default function MobileLayoutList({
     setCursor(null);
     setDone(false);
     setBuilding(false);
+    appliedVariantRef.current = null;
+    setAppliedVariant(null);
+    setEmptyReason(null);
     void loadPage(null, true);
   }, [loadPage]);
 
@@ -105,6 +132,9 @@ export default function MobileLayoutList({
   useEffect(
     () => registerLayoutRefetch(projectId, () => {
       generation.current += 1;
+      appliedVariantRef.current = null;
+      setAppliedVariant(null);
+      setEmptyReason(null);
       void loadPage(null, true);
     }),
     [projectId, loadPage],
@@ -136,6 +166,9 @@ export default function MobileLayoutList({
         ancestors={focusNode?.ancestors?.map((a) => ({ id: a.id, title: a.title })) ?? []}
         current={focusNode ? { id: focusNode.node.id, title: focusNode.node.title } : { id: focusId, title: focusId }}
         onSelect={onFocus ?? (() => {})} />}
+      <GraphScopeNotice requestedVariant={variant} appliedVariant={appliedVariant}
+        emptyReason={null} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
+        showBanner={!!focusId} showEmpty={false} loading={building} error={error} />
       {error && <p role="alert" className="text-sm text-amber-200">Could not load tasks. {error.message}</p>}
       {building && <p role="status" className="py-6 text-center text-sm text-gray-400">Laying out…</p>}
       {shown.map((node) => (
@@ -143,8 +176,10 @@ export default function MobileLayoutList({
           <TaskCard fluid selected={selectedTaskId === node.id} data={taskNodeData(node, context, [])} />
         </div>
       ))}
-      {done && shown.length === 0 && !error && !building &&
-        <p className="py-6 text-center text-sm text-gray-500">No tasks match these filters.</p>}
+      {done && shown.length === 0 && <GraphScopeNotice requestedVariant={variant} appliedVariant={appliedVariant}
+        emptyReason={emptyReason} showCompleted={filters.showCompleted} onShowCompleted={setShowCompleted}
+        showBanner={false} loading={building} error={error}
+        emptyClassName="flex flex-col items-center gap-2 py-6 text-center text-sm text-gray-500" />}
       {!done && !building && <button type="button" onClick={() => void loadPage(cursor, false)}
         className="w-full rounded border border-gray-700 py-2 text-xs text-gray-300 hover:bg-gray-800">Load more</button>}
       <div ref={sentinel} />
