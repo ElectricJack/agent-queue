@@ -172,6 +172,8 @@ class SessionSpec:
     work_dir: str
     #: argv.  The agent is the initial process; never typed into a shell.
     command: tuple[str, ...]
+    #: Original harness executable, before prompt and resource wrappers.
+    harness_executable: str | None = None
     #: Full child environment (already scrubbed, ``AQ_*`` markers merged).
     env: dict[str, str] = field(default_factory=dict)
     #: Bootstrap prompt text.  ``None`` when ``prompt_mode == "none"``.
@@ -242,7 +244,10 @@ def require_session_executable(spec: SessionSpec) -> None:
     """Check the child lookup context, before creating files or starting a process."""
     if not spec.command:
         raise ValueError(f"session {spec.session_name!r} has an empty command")
-    command = spec.command[0]
+    # Prompt-file and resource-limit wrappers can put sh, nice or systemd-run
+    # first. Diagnose the CLI the operator needs to install before checking
+    # those launch helpers.
+    command = spec.harness_executable or spec.command[0]
     work_dir = Path(spec.work_dir).resolve()
     # Relative PATH entries (including an empty entry) resolve in the child's
     # working directory, never in the daemon's current checkout.
@@ -255,6 +260,10 @@ def require_session_executable(spec: SessionSpec) -> None:
         target = str(work_dir / command)
     if not shutil.which(target, path=os.pathsep.join(paths)):
         raise SessionExecutableNotFound(command)
+    if spec.harness_executable and spec.command[0] != command:
+        wrapper = spec.command[0]
+        if not shutil.which(wrapper, path=os.pathsep.join(paths)):
+            raise SessionExecutableNotFound(wrapper)
 
 
 class CapabilityUnsupported(SessionError):

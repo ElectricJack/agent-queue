@@ -28,6 +28,7 @@ from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import PullRequestIdentity
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
@@ -35,6 +36,8 @@ from tests.db_fixtures import lease_dsn
 
 #: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
 #: never runs in this test, so the OIDs only have to be well-formed.
+PR_URL = "https://github.com/o/r/pull/1"
+REPOSITORY = GitHubRepositoryBinding(1, "o/r")
 PR_IDENTITY = PullRequestIdentity(
     repository="o/r",
     number=1,
@@ -68,7 +71,9 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     orch.db = db
     handler = CommandHandler(orch, config)
     for pid in ("p", "other"):
-        await db.create_project(Project(id=pid, name=pid))
+        await db.create_project(Project(
+            id=pid, name=pid, repo_url=f"https://github.com/o/{'r' if pid == 'p' else pid}.git",
+        ))
     for profile_id in ("reviewer", "final-reviewer", "coder"):
         await db.upsert_profile(AgentProfile(
             id=profile_id, name=profile_id, harness="codex", needs_workspace=False,
@@ -82,7 +87,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Worker output",
             status=TaskStatus.DEFINED, profile_id="coder", branch_name=f"feature/{tid}",
-            pr_url=("https://example.invalid/pr/1" if tid == "reviewed" else None),
+            pr_url=(PR_URL if tid == "reviewed" else None),
         ))
         await db.transition_task(tid, TaskStatus.COMPLETED, context="test")
 
@@ -113,7 +118,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         id="final-reviewer-agent-job", project_id="p", title="final review",
         description="Final review for branch feature/reviewed.", status=TaskStatus.IN_PROGRESS,
         profile_id="final-reviewer", assigned_agent_id="final-reviewer-agent",
-        branch_name="feature/reviewed", pr_url="https://example.invalid/pr/1",
+        branch_name="feature/reviewed", pr_url=PR_URL,
     ))
     await db.update_agent(
         "final-reviewer-agent", state=AgentState.BUSY,
@@ -137,6 +142,14 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         for worker in ("reviewer-agent", "worker-agent", "final-reviewer-agent")
     }
     merge_pr = AsyncMock(return_value={"success": True, "sha": "merged"})
+    monkeypatch.setattr(
+        orch.git, "bind_github_repository",
+        AsyncMock(return_value=REPOSITORY),
+    )
+    monkeypatch.setattr(orch.git, "acheck_pr_merged", AsyncMock(return_value=False))
+    monkeypatch.setattr(orch.git, "apr_check_rollup", AsyncMock(return_value=[]))
+    monkeypatch.setattr(orch.git, "apr_behind_base", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch.git, "apr_base_ref", AsyncMock(return_value="main"))
     monkeypatch.setattr(orch.git, "amerge_pr", merge_pr)
     # ``pr_merge`` pins the merge to the identity GitHub will merge and fails
     # closed when it cannot resolve one; there is no real PR behind this URL.
@@ -264,19 +277,20 @@ async def test_final_reviewer_keeps_its_carve_out_for_commands_triage_also_claim
 
 async def test_final_reviewer_can_merge_its_review_branch_pr(api):
     response = await api.post("pr_merge", {
-        "project_id": "p", "pr_url": "https://example.invalid/pr/1", "method": "squash",
+        "project_id": "p", "pr_url": PR_URL, "method": "squash",
     }, worker="final-reviewer-agent")
     assert response.status_code == 200, response.text
     payload = response.json()
     result = payload.get("result", payload)
     assert result["sha"] == "merged"
     api.merge_pr.assert_awaited_once()
-    assert api.merge_pr.await_args.args[1] == "https://example.invalid/pr/1"
+    assert api.merge_pr.await_args.args[1] == PR_URL
     # The merge is pinned to the validated identity, not just the URL.
     assert api.merge_pr.await_args.kwargs == {
         "method": "squash",
         "expected_head_oid": PR_IDENTITY.head_oid,
         "expected_base_ref": PR_IDENTITY.base_ref,
+        "repository": REPOSITORY,
     }
 
 
@@ -291,7 +305,7 @@ async def test_final_reviewer_can_call_git_diff(api):
 @pytest.mark.parametrize("command,args", [
     ("reopen_with_feedback", {"task_id": "unrelated", "feedback": "not my branch"}),
     ("task_show", {"task_id": "unrelated"}),
-    ("pr_merge", {"project_id": "p", "pr_url": "https://example.invalid/pr/2"}),
+    ("pr_merge", {"project_id": "p", "pr_url": "https://github.com/o/r/pull/2"}),
 ])
 async def test_final_reviewer_cannot_reach_another_branch(api, command, args):
     response = await api.post(command, args, worker="final-reviewer-agent")
@@ -407,7 +421,7 @@ async def test_reviewer_does_not_gain_operator_commands(api):
         ("list_tasks", {}),
         ("delete_task", {"task_id": "unrelated"}),
         ("restart_task", {"task_id": "unrelated"}),
-        ("pr_merge", {"project_id": "p", "pr_url": "https://example.invalid/pr/1"}),
+        ("pr_merge", {"project_id": "p", "pr_url": PR_URL}),
     ):
         response = await api.post(command, args)
         assert response.status_code == 403, (command, response.text)

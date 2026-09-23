@@ -560,6 +560,7 @@ class SessionSpecBuilder:
             session_name=session_name,
             work_dir=work_dir,
             command=tuple(argv),
+            harness_executable=harness.command,
             env=env,
             prompt=prompt,
             prompt_mode=harness.prompt_mode,
