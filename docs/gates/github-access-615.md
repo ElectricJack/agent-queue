@@ -389,4 +389,5 @@ The following remain open or without live coverage:
 | App denial with an available PAT | `not_run` live; the earlier no-fallback result is mock-only. |
 | Two-repository App token separation | `not_run` live; installation `164168761` selected only one fixture repository. |
 | Installation-token expiry refresh | `not_run` live; the earlier refresh result is mock-only. |
+| Other App-only runbook paths | A stale-head refusal, a separate integration batch, and recovery/WIP publication were not run in the final App-only fixture. The existing-login stale-head refusal is recorded above. |
 | Fixture cleanup | Credential-bearing daemons were stopped. The disposable repositories, App installation, and fixture data remain retained. Removing them is Jack's decision. |
