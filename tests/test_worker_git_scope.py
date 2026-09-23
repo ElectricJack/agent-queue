@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -20,7 +21,9 @@ from src.api.scope import (
     check_request_scope,
     worker_branches_for_session,
 )
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
+from src.git.manager import GitManager
 from src.plugins.internal.git import _build_tool_definitions
 from src.profiles.drift import diff_profile, merge_profile_grants, vault_profile_path
 from src.models import (
@@ -28,9 +31,11 @@ from src.models import (
     AgentProfile,
     AgentState,
     Project,
+    RepoSourceType,
     SessionRecord,
     Task,
     TaskStatus,
+    Workspace,
 )
 from tests.db_fixtures import lease_dsn
 
@@ -60,7 +65,10 @@ async def env(tmp_path, request):
         state="running", work_dir=str(tmp_path), epoch="test",
         instance_token="instance-a1", started_at=time.time(), last_claim_epoch=0,
     ))
-    scope = RequestScope(kind="session", session_id="s1", task_id="t1", project_id="p")
+    scope = RequestScope(
+        kind="session", session_id="s1",
+        task_id="t1" if request.param == "task" else None, project_id="p",
+    )
     yield db, scope
     await db.close()
 
@@ -93,6 +101,45 @@ async def test_worker_pushes_its_own_branch(env):
     db, scope = env
     args = {"branch": "aq/calm-ember-48"}
     assert await check_request_scope("git_push", args, scope, db=db) is None
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+@pytest.mark.parametrize("explicit_branch", [False, True])
+async def test_worker_push_uses_claimed_worktree_and_task_branch(
+    env, tmp_path, internal_plugins_handler, command, explicit_branch,
+):
+    db, scope = env
+    base = tmp_path / "base-checkout"
+    base.mkdir()
+    await db.create_workspace(Workspace(
+        id="base", project_id="p", workspace_path=str(base),
+        source_type=RepoSourceType.LINK,
+    ))
+    git = create_autospec(GitManager, instance=True)
+    git.avalidate_checkout.return_value = True
+    git.aget_current_branch.return_value = "main"
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path),
+        database=DatabaseConfig(url=lease_dsn("worker-git.db")),
+        data_dir=str(tmp_path / "data"),
+    )
+    handler = await internal_plugins_handler(db=db, config=config, git=git)
+
+    # The HTTP scope is trusted; the missing session_id argument reproduces
+    # the path that previously fell through to the first project workspace.
+    args = {"_scope": {
+        "kind": "session", "session_id": scope.session_id,
+        "task_id": scope.task_id, "project_id": scope.project_id,
+    }}
+    if explicit_branch:
+        args["branch" if command == "git_push" else "branch_name"] = "aq/calm-ember-48"
+    result = await handler.execute(command, args)
+
+    assert "error" not in result
+    assert result.get("pushed", result.get("branch")) == "aq/calm-ember-48"
+    assert git.apush_branch.await_args.args == (str(tmp_path), "aq/calm-ember-48")
+    git.aget_current_branch.assert_not_awaited()
 
 
 async def test_explicit_lease_stays_on_the_held_task_branch(env):
