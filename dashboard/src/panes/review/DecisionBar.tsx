@@ -3,16 +3,24 @@ import { useIntelligenceClasses, useProfiles } from "../../api/hooks";
 
 export type ReviewDecision = "approve" | "request_changes";
 
+export type ResponseRoute = {
+  kind: string;
+  summary: string;
+  class_summaries: Record<string, string>;
+};
+
 export function DecisionBar({
   disabledReason,
   onDecide,
   pending = false,
   approveButtonRef,
+  responseRoute,
 }: {
   disabledReason: string | null;
   onDecide: (decision: ReviewDecision, note: string, responderClass: string, responderProfile: string) => Promise<void>;
   pending?: boolean;
   approveButtonRef?: RefObject<HTMLButtonElement | null>;
+  responseRoute: ResponseRoute;
 }) {
   const [note, setNote] = useState("");
   const [responderClass, setResponderClass] = useState("");
@@ -23,6 +31,18 @@ export function DecisionBar({
   const localApproveRef = useRef<HTMLButtonElement>(null);
   const approveRef = approveButtonRef ?? localApproveRef;
   const disabled = Boolean(disabledReason) || pending;
+  const routeSummary = responseRoute.kind !== "new_task"
+    ? responseRoute.summary + (responderClass
+      ? ` Chosen response class: ${responderClass}`
+        + (responderProfile ? `, profile: ${responderProfile}` : "")
+        + "; no new task uses this choice."
+      : "")
+    : responderProfile
+      ? `Response task: ${responderProfile} (${responderClass}; explicit choice).`
+      : responderClass
+        ? responseRoute.class_summaries[responderClass]
+          ?? `No eligible response profile is available for ${responderClass}.`
+        : responseRoute.summary;
 
   const decide = async (decision: ReviewDecision) => {
     if (disabled) return;
@@ -38,6 +58,7 @@ export function DecisionBar({
     <div className="sticky bottom-0 z-20 border-t border-gray-800 bg-gray-950/95 p-3 backdrop-blur">
       {disabledReason && <p className="mb-2 text-xs text-amber-300">{disabledReason}</p>}
       {error && <p role="alert" className="mb-2 text-xs text-red-300">{error}</p>}
+      <p className="mb-2 text-xs text-indigo-200" aria-label="Response route">{routeSummary}</p>
       <div className="mb-2 flex flex-wrap gap-2">
         <label className="text-xs text-gray-400">
           Response intelligence class

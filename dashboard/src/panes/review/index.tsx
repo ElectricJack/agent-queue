@@ -11,7 +11,7 @@ import { extractToc, parseFrontmatter, resolveTitle, stripLeadingH1 } from "../s
 import { anchorFromSelection, headingPathAt, partitionComments, type Anchor } from "./anchoring";
 import { CommentMargin, type ReviewComment } from "./CommentMargin";
 import { CommentPopover } from "./CommentPopover";
-import { DecisionBar, type ReviewDecision } from "./DecisionBar";
+import { DecisionBar, type ResponseRoute, type ReviewDecision } from "./DecisionBar";
 import type { ReviewArgs } from "./manifest";
 import { RevisionHeader, type RevisionSummary } from "./RevisionHeader";
 
@@ -31,6 +31,7 @@ type ReviewResponse = {
   vault_state: string;
   comments?: ReviewComment[] | null;
   diff?: { op: "equal" | "added" | "removed"; text: string }[] | null;
+  response_route: ResponseRoute;
 };
 
 type SelectionPosition = { anchor: Anchor; left: number; top: number };
@@ -109,10 +110,9 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   const title = response
     ? resolveTitle({ frontmatter: parsed.data, body: parsed.content, fallbackName: response.review.title })
     : "Review";
-  const comments = response?.comments ?? [];
   const partitioned = useMemo(
-    () => partitionComments(comments, renderedBody, response?.review.current_revision ?? viewedRevision ?? 1),
-    [comments, renderedBody, response?.review.current_revision, viewedRevision],
+    () => partitionComments(response?.comments ?? [], renderedBody, response?.review.current_revision ?? viewedRevision ?? 1),
+    [response?.comments, renderedBody, response?.review.current_revision, viewedRevision],
   );
 
   const selectCurrentText = useCallback(() => {
@@ -185,7 +185,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
           : null;
 
   const headingComponents = {
-    h2: ({ node: _node, children, ...props }: ComponentProps<"h2"> & ExtraProps) => {
+    h2: ({ node, children, ...props }: ComponentProps<"h2"> & ExtraProps) => {
+      void node;
       const heading = textFromChildren(children).trim();
       const path = headingPathAt(renderedBody, headingOffset(renderedBody, 2, heading));
       return (
@@ -201,7 +202,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
         </h2>
       );
     },
-    h3: ({ node: _node, children, ...props }: ComponentProps<"h3"> & ExtraProps) => {
+    h3: ({ node, children, ...props }: ComponentProps<"h3"> & ExtraProps) => {
+      void node;
       const heading = textFromChildren(children).trim();
       const path = headingPathAt(renderedBody, headingOffset(renderedBody, 3, heading));
       return (
@@ -294,7 +296,7 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
         </div>
         <CommentMargin anchored={partitioned.anchored} earlier={partitioned.earlier} />
       </div>
-      <DecisionBar key={`${reviewId}:${viewedRevision}`} disabledReason={disabledReason} onDecide={submitDecision} pending={decide.isPending} approveButtonRef={approveRef} />
+      <DecisionBar key={`${reviewId}:${viewedRevision}`} disabledReason={disabledReason} onDecide={submitDecision} pending={decide.isPending} approveButtonRef={approveRef} responseRoute={response.response_route} />
     </div>
   );
 }

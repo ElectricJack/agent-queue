@@ -644,6 +644,11 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert (response.profile_id, response.intelligence_class) == (
         "standard-high-codex", "standard-high",
     )
+    shown = await handler.execute("review_show", {"review_id": chosen["review_id"]})
+    assert shown["response_route"]["kind"] == "new_task"
+    assert shown["response_route"]["profile_id"] == "standard-high-codex"
+    assert shown["response_route"]["class_id"] == "standard-high"
+    assert "class match" in shown["response_route"]["summary"]
 
     fallback = await handler.execute("review_submit", {
         "task_id": "peer", "kind": "spec", "title": "Default route", "content": "# Default\n",
@@ -661,6 +666,45 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     # Project defaults remain implicit on the task row; the claimant resolves it.
     assert response.profile_id is None
     assert (await db.get_project("p")).default_profile_id == "fast-high-codex"
+    shown = await handler.execute("review_show", {"review_id": fallback["review_id"]})
+    assert shown["response_route"]["profile_id"] == "fast-high-codex"
+    assert shown["response_route"]["class_id"] == "fast-high"
+    assert "project default" in shown["response_route"]["summary"]
+
+
+async def test_review_show_explains_when_feedback_creates_no_response_task(env):
+    handler, db = env
+    with_author = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Active author", "content": "# Active\n",
+    })
+    shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
+    assert shown["response_route"]["kind"] == "author_task"
+    assert "No response task is created; author revises task author" in shown["response_route"]["summary"]
+
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
+    await db.create_profile(AgentProfile(
+        id="standard-high-codex", name="Standard high", harness="codex", lifecycle="pool",
+        default_class="standard-high", needs_workspace=False,
+        aq_commands=[], harness_tools=[], plugin_tools=[],
+    ))
+    decided = await handler.execute("review_decide", {
+        "review_id": with_author["review_id"], "revision": 1, "decision": "request_changes",
+        "responder_class": "standard-high", "responder_profile": "standard-high-codex",
+    })
+    assert decided["success"], decided
+    shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
+    assert shown["response_route"]["kind"] == "author_task"
+    assert "Chosen response class: standard-high, profile: standard-high-codex" in (
+        shown["response_route"]["summary"]
+    )
+
+    without_author = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "No author", "content": "# No author\n",
+    })
+    shown = await handler.execute("review_show", {"review_id": without_author["review_id"]})
+    assert shown["response_route"]["kind"] == "supervisor"
+    assert "No response task is created; the supervisor receives" in shown["response_route"]["summary"]
 
 
 async def test_response_routing_accepts_explicit_matching_profile(env):

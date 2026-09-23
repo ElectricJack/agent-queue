@@ -207,17 +207,133 @@ class ReviewCommandsMixin:
         if error:
             return error
         try:
+            shown = await self._review_service().show(
+                review_id=review["id"],
+                revision=args.get("revision"),
+                comments=bool(args.get("comments", False)),
+                diff_from=args.get("diff_from"),
+            )
+            current = next(
+                row for row in shown["revisions"]
+                if row["revision"] == review["current_revision"]
+            )
             return {
                 "success": True,
-                **await self._review_service().show(
-                    review_id=review["id"],
-                    revision=args.get("revision"),
-                    comments=bool(args.get("comments", False)),
-                    diff_from=args.get("diff_from"),
-                ),
+                **shown,
+                "response_route": await self._review_response_route(review, current),
             }
         except ReviewError as error:
             return _error(error.code, error.message)
+
+    async def _review_response_route(self, review: dict, revision: dict) -> dict:
+        """Describe what requesting changes on the current revision actually does."""
+        selected_class = revision.get("responder_class")
+        selected_profile = revision.get("responder_profile")
+        route = {
+            "kind": "none",
+            "summary": "",
+            "class_id": None,
+            "profile_id": None,
+            "source": None,
+            "selected_class": selected_class,
+            "selected_profile": selected_profile,
+            "class_summaries": {},
+        }
+
+        chosen_note = ""
+        if selected_class:
+            chosen_note = f" Chosen response class: {selected_class}"
+            if selected_profile:
+                chosen_note += f", profile: {selected_profile}"
+            chosen_note += "; no new task uses this choice."
+        if review["state"] in {"approved", "withdrawn"}:
+            route["summary"] = f"No response task is created; this review is {review['state']}."
+            return route
+
+        author_id = review.get("author_task_id")
+        if not author_id:
+            route["kind"] = "supervisor"
+            route["summary"] = (
+                "No response task is created; the supervisor receives the feedback."
+                + chosen_note
+            )
+            return route
+
+        author = await self.db.get_task(author_id)
+        if author is not None:
+            route["kind"] = "author_task"
+            profile_id = author.profile_id
+            source = "inherited from author task"
+            if profile_id is None:
+                project = await self.db.get_project(review["project_id"])
+                if project is not None:
+                    profile, error = await self._supervisor_default_worker_profile(project)
+                    if error is None and profile is not None:
+                        profile_id = profile.id
+                        source = "project default for author task"
+            profile = await self.db.get_profile(profile_id) if profile_id else None
+            class_id = author.intelligence_class or (
+                profile.default_class if profile is not None else None
+            )
+            route.update(profile_id=profile_id, class_id=class_id, source=source)
+            who = (
+                f" ({profile_id}, {class_id or 'class unspecified'}; {source})"
+                if profile_id else " (worker route unavailable)"
+            )
+            route["summary"] = (
+                f"No response task is created; author revises task {author_id}{who}."
+                + chosen_note
+            )
+            return route
+
+        route["kind"] = "new_task"
+        project = await self.db.get_project(review["project_id"])
+        implicit, error = await self._supervisor_default_worker_profile(project)
+        if error or implicit is None:
+            route["summary"] = f"No response worker route is configured: {error or 'missing project'}."
+            return route
+
+        def describe(profile, class_id: str | None, source: str) -> str:
+            label = class_id or "class unspecified"
+            return f"Response task: {profile.id} ({label}; {source.replace('_', ' ')})."
+
+        route["class_summaries"] = {}
+        from src.intelligence_classes import load_intelligence_classes
+
+        for class_id in load_intelligence_classes(self.config.data_dir):
+            matched, match_error = await self._resolve_class_route(class_id, implicit)
+            if match_error:
+                continue
+            profile = matched or implicit
+            source = (
+                "class_match" if matched is not None
+                else "project_default" if project.default_profile_id else "system_fallback"
+            )
+            route["class_summaries"][class_id] = describe(profile, class_id, source)
+
+        if selected_profile:
+            profile = await self.db.get_profile(selected_profile)
+            if profile is None:
+                route["summary"] = f"Selected response profile {selected_profile} is unavailable."
+                return route
+            source = "explicit"
+        elif selected_class:
+            matched, match_error = await self._resolve_class_route(selected_class, implicit)
+            if match_error:
+                route["summary"] = f"Selected response class {selected_class}: {match_error}"
+                return route
+            profile = matched or implicit
+            source = (
+                "class_match" if matched is not None
+                else "project_default" if project.default_profile_id else "system_fallback"
+            )
+        else:
+            profile = implicit
+            source = "project_default" if project.default_profile_id else "system_fallback"
+        class_id = selected_class or profile.default_class
+        route.update(profile_id=profile.id, class_id=class_id, source=source)
+        route["summary"] = describe(profile, class_id, source)
+        return route
 
     async def _cmd_review_list(self, args: dict) -> dict:
         principal = current_principal() or TRUSTED_LOCAL
