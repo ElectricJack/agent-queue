@@ -68,6 +68,8 @@ async def env(command_handler_factory, tmp_path):
     handler = await command_handler_factory()
     db = handler.db
     handler.orchestrator.bus = EventBus(env="dev")
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
     await db.create_project(Project(id="p", name="Project P"))
     await db.create_project(Project(id="other", name="Other"))
     await db.create_profile(
@@ -76,6 +78,7 @@ async def env(command_handler_factory, tmp_path):
             name="Worker",
             harness="codex",
             lifecycle="pool",
+            default_class="standard-high",
             # Grant every review command here so these tests exercise the
             # request-scope boundary independently from profile discovery.
             # Shipped worker profiles deliberately retain only the first four.
@@ -102,6 +105,8 @@ async def env(command_handler_factory, tmp_path):
             needs_workspace=False,
         )
     )
+    await db.update_project("p", default_profile_id="worker")
+    await db.update_project("other", default_profile_id="worker")
     await db.create_task(
         Task(
             id="author",
@@ -190,7 +195,7 @@ async def test_submit_persists_events_and_enforces_worker_author_scope(env):
     assert listed.get("error_code") == "not_your_task" or "scope" in listed["error"]
 
 
-async def test_delegated_supervisor_can_decide_and_changes_reopen_author(env):
+async def test_delegated_supervisor_creates_revision_task_without_changing_author(env):
     handler, db = env
     created = await handler.execute(
         "review_submit",
@@ -217,8 +222,11 @@ async def test_delegated_supervisor_can_decide_and_changes_reopen_author(env):
     assert review["decided_by"].startswith("supervisor (delegated)")
     author = await db.get_task("author")
     assert author.status is TaskStatus.IN_PROGRESS
-    comments = await db.list_task_comments("author")
-    assert any("Tighten it." in comment["body"] for comment in comments["comments"])
+    assert not (await db.list_task_comments("author"))["comments"]
+    revisions = [task for task in await db.list_tasks(project_id="p")
+                 if task.title == f"Revise Plan (review {review_id})"]
+    assert len(revisions) == 1
+    assert "Tighten it." in revisions[0].description
 
 
 async def test_edit_project_review_default_is_local_only(env):
@@ -543,60 +551,52 @@ def test_dispatch_cli_repeats_to_and_selects_clean_room(monkeypatch):
     }
 
 
-async def test_changes_requested_routes_feedback_to_each_author_state(env):
+async def test_changes_requested_creates_one_revision_task_for_every_author_state(env):
     handler, db = env
-
-    completed = await handler.execute(
-        "review_submit",
-        {"task_id": "author", "kind": "spec", "title": "Completed", "content": "# Completed\n"},
-    )
-    await db.transition_task("author", TaskStatus.COMPLETED, context="test")
-    assert (await handler.execute(
-        "review_decide",
-        {"review_id": completed["review_id"], "revision": 1, "decision": "request_changes", "note": "Add detail."},
-    ))["success"]
-    author = await db.get_task("author")
-    assert author.status is TaskStatus.READY
-    contexts = await db.get_task_contexts("author")
-    feedback = next(context["content"] for context in contexts if context["type"] == "reopen_feedback")
-    assert "Add detail." in feedback
-    assert author.description.endswith(feedback)
-
-    in_progress = await handler.execute(
-        "review_submit",
-        {"task_id": "peer", "kind": "spec", "title": "In progress", "content": "# In progress\n"},
-    )
-    assert (await handler.execute(
-        "review_decide",
-        {"review_id": in_progress["review_id"], "revision": 1, "decision": "request_changes", "note": "Clarify it."},
-    ))["success"]
-    assert (await db.get_task("peer")).status is TaskStatus.IN_PROGRESS
-    assert any("Clarify it." in c["body"] for c in (await db.list_task_comments("peer"))["comments"])
-
-    deleted = await handler.execute(
-        "review_submit",
-        {"task_id": "other-author", "kind": "spec", "title": "Deleted", "content": "# Deleted\n"},
-    )
-    await db.delete_task("other-author")
-    assert (await handler.execute(
-        "review_decide",
-        {"review_id": deleted["review_id"], "revision": 1, "decision": "request_changes", "note": "Restore this."},
-    ))["success"]
-    assert any(
-        task.title == f"Revise Deleted (review {deleted['review_id']})"
-        for task in await db.list_tasks(project_id="other")
-    )
-
-    no_author = await handler.execute(
-        "review_submit",
-        {"project_id": "p", "kind": "other", "title": "No author", "content": "# No author\n"},
-    )
-    assert (await handler.execute(
-        "review_decide",
-        {"review_id": no_author["review_id"], "revision": 1, "decision": "request_changes", "note": "Assign this."},
-    ))["success"]
-    messages = await db.get_pending_messages("session", "supervisor-p")
-    assert any("Assign this." in message.body for message in messages)
+    await db.create_profile(AgentProfile(
+        id="fast-high-codex", name="Fast high", harness="codex", lifecycle="pool",
+        default_class="fast-high", needs_workspace=False,
+        aq_commands=["review_submit", "review_show"], harness_tools=[], plugin_tools=[],
+    ))
+    await db.create_task(Task(
+        id="archived-author", project_id="p", title="Archived author",
+        description="Original draft", status=TaskStatus.READY,
+    ))
+    archived_review = await handler.execute("review_submit", {
+        "task_id": "archived-author", "kind": "spec", "title": "Archived", "content": "# Archived\n",
+    })
+    await db.transition_task("archived-author", TaskStatus.COMPLETED, context="test")
+    assert await db.archive_task("archived-author")
+    live_review = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Live", "content": "# Live\n",
+    })
+    supervisor_review = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "other", "title": "Supervisor", "content": "# Supervisor\n",
+    })
+    for submitted in (archived_review, live_review, supervisor_review):
+        review_id = submitted["review_id"]
+        decided = await handler.execute("review_decide", {
+            "review_id": review_id, "revision": 1, "decision": "request_changes",
+            "responder_class": "fast-high", "note": "Expand the reasoning.",
+        })
+        assert decided["success"], decided
+        revisions = [task for task in await db.list_tasks(project_id="p")
+                     if task.title.endswith(f"(review {review_id})")]
+        assert len(revisions) == 1
+        assert revisions[0].profile_id == "fast-high-codex"
+        assert revisions[0].intelligence_class == "fast-high"
+        assert revisions[0].parent_task_id is None
+        assert (await db.get_task_meta(revisions[0].id, "review_response"))["profile_source"] == "explicit"
+        repeated = await handler.execute("review_decide", {
+            "review_id": review_id, "revision": 1, "decision": "request_changes",
+            "responder_class": "fast-high",
+        })
+        assert not repeated["success"]
+        assert len([task for task in await db.list_tasks(project_id="p")
+                    if task.title.endswith(f"(review {review_id})")]) == 1
+    assert (await db.get_task("author")).status is TaskStatus.IN_PROGRESS
+    assert not (await db.list_task_comments("author"))["comments"]
+    assert not await db.get_pending_messages("session", "supervisor-p")
 
 
 async def test_response_routing_uses_decided_revision_class_and_project_default(env):
@@ -637,7 +637,7 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert decided["success"], decided
     revision = await db.get_review_revision(chosen["review_id"], 1)
     assert (revision["responder_class"], revision["responder_profile_source"]) == (
-        "standard-high", "class_match",
+        "standard-high", "explicit",
     )
     response = next(task for task in await db.list_tasks(project_id="p")
                     if task.title.startswith("Revise Chosen route"))
@@ -648,7 +648,7 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert shown["response_route"]["kind"] == "new_task"
     assert shown["response_route"]["profile_id"] == "standard-high-codex"
     assert shown["response_route"]["class_id"] == "standard-high"
-    assert "class match" in shown["response_route"]["summary"]
+    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
 
     fallback = await handler.execute("review_submit", {
         "task_id": "peer", "kind": "spec", "title": "Default route", "content": "# Default\n",
@@ -663,23 +663,26 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert revision["responder_profile_source"] == "project_default"
     response = next(task for task in await db.list_tasks(project_id="p")
                     if task.title.startswith("Revise Default route"))
-    # Project defaults remain implicit on the task row; the claimant resolves it.
-    assert response.profile_id is None
+    assert response.profile_id == "fast-high-codex"
+    assert response.intelligence_class == "fast-high"
+    assert response.provider_intent == "class_only"
+    assert (await db.get_task_meta(response.id, "review_response"))["profile_source"] == "project_default"
     assert (await db.get_project("p")).default_profile_id == "fast-high-codex"
     shown = await handler.execute("review_show", {"review_id": fallback["review_id"]})
     assert shown["response_route"]["profile_id"] == "fast-high-codex"
     assert shown["response_route"]["class_id"] == "fast-high"
-    assert "project default" in shown["response_route"]["summary"]
+    assert "project_default" in shown["response_route"]["summary"]
 
 
-async def test_review_show_explains_when_feedback_creates_no_response_task(env):
+async def test_review_show_explains_both_decision_routes(env):
     handler, db = env
     with_author = await handler.execute("review_submit", {
         "task_id": "author", "kind": "spec", "title": "Active author", "content": "# Active\n",
     })
     shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
-    assert shown["response_route"]["kind"] == "author_task"
-    assert "No response task is created; author revises task author" in shown["response_route"]["summary"]
+    assert shown["response_route"]["kind"] == "new_task"
+    assert "Request changes → new revision task on standard-high (project_default)" in shown["response_route"]["summary"]
+    assert "Approve → sent to the supervisor" in shown["response_route"]["summary"]
 
     ensure_default_intelligence_classes(handler.config.data_dir)
     handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
@@ -694,17 +697,15 @@ async def test_review_show_explains_when_feedback_creates_no_response_task(env):
     })
     assert decided["success"], decided
     shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
-    assert shown["response_route"]["kind"] == "author_task"
-    assert "Chosen response class: standard-high, profile: standard-high-codex" in (
-        shown["response_route"]["summary"]
-    )
+    assert shown["response_route"]["kind"] == "new_task"
+    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
 
     without_author = await handler.execute("review_submit", {
         "project_id": "p", "kind": "spec", "title": "No author", "content": "# No author\n",
     })
     shown = await handler.execute("review_show", {"review_id": without_author["review_id"]})
-    assert shown["response_route"]["kind"] == "supervisor"
-    assert "No response task is created; the supervisor receives" in shown["response_route"]["summary"]
+    assert shown["response_route"]["kind"] == "new_task"
+    assert "new revision task on standard-high (project_default)" in shown["response_route"]["summary"]
 
 
 async def test_response_routing_accepts_explicit_matching_profile(env):
@@ -726,6 +727,12 @@ async def test_response_routing_accepts_explicit_matching_profile(env):
     assert mismatch["error_code"] == "invalid_responder_profile"
     assert (await db.get_review(submitted["review_id"]))["state"] == "in_review"
     await db.delete_task("author")
+    await db.create_profile(AgentProfile(
+        id="disabled-worker", name="Disabled", harness="codex", lifecycle="pool",
+        default_class="standard-high", enabled=False, needs_workspace=False,
+        aq_commands=[], harness_tools=[], plugin_tools=[],
+    ))
+    await db.update_project("p", default_profile_id="disabled-worker")
     decided = await handler.execute("review_decide", {
         "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
         "responder_class": "standard-high", "responder_profile": "standard-high-codex",
@@ -737,3 +744,116 @@ async def test_response_routing_accepts_explicit_matching_profile(env):
     response = next(task for task in await db.list_tasks(project_id="p")
                     if task.title.startswith("Revise Explicit route"))
     assert response.profile_id == "standard-high-codex"
+    assert response.provider_intent == "preferred"
+    shown = await handler.execute("review_show", {"review_id": submitted["review_id"]})
+    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
+
+
+async def test_revision_task_contains_comments_and_can_resubmit(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Commented draft", "content": "# Draft\n",
+    })
+    review_id = submitted["review_id"]
+    first = await handler.execute("review_comment", {
+        "review_id": review_id, "revision": 1, "quote": "Draft",
+        "heading_path": ["Introduction"], "body": "Explain the motivation.",
+    })
+    second = await handler.execute("review_comment", {
+        "review_id": review_id, "revision": 1,
+        "heading_path": ["Appendix"], "body": "Add a source.",
+    })
+    assert first["success"] and second["success"]
+    assert (await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 1, "decision": "request_changes",
+        "note": "Rework the opening and cite the claim.",
+    }))["success"]
+    task = next(task for task in await db.list_tasks(project_id="p")
+                if task.title == f"Revise Commented draft (review {review_id})")
+    assert "Rework the opening and cite the claim." in task.description
+    for comment, anchor in ((first, "Introduction — quote: Draft"), (second, "Appendix")):
+        assert comment["comment_id"] in task.description
+        assert anchor in task.description
+    assert "aq review submit --review-id" in task.description
+    assert "--resolves" in task.description
+    assert (await db.get_task_meta(task.id, "review_response")) == {
+        "review_id": review_id, "revision": 1, "profile_source": "project_default",
+    }
+    refused = await _scoped(handler, "review_submit", {
+        "review_id": review_id, "content": "# Wrong worker\n",
+    }, session_id="worker")
+    assert refused["error_code"] == "not_your_task"
+    await db.update_session("worker", task_id=task.id)
+    revised = await _scoped(handler, "review_submit", {
+        "review_id": review_id, "content": "# Better draft\n", "changes": "Expanded the motivation",
+        "resolves": [first["comment_id"]],
+    }, session_id="worker", task_id=task.id)
+    assert revised["success"], revised
+    assert revised["revision"] == 2
+    assert (await db.get_review_revision(review_id, 2))["submitted_task_id"] == task.id
+    comments = {comment["id"]: comment for comment in await db.list_review_comments(review_id)}
+    assert comments[first["comment_id"]]["resolved_in_revision"] == 2
+    assert comments[second["comment_id"]]["resolved_in_revision"] is None
+    assert (await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 2, "decision": "request_changes",
+        "note": "Finish the citation.",
+    }))["success"]
+    next_task = next(task for task in await db.list_tasks(project_id="p")
+                     if task.dedup_key == f"review-revision:{review_id}:2")
+    assert second["comment_id"] in next_task.description
+    assert first["comment_id"] not in next_task.description
+
+
+async def test_revision_task_uses_authors_parent(env):
+    handler, db = env
+    await db.create_task(Task(
+        id="container", project_id="p", title="Container", description="Group",
+        status=TaskStatus.READY,
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("author", "container", conn=conn)
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "plan", "title": "Grouped plan", "content": "# Plan\n",
+    })
+    assert (await handler.execute("review_decide", {
+        "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
+    }))["success"]
+    revision = next(task for task in await db.list_tasks(project_id="p")
+                    if task.title == f"Revise Grouped plan (review {submitted['review_id']})")
+    assert revision.parent_task_id == "container"
+
+
+async def test_approval_notifies_only_supervisor_once_for_each_author_state(env):
+    handler, db = env
+    await db.create_task(Task(
+        id="archived-author", project_id="p", title="Archived author",
+        description="Original draft", status=TaskStatus.READY,
+    ))
+    reviews = [
+        await handler.execute("review_submit", {
+            "project_id": "p", "kind": "spec", "title": "Supervisor draft", "content": "# Draft\n",
+        }),
+        await handler.execute("review_submit", {
+            "task_id": "author", "kind": "plan", "title": "Live draft", "content": "# Draft\n",
+        }),
+        await handler.execute("review_submit", {
+            "task_id": "archived-author", "kind": "other", "title": "Archived draft", "content": "# Draft\n",
+        }),
+    ]
+    await db.transition_task("archived-author", TaskStatus.COMPLETED, context="test")
+    assert await db.archive_task("archived-author")
+    for submitted, kind in zip(reviews, ("spec", "plan", "other"), strict=True):
+        review_id = submitted["review_id"]
+        review = await db.get_review(review_id)
+        assert (await handler.execute("review_decide", {
+            "review_id": review_id, "revision": 1, "decision": "approve",
+        }))["success"]
+        repeated = await handler.execute("review_decide", {
+            "review_id": review_id, "revision": 1, "decision": "approve",
+        })
+        assert not repeated["success"]
+        messages = [message for message in await db.get_pending_messages("session", "supervisor-p")
+                    if review_id in message.body]
+        assert len(messages) == 1
+        assert kind in messages[0].body
+        assert review["vault_path"] in messages[0].body

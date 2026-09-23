@@ -220,7 +220,7 @@ def test_review_show_renders_markdown_header_and_comments():
             },
             "revision": {"revision": 2, "content": "# Proposed release\n\nShip it carefully."},
             "vault_state": "diverged",
-            "response_route": {"summary": "No response task is created; author revises task author."},
+            "response_route": {"summary": "Request changes → new revision task on standard-high (project_default); Approve → sent to the supervisor."},
             "dispatches": [{
                 "profile_id": "astra-high-codex", "revision": 2,
                 "with_comments": False, "task_id": "review-task", "task_state": "IN_PROGRESS",
@@ -244,7 +244,8 @@ def test_review_show_renders_markdown_header_and_comments():
     assert "Safety" in out and "revision 3" in out
     assert "Add a rollback step." in out
     assert "astra-high-codex" in out and "clean room" in out
-    assert "No response task is created; author revises task author." in out
+    assert "Request changes → new revision task on standard-high (project_default)" in out
+    assert "Approve → sent to the supervisor" in out
     assert "review-task" in out and "IN_PROGRESS" in out
 
 

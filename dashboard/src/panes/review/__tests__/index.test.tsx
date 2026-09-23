@@ -37,9 +37,9 @@ const response = {
   vault_state: "ok",
   response_route: {
     kind: "new_task",
-    summary: "Response task: fast-high-codex (fast-high; project default).",
+    summary: "Request changes → new revision task on fast-high (project_default); Approve → sent to the supervisor.",
     class_summaries: {
-      "standard-high": "Response task: standard-high-codex (standard-high; class match).",
+      "standard-high": "Request changes → new revision task on standard-high (explicit); Approve → sent to the supervisor.",
     },
   },
   comments: [],
@@ -121,16 +121,18 @@ describe("review pane", () => {
 
   it("submits the selected response route with requested changes", async () => {
     renderPane();
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("fast-high-codex");
-    fireEvent.change(screen.getByLabelText("Response intelligence class"), {
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on fast-high (project_default)");
+    expect(screen.queryByLabelText("Revision intelligence class")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    expect(screen.getByText("Who revises this after your feedback?")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Revision intelligence class"), {
       target: { value: "standard-high" },
     });
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("standard-high-codex (standard-high; class match)");
-    fireEvent.change(screen.getByLabelText("Response profile"), {
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on standard-high (explicit)");
+    fireEvent.change(screen.getByLabelText("Revision profile"), {
       target: { value: "standard-high-codex" },
     });
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("explicit choice");
-    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Send changes request" }));
     await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
       review_id: "rev-x", revision: 2, decision: "request_changes",
       responder_class: "standard-high", responder_profile: "standard-high-codex",
@@ -142,34 +144,25 @@ describe("review pane", () => {
       data: {
         ...response,
         response_route: { ...response.response_route,
-          summary: "Response task: standard-high-codex (standard-high; class match)." },
+          summary: "Request changes → new revision task on standard-high (explicit); Approve → sent to the supervisor." },
       },
       isLoading: false,
       error: null,
     }));
     renderPane();
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("standard-high-codex (standard-high; class match)");
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on standard-high (explicit)");
   });
 
-  it("says when feedback returns to the author without creating a task", () => {
-    hooks.useReview.mockImplementation(() => ({
-      data: { ...response, response_route: {
-        kind: "author_task", class_summaries: {},
-        summary: "No response task is created; author revises task author.",
-      } },
-      isLoading: false,
-      error: null,
-    }));
+  it("keeps approval separate from the revision selector", async () => {
     renderPane();
-    expect(screen.getByLabelText("Response route")).toHaveTextContent(
-      "No response task is created; author revises task author.",
-    );
-    fireEvent.change(screen.getByLabelText("Response intelligence class"), {
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    fireEvent.change(screen.getByLabelText("Revision intelligence class"), {
       target: { value: "standard-high" },
     });
-    expect(screen.getByLabelText("Response route")).toHaveTextContent(
-      "Chosen response class: standard-high; no new task uses this choice.",
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, decision: "approve",
+    }));
   });
 
   it("shows the live revision banner", async () => {

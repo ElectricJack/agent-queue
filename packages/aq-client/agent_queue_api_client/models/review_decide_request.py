@@ -19,8 +19,9 @@ class ReviewDecideRequest:
         revision (int):
         decision (str):
         note (None | str | Unset):
-        responder_class (None | str | Unset): Intelligence class for the response to requested changes.
-        responder_profile (None | str | Unset): Optional enabled worker profile for that class.
+        responder_class (None | str | Unset): Who revises after feedback: intelligence class for the new revision task
+            (request_changes only).
+        responder_profile (None | str | Unset): Optional worker profile for that revision class (request_changes only).
     """
 
     review_id: str

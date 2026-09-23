@@ -42439,7 +42439,7 @@
               }
             ],
             "title": "Responder Class",
-            "description": "Intelligence class for the response to requested changes."
+            "description": "Who revises after feedback: intelligence class for the new revision task (request_changes only)."
           },
           "responder_profile": {
             "anyOf": [
@@ -42451,7 +42451,7 @@
               }
             ],
             "title": "Responder Profile",
-            "description": "Optional enabled worker profile for that class."
+            "description": "Optional worker profile for that revision class (request_changes only)."
           }
         },
         "type": "object",
