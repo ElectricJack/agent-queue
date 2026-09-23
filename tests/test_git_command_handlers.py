@@ -11,6 +11,7 @@ import pytest
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.git.manager import GitError, GitManager
+from src.git.github_contracts import GitHubAccessError
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from tests.db_fixtures import lease_dsn
 
@@ -78,7 +79,6 @@ def mock_git():
     git.aget_changed_files.return_value = []
     git.alist_branches.return_value = ["* main"]
     git.acreate_pr.return_value = "https://github.com/test/pr/1"
-    git.acheck_gh_auth.return_value = True
     git.acreate_github_repo.return_value = "https://github.com/user/repo"
     git.aget_status.return_value = ""
     git.aget_default_branch.return_value = "main"
@@ -1269,7 +1269,6 @@ class TestCreateGithubRepo:
     """Tests for _cmd_create_github_repo."""
 
     async def test_success(self, handler, mock_git):
-        mock_git.acheck_gh_auth.return_value = True
         mock_git.acreate_github_repo.return_value = "https://github.com/user/my-app"
 
         result = await handler.execute(
@@ -1291,7 +1290,6 @@ class TestCreateGithubRepo:
         )
 
     async def test_success_with_options(self, handler, mock_git):
-        mock_git.acheck_gh_auth.return_value = True
         mock_git.acreate_github_repo.return_value = "https://github.com/my-org/my-app"
 
         result = await handler.execute(
@@ -1320,7 +1318,9 @@ class TestCreateGithubRepo:
         assert result == {"error": "name is required"}
 
     async def test_gh_not_authenticated(self, handler, mock_git):
-        mock_git.acheck_gh_auth.return_value = False
+        mock_git.acreate_github_repo.side_effect = GitHubAccessError(
+            "credentials", "GitHub CLI is not authenticated"
+        )
 
         result = await handler.execute(
             "create_github_repo",
@@ -1331,10 +1331,21 @@ class TestCreateGithubRepo:
 
         assert "error" in result
         assert "not authenticated" in result["error"].lower()
-        mock_git.acreate_github_repo.assert_not_called()
+        assert result["error_code"] == "credentials"
+
+    async def test_app_mode_rejects_repository_creation(self, handler, mock_git):
+        mock_git.acreate_github_repo.side_effect = GitHubAccessError(
+            "github_operation_unsupported", "Repository creation is unavailable"
+        )
+
+        result = await handler.execute("create_github_repo", {"name": "my-app"})
+
+        assert result == {
+            "error": "Repository creation is unavailable",
+            "error_code": "github_operation_unsupported",
+        }
 
     async def test_git_error(self, handler, mock_git):
-        mock_git.acheck_gh_auth.return_value = True
         mock_git.acreate_github_repo.side_effect = GitError(
             "gh repo create failed: Name already exists"
         )

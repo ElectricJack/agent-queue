@@ -4893,16 +4893,6 @@ class GitManager:
         except GitError:
             return ""
 
-    async def acheck_gh_auth(self) -> bool:
-        try:
-            result = await self._arun_subprocess(
-                ["gh", "auth", "status"],
-                timeout=30,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return False
-
     async def acreate_github_repo(
         self,
         name: str,
@@ -4911,35 +4901,11 @@ class GitManager:
         org: str | None = None,
         description: str = "",
     ) -> str:
-        full_name = f"{org}/{name}" if org else name
-        cmd = ["gh", "repo", "create", full_name]
-        cmd.append("--private" if private else "--public")
-        if description:
-            cmd.extend(["--description", description])
-        try:
-            result = await self._arun_subprocess(cmd, timeout=60)
-        except subprocess.TimeoutExpired:
-            raise GitError("gh repo create timed out after 60s (possible auth prompt)")
-        if result.returncode != 0:
-            raise GitError(f"gh repo create failed: {result.stderr.strip()}")
-        url = ""
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line.startswith("https://") or line.startswith("http://"):
-                url = line
-                break
-        if not url:
-            for line in reversed(result.stderr.strip().splitlines()):
-                line = line.strip()
-                if line.startswith("https://") or line.startswith("http://"):
-                    url = line
-                    break
-        if not url:
-            raise GitError(
-                "gh repo create succeeded but no repository URL was found "
-                f"in output: {result.stdout.strip()}"
-            )
-        return url
+        if self.github_access is None:
+            raise GitError("GitHub access service is not configured")
+        return await self.github_access.create_repository(
+            name, private=private, org=org, description=description
+        )
 
     @staticmethod
     def slugify(text: str) -> str:
