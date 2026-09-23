@@ -2595,8 +2595,9 @@ integration_review_evidence = Table(
     Column("source_base", Text, nullable=False),
     Column("reviewed_head_sha", Text, nullable=False),
     Column("reviewed_tree_sha", Text, nullable=False),
-    Column("reviewer_task_id", Text, nullable=False),
+    Column("reviewer_task_id", Text, nullable=True),
     Column("reviewer_session_attempt_id", Text, nullable=True),
+    Column("reviewer_identity", Text, nullable=True),
     Column("review_kind", Text, nullable=False),
     Column("generation", Integer, nullable=False),
     Column("verdict", Text, nullable=False),
@@ -3969,6 +3970,18 @@ integration_operation_artifact_pins = Table(
     Index("idx_integration_operation_artifact_pins_sha", "artifact_sha256"),
 )
 
+epic_dependencies = Table(
+    "epic_dependencies",
+    metadata,
+    Column("dependent_task_id", Text, nullable=False),
+    Column("dependency_task_id", Text, nullable=False),
+    Column("declared_at", Float, nullable=False),
+    PrimaryKeyConstraint("dependent_task_id", "dependency_task_id", name="pk_epic_dependencies"),
+    CheckConstraint(
+        "dependent_task_id <> dependency_task_id", name="ck_epic_dependencies_not_self"
+    ),
+)
+
 project_integration_schedules = Table(
     "project_integration_schedules",
     metadata,
@@ -3985,6 +3998,8 @@ project_integration_schedules = Table(
     Column("catchup_requested_at", Float, nullable=True),
     Column("catchup_after_sequence", Integer, nullable=True),
     Column("last_completed_sweep_at", Float, nullable=True),
+    Column("settling_first_approval_at", Float, nullable=True),
+    Column("settling_fires_at", Float, nullable=True),
     Column("updated_at", Float, nullable=False),
     CheckConstraint("interval_seconds > 0", name="ck_project_integration_schedules_interval"),
     CheckConstraint("request_sequence >= 0", name="ck_project_integration_schedules_sequence"),
