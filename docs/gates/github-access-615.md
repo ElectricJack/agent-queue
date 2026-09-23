@@ -6,6 +6,8 @@ against [the specification](../specs/github-access.md#11-verification-and-accept
 and [the disposable repository runbook](../plans/github-access/acceptance-runbook.md),
 not a sign-off on the private repository workflow.
 
+Live acceptance is tracked by task `prime-grove`, which is **BLOCKED** until the disposable fixtures are supplied.
+
 ## Source and test environment
 
 | Item | Observed value |
