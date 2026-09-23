@@ -126,6 +126,28 @@ failed live gate, not an App credential-parity result. The installation selects
 only this App fixture repository, so live concurrent repository token
 separation also needs a second disposable repository selected for the App.
 
+### App permission-update rerun: installation still behind
+
+After the fixture owner reported an App permission change, the isolated App
+daemon was restarted from `agile-delta` fix
+`9c12d1df7c97650a746fa842e6d74cb9207b0ff7`, which requests
+`actions_variables` instead of `variables`. On 2026-09-23 UTC, authenticated
+`GET /app` returned HTTP 200 and showed the App registration now has
+`checks:write`, `administration:read`, `issues:write` and
+`actions_variables:read`. Authenticated `GET /app/installations/164168761`
+also returned HTTP 200, but the installation
+still showed `checks:read` and had no `administration` or `issues` grant.
+
+With the corrected source, installation-token mint scoped to repository
+`1384141153` returned HTTP 422: “The permissions requested are not granted
+to this installation.” The AQ `github_clone` retry with request ID
+`gh615-app-onboard-2` again returned `github_repository_inaccessible` in
+`preflight`. It made no clone or remote write. This confirms the source-key
+repair alone is insufficient; the fixture installation needs the pending
+permission update applied before the App path can continue. The credential
+daemon was stopped after this check, and the App fixture remains for the
+approved rerun.
+
 ### Existing-login result: remote PR and merge verified, AQ close blocked
 
 The other isolated daemon reported `credential_mode=existing_login`,
@@ -209,6 +231,7 @@ after verification. No token value was logged or placed in this record.
 
 | Step | Current result |
 | --- | --- |
+| App registration update and installation token mint | Registration has requested grants; installation remains at `checks:read` without `administration` or `issues`; fixed-source mint HTTP 422 |
 | App-only held-branch push, PR, CI, immutable merge, integration and WIP publication | `not_run` after App token HTTP 422 |
 | App token expiry refresh and concurrent repository separation | `not_run` live; mock-only evidence above |
 | Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified in two PRs; AQ task close `BLOCKED` on both |
