@@ -22,7 +22,9 @@ def _fake_gh(tmp_path: Path) -> Path:
         "args = sys.argv[1:]\n"
         "with Path(os.environ['AQ_GH_LOG']).open('a') as log:\n"
         "    log.write(json.dumps({'args': args, 'host': os.environ.get('GH_HOST'), "
-        "'token': os.environ.get('GH_TOKEN'), 'config': os.environ.get('GH_CONFIG_DIR'), "
+        "'token': os.environ.get('GH_TOKEN'), "
+        "'github_token': os.environ.get('GITHUB_TOKEN'), "
+        "'config': os.environ.get('GH_CONFIG_DIR'), "
         "'prompt': os.environ.get('GH_PROMPT_DISABLED')}) + '\\n')\n"
         "if args[:2] == ['auth', 'status']:\n"
         "    sys.exit(4 if os.environ.get('AQ_GH_AUTH_FAIL') else 0)\n"
@@ -37,7 +39,14 @@ def _fake_gh(tmp_path: Path) -> Path:
     return executable
 
 
-@pytest.mark.parametrize("login_env", [{"GH_TOKEN": "pat-value"}, {"GH_CONFIG_DIR": "/stored/gh"}])
+@pytest.mark.parametrize(
+    "login_env",
+    [
+        {"GH_TOKEN": "pat-value"},
+        {"GITHUB_TOKEN": "pat-value"},
+        {"GH_CONFIG_DIR": "/stored/gh"},
+    ],
+)
 @pytest.mark.parametrize("org", [None, "my-org"])
 async def test_existing_login_creates_repository_through_shared_runner(tmp_path, login_env, org):
     log = tmp_path / "gh.jsonl"
@@ -66,6 +75,7 @@ async def test_existing_login_creates_repository_through_shared_runner(tmp_path,
     ]
     assert all(call["host"] == "github.com" and call["prompt"] == "1" for call in calls)
     assert all(call["token"] == login_env.get("GH_TOKEN") for call in calls)
+    assert all(call["github_token"] == login_env.get("GITHUB_TOKEN") for call in calls)
     assert all(call["config"] == login_env.get("GH_CONFIG_DIR") for call in calls)
 
 
