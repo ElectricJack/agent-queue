@@ -16,6 +16,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
+    archived_tasks,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -27,10 +28,12 @@ from src.database.tables import (
     integration_repair_stages,
     integration_root_intent_members,
     task_delivery_receipts,
+    tasks,
     workspaces,
 )
 from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitError
+from src.integration.delivery_branches import branch_of, deletable
 
 
 class CleanupMaterializationResult(BaseModel):
@@ -218,6 +221,7 @@ class IntegrationCleanupService:
             if not await provider.has_comment_marker(
                 number=int(row["target_pr_number"]), marker=marker
             ):
+                summary = await self._repair_commit_summary(row["batch_id"])
                 reservation = await self._mark_irreversible_prewrite(row)
                 if reservation != "owner":
                     return "retryable", "pull request comment publication is unresolved"
@@ -227,11 +231,37 @@ class IntegrationCleanupService:
                     body=(
                         f"{marker}\nDelivered by integration batch `{row['batch_id']}` "
                         f"at `{row['expected_sha']}` via receipt `{row['receipt_id']}`."
+                        + summary
                     ),
                 )
         if current.get("state") != "closed":
             await provider.close_pull_request(number=int(row["target_pr_number"]))
         return "complete", None
+
+    async def _repair_commit_summary(self, batch_id: str) -> str:
+        async with self.db._engine.connect() as conn:
+            dossiers = (
+                await conn.execute(
+                    select(integration_repair_stages.c.dossier)
+                    .select_from(
+                        integration_repair_operations.join(
+                            integration_repair_stages,
+                            integration_repair_stages.c.operation_id
+                            == integration_repair_operations.c.id,
+                        )
+                    )
+                    .where(integration_repair_operations.c.batch_id == batch_id)
+                    .order_by(integration_repair_stages.c.ordinal)
+                )
+            ).scalars().all()
+        commits = list(dict.fromkeys(
+            sha for dossier in dossiers for sha in (dossier or {}).get("repair_commits", [])
+        ))
+        if not commits:
+            return "\n\nNo integration repair commits were recorded."
+        return "\n\nIntegration repair commits included in the promoted batch:\n" + "\n".join(
+            f"- `{sha}`" for sha in commits
+        )
 
     async def _mark_irreversible_prewrite(self, row: dict[str, Any]) -> str:
         """Freeze one claim before an ambiguous external write; marked writes never transfer."""
@@ -746,6 +776,10 @@ class IntegrationCleanupService:
                 )
                 return CleanupMaterializationResult(outcome="conflict", batch_id=batch_id)
             items = self._items(batch, publication, members, reservations, receipts, observed_at)
+            items.extend(await self._descendant_ref_items(
+                conn, batch, publication, members, observed_at,
+                existing_refs={item["target_ref"] for item in items if item.get("target_ref")},
+            ))
             items.extend(await self._worktree_items(conn, batch, publication, observed_at))
             insert_fn = pg_insert
             for item in items:
@@ -778,6 +812,110 @@ class IntegrationCleanupService:
                 batch_id=batch_id,
                 item_count=len(persisted),
             )
+
+    async def _descendant_ref_items(
+        self, conn, batch, publication, members, now, *, existing_refs: set[str]
+    ) -> list[dict[str, Any]]:
+        """Only delete descendant refs with a delivered, exact source head."""
+        parent_ordinals = {member["task_id"]: int(member["ordinal"]) for member in members}
+        delete_ordinals = {
+            int(member["ordinal"])
+            for member in members
+            if member["source_ref_retention"] == "delete"
+        }
+        descendants: dict[str, tuple[dict[str, Any], int]] = {}
+        frontier = set(parent_ordinals)
+        while frontier:
+            found: dict[str, dict[str, Any]] = {}
+            for table in (tasks, archived_tasks):
+                rows = (
+                    await conn.execute(
+                        select(table.c.id, table.c.parent_task_id, table.c.branch_name,
+                               table.c.status)
+                        .where(table.c.parent_task_id.in_(frontier))
+                    )
+                ).mappings().all()
+                for row in rows:
+                    found.setdefault(row["id"], dict(row))
+            next_frontier: set[str] = set()
+            for task_id, row in found.items():
+                if task_id in parent_ordinals:
+                    continue
+                ordinal = parent_ordinals[row["parent_task_id"]]
+                parent_ordinals[task_id] = ordinal
+                descendants[task_id] = row, ordinal
+                next_frontier.add(task_id)
+            frontier = next_frontier
+        if not descendants:
+            return []
+        promoted_at = (
+            await conn.execute(
+                select(integration_promotion_intents.c.committed_at).where(
+                    integration_promotion_intents.c.root_batch_id == batch["id"],
+                    integration_promotion_intents.c.state == "committed",
+                )
+            )
+        ).scalar_one_or_none()
+        if promoted_at is None:
+            return []
+        receipt_rows = (
+            await conn.execute(
+                select(task_delivery_receipts.c.source_task_id,
+                       task_delivery_receipts.c.target_task_id,
+                       task_delivery_receipts.c.reviewed_head_sha)
+                .where(
+                    task_delivery_receipts.c.source_task_id.in_(descendants),
+                    task_delivery_receipts.c.repository_id == batch["repository_id"],
+                    task_delivery_receipts.c.disposition.in_(("code", "noop")),
+                    task_delivery_receipts.c.created_at <= promoted_at,
+                )
+                .order_by(task_delivery_receipts.c.created_at.desc(),
+                          task_delivery_receipts.c.id.desc())
+            )
+        ).mappings().all()
+        heads = {}
+        for receipt in receipt_rows:
+            row, _ = descendants[receipt["source_task_id"]]
+            if receipt["target_task_id"] == row["parent_task_id"]:
+                heads.setdefault(receipt["source_task_id"], receipt["reviewed_head_sha"])
+        common = {
+            "batch_id": batch["id"],
+            "project_id": batch["project_id"],
+            "repository_id": batch["repository_id"],
+            "repository_numeric_id": publication["repository_numeric_id"],
+            "repository_full_name": publication["repository_full_name"],
+            "revision": int(batch["current_revision"]),
+            "state": "pending",
+            "attempts": 0,
+            "next_attempt_at": now,
+            "created_at": now,
+            "updated_at": now,
+        }
+        items = []
+        for task_id, (row, ordinal) in sorted(descendants.items()):
+            branch = branch_of(row["branch_name"])
+            head = heads.get(task_id)
+            if (
+                ordinal not in delete_ordinals
+                or row["status"] != "COMPLETED"
+                or not branch
+                or not deletable(branch, "main")
+                or not head
+            ):
+                continue
+            ref = f"refs/heads/{branch}"
+            if ref in existing_refs:
+                continue
+            existing_refs.add(ref)
+            items.append(common | {
+                "kind": "remote_ref",
+                "identity": ref,
+                "domain_key": f"cleanup:{batch['id']}:remote_ref:{ref}",
+                "member_ordinal": ordinal,
+                "target_ref": ref,
+                "expected_sha": head,
+            })
+        return items
 
     def _items(self, batch, publication, members, reservations, receipts, now):
         common = {

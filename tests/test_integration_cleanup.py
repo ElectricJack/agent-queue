@@ -11,6 +11,7 @@ from sqlalchemy import insert, select, update
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import Database
 from src.database.tables import (
+    archived_tasks,
     integration_attestation_publications,
     integration_batch_members,
     integration_batches,
@@ -31,6 +32,7 @@ from src.database.tables import (
     project_integration_schedules,
     projects,
     task_delivery_receipts,
+    tasks,
     workspaces,
 )
 from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
@@ -563,6 +565,108 @@ async def test_cleanup_materializes_normalized_terminal_set_idempotently(release
     assert all(row["project_id"] == "p" for row in rows)
     assert all(row["repository_numeric_id"] == 99 for row in rows)
     assert all(row["repository_full_name"] == "acme/widgets" for row in rows)
+
+
+async def test_batch_cleanup_waits_for_promotion_and_only_collects_member_descendants(release_db):
+    db, _scheduler = release_db
+    child_head = "f" * 40
+    ejected_head = "1" * 40
+    late_head = "2" * 40
+    async with db.immediate() as conn:
+        for task_id, parent_id, branch in (
+            ("root", None, "aq/root"),
+            ("root.2", "root", "aq/root.2"),
+            ("ejected", None, "aq/epic/ejected"),
+            ("ejected.1", "ejected", "aq/ejected.1"),
+        ):
+            await conn.execute(insert(tasks).values(
+                id=task_id,
+                project_id="p",
+                parent_task_id=parent_id,
+                repo_id="repo",
+                title=task_id,
+                description="",
+                status="COMPLETED",
+                branch_name=branch,
+                created_at=1.0,
+                updated_at=2.0,
+            ))
+        await conn.execute(insert(archived_tasks).values(
+            id="root.1", project_id="p", parent_task_id="root", repo_id="repo",
+            title="root.1", description="", status="COMPLETED", branch_name="aq/root.1",
+            created_at=1.0, updated_at=2.0, archived_at=4.0,
+        ))
+        for task_id, parent_id, head, created_at in (
+            ("root.1", "root", child_head, 3.0),
+            ("root.2", "root", late_head, 21.0),
+            ("ejected.1", "ejected", ejected_head, 3.0),
+        ):
+            await conn.execute(insert(task_delivery_receipts).values(
+                id=f"receipt-{task_id}",
+                domain_key=f"child:{task_id}",
+                source_task_id=task_id,
+                target_task_id=parent_id,
+                repository_id="repo",
+                target_branch=f"aq/{parent_id}",
+                reviewed_head_sha=head,
+                disposition="code",
+                created_at=created_at,
+            ))
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(lifecycle="sealed", final_main_sha=None))
+    app = CleanupApp({
+        BRANCH.removeprefix("refs/heads/"): HEAD,
+        "aq/root": SOURCE,
+        "aq/root.1": child_head,
+        "aq/root.2": late_head,
+        "aq/epic/ejected": ejected_head,
+        "aq/ejected.1": ejected_head,
+    })
+    git = CleanupGit(app)
+    service = IntegrationCleanupService(
+        db, data_dir="/daemon", git_manager=git,
+        github_client_factory=lambda _binding: app, forge_provider=CleanupForge(),
+    )
+    sealed = await service.materialize("batch", now=19.0)
+    assert sealed.outcome == "invariant_error"
+    assert await service.advance("batch", now=19.0) == []
+    assert git.remote_deletes == []
+
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(lifecycle="promoted", final_main_sha=HEAD))
+    first = await service.materialize("batch", now=30.0)
+    second = await service.materialize("batch", now=31.0)
+    assert first == second
+    assert first.item_count == 6
+    results = await service.advance("batch", now=30.0)
+    assert {result.outcome for result in results} == {"complete"}
+    deleted = {entry[1]["branch"] for entry in git.remote_deletes}
+    assert deleted == {BRANCH.removeprefix("refs/heads/"), "aq/root", "aq/root.1"}
+    assert "aq/epic/ejected" in app.refs
+    assert "aq/ejected.1" in app.refs
+    assert "aq/root.2" in app.refs
+    assert await service.advance("batch", now=31.0) == []
+
+
+async def test_source_pr_comment_summarizes_batch_repair_commits_once(release_db):
+    db, _scheduler = release_db
+    fixes = ["4" * 40, "5" * 40]
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "op"
+        ).values(dossier={"repair_commits": fixes}))
+    forge = CleanupForge()
+    service = IntegrationCleanupService(db, data_dir="/daemon", forge_provider=forge)
+    await service.materialize("batch", now=30.0)
+    first = await service.execute("batch", "source_pr", "99#1", now=30.0)
+    second = await service.execute("batch", "source_pr", "99#1", now=31.0)
+    assert first.outcome == "complete"
+    assert second.outcome == "already_complete"
+    assert len(forge.comments) == 1
+    assert all(f"`{sha}`" in forge.comments[0][2] for sha in fixes)
 
 
 async def test_cleanup_retains_source_ref_from_frozen_policy(release_db):
