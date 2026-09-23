@@ -68,6 +68,8 @@ type DecideInput = {
   revision: number;
   decision: "approve" | "request_changes";
   note?: string;
+  responder_class?: string;
+  responder_profile?: string;
 };
 
 export function useDecideReview(): UseMutationResult<ReviewDecideResponse, Error, DecideInput> {

@@ -6426,6 +6426,8 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "revision": {"type": "integer", "minimum": 1},
                     "decision": {"type": "string", "enum": ["approve", "request_changes"]},
                     "note": {"type": "string"},
+                    "responder_class": {"type": "string", "description": "Intelligence class for the response to requested changes."},
+                    "responder_profile": {"type": "string", "description": "Optional enabled worker profile for that class."},
                 },
                 "required": ["review_id", "revision", "decision"],
                 "additionalProperties": False,
