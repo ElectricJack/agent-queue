@@ -303,6 +303,38 @@ async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(se
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
+async def test_branchless_epic_dependencies_are_satisfied_without_manifest_members(setup):
+    """The fair-bridge.1 shape publishes after three completed epics settle."""
+    db, service, _source, remote, _repo = setup
+    for epic_id in ("sharp-stone", "first-epic", "second-epic"):
+        await db.create_task(Task(
+            id=epic_id, project_id="p", title=epic_id, description="",
+            status=TaskStatus.COMPLETED,
+        ))
+        assert not await _delivery_pending(db, epic_id)
+    await db.create_task(Task(
+        id="fair-bridge", project_id="p", title="fair-bridge", description="",
+        status=TaskStatus.PAUSED,
+    ))
+    head = await feature(setup, "fair-bridge.1")
+    async with db.immediate() as conn:
+        await db.set_parent("fair-bridge.1", "fair-bridge", conn=conn)
+    for epic_id in ("sharp-stone", "first-epic", "second-epic"):
+        await db.add_dependency("fair-bridge.1", epic_id, "blocks")
+    assert not (await db.get_task("fair-bridge.1")).is_blocked
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert await db.get_task_meta("fair-bridge.1", PUBLISHER_SKIP_KEY) is None
+    delivered = [
+        row for row in await service.rows("p")
+        if row["state"] == "delivered" and row["target_ref"] == "refs/heads/main"
+    ]
+    assert [member["task_id"] for member in delivered[0]["manifest"]] == ["fair-bridge.1"]
+
+
 async def test_recover_child_publishes_past_delivered_dependency_without_ref(setup):
     """An older parked attempt cannot override a later delivered receipt."""
     db, service, source, remote, _repo = setup
@@ -433,6 +465,7 @@ async def test_recover_child_isolated_from_conflicting_sibling(setup):
     await service.sweep("p")
     await db.create_task(Task(
         id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED,
+        branch_name="epic-source",
     ))
     await feature(setup, "conflict", filename="base.txt", content="conflicts\n")
     clean = await feature(setup, "clean")
@@ -459,7 +492,32 @@ async def test_recover_child_isolated_from_conflicting_sibling(setup):
     )
 
 
-async def test_old_delivery_does_not_clear_parked_newer_dependency(setup):
+async def test_branchless_parent_does_not_skip_clean_child_after_sibling_conflict(setup):
+    db, service, _source, remote, _repo = setup
+    await feature(setup, "main-change", filename="base.txt", content="on main\n")
+    await service.sweep("p")
+    await db.create_task(Task(
+        id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED,
+    ))
+    await feature(setup, "conflict", filename="base.txt", content="conflicts\n")
+    clean = await feature(setup, "clean")
+    async with db.immediate() as conn:
+        await db.set_parent("conflict", "epic", conn=conn)
+        await db.set_parent("clean", "epic", conn=conn)
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", clean, "main") == ""
+    assert await db.get_task_meta("clean", PUBLISHER_SKIP_KEY) is None
+    assert any(
+        row["state"] == "parked" and any(
+            member["task_id"] == "conflict" for member in row["manifest"]
+        ) for row in await service.rows("p")
+    )
+
+
+async def test_branchless_dependency_ignores_parked_newer_attempt(setup):
     db, service, source, _remote, _repo = setup
     await feature(setup, "previous")
     assert (await service.sweep("p"))["outcome"] == "delivered"
@@ -480,8 +538,25 @@ async def test_old_delivery_does_not_clear_parked_newer_dependency(setup):
     await feature(setup, "later")
     await db.add_dependency("later", "previous")
 
+    assert not await _delivery_pending(db, "previous")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
+
+
+async def test_branchful_undelivered_dependency_still_blocks_publication(setup):
+    db, service, source, remote, _repo = setup
+    await feature(setup, "unpublished")
+    git(source, "push", "origin", "--delete", "unpublished")
+    await feature(setup, "dependent")
+    await db.add_dependency("dependent", "unpublished")
+    assert await _delivery_pending(db, "unpublished")
+    assert (await db.get_task("dependent")).is_blocked
+
     assert (await service.sweep("p"))["outcome"] == "idle"
-    assert (await db.get_task_meta("later", PUBLISHER_SKIP_KEY))["dependency_id"] == "previous"
+    skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert skip["reason"] == "dependency_unavailable"
+    assert skip["dependency_id"] == "unpublished"
+    assert git(remote, "rev-parse", "main") != git(source, "rev-parse", "dependent")
 
 
 async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup, caplog):

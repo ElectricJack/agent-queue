@@ -40,6 +40,7 @@ from src.database.tables import (
     tasks,
 )
 from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
+from src.integration.publishable_artifact import has_publishable_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +161,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
         .where(
             project.c.id == task.c.project_id,
             project.c.hierarchical_integration_mode == "development",
-            task.c.branch_name.is_not(None),
+            has_publishable_artifact(task.c.branch_name),
             repo_scope,
             ~delivered,
         )

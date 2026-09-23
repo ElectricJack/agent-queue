@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text, update
 
 from src.database.queries.blocked_state import blocked_predicate
-from src.database.tables import development_deliveries as deliveries
+from src.database.tables import archived_tasks, development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.delegate_release import release_delegates_on
@@ -38,6 +38,7 @@ from src.integration.delivery_branches import (
     released_integration_refs,
     remote_heads,
 )
+from src.integration.publishable_artifact import has_publishable_artifact
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -618,7 +619,7 @@ class DevelopmentIntegration:
                                 tasks.c.project_id == project_id,
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
-                                tasks.c.branch_name.is_not(None),
+                                has_publishable_artifact(tasks.c.branch_name),
                                 *([tasks.c.id == recover_child_id] if recover_child_id else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
@@ -664,7 +665,44 @@ class DevelopmentIntegration:
                 for task in eligible:
                     ordered.append(task)
                     remaining.pop(task["id"])
+            candidate_ids = {task["id"] for task in candidates}
+            dependency_ids = set().union(*dependencies.values()) if dependencies else set()
             unavailable = {task_id for task_id, _source in parked}
+            # An old parked receipt cannot make a branchless container require
+            # publication. Include archived tasks because a dependency may
+            # already have moved out of the live table.
+            artifact_ids = (
+                dependency_ids | unavailable
+                | {task["parent_task_id"] for task in candidates if task["parent_task_id"]}
+            ) - candidate_ids
+            branch_by_id = {task["id"]: task["branch_name"] for task in candidates}
+            if artifact_ids:
+                async with self.db._engine.connect() as conn:
+                    live = (
+                        await conn.execute(
+                            select(tasks.c.id, tasks.c.branch_name)
+                            .where(tasks.c.id.in_(artifact_ids))
+                        )
+                    ).all()
+                    branch_by_id.update(live)
+                    missing = artifact_ids - branch_by_id.keys()
+                    if missing:
+                        archived = (
+                            await conn.execute(
+                                select(archived_tasks.c.id, archived_tasks.c.branch_name)
+                                .where(archived_tasks.c.id.in_(missing))
+                            )
+                        ).all()
+                        branch_by_id.update(archived)
+
+            def requires_publication(task_id):
+                # Missing tasks remain unavailable; only a known branchless
+                # task is satisfied without a source.
+                return task_id not in branch_by_id or has_publishable_artifact(
+                    branch_by_id[task_id]
+                )
+
+            unavailable = {task_id for task_id in unavailable if requires_publication(task_id)}
             # A delivered source on the pinned target satisfies a dependency.
             # Recovery can leave newer parked/conflict rows for other attempts,
             # including rows later adopted by a repair. Those attempts cannot
@@ -680,9 +718,9 @@ class DevelopmentIntegration:
             # branch was cleaned up or its task was archived. Bind an already
             # contained source to the default ref so readiness can release
             # descendants without consulting that missing branch.
-            candidate_ids = {task["id"] for task in candidates}
-            dependency_ids = set().union(*dependencies.values()) if dependencies else set()
             for dependency_id in sorted(dependency_ids):
+                if not requires_publication(dependency_id):
+                    continue
                 if dependency_id in candidate_ids or dependency_id in unavailable:
                     continue
                 source = await self._delivered_source(
@@ -716,11 +754,18 @@ class DevelopmentIntegration:
             source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
             for task in ordered:
                 processed.add(task["id"])
-                if task["parent_task_id"] in blocked_parents:
+                if (
+                    task["parent_task_id"] in blocked_parents
+                    and requires_publication(task["parent_task_id"])
+                ):
                     unavailable.add(task["id"])
                     skipped[task["id"]] = ("parent_unavailable", task["parent_task_id"])
                     continue
-                unavailable_dependencies = dependencies.get(task["id"], set()) & unavailable
+                unavailable_dependencies = {
+                    dependency_id
+                    for dependency_id in dependencies.get(task["id"], set()) & unavailable
+                    if requires_publication(dependency_id)
+                }
                 if unavailable_dependencies:
                     for dependency_id in sorted(unavailable_dependencies):
                         logger.warning(
