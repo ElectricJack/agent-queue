@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import random
 
-from sqlalchemy import and_, exists, insert, or_, select, update
+from sqlalchemy import and_, exists, func, insert, or_, select, update
 
 from src.database.tables import (
     doc_review_comments, doc_review_dispatches, doc_review_revisions, doc_reviews, task_gates,
@@ -229,16 +229,42 @@ class ReviewQueriesMixin:
 
     # -- comments ----------------------------------------------------------
 
-    async def insert_review_comment(self, comment: dict) -> None:
-        async with self._engine.begin() as conn:
-            await conn.execute(insert(doc_review_comments).values(**comment))
+    async def insert_review_comment(self, comment: dict, *, conn=None) -> None:
+        """Insert one comment, assigning its per-review creation sequence.
+
+        ``created_seq`` is the comment's position among that review's comments
+        (1-based), which fixes the ordering when the clock hands two comments
+        the same ``created_at``; the random ``id`` must never be a tiebreak.
+        A caller passing ``created_seq`` explicitly (tests, imports) wins.
+        Runs on *conn* when given so the read and the insert share the
+        caller's transaction and it never commits.
+        """
+        values = dict(comment)
+        next_seq_stmt = select(
+            func.coalesce(func.max(doc_review_comments.c.created_seq), 0) + 1
+        ).where(doc_review_comments.c.review_id == comment["review_id"])
+        if conn is not None:
+            if values.get("created_seq") is None:
+                values["created_seq"] = (await conn.execute(next_seq_stmt)).scalar_one()
+            await conn.execute(insert(doc_review_comments).values(**values))
+        else:
+            async with self._engine.begin() as execution:
+                if values.get("created_seq") is None:
+                    values["created_seq"] = (await execution.execute(next_seq_stmt)).scalar_one()
+                await execution.execute(insert(doc_review_comments).values(**values))
 
     async def list_review_comments(self, review_id: str) -> list[dict]:
-        """Every comment on *review_id*, in the order they were made."""
+        """Every comment on *review_id*, in the order they were made.
+
+        ``created_at`` is the creation clock and stays the primary key.  Two
+        comments that share a stamp (a coarse or frozen clock) are broken by
+        the per-review ``created_seq`` assigned at insert — their real creation
+        order — never by the random ``id``.
+        """
         stmt = (
             select(doc_review_comments)
             .where(doc_review_comments.c.review_id == review_id)
-            .order_by(doc_review_comments.c.created_at.asc(), doc_review_comments.c.id.asc())
+            .order_by(doc_review_comments.c.created_at.asc(), doc_review_comments.c.created_seq.asc())
         )
         async with self._engine.begin() as conn:
             rows = (await conn.execute(stmt)).mappings().fetchall()
