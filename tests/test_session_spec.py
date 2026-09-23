@@ -577,6 +577,58 @@ class TestPromptDelivery:
         assert "aq session drain-ack" in spec.prompt
         assert "task-1" in spec.prompt
 
+    @pytest.mark.parametrize(
+        ("profile_id", "project_id"),
+        [
+            ("supervisor", "proj-1"),
+            ("supervisor", None),
+            ("supervisor-global", None),
+            ("n-supervisor--proj-1", "proj-1"),
+        ],
+    )
+    def test_supervisor_named_bootstrap_establishes_patrol(
+        self, builder, profile_id, project_id
+    ):
+        spec = builder.build_named_spec(
+            profile=_Profile(id=profile_id),
+            harness=CLAUDE,
+            project_id=project_id,
+            work_dir="/wd",
+            session_id="s1",
+            instance_token="t1",
+        )
+        prompt = spec.prompt
+        assert "As your FIRST action on a cold start" in prompt
+        assert prompt.index("As your FIRST action") < prompt.index("Run `aq message inbox")
+        assert "list the scheduled jobs" in prompt
+        assert "Do not create a second patrol" in prompt
+        assert "CronCreate" in prompt and "~15 minutes" in prompt
+        assert "off the :00/:30 marks" in prompt
+        assert "python3 ~/.agent-queue/operator-checks/stall-sweep.py" in prompt
+        assert "aq --json message inbox --inject" in prompt
+        assert "aq --json message inbox --to profile:supervisor" in prompt
+        assert "aq --json message inbox --to session:supervisor-agent-queue" in prompt
+        assert "FIX what it finds" in prompt
+        assert "no scheduler" in prompt and "start of every turn" in prompt
+        assert "re-establish it after any restart" in prompt
+        assert "Do not run background inbox polls or shell sleep loops" in prompt
+        assert "Do not run `aq prime`" in prompt
+
+    @pytest.mark.parametrize("profile_id", ["claude-opus", "supervisor-auditor"])
+    def test_other_named_bootstrap_has_no_patrol(self, builder, profile_id):
+        spec = builder.build_named_spec(
+            profile=_Profile(id=profile_id),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/wd",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert "recurring patrol" not in spec.prompt
+        assert "CronCreate" not in spec.prompt
+        assert "Do not run background inbox polls or shell sleep loops" in spec.prompt
+        assert "Do not run `aq prime`" in spec.prompt
+
     def test_oversized_prompt_moves_to_a_file(self, builder):
         big = "x" * 5000
         spec = _build(builder, prompt=big)

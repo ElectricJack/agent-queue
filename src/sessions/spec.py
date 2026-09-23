@@ -128,6 +128,7 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
 #: session exists to process.
 NAMED_BOOTSTRAP_PROMPT = (
     "You are the {profile} session in {work_dir}.\n"
+    "{supervisor_patrol}"
     "Run `aq message inbox --inject --json` once to retrieve pending messages, "
     "then handle anything waiting.\n"
     "For each AQ notification, retrieve the referenced message and handle its body. "
@@ -138,6 +139,23 @@ NAMED_BOOTSTRAP_PROMPT = (
     "AQ will wake you when more messages arrive. "
     "Do not run background inbox polls or shell sleep loops; they can prevent message nudges. "
     "Do not run `aq prime` — it is task-scoped and there is no task here."
+)
+
+SUPERVISOR_PATROL_PROMPT = (
+    "You are responsible for keeping AQ running between messages. "
+    "As your FIRST action on a cold start, list the scheduled jobs and establish "
+    "a recurring patrol on your harness scheduler if one does not already exist. "
+    "Do not create a second patrol. Claude Code: use the CronCreate tool every "
+    "~15 minutes, off the :00/:30 marks. The patrol prompt must run "
+    "`python3 ~/.agent-queue/operator-checks/stall-sweep.py` from the vault, "
+    "poll all three supervisor inboxes (`aq --json message inbox --inject`, "
+    "`aq --json message inbox --to profile:supervisor`, and "
+    "`aq --json message inbox --to session:supervisor-agent-queue`), and FIX "
+    "what it finds rather than only reporting it. A scheduler job is not a "
+    "background inbox poll or shell sleep loop. The patrol only lives as long "
+    "as this session; re-establish it after any restart. If your harness has "
+    "no scheduler, say so once in your first reply and fall back to sweeping "
+    "at the start of every turn.\n"
 )
 
 #: Bootstrap for a pool worker session (swarm-work-model §11.3) — no task in
@@ -330,8 +348,15 @@ class SessionSpecBuilder:
             profile_id, "global" if profile_id == "supervisor" and project_id is None else project_id
         )
         effective_resume = resume_key if wake == "resume" else None
+        is_supervisor = (
+            profile_id in {"supervisor", "supervisor-global"}
+            or profile_id.startswith("n-supervisor--")
+            or name.startswith("n-supervisor--")
+        )
         bootstrap = prompt if prompt is not None else NAMED_BOOTSTRAP_PROMPT.format(
-            profile=profile_id or "agent", work_dir=work_dir
+            profile=profile_id or "agent",
+            work_dir=work_dir,
+            supervisor_patrol=SUPERVISOR_PATROL_PROMPT if is_supervisor else "",
         )
         return self._build(
             harness=harness,
