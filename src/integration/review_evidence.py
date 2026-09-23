@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import math
 import time
 import uuid
 from typing import Any
 
-from sqlalchemy import insert, select
+from sqlalchemy import and_, func, insert, select
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    archived_tasks,
     integration_review_evidence,
     task_branch_origins,
     task_dependencies,
@@ -19,6 +21,7 @@ from src.database.tables import (
     projects,
 )
 from src.git.manager import RemoteRefState
+from src.integration.settling import note_approval
 from src.models import TaskStatus
 
 
@@ -33,6 +36,204 @@ class ReviewEvidenceProducer:
         self.db = db
         self.promotion = promotion_service
         self.clock = clock
+
+    async def snapshot_from_pull_request(
+        self,
+        epic_task_id: str,
+        *,
+        verdict: str,
+        reviewer_login: str,
+        reviewed_sha: str,
+        summary: str = "",
+        feedback: str = "",
+    ) -> dict[str, Any] | None:
+        """Store a GitHub verdict against the exact verified train epic head."""
+        if verdict not in {"approved", "rejected"}:
+            raise ValueError(f"unsupported verdict: {verdict}")
+        if not reviewer_login or not reviewer_login.strip():
+            raise ValueError("reviewer_login is required")
+
+        async with self.db._engine.connect() as conn:
+            source = await self._pull_request_source_on(conn, epic_task_id)
+        if source is None:
+            return None
+        if reviewed_sha != source["head"]:
+            raise HierarchyError("stale_head", "reviewed head is not the verified epic head")
+
+        resolved = await self.promotion._resolve_repository(source["repository_id"])
+        if resolved.repo.project_id != source["project_id"]:
+            raise HierarchyError("invalid", "review repository project changed")
+        await self.promotion._ensure_retained_repository(resolved)
+        async with self.promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+            await self.promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+            remote = await self.promotion.git.als_remote_ref(
+                str(resolved.retained_git_dir), source["branch"]
+            )
+            if remote.state is not RemoteRefState.PRESENT or remote.oid != reviewed_sha:
+                raise HierarchyError("stale_head", "reviewed remote ref is not the exact head")
+            tree = await self.promotion._tree_oid(resolved.retained_git_dir, reviewed_sha)
+
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            current = await self._pull_request_source_on(conn, epic_task_id)
+            if current != source:
+                raise HierarchyError("stale_head", "epic snapshot changed before verdict commit")
+            identity = ":".join(
+                (
+                    "github",
+                    epic_task_id,
+                    source["repository_id"],
+                    source["base"],
+                    reviewed_sha,
+                    str(source["generation"]),
+                    verdict,
+                    reviewer_login,
+                    source["pr_url"],
+                )
+            )
+            evidence_id = f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}"
+            existing = (
+                (
+                    await conn.execute(
+                        select(integration_review_evidence).where(
+                            integration_review_evidence.c.id == evidence_id
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                return dict(existing)
+            latest_created_at = (
+                await conn.execute(
+                    select(func.max(integration_review_evidence.c.created_at)).where(
+                        integration_review_evidence.c.source_task_id == epic_task_id,
+                        integration_review_evidence.c.repository_id == source["repository_id"],
+                        integration_review_evidence.c.source_base == source["base"],
+                        integration_review_evidence.c.reviewed_head_sha == reviewed_sha,
+                        integration_review_evidence.c.generation == source["generation"],
+                    )
+                )
+            ).scalar_one()
+            created_at = self.clock()
+            if latest_created_at is not None:
+                created_at = max(created_at, math.nextafter(latest_created_at, math.inf))
+            evidence = {
+                "id": evidence_id,
+                "source_task_id": epic_task_id,
+                "repository_id": source["repository_id"],
+                "source_base": source["base"],
+                "reviewed_head_sha": reviewed_sha,
+                "reviewed_tree_sha": tree,
+                "reviewer_task_id": None,
+                "reviewer_session_attempt_id": None,
+                "reviewer_identity": f"github:{reviewer_login}",
+                "review_kind": "parent",
+                "generation": source["generation"],
+                "verdict": verdict,
+                "evidence": {
+                    "decision_path": "github_pull_request",
+                    "summary": summary,
+                    "feedback": feedback,
+                    "reviewed_sha": reviewed_sha,
+                    "pr_url": source["pr_url"],
+                    "verification_id": source["verification_id"],
+                },
+                "created_at": created_at,
+            }
+            await self._append_on(conn, evidence)
+            if verdict == "approved":
+                await note_approval(conn, project_id=source["project_id"], now=created_at)
+            return evidence
+
+    async def _pull_request_source_on(self, conn, epic_task_id: str) -> dict[str, Any] | None:
+        checkpoint = task_integration_checkpoints
+        origin = task_branch_origins
+        row = (
+            (
+                await conn.execute(
+                    select(
+                        tasks.c.project_id,
+                        tasks.c.branch_name.label("branch"),
+                        tasks.c.pr_url,
+                        tasks.c.repo_id.label("repository_id"),
+                        checkpoint.c.checkpoint_sha,
+                        checkpoint.c.verified_sha.label("head"),
+                        checkpoint.c.verified_generation,
+                        checkpoint.c.generation,
+                        checkpoint.c.current_verification_id.label("verification_id"),
+                        checkpoint.c.last_completed_verification_id,
+                        origin.c.base_sha.label("base"),
+                    )
+                    .select_from(
+                        tasks.join(projects, projects.c.id == tasks.c.project_id)
+                        .join(
+                            checkpoint,
+                            and_(
+                                checkpoint.c.task_id == tasks.c.id,
+                                checkpoint.c.repository_id == tasks.c.repo_id,
+                                checkpoint.c.branch == tasks.c.branch_name,
+                            ),
+                        )
+                        .join(
+                            origin,
+                            and_(
+                                origin.c.task_id == tasks.c.id,
+                                origin.c.repository_id == tasks.c.repo_id,
+                                origin.c.retired_at.is_(None),
+                            ),
+                        )
+                    )
+                    .where(
+                        tasks.c.id == epic_task_id,
+                        tasks.c.parent_task_id.is_(None),
+                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        tasks.c.branch_name.is_not(None),
+                        tasks.c.pr_url.is_not(None),
+                        projects.c.hierarchical_integration_mode == "train",
+                        projects.c.integration_repository_id == tasks.c.repo_id,
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if (
+            row is None
+            or not row["pr_url"].strip()
+            or not row["branch"].strip()
+            or row["head"] is None
+            or row["head"] != row["checkpoint_sha"]
+            or row["verified_generation"] != row["generation"]
+            or not row["verification_id"]
+            or row["verification_id"] != row["last_completed_verification_id"]
+        ):
+            return None
+        active_child = (
+            await conn.execute(
+                select(tasks.c.id).where(tasks.c.parent_task_id == epic_task_id).limit(1)
+            )
+        ).first()
+        archived_child = (
+            await conn.execute(
+                select(archived_tasks.c.id)
+                .where(archived_tasks.c.parent_task_id == epic_task_id)
+                .limit(1)
+            )
+        ).first()
+        if active_child is None and archived_child is None:
+            return None
+        return {
+            "project_id": row["project_id"],
+            "repository_id": row["repository_id"],
+            "branch": row["branch"],
+            "pr_url": row["pr_url"],
+            "base": row["base"],
+            "head": row["head"],
+            "generation": int(row["generation"]),
+            "verification_id": row["verification_id"],
+        }
 
     async def snapshot(
         self,
