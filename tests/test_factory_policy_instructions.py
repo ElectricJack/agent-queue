@@ -107,6 +107,8 @@ def test_policy_is_one_short_normative_page():
     assert "no automatic" in flat
     assert "one configured publisher" in flat
     assert "never a pass" in flat
+    assert "recorded known-failing baseline" in flat
+    assert "full-suite runs belong to ci" in flat
     # Short on purpose: role instructions reference it instead of copying it.
     assert len(text.splitlines()) <= 90
 

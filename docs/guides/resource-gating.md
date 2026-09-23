@@ -125,6 +125,26 @@ aq test --aq-dry-run tests/              # print the pytest command
 aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
+### Test scope and the recorded baseline
+
+Run focused tests for changed behavior and then the related area suite. Record
+the exact `aq test` commands. The full suite runs in CI or in a task whose
+subject is the suite; it is not a routine worker close check. Task authors
+should name the focused and area checks a worker must run rather than require
+"run the full suite before closing".
+
+For the agent-queue project, the recorded known-failing list on `origin/main`
+is a dated note in the operator vault:
+`projects/agent-queue/notes/full-suite-baseline-2026-09-22.md` (under the
+configured vault root, normally `~/.agent-queue/vault/`). Read the latest
+recorded note and its source main SHA or CI run before interpreting a failure.
+Compare failing test node IDs with that list. Investigate failures absent from
+the list as possible regressions. If a listed failure is unrelated to your
+change, name it in the close summary and continue; do not fail the task or
+weaken or skip the test because main is red. If your task changes the failing
+area, investigate its result rather than assuming the old classification still
+applies. Never run another full suite just to capture your own baseline.
+
 PostgreSQL is required for the suite. Configure a disposable server before
 running tests (the base database is used only as a maintenance connection):
 

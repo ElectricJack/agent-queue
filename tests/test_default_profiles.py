@@ -81,6 +81,29 @@ def test_seeded_worker_profiles_require_material_progress_notes(tmp_path):
         assert "while working" in prompt, profile_id
 
 
+def test_seeded_worker_profiles_carry_test_scope_and_baseline_policy(tmp_path):
+    """Every runnable worker inherits bounded checks and baseline handling."""
+    ensure_default_profiles(str(tmp_path))
+
+    for profile_id in WORKER_PROFILE_IDS:
+        text = _vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8")
+        parsed = parse_profile(text)
+        assert parsed.is_valid, (profile_id, parsed.errors)
+        rules = " ".join(parsed.rules.lower().split())
+        for required in (
+            "aq test",
+            "focused tests",
+            "area suite",
+            "full-suite runs belong to ci",
+            "recorded known-failing baseline",
+            "never capture your own baseline",
+            "pre-existing failure does not fail your task",
+            "weakening or skipping a test",
+            "when authoring a task",
+        ):
+            assert required in rules, (profile_id, required)
+
+
 def test_seeded_supervisor_profile_has_named_session_config(tmp_path):
     """Supervisor profile carries the named-session config the lens needs."""
     ensure_default_profiles(str(tmp_path))

@@ -140,8 +140,13 @@ somehow declares none.
   `aq stop` and `aq restart` are equally forbidden; end-to-end checks must use
   a disposable daemon on another port and data directory.
 - **Test what you change.** Run focused tests using the project's resource
-  controls. Record exact commands and results; unavailable checks are not passes.
-  Follow the project's configured validation scope, not an assumed full-suite run.
+  controls (`aq test`), then the related area suite. Record exact commands and
+  results; unavailable checks are not passes. Full-suite runs belong to CI and
+  tasks whose subject is the suite, not a routine worker close. Compare failures
+  with the recorded known-failing baseline note; never capture your own baseline.
+  A pre-existing failure does not fail your task or justify weakening or skipping
+  a test; name it in the close summary. When authoring a task, specify focused
+  and area checks instead of "run the full suite before closing".
 - **Preserve work.** Push code changes to the assigned branch and record the
   head SHA and checks. Open a PR only when the task/project requires one.
   A worker checkpoint is not proof that its changes reached the default branch.

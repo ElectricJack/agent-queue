@@ -91,7 +91,8 @@ Rules:
   ```
 - **Skip the slow-by-nature markers** unless the change is about them (real tmux, Milvus, latency budgets). `aq test` applies `-m "not perf and not migration and not slow and not tmux and not integration"` by default; pass your own `-m` (or `--aq-all-markers`) when the change *is* about them.
 - **Latency budgets need a quiet box.** Everything in `tests/perf/` is marked `perf`, and every wall-clock budget — there or elsewhere in `tests/` — also takes the `perf_strict` fixture (`tests/conftest.py`) and skips unless `AQ_PERF_STRICT=1`; they measure the machine as much as the query, and an ungated one turns CI's `Tests (default)` arm red on runner load. Run them serially and deliberately: `AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf`. See [resource gating](docs/guides/resource-gating.md).
-- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run is for CI and explicit review gates only.
+- **One broader run at the end of a task, not during:** the area suite for what you changed (e.g. `aq test tests/test_playbook*.py tests/test_pipeline*.py`). The whole-repo run belongs to CI and tasks whose subject is the suite.
+- **Use the recorded baseline, never capture your own:** compare failures with the known-failing list in the latest `projects/agent-queue/notes/full-suite-baseline-<date>.md` vault note (see [resource gating](docs/guides/resource-gating.md)). A pre-existing failure does not fail your task or justify weakening or skipping a test; name it in the close summary. Task authors should specify focused and area checks, never require "run the full suite before closing".
 - Ruff on changed files only: `ruff check <paths>`.
 
 ## Database Migrations (Alembic)

@@ -14,6 +14,14 @@ are stuck; exit code 75 means no slot came free, which is retryable and not a te
 raise `-n` above what the session was given — the cap is what keeps concurrent agents from
 saturating the machine.
 
+Run focused tests for what changed and the related area suite, and record the exact commands.
+Full-suite runs belong to CI and tasks whose subject is the suite; do not run one as a routine
+close check. Compare failures with the project's recorded known-failing baseline note instead
+of capturing your own baseline. A pre-existing failure does not fail your task and is never a
+reason to weaken or skip a test; name it in your close summary. When authoring a task, specify
+focused and area checks, not "run the full suite before closing". For the agent-queue project,
+see `docs/guides/resource-gating.md` for the baseline-note path and comparison workflow.
+
 A small, fixed set of native tools also exists for calls you'll make mid-turn where a native
 tool call beats shelling out: `task_show`, `task_set`, `task_comment`, `task_comments`, `task_close`, `task_heartbeat`,
 `task_claim`, `task_handoff`, `message_send`, `message_inbox`, `memory_save`,
