@@ -326,6 +326,69 @@ async def test_recover_child_publishes_past_delivered_dependency_without_ref(set
     assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
 
 
+@pytest.mark.parametrize("recover", [False, True])
+@pytest.mark.parametrize("child_already_on_main", [False, True])
+async def test_delivered_dependency_survives_later_conflict_and_adoption_rows(
+    setup, recover, child_already_on_main,
+):
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    await db.save_task_completion(TaskCompletion(
+        id="previous-close", task_id="previous", outcome="pass",
+        commits=[previous], completed_at=time.time(),
+    ))
+    # Recovery attempts may leave a newer, uncontained conflict revision and
+    # an adopted conflict row. Neither revokes the original delivery on main.
+    git(source, "checkout", "previous")
+    (source / "conflict-attempt.txt").write_text("unpublished\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "conflict attempt")
+    conflict = git(source, "rev-parse", "HEAD")
+    await _park(service, "later-conflict", [
+        {"task_id": "previous", "source_sha": conflict}
+    ], reason="source conflict; independent work may continue")
+    now = time.time()
+    await service.save({
+        "id": "later-adoption", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/aq/development/parent/old",
+        "expected_sha": None, "prepared_sha": conflict,
+        "state": "adopted", "manifest": [
+            {"task_id": "previous", "source_sha": conflict}
+        ], "evidence": {"kind": "source_conflict"},
+        "reason": "source conflict; independent work may continue",
+        "created_at": now, "updated_at": now,
+    })
+    git(source, "push", "origin", "--delete", "previous")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "previous").values(branch_name=None))
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+    if child_already_on_main:
+        git(source, "fetch", "origin", "main")
+        git(source, "merge", "--no-edit", "origin/main")
+        later = git(source, "rev-parse", "HEAD")
+        git(source, "push", "origin", "later")
+        await db.save_task_completion(TaskCompletion(
+            id="later-close", task_id="later", outcome="pass",
+            commits=[later], completed_at=time.time(),
+        ))
+        git(source, "push", "origin", f"{later}:main")
+        git(source, "push", "origin", "--delete", "later")
+
+    result = await service.recover_child("p", "later") if recover else await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+    assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
+    assert any(
+        row["target_ref"] == "refs/heads/main"
+        and row["state"] == "delivered"
+        and any(member["task_id"] == "later" for member in row["manifest"])
+        for row in await service.rows("p")
+    )
+
+
 @pytest.mark.parametrize("receipt_state", ["delivered", "adopted"])
 @pytest.mark.parametrize("recover", [False, True])
 async def test_non_default_receipt_releases_deleted_dependency_ref(setup, receipt_state, recover):
@@ -406,6 +469,10 @@ async def test_old_delivery_does_not_clear_parked_newer_dependency(setup):
     git(source, "commit", "-m", "new revision")
     newer = git(source, "rev-parse", "HEAD")
     git(source, "push", "origin", "previous")
+    await db.save_task_completion(TaskCompletion(
+        id="new-revision-close", task_id="previous", outcome="pass",
+        commits=[newer], completed_at=time.time(),
+    ))
     await _park(service, "newer-attempt", [{"task_id": "previous", "source_sha": newer}])
     git(source, "push", "origin", "--delete", "previous")
     async with db._engine.begin() as conn:
