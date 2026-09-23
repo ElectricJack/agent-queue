@@ -24,7 +24,7 @@ from src.runtimes.base import Runtime
 from src.config import DatabaseConfig, AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
-from src.git.manager import GitManager
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from tests.assignment_routing_helpers import install_already_routed
 from tests.db_fixtures import lease_dsn
 
@@ -1871,7 +1871,9 @@ class TestPhaseVerifyApprovalTask:
         o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
-        await o.db.create_project(Project(id="p-1", name="alpha"))
+        await o.db.create_project(
+            Project(id="p-1", name="alpha", repo_url="https://github.com/org/repo.git")
+        )
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
         await o.db.create_workspace(
@@ -1895,6 +1897,10 @@ class TestPhaseVerifyApprovalTask:
         # Default: the task branch carries work, so the PR gate applies.
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+        mock_git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
