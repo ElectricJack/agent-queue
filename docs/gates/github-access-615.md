@@ -6,7 +6,13 @@ against [the specification](../specs/github-access.md#11-verification-and-accept
 and [the disposable repository runbook](../plans/github-access/acceptance-runbook.md),
 not a sign-off on the private repository workflow.
 
-Live acceptance is tracked by task `prime-grove`, which is **BLOCKED** until the disposable fixtures are supplied.
+**Current disposition (2026-09-23 UTC): issue #615 is completed.** The
+App-only live run passed on the disposable repository after the credential
+broker repair. The opening disposition remains the historical mock-only
+assessment from `fair-bridge.4`; the final live result is recorded below.
+
+Live acceptance subsequently moved to task `prime-grove` after the
+disposable fixtures were supplied.
 
 The preceding disposition records the state when `fair-bridge.4` closed. The
 subsequent live run and its current result are recorded below.
@@ -76,17 +82,17 @@ CI conclusions, authenticated actor observations or cleanup confirmations.
 | App denial with an available PAT | `not_run` | Safe AQ failures and independent audit proof that the PAT actor performed no write |
 | Final fixture cleanup | `not_run` | Deletion/revocation confirmation and UTC time |
 
-Before recommending #615 completion, finish the legacy-launcher removal,
-provision the disposable inputs in the runbook, and run its full App-only and
-existing-login sequences. Record sanitized commands/results, the supported
-`gh` version, exact remote revisions, actor checks and cleanup in this gate.
+At the close of `fair-bridge.4`, the remaining plan was to finish the
+legacy-launcher removal, provision the disposable inputs, and run the App-only
+and existing-login sequences. The live attempts below retain their separate
+results and gaps.
 
 ## Live disposable run: `gh615-20260923` (in progress)
 
 Task `prime-grove` started a separate App daemon and a separate existing-login
 daemon against disposable private repositories on 2026-09-23 UTC. This is live
-GitHub evidence. **Current disposition: acceptance failed at App onboarding
-and AQ task close; issue #615 completion is not recommended.** The App
+GitHub evidence. **Disposition at this attempt: acceptance failed at App
+onboarding and AQ task close; issue #615 completion was not recommended.** The App
 installation permission update has propagated and direct token mint works.
 The historical bootstrap failure and its source repairs are recorded below;
 the later rerun at `c7cf95f4f` is recorded at the end of this file. All
@@ -288,8 +294,8 @@ mock-only evidence. No full-suite run was made.
 
 ## App-only rerun after deployed repairs: `c7cf95f4f` (2026-09-23 UTC)
 
-This section supersedes the status table above for the latest attempt. The
-isolated source checkout was rebuilt at
+This section superseded the status table above until the later successful
+App-only run. The isolated source checkout was rebuilt at
 `c7cf95f4f33ec9f486dcf28323125e5570f910f9`, which contains the App
 permission-name repair, bounded HTTP response read, and PR delivery tracking
 repair. The App daemon used the retained disposable database and port `18155`.
@@ -344,5 +350,43 @@ confirmed closed. The disposable repositories, installation and fixture data
 are retained for the next authorized rerun. No new automated suite was run:
 this task changed only this live evidence record, while the earlier
 `126 passed, 3 skipped` result remains explicitly mock-only. **Issue #615
-completion is not recommended** until the App-only PR, CI, merge and delivery
-steps succeed without ambient credentials.
+completion was not recommended at this point** because the App-only PR, CI,
+merge and delivery steps had not succeeded without ambient credentials.
+
+## Final App-only acceptance and #615 disposition (2026-09-23 UTC)
+
+The subsequent App-only run is recorded in the
+[live App-only repair rerun](github-access-615-app-only-2026-09-23.md). Task
+`steady-flare` ran it from source commit
+`9cd4481321b59053154a275d6e0433ec25c80ce5` against the authorized
+disposable App repository, ID `1384141153`, with real `gh` version `2.45.0`.
+The daemon had an empty `GH_CONFIG_DIR`, no ambient GitHub token or usable SSH
+credential, and disabled global/system Git configuration. Before startup,
+`gh auth status` exited `1` with no GitHub login. The isolated daemon was
+stopped after the run. This task records the linked run and supervisor's
+independent GitHub API verification; it did not repeat the live operations.
+
+| App-only step | Verified live result |
+| --- | --- |
+| Private URL onboarding | `github_clone` succeeded on `main` at `206e0b7c1d93415ae470a34a3569dac3f099e84f`. |
+| Held task and push | `quick-current` committed `2afdd98e463471df4b669fcda972053d5c3cad25` on `aq/quick-current`; AQ push and App-token remote-ref HTTP `200` agreed on that OID. |
+| PR create and view | AQ created [fixture PR 1](https://github.com/ElectricJack/aq-gh615-app-fixture-20260923/pull/1). App-token API HTTP `200` showed the same head OID, base `206e0b7c1d93415ae470a34a3569dac3f099e84f`, and creator `electricjack-aq-github-test[bot]`. |
+| CI | App-token check-runs API HTTP `200` showed both fixture checks completed with `success`. |
+| Merge | AQ's CLI response was ambiguous, so the verifier checked GitHub before retrying. PR API HTTP `200` showed a merge by `electricjack-aq-github-test[bot]` at `2026-09-23T23:12:53Z`; remote `main` HTTP `200` matched merge OID `69f6b18f5998b074b141903b6d3a51bcec9e4b84`. The task branch ref returned HTTP `404` after merge. |
+| Normal AQ task close and delivery | `task close --outcome pass --claim-next` returned `COMPLETED`, `pipeline_ok=true`, and `drain_requested`. The daemon logged `apush_validated_delivery` using the App credential. |
+
+The App-only clone, push, PR, CI, merge, and task-close path passed without
+ambient GitHub login. The supervisor independently verified the App actor,
+successful checks, and remote merge OID, and reported that Jack closed issue
+#615 after the App-only PR operations passed. **Final #615 disposition:
+completed.**
+
+The following remain open or without live coverage:
+
+| Item | Status |
+| --- | --- |
+| Post-merge branch recreation | Observed: AQ close recreated `aq/quick-current` at `2afdd98e463471df4b669fcda972053d5c3cad25` after merge had deleted it. The verifier deleted the disposable branch (HTTP `204`); final ref read was HTTP `404`. Repair task `noble-forge` tracks the regression; its fix was not verified in this run. |
+| App denial with an available PAT | `not_run` live; the earlier no-fallback result is mock-only. |
+| Two-repository App token separation | `not_run` live; installation `164168761` selected only one fixture repository. |
+| Installation-token expiry refresh | `not_run` live; the earlier refresh result is mock-only. |
+| Fixture cleanup | Credential-bearing daemons were stopped. The disposable repositories, App installation, and fixture data remain retained. Removing them is Jack's decision. |
