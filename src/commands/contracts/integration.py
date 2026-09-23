@@ -57,6 +57,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cleanup",
         "integration_status",
         "integration_flush",
+        "integration_eject",
         "integration_enable",
         "integration_reconcile_unmaterialized",
         "integration_waive_history",
@@ -82,6 +83,12 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class IntegrationEjectArgs(CommandArgs):
+    batch_id: str = Field(min_length=1)
+    task_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
 
 
 class IntegrationEnableArgs(CommandArgs):
@@ -177,6 +184,7 @@ class IntegrationOperationalValue(CommandValue):
     project_id: str | None = None
     operation_id: str | None = None
     batch_id: str | None = None
+    task_id: str | None = None
     effective_mode: str | None = None
     desired_mode: str | None = None
     mode: str | None = None
@@ -617,6 +625,13 @@ INTEGRATION_FLUSH = _operational_contract(
     IntegrationStatusArgs,
     ("due", "not_due", "coalesced", "disabled", "draining", "eligibility", "not_found"),
     successes=frozenset({"due", "not_due", "coalesced", "eligibility"}),
+    side_effect=SideEffectClass.COMPOSITE,
+)
+INTEGRATION_EJECT = _operational_contract(
+    "integration_eject",
+    IntegrationEjectArgs,
+    ("ejected", "unknown_batch", "not_a_member", "invalid_state"),
+    successes=frozenset({"ejected"}),
     side_effect=SideEffectClass.COMPOSITE,
 )
 INTEGRATION_ENABLE = _operational_contract(
@@ -1886,6 +1901,16 @@ async def _flush_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None
     )
 
 
+async def _eject_adapter(args: IntegrationEjectArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_eject",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"ejected", "unknown_batch", "not_a_member", "invalid_state"},
+    )
+
+
 async def _enable_adapter(args: IntegrationEnableArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_enable",
@@ -2037,6 +2062,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
+        (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),
         (INTEGRATION_RECONCILE_UNMATERIALIZED, _reconcile_unmaterialized_adapter),
         (INTEGRATION_WAIVE_HISTORY, _waive_history_adapter),

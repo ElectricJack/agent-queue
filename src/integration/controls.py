@@ -17,11 +17,13 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 
 from src.database.tables import (
     gates,
     integration_batches,
+    integration_batch_members,
+    integration_candidate_revisions,
     integration_branch_owners,
     integration_cleanup_items,
     integration_history_waiver_consumptions,
@@ -41,7 +43,7 @@ from src.database.tables import (
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.preflight import daemon_functional_preflight
-from src.integration.scheduler import IntegrationScheduler
+from src.integration.scheduler import IntegrationScheduler, TrainService
 
 ExternalPreflight = Callable[[str, str], Awaitable[tuple[str, ...]] | tuple[str, ...]]
 
@@ -1001,6 +1003,121 @@ class IntegrationControlService:
         if project.hierarchical_integration_mode in {"observe", "hierarchy"}:
             return {"outcome": "eligibility", **await self.preflight(project_id)}
         return await self.scheduler.mark_due(project_id, self.clock(), "manual")
+
+    async def eject(
+        self, batch_id: str, *, task_id: str, reason: str, operator_id: str
+    ) -> dict[str, Any]:
+        """Remove an epic from a sealed train batch without revoking its review."""
+        if not reason.strip():
+            raise ValueError("ejection reason is required")
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            batch = (
+                await conn.execute(select(integration_batches).where(integration_batches.c.id == batch_id))
+            ).mappings().one_or_none()
+            if batch is None:
+                return {"outcome": "unknown_batch", "batch_id": batch_id}
+            project_id = str(batch["project_id"])
+            await self.db.lock_hierarchy_project(conn, project_id)
+            batch = (
+                await conn.execute(
+                    select(integration_batches)
+                    .where(integration_batches.c.id == batch_id)
+                    .with_for_update()
+                )
+            ).mappings().one()
+            members = (
+                await conn.execute(
+                    select(integration_batch_members)
+                    .where(integration_batch_members.c.batch_id == batch_id)
+                    .order_by(integration_batch_members.c.ordinal)
+                )
+            ).mappings().all()
+            if not any(member["task_id"] == task_id for member in members):
+                return {"outcome": "not_a_member", "batch_id": batch_id, "task_id": task_id}
+            revision = (
+                await conn.execute(
+                    select(integration_candidate_revisions.c.revision)
+                    .where(integration_candidate_revisions.c.batch_id == batch_id)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if batch["lifecycle"] != "sealed" or revision is not None:
+                return {"outcome": "invalid_state", "batch_id": batch_id, "task_id": task_id}
+
+            # The database permits sealed-member edits only for this one
+            # batch and only during this transaction. Ordinary writers still
+            # meet the immutable-membership trigger.
+            await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
+
+            await conn.execute(
+                delete(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch_id,
+                    integration_batch_members.c.task_id == task_id,
+                )
+            )
+            remaining = [member for member in members if member["task_id"] != task_id]
+            for ordinal, member in enumerate(remaining):
+                if member["ordinal"] != ordinal:
+                    await conn.execute(
+                        update(integration_batch_members)
+                        .where(
+                            integration_batch_members.c.batch_id == batch_id,
+                            integration_batch_members.c.task_id == member["task_id"],
+                        )
+                        .values(ordinal=ordinal)
+                    )
+            manifest = [
+                {
+                    "task_id": member["task_id"],
+                    "repository_id": member["repository_id"],
+                    "source_base": member["source_base_sha"],
+                    "source_head": member["reviewed_head_sha"],
+                    "review": member["review_evidence"],
+                    "source_ref": member["source_ref"],
+                    "source_ref_retention": member["source_ref_retention"],
+                }
+                for member in remaining
+            ]
+            values: dict[str, Any] = {"updated_at": now}
+            if remaining:
+                values.update(
+                    source_manifest_digest=TrainService._manifest_digest(manifest),
+                    base_sha=remaining[0]["source_base_sha"],
+                )
+            else:
+                values.update(
+                    lifecycle="aborted",
+                    human_abort_reason=reason,
+                    cleanup_state="complete",
+                )
+                await conn.execute(
+                    update(integration_repair_operations)
+                    .where(integration_repair_operations.c.batch_id == batch_id)
+                    .values(state="cancelled", updated_at=now)
+                )
+                await conn.execute(
+                    delete(project_integration_leases).where(
+                        project_integration_leases.c.project_id == project_id,
+                        project_integration_leases.c.batch_id == batch_id,
+                    )
+                )
+                await TrainService._consume_request(conn, project_id, batch["request_id"], now)
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == batch_id)
+                .values(**values)
+            )
+            await self.db.log_event(
+                "integration.batch_ejected",
+                project_id=project_id,
+                task_id=task_id,
+                payload=json.dumps(
+                    {"batch_id": batch_id, "reason": reason, "operator_id": operator_id, "at": now}
+                ),
+                conn=conn,
+            )
+        return {"outcome": "ejected", "batch_id": batch_id, "task_id": task_id, "reason": reason}
 
     async def waive_history(
         self,
