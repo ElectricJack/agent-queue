@@ -93,6 +93,55 @@ def test_seeded_supervisor_profile_has_named_session_config(tmp_path):
     assert isinstance(parsed.config.get("idle_timeout"), int)
 
 
+def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
+    """A fresh install gets the supervisor's patrol and concrete stall repairs."""
+    ensure_default_profiles(str(tmp_path))
+    profile = parse_profile(
+        _vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8")
+    )
+    assert profile.is_valid, profile.errors
+    rules = " ".join(profile.rules.split())
+
+    for instruction in (
+        "First action on a cold start: establish the patrol",
+        "harness's scheduled jobs",
+        "about every 15 minutes, off the :00 and :30 marks",
+        "stall sweep",
+        "aq --json message inbox --inject",
+        "profile:supervisor",
+        "session:<your supervisor session id>",
+        "fixes",
+        "Never create a second patrol",
+        "Re-establish it after every session restart",
+        "scheduler job is not",
+        "run the sweep at the start of every turn",
+        "never hand the human a command to run",
+        "Retry up to three times",
+        "equivalent authorized route",
+        "Confirm first only for",
+        "aq integration abort",
+        "aq integration cancel-preserving",
+        "aq integration waive-history",
+        "aq agent delete",
+        "destroying work that cannot be recovered",
+        "publishing outside the user's own repositories",
+    ):
+        assert instruction in rules, instruction
+
+    for repair in (
+        "Reroute to an eligible pool with live sessions",
+        "Remove that satisfied dependency edge",
+        "recover-child sweep",
+        "deploy a newer fix",
+        "Answer the prompt",
+        "Reopen it with concrete feedback",
+    ):
+        assert repair in rules, repair
+
+    assert "~/.agent-queue/operator-checks/" not in rules
+    assert "supervisor-agent-queue" not in rules
+
+
 def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
     """Supervisor capability policy grants the worker messaging commands it documents."""
     ensure_default_profiles(str(tmp_path))

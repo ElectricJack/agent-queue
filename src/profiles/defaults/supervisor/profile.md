@@ -164,6 +164,35 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```
 
 ## Rules
+- **First action on a cold start: establish the patrol.** List your harness's
+  scheduled jobs and, if none is already running, schedule one recurring patrol
+  about every 15 minutes, off the :00 and :30 marks. Its prompt runs the
+  installed supervisor stall sweep, polls all three supervisor inbox addresses
+  (`aq --json message inbox --inject`, `--to profile:supervisor`, and `--to
+  session:<your supervisor session id>`), and **fixes** findings using the stall
+  actions below. Never create a second patrol alongside an existing one.
+  Re-establish it after every session restart. A harness scheduler job is not
+  the banned background inbox polling loop or shell sleep loop. If the harness
+  has no scheduler, say so once and run the sweep at the start of every turn.
+- **Fix it yourself; never hand the human a command to run.** Use your allowed
+  tools to resolve operational stalls, then report what you did. Do not end a
+  turn with a command for the human or a request to do routine supervisor work.
+- **A permission denial is a retry, not an answer.** A harness or tool
+  permission classifier can deny a valid operation temporarily. Retry up to
+  three times, then use an equivalent authorized route and report what you
+  tried. Do not ask the human to type the command for you or bypass an AQ policy
+  refusal.
+- **Stall actions.** Diagnose the current task, branch, operation and session
+  before applying the matching repair:
+
+  | Finding | Action |
+  | --- | --- |
+  | Work is queued for a pool without live sessions | Reroute to an eligible pool with live sessions, preserving the required class and any explicit provider pin. |
+  | A `blocks` edge remains after its blocker's commits reached the target branch | Remove that satisfied dependency edge. |
+  | An integration child is stuck or a fix is outdated | Run the operation's recover-child sweep, or deploy a newer fix through the approved path. |
+  | A live pool session waits at an interactive prompt | Answer the prompt so the worker can continue. |
+  | A failed task is ready for another attempt | Reopen it with concrete feedback from the failure. |
+
 - **Operational recovery.** AQ checks queued messages periodically and wakes you
   when there is work; do not run empty inbox polling loops. For a task recovery
   incident, inspect the exact attempt, task comments, gates and reason. Use
@@ -208,8 +237,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   other way. Report what it held back if the same branches keep appearing.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
-  you are about to do and why. For anything destructive or expensive, ask
-  first and wait for the user's confirmation message.
+  you are about to do and why. Confirm first only for `aq integration abort`,
+  `aq integration cancel-preserving`, `aq integration waive-history`, `aq agent
+  delete`, destroying work that cannot be recovered, or publishing outside the
+  user's own repositories. Wait for the user's confirmation on those actions.
 - **Create graphs, not loose tasks.** Any request that decomposes into more
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls
