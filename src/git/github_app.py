@@ -1,8 +1,9 @@
-"""GitHub App bootstrap plus its shared-client compatibility constructor.
+"""GitHub App bootstrap: fixed-identity App tokens for the shared ``gh`` runner.
 
 ``AppTokenProvider`` owns the only direct GitHub HTTP calls: fixed App identity
-and installation-token bootstrap requests. ``GitHubAppClient`` combines that
-provider with the repository operations implemented in ``src.git.github``.
+and installation-token bootstrap requests.  Composed repository operations live
+in ``src.git.github`` and are driven through ``GhRunner`` with the tokens minted
+by this provider.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import json
 import os
 import stat
 import time
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -22,8 +22,7 @@ import aiohttp
 import jwt
 
 from src.config import GitHubAppConfig
-from src.git.github import MAX_PAGINATION_BYTES, MAX_RESPONSE_BYTES, GitHubClient
-from src.git.github_cli import DEFAULT_TIMEOUT_SECONDS, GhRunner
+from src.git.github import MAX_RESPONSE_BYTES
 from src.git.github_contracts import (
     GitHubAccessError,
     GitHubCredentialIdentity,
@@ -288,141 +287,6 @@ class AppTokenProvider:
         return _decode_object(response.body)
 
 
-class GitHubAppClient(GitHubClient):
-    """Compatibility constructor combining App bootstrap with the shared client."""
-
-    def __init__(
-        self,
-        config: GitHubAppConfig,
-        repository: GitHubRepositoryBinding,
-        *,
-        key_provider: PrivateKeyProvider,
-        transport: HttpTransport | None = None,
-        clock=time.time,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
-        runner: GhRunner | None = None,
-        executable: str = "gh",
-        env: Mapping[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    ) -> None:
-        if config.validate():
-            raise ValueError("invalid GitHub App configuration")
-        self.config = config
-        self.key_provider = key_provider
-        self.transport = transport or AiohttpTransport()
-        self._token_provider = AppTokenProvider(
-            config,
-            key_provider=key_provider,
-            transport=self.transport,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-        )
-        self._token: str | None = None
-        self._token_expires_at = 0.0
-        self._token_lock = asyncio.Lock()
-        selected_runner = runner or GhRunner(
-            self,
-            executable=executable,
-            env=env,
-            timeout=timeout,
-            max_stdout_bytes=max_response_bytes,
-        )
-        super().__init__(
-            repository,
-            runner=selected_runner,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-            max_pagination_bytes=max_pagination_bytes,
-        )
-
-    @property
-    def credential_identity(self) -> GitHubCredentialIdentity:
-        """Return non-secret App identity independently of the HTTP transport."""
-        return GitHubCredentialIdentity.app(
-            self.config.app_id,
-            self.config.installation_id,
-        )
-
-    @classmethod
-    async def bind_repository(
-        cls,
-        config: GitHubAppConfig,
-        full_name: str,
-        *,
-        key_provider: PrivateKeyProvider,
-        transport: HttpTransport | None = None,
-        clock=time.time,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
-        runner: GhRunner | None = None,
-        executable: str = "gh",
-        env: Mapping[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-    ) -> "GitHubAppClient":
-        """Mint, verify through ``gh``, and retain one exact repository binding."""
-        provider = AppTokenProvider(
-            config,
-            key_provider=key_provider,
-            transport=transport,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-        )
-        candidate = await provider.mint_for_repository(full_name)
-        client = cls(
-            config,
-            candidate.repository,
-            key_provider=key_provider,
-            transport=provider.transport,
-            clock=clock,
-            max_response_bytes=max_response_bytes,
-            max_pagination_bytes=max_pagination_bytes,
-            runner=runner,
-            executable=executable,
-            env=env,
-            timeout=timeout,
-        )
-        client._token = candidate.token
-        client._token_expires_at = candidate.expires_at
-        payload = await client.request_json("GET", f"repos/{candidate.repository.full_name}")
-        if (
-            _strict_positive_int(payload.get("id")) != candidate.repository.repository_id
-            or payload.get("full_name") != candidate.repository.full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        return client
-
-    def _app_jwt(self) -> str:
-        return self._token_provider._app_jwt()
-
-    async def installation_token(self, *, force_refresh: bool = False) -> str:
-        async with self._token_lock:
-            if (
-                not force_refresh
-                and self._token is not None
-                and self._token_expires_at - self.clock() > 300
-            ):
-                return self._token
-            token, expiry = await self._mint_installation_token()
-            self._token = token
-            self._token_expires_at = expiry
-            return token
-
-    async def _mint_installation_token(self) -> tuple[str, float]:
-        candidate = await self._token_provider.mint(self.repository)
-        return candidate.token, candidate.expires_at
-
-    async def token_for(self, repository: GitHubRepositoryBinding) -> str:
-        """Supply the runner only the token for this exact immutable binding."""
-        if repository != self.repository:
-            raise GitHubAppError("credentials", "GitHub repository binding did not match")
-        return await self.installation_token()
-
-    async def _refresh_rejected_credential(self) -> bool:
-        await self.installation_token(force_refresh=True)
-        return True
-
-
 def _single_repository(payload: dict[str, Any]) -> dict[str, Any]:
     repositories = payload.get("repositories")
     if (
@@ -492,15 +356,3 @@ def _http_error(status: int, headers: dict[str, str], now: float) -> GitHubAppEr
         422: "conflict_or_invalid",
     }.get(status, "transient" if status >= 500 else "conflict_or_invalid")
     return GitHubAppError(category, f"GitHub request failed ({category})")
-
-
-def _next_link(value: str | None) -> str | None:
-    if not value:
-        return None
-    for item in value.split(","):
-        target, *parameters = item.split(";")
-        if any(parameter.strip() == 'rel="next"' for parameter in parameters):
-            target = target.strip()
-            if target.startswith("<") and target.endswith(">"):
-                return target[1:-1]
-    return None
