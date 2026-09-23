@@ -179,7 +179,7 @@ class InstallationProvider:
         return await self.mint(repository)
 
 
-@pytest.fixture(params=["app", "existing_login"])
+@pytest.fixture(params=["app_clean", "app_poisoned", "existing_login"])
 def workflow(tmp_path: Path, request):
     executable = tmp_path / "gh"
     executable.write_text(FAKE_GH)
@@ -196,15 +196,18 @@ def workflow(tmp_path: Path, request):
     env = {
         "AQ_FAKE_GH_STATE": str(state_path),
         "AQ_FAKE_GH_LOG": str(log_path),
-        "AQ_FAKE_STORED_LOGIN": "1",
-        "GH_CONFIG_DIR": str(tmp_path / "operator-gh"),
-        "GH_TOKEN": "github_pat_poisoned_primary",
-        "GITHUB_TOKEN": "github_pat_poisoned_secondary",
         "PATH": os.environ["PATH"],
     }
+    if request.param != "app_clean":
+        env.update({
+            "AQ_FAKE_STORED_LOGIN": "1",
+            "GH_CONFIG_DIR": str(tmp_path / "operator-gh"),
+            "GH_TOKEN": "github_pat_poisoned_primary",
+            "GITHUB_TOKEN": "github_pat_poisoned_secondary",
+        })
     config = (
         GitHubAppConfig("Iv1.client", 101, 202, str(tmp_path / "unused-key.pem"))
-        if request.param == "app" else None
+        if request.param != "existing_login" else None
     )
     access = GitHubAccess.from_config(
         config, app_provider=provider if config else None,
@@ -232,7 +235,7 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
     assert binding == REPOSITORY
     assert access.credential_identity == (
         GitHubCredentialIdentity.app(101, 202)
-        if mode == "app" else GitHubCredentialIdentity.existing_login()
+        if mode != "existing_login" else GitHubCredentialIdentity.existing_login()
     )
     client = GitHubClient(binding, access=access)
 
@@ -258,10 +261,12 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
     assert sum(e["argv"][:2] == ["pr", "create"] for e in events) == 1
     assert sum(e["argv"][:2] == ["pr", "merge"] for e in events) == 1
     assert all(e["repo"] in (None, "acme/widgets") for e in events)
-    assert all(e["kind"] == ("app" if mode == "app" else "login") for e in events)
-    if mode == "app":
+    assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in events)
+    if mode != "existing_login":
         assert provider.calls
         assert all(e["config_isolated"] and not e["has_secondary_token"] for e in events)
+        if mode == "app_clean":
+            assert not {"GH_TOKEN", "GITHUB_TOKEN", "AQ_FAKE_STORED_LOGIN"} & env.keys()
     else:
         assert provider.calls == []
         assert all(not e["config_isolated"] and e["has_secondary_token"] for e in events)
@@ -271,8 +276,8 @@ async def test_private_repository_pr_ci_merge_workflow_has_credential_parity(wor
 @pytest.mark.asyncio
 async def test_app_denial_never_uses_available_personal_token(workflow):
     access, provider, _, _, state_path, log_path, mode = workflow
-    if mode != "app":
-        pytest.skip("App authority is the denial under test")
+    if mode != "app_poisoned":
+        pytest.skip("Denied App with an available PAT is the subject")
     provider.fail = True
     with pytest.raises(GitHubAccessError, match="installation permission denied"):
         await access.bind_repository("https://github.com/acme/widgets")
@@ -291,7 +296,7 @@ async def test_app_denial_never_uses_available_personal_token(workflow):
 @pytest.mark.asyncio
 async def test_app_expiry_and_simultaneous_repositories_keep_tokens_separate(workflow):
     access, provider, now, env, _, log_path, mode = workflow
-    if mode != "app":
+    if mode == "existing_login":
         pytest.skip("App token lifecycle is the subject")
     original_env = dict(env)
     first, second = await asyncio.gather(
@@ -340,7 +345,7 @@ async def test_integration_audit_publication_reconciles_by_idempotency_key(workf
     assert sum(
         e["argv"][0] == "api" and "POST" in e["argv"] for e in events
     ) == 1
-    assert all(e["kind"] == ("app" if mode == "app" else "login") for e in events)
+    assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in events)
 
 
 @pytest.mark.asyncio
@@ -456,7 +461,7 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
         })
         assert created["pr_url"] == PR_URL
         assert any(e["argv"][:2] == ["pr", "create"] for e in _events(log_path))
-        assert all(e["kind"] == ("app" if mode == "app" else "login") for e in _events(log_path))
+        assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in _events(log_path))
     finally:
         await db.close()
 
@@ -518,8 +523,8 @@ async def test_operator_onboards_private_url_through_shared_access(
         })
         assert result["success"] is True, result
         assert _git(root / "private", "rev-parse", "HEAD") == _git(seed, "rev-parse", "HEAD")
-        assert git.selections == [("https://github.com/acme/widgets.git", mode == "app")]
+        assert git.selections == [("https://github.com/acme/widgets.git", mode != "existing_login")]
         assert _events(log_path)
-        assert all(e["kind"] == ("app" if mode == "app" else "login") for e in _events(log_path))
+        assert all(e["kind"] == ("app" if mode != "existing_login" else "login") for e in _events(log_path))
     finally:
         await db.close()
