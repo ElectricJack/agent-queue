@@ -59,8 +59,13 @@ reports, reviews and superseded specs are evidence, not directives.
 ## Testing scope
 
 Workers run focused tests for what they change through the resource-governed
-runner (`aq test`) and record the exact commands. Full CI belongs to the
-project's configured candidate checks, not to every agent's local loop.
+runner (`aq test`), then the related area suite, and record the exact commands.
+Full-suite runs belong to CI or tasks whose subject is the suite. Compare
+failures against a recorded known-failing baseline; do not capture a new one
+per task. A pre-existing failure neither fails the task nor justifies weakening
+or skipping a test. Task authors specify focused and area checks, not a
+full-suite close requirement. See [resource gating](../guides/resource-gating.md)
+for the baseline-note workflow.
 
 ## Keeping instructions in line
 

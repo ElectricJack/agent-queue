@@ -526,6 +526,22 @@ class TestStaticSections:
         for name in ("task_show", "task_set", "memory_search"):
             assert name in body
 
+    async def test_tool_guidance_carries_test_scope_and_baseline_policy(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = " ".join({s.key: s.body for s in doc.sections}["tool_guidance"].lower().split())
+        for required in (
+            "aq test",
+            "focused tests",
+            "area suite",
+            "full-suite runs belong to ci",
+            "recorded known-failing baseline",
+            "instead of capturing your own baseline",
+            "pre-existing failure does not fail your task",
+            "weaken or skip a test",
+            'not "run the full suite before closing"',
+        ):
+            assert required in body, required
+
     async def test_completion_protocol_embeds_task_id(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
         body = {s.key: s.body for s in doc.sections}["completion_protocol"]
