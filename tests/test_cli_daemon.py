@@ -17,7 +17,7 @@ from click.testing import CliRunner
 
 import src.cli.daemon as daemon_mod
 from src.cli.app import cli
-from src.sessions.env import DAEMON_ENV_STRIP_KEYS
+from src.sessions.env import AQ_MARKER_KEYS, DAEMON_ENV_STRIP_KEYS, DB_ISOLATION_KEYS
 
 
 @pytest.fixture(autouse=True)
@@ -460,3 +460,163 @@ def test_an_unreachable_database_in_a_checkout_still_starts_the_dev_container(
 
     assert daemon_mod._ensure_database() is True
     assert called == [True]
+
+
+# ---------------------------------------------------------------------------
+# Environment scrub: daemon children must never inherit any harness or worker
+# marker, or a per-session DB sentinel leaked in.  Regression test for the
+# 2026-09-21 incident.
+# ---------------------------------------------------------------------------
+
+def test_daemon_environment_strips_all_harness_and_db_markers(monkeypatch):
+    """`_daemon_environment` returns an env free of every known leak vector.
+
+    The 2026-09-21 incident: AQ_DB_SCOPE / AQ_DATABASE_URL / AGENT_QUEUE_DB
+    entered the daemon env, making it refuse to migrate and report a
+    different DB than the operator owns.
+    """
+    incident_keys = {
+        "AQ_DB_SCOPE": "worker",
+        "AQ_DATABASE_URL": "aq-worker-no-direct-db://",
+        "AGENT_QUEUE_DB": "aq-worker-no-direct-db://",
+    }
+    # Every key the codebase knows about that a worker or harness session
+    # could have set on the parent process.
+    all_markers = set(AQ_MARKER_KEYS) | set(DB_ISOLATION_KEYS) | set(DAEMON_ENV_STRIP_KEYS)
+    for key in all_markers:
+        monkeypatch.setenv(key, "worker" if key in incident_keys else "polluted")
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "s1")
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+
+    env = daemon_mod._daemon_environment()
+
+    # Every leak vector must be absent.
+    for key in all_markers:
+        assert key not in env, f"{key} leaked into daemon env"
+        assert "CLAUDE_CODE_SESSION_ID" not in env
+        assert "CLAUDE_CODE_ENTRYPOINT" not in env
+
+    # Sanity: keys the daemon *needs* must survive.
+    assert env.get("PYTHONUNBUFFERED") == "1"
+    assert "PATH" in env
+
+
+# ---------------------------------------------------------------------------
+# Backup path: `aq start` (and `aq restart`) backs up the database when the
+# schema is behind the checkout's Alembic head, before launching the daemon.
+# The dump must reach disk and pass a tail-integrity check before start
+# proceeds.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "at_head", [True, False], ids=["at-head-no-backup", "not-at-head-backup"],
+)
+def test_start_backs_up_only_when_db_is_behind_code(
+    runner, tmp_path, monkeypatch, at_head,
+):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    for name, path in {
+        "CONFIG_PATH": config_path,
+        "CONFIG_DIR": tmp_path,
+        "LOCK_DIR": tmp_path / "lock",
+        "PID_FILE": tmp_path / "pid",
+        "LOG_PATH": tmp_path / "log",
+    }.items():
+        monkeypatch.setattr(daemon_mod, name, str(path))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_config_uses_postgres", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_ensure_database", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_database_is_at_head", lambda: at_head)
+    monkeypatch.setattr(daemon_mod, "_resolve_agent_queue_bin", lambda: "agent-queue")
+    monkeypatch.setattr("src.cli.client._resolve_api_url", lambda: "http://daemon.test")
+    monkeypatch.setattr(daemon_mod.os, "kill", lambda *args: None)
+
+    backup_calls: list[bool] = []
+    monkeypatch.setattr(
+        daemon_mod, "_backup_database", lambda: backup_calls.append(True),
+    )
+    # Hermetic: skip the /ready poll + doctor fix entirely.
+    monkeypatch.setattr(daemon_mod, "_post_daemon_checks", lambda: None)
+
+    class HealthResp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: HealthResp())
+
+    def popen(*a, **k):
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(daemon_mod.subprocess, "Popen", popen)
+
+    result = runner.invoke(cli, ["start", "--no-dashboard", "--no-dashboard-server"])
+    assert result.exit_code == 0, result.output
+    expected: list[bool] = [] if at_head else [True]
+    assert backup_calls == expected, f"expected {expected!r}, got {backup_calls!r}"
+
+
+def test_backup_database_dumps_and_passes_integrity(tmp_path, monkeypatch):
+    """A pg_dump that lands on disk with the marker survives the integrity check.
+
+    The docker steps are stubbed by writing the dump file ourselves where
+    ``docker cp`` would have placed it.
+    """
+    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
+
+    docker_calls: list[list[str]] = []
+
+    # Simulate `docker cp` by writing the fake dump to the destination path.
+    def stub_run(cmd, **kw):
+        docker_calls.append(list(cmd))
+        args = list(cmd)
+        # "docker cp aq-postgres:/tmp/pre-deploy-<ts>.sql <out>" — copy step
+        if "cp" in args:
+            with open(args[-1], "w") as f:
+                f.write("-- pg_dump tail\nunrestrict;\n")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
+
+    daemon_mod._backup_database()
+
+    # The docker steps ran in order: pg_dump, cp, rm.
+    kinds = [c[1] for c in docker_calls]
+    assert kinds == ["exec", "cp", "exec"], f"wrong docker step order: {kinds}"
+
+    # The dump file landed on disk and carries the marker.
+    dumps = list(tmp_path.glob("pre-deploy-*.sql"))
+    assert dumps, "no dump file was written"
+    assert "unrestrict" in dumps[0].read_text().lower()
+
+
+def test_backup_database_raises_on_missing_integrity_marker(tmp_path, monkeypatch):
+    """A dump without the marker comment must abort with SystemExit(15)."""
+    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
+
+    def stub_run(cmd, **kw):
+        args = list(cmd)
+        if "cp" in args:
+            with open(args[-1], "w") as f:
+                f.write("-- incomplete pg_dump, no marker\n")
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", stub_run)
+
+    with pytest.raises(SystemExit, match="15"):
+        daemon_mod._backup_database()
+
+
+def test_backup_database_raises_on_docker_failure(tmp_path, monkeypatch):
+    """A failed docker step must abort with SystemExit(13)."""
+    monkeypatch.setattr(daemon_mod, "BACKUPS_DIR", str(tmp_path))
+
+    import subprocess as _sp
+    def failing_run(cmd, **kw):
+        raise _sp.CalledProcessError(1, list(cmd))
+
+    monkeypatch.setattr(daemon_mod.subprocess, "run", failing_run)
+
+    with pytest.raises(SystemExit, match="13"):
+        daemon_mod._backup_database()
