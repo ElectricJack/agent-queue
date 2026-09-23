@@ -156,9 +156,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   ],
   "plugin_tools": [
     "count_project_memory_files",
-    "git_create_pr",
     "git_diff",
-    "git_push",
     "memory_save",
     "memory_search",
     "read_project_memory_file"

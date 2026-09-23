@@ -954,6 +954,26 @@ Anchored comments on a review revision. Added by Alembic `a00000000014`.
 
 Index: `idx_doc_review_comments_review` (`review_id`, `revision`).
 
+### Table: `doc_review_dispatches`
+
+Records each dispatch of a document review to a reviewer task, including forced
+repeat dispatches. Review and task ids are soft references so the history
+survives task archival or deletion. Added by Alembic `a0000000001a`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Dispatch id |
+| `review_id` | TEXT | NOT NULL, no FK | The document review |
+| `profile_id` | TEXT | NOT NULL | Reviewer profile selected for the dispatch |
+| `revision` | INTEGER | NOT NULL | Review revision sent to the reviewer |
+| `with_comments` | BOOLEAN | NOT NULL | Whether review comments were included |
+| `focus` | TEXT | nullable | Optional focus for the reviewer |
+| `task_id` | TEXT | NOT NULL, UNIQUE, no FK | Reviewer task created for this dispatch |
+| `dispatched_by` | TEXT | NOT NULL | Principal that requested the dispatch |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Index: `idx_doc_review_dispatches_review` (`review_id`, `profile_id`, `revision`).
+
 ### Table: `workspace_kinds`
 
 Typed workspace definitions (Workspaces v2). Rows are projected from markdown in
