@@ -71,6 +71,7 @@ async def orch(tmp_path):
     mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+    mock_git.acheck_pr_merged = AsyncMock(return_value=False)
     mock_git.bind_github_repository = AsyncMock(
         return_value=GitHubRepositoryBinding(1, "org/repo")
     )
@@ -602,6 +603,46 @@ class TestPhaseVerifyByMode:
             event_bus=orch.bus,
             project_id="p-1",
         )
+
+    async def test_pr_close_does_not_recreate_deleted_branch_after_merge(self, orch):
+        task = _pr_task("t-pr-merged-deleted")
+        await orch.db.create_task(task)
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.ABSENT)
+        )
+        orch.git.acheck_pr_merged = AsyncMock(return_value=True)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/42"
+        orch.git.afind_open_pr.assert_awaited_once_with(
+            ws.workspace_path,
+            "feature-1",
+            head_ref="refs/heads/feature-1",
+            include_workspace_head=False,
+            repository=GitHubRepositoryBinding(1, "org/repo"),
+        )
+        orch.git.acheck_pr_merged.assert_awaited_once_with(
+            ws.workspace_path,
+            "https://github.com/org/repo/pull/42",
+            repository=GitHubRepositoryBinding(1, "org/repo"),
+        )
+        orch.git.apush_validated_delivery.assert_not_awaited()
+
+    async def test_pr_close_does_not_push_when_merge_state_is_unknown(self, orch):
+        task = _pr_task("t-pr-merge-unknown")
+        await orch.db.create_task(task)
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.ABSENT)
+        )
+        orch.git.acheck_pr_merged = AsyncMock(side_effect=GitError("PR unavailable"))
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        orch.git.apush_validated_delivery.assert_not_awaited()
 
     async def test_pr_close_accepts_first_aq_push_without_tracking_ref(self, orch):
         task = _pr_task("t-pr-aq-pushed")
