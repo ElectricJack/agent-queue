@@ -1243,6 +1243,23 @@ class TestAsyncDeleteBranch:
         assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-race"], cwd=clone).split()[0] == competing_tip
         assert await mgr.abranch_exists(clone, "task/delete-race") is True
 
+    @pytest.mark.asyncio
+    async def test_remote_delete_keeps_branch_already_moved_elsewhere(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/delete-moved")
+        _commit_file(clone, "initial.txt", "data", "initial")
+        await mgr.apush_branch(clone, "task/delete-moved")
+        _git(["checkout", "main"], cwd=clone)
+        _git(["checkout", "-b", "other-writer", "origin/task/delete-moved"], cwd=clone)
+        new_tip = _commit_file(clone, "other.txt", "new", "other")
+        _git(["push", "origin", "HEAD:refs/heads/task/delete-moved"], cwd=clone)
+        _git(["checkout", "main"], cwd=clone)
+
+        with pytest.raises(GitError, match="moved beyond its local cleanup tip"):
+            await mgr.adelete_branch(clone, "task/delete-moved")
+
+        assert _git(["ls-remote", "--heads", "origin", "refs/heads/task/delete-moved"], cwd=clone).split()[0] == new_tip
+        assert await mgr.abranch_exists(clone, "task/delete-moved") is True
+
 
 class TestAsyncHasRemote:
     @pytest.mark.asyncio

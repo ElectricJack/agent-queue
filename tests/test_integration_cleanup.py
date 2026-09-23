@@ -614,7 +614,7 @@ class CleanupGit:
         self.remote_deletes = []
         self.local_refs = {BRANCH: HEAD}
 
-    async def adelete_ref_with_app_auth(self, store, **kwargs):
+    async def adelete_repository_ref(self, store, **kwargs):
         self.remote_deletes.append((store, kwargs))
         branch = kwargs["branch"]
         assert self.app.refs[branch] == kwargs["expected_old_oid"]
@@ -684,7 +684,6 @@ async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
         "aq/root": SOURCE,
     }
     assert all(remote[1]["repository"] == app.repository for remote in git.remote_deletes)
-    assert all(remote[1]["token"] == "installation-token" for remote in git.remote_deletes)
     assert git.local_refs == {}
     assert sorted(forge.closed) == [1, 9]
     assert len(forge.comments) == 1

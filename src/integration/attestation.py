@@ -339,15 +339,13 @@ class IntegrationAttestationService:
                 ),
                 client,
             )
-        token = await client.installation_token()
         store = self._store(state["canonical_repository_id"])
         destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
             f"{state['batch_id']}:{state['revision']}".encode()
         ).hexdigest()
-        imported = await self.git.afetch_exact_oid_with_app_auth(
+        imported = await self.git.afetch_repository_oid(
             str(store),
             repository=binding,
-            token=token,
             oid=state["candidate_sha"],
             destination_ref=destination_ref,
         )

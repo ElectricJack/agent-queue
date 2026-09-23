@@ -244,7 +244,7 @@ class ExactTreeGit:
         self.manifest = manifest
         self.fetches: list[dict] = []
 
-    async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+    async def afetch_repository_oid(self, destination_git_dir, **kwargs):
         self.fetches.append({"destination_git_dir": destination_git_dir, **kwargs})
         return kwargs["oid"]
 

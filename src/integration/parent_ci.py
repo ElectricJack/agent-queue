@@ -32,18 +32,17 @@ async def publish_parent_snapshot(git, client, store, branch, head_sha, current)
     remote = await client.exact_head_ref(branch)
     if remote is not None:
         return remote == head_sha
-    token = await client.installation_token()
-    imported = await git.afetch_exact_oid_with_app_auth(
-        str(store), repository=client.repository, token=token, oid=head_sha,
+    imported = await git.afetch_repository_oid(
+        str(store), repository=client.repository, oid=head_sha,
         destination_ref='refs/aq/parent-ci/' + hashlib.sha256(branch.encode()).hexdigest(),
     )
     if imported != head_sha or not await current():
         return False
-    await git.apush_oid_with_app_auth(
-        str(store), repository=client.repository, token=token,
+    await git.apush_repository_oid(
+        str(store), repository=client.repository,
         tip_oid=head_sha, branch=branch, expected_old_oid='0' * 40,
     )
-    return True
+    return await client.exact_head_ref(branch) == head_sha
 
 
 class ParentCIService:

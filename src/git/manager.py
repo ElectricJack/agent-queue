@@ -1636,10 +1636,13 @@ class GitManager:
     # is retained only for backward compatibility and tests.
     # ------------------------------------------------------------------
 
-    async def acreate_checkout(self, repo_url: str, checkout_path: str) -> None:
+    async def acreate_checkout(
+        self, repo_url: str, checkout_path: str, *, no_checkout: bool = False
+    ) -> None:
         if self._uses_existing_ssh(repo_url):
             os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
-            await self._arun(["clone", repo_url, checkout_path])
+            args = ["clone", "--no-checkout"] if no_checkout else ["clone"]
+            await self._arun([*args, repo_url, checkout_path])
             return
         binding = await self._abind_git_repository(repo_url)
         if binding is not None and self.github_access is not None:
@@ -1649,10 +1652,30 @@ class GitManager:
                 checkout_path,
                 source_url=f"https://github.com/{binding.full_name}.git",
                 token=token,
+                no_checkout=no_checkout,
             )
             return
         os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
-        await self._arun(["clone", repo_url, checkout_path])
+        args = ["clone", "--no-checkout"] if no_checkout else ["clone"]
+        await self._arun([*args, repo_url, checkout_path])
+
+    async def acreate_bare_checkout(self, repo_url: str, checkout_path: str) -> None:
+        """Create a bare retained store through the selected repository authority."""
+        if self._uses_existing_ssh(repo_url):
+            os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
+            await self._arun(["clone", "--bare", "--", repo_url, checkout_path])
+            return
+        binding = await self._abind_git_repository(repo_url)
+        if binding is not None:
+            token = await self._atoken_for_repository(binding)
+            await self._aclone_with_auth_to_url(
+                repo_url, checkout_path,
+                source_url=f"https://github.com/{binding.full_name}.git",
+                token=token, bare=True,
+            )
+            return
+        os.makedirs(os.path.dirname(checkout_path), exist_ok=True)
+        await self._arun(["clone", "--bare", "--", repo_url, checkout_path])
 
     @staticmethod
     def _is_github_ssh_url(repo_url: str) -> bool:
@@ -1692,7 +1715,10 @@ class GitManager:
         return await self.github_access.bind_repository(repo_url)
 
     async def _atoken_for_repository(self, binding: GitHubRepositoryBinding) -> str | None:
-        assert self.github_access is not None
+        if self.github_access is None:
+            raise GitError("GitHub access service is not configured")
+        if not isinstance(binding, GitHubRepositoryBinding):
+            raise GitError("an authorized GitHub repository binding is required")
         token = await self.github_access.installation_token(binding)
         if self.github_access.auth.mode is GitHubCredentialMode.APP and not token:
             raise GitError("GitHub App credential is unavailable")
@@ -1705,6 +1731,8 @@ class GitManager:
         *,
         source_url: str,
         token: str | None,
+        bare: bool = False,
+        no_checkout: bool = False,
     ) -> None:
         """Clone in isolation and move a credential-free local clone into place."""
         destination = Path(checkout_path)
@@ -1726,17 +1754,28 @@ class GitManager:
                 token=token,
                 deadline=deadline,
             )
+            clone_args = ["-c", "core.hooksPath=/dev/null", "clone"]
+            if bare:
+                clone_args.append("--bare")
+            elif no_checkout:
+                clone_args.append("--no-checkout")
+            clone_args.extend(["--no-local", "--template=", str(imported), str(staged)])
             await self._run_isolated_import_git(
-                ["-c", "core.hooksPath=/dev/null", "clone", "--no-local", "--template=",
-                 str(imported), str(staged)],
+                clone_args,
                 home=home,
                 deadline=deadline,
             )
             await self._run_isolated_import_git(
-                ["-C", str(staged), "remote", "set-url", "origin", configured_url],
+                ["-C", str(staged), "config", "remote.origin.url", configured_url],
                 home=home,
                 deadline=deadline,
             )
+            if bare:
+                await self._run_isolated_import_git(
+                    ["-C", str(staged), "config", "remote.origin.fetch",
+                     "+refs/heads/*:refs/remotes/origin/*"],
+                    home=home, deadline=deadline,
+                )
             os.replace(staged, destination)
 
     async def afetch_origin(
@@ -1745,8 +1784,14 @@ class GitManager:
         *,
         repository_url: str,
         lock_held: bool = False,
+        all_heads: bool = False,
     ) -> None:
         """Fetch an explicitly authorized origin without credentials in the checkout."""
+        fetch_args = (
+            ["fetch", "--no-tags", "--prune", "origin",
+             "+refs/heads/*:refs/remotes/origin/*"]
+            if all_heads else ["fetch", "origin"]
+        )
         if self._uses_existing_ssh(repository_url):
             from src.projects.github import GitHubError, parse_github_repository
 
@@ -1763,7 +1808,7 @@ class GitManager:
             if not matches:
                 raise GitError("GitHub repository reference did not match the authorized repository")
             run = self._arun_unlocked if lock_held else self._arun
-            await run(["fetch", "origin"], cwd=checkout_path)
+            await run(fetch_args, cwd=checkout_path)
             return
         binding = await self._abind_git_repository(repository_url)
         if binding is None:
@@ -1777,7 +1822,7 @@ class GitManager:
                 if "github.com" in configured_origin.lower():
                     raise GitError("authorized GitHub repository is required for App fetch")
             run = self._arun_unlocked if lock_held else self._arun
-            await run(["fetch", "origin"], cwd=checkout_path)
+            await run(fetch_args, cwd=checkout_path)
             return
         assert self.github_access is not None
         configured_origin = await self._arun(
@@ -2330,6 +2375,11 @@ class GitManager:
                 token=token, deadline=deadline,
             )
             if observed is not None:
+                local_tip = await self.arev_parse(
+                    checkout_path, f"refs/heads/{branch_name}"
+                )
+                if local_tip is None or local_tip != observed:
+                    raise GitError("remote branch moved beyond its local cleanup tip")
                 await self._atransfer_exact_ref(
                     checkout_path, None, branch_name, observed,
                     remote="origin", destination_url=destination_url, token=token,
@@ -2814,6 +2864,20 @@ class GitManager:
     ) -> RemoteRefResult:
         """Read one exact remote head without conflating absence and I/O failure."""
         branch = _validate_ref(branch)
+        try:
+            destination_url, token = await self._apush_destination(checkout_path, remote)
+            if destination_url is not None:
+                oid = await self._aobserved_remote_head(
+                    checkout_path, branch, remote=remote,
+                    destination_url=destination_url, token=token,
+                    deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                )
+                return RemoteRefResult(
+                    RemoteRefState.PRESENT if oid is not None else RemoteRefState.ABSENT,
+                    oid=oid,
+                )
+        except (GitError, GitHubAccessError, asyncio.TimeoutError) as exc:
+            return RemoteRefResult(RemoteRefState.ERROR, error=str(exc))
         result = await self.arun_git_result(
             ["ls-remote", "--heads", remote, f"refs/heads/{branch}"],
             cwd=checkout_path,
@@ -2836,6 +2900,43 @@ class GitManager:
         if len(matches) != 1:
             return RemoteRefResult(RemoteRefState.ERROR, error="remote returned duplicate refs")
         return RemoteRefResult(RemoteRefState.PRESENT, oid=matches[0])
+
+    async def afetch_repository_oid(
+        self, destination_git_dir: str, *, repository: GitHubRepositoryBinding,
+        oid: str, destination_ref: str,
+    ) -> str:
+        """Import an exact repository object with a credential selected for this fetch."""
+        token = await self._atoken_for_repository(repository)
+        return await self.afetch_exact_oid_with_app_auth(
+            destination_git_dir, repository=repository, token=token,
+            oid=oid, destination_ref=destination_ref,
+        )
+
+    async def apush_repository_oid(
+        self, checkout_path: str, *, repository: GitHubRepositoryBinding,
+        tip_oid: str, branch: str, expected_old_oid: str,
+        authority_deadline: float | None = None,
+    ) -> str:
+        """Transfer an immutable OID under an exact lease with fresh credentials."""
+        token = await self._atoken_for_repository(repository)
+        return await self.apush_oid_with_app_auth(
+            checkout_path, repository=repository, token=token,
+            tip_oid=tip_oid, branch=branch, expected_old_oid=expected_old_oid,
+            authority_deadline=authority_deadline,
+        )
+
+    async def adelete_repository_ref(
+        self, checkout_path: str, *, repository: GitHubRepositoryBinding,
+        branch: str, expected_old_oid: str,
+        authority_deadline: float | None = None,
+    ) -> str:
+        """Lease-delete one repository head with a credential selected now."""
+        token = await self._atoken_for_repository(repository)
+        return await self.adelete_ref_with_app_auth(
+            checkout_path, repository=repository, token=token,
+            branch=branch, expected_old_oid=expected_old_oid,
+            authority_deadline=authority_deadline,
+        )
 
     async def apush_head_to(
         self,
@@ -2893,6 +2994,7 @@ class GitManager:
         branch: str,
         *,
         force_with_lease: bool = False,
+        expected_old_oid: str | None = None,
     ) -> str:
         """Resolve *source_ref* once and push that exact commit to *branch*.
 
@@ -2911,8 +3013,33 @@ class GitManager:
             tip,
             branch,
             force_with_lease=force_with_lease,
+            expected_old_oid=expected_old_oid,
         )
         return tip
+
+    async def adelete_remote_ref_exact(
+        self, checkout_path: str, branch: str, expected_old_oid: str,
+        *, remote: str = "origin",
+    ) -> None:
+        """Delete a remote branch only under its observed exact old-tip lease."""
+        branch = _validate_ref(branch)
+        if not isinstance(expected_old_oid, str) or _OID_RE.fullmatch(expected_old_oid) is None:
+            raise GitError("invalid expected target OID")
+        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        destination_url, token = await self._apush_destination(checkout_path, remote)
+        observed = await self._aobserved_remote_head(
+            checkout_path, branch, remote=remote,
+            destination_url=destination_url, token=token, deadline=deadline,
+        )
+        if observed is None:
+            return
+        if observed != expected_old_oid:
+            raise GitError("remote head differs from expected target")
+        await self._atransfer_exact_ref(
+            checkout_path, None, branch, expected_old_oid,
+            remote=remote, destination_url=destination_url, token=token,
+            deadline=deadline, lock_held=False,
+        )
 
     async def _apush_oid(
         self,

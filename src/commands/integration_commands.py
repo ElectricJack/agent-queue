@@ -1011,7 +1011,8 @@ class IntegrationCommandsMixin:
                 str(resolved.retained_git_dir)
             ):
                 return await materialize_exact_branch(
-                    promotion.git, str(resolved.retained_git_dir), branch, base_sha
+                    promotion.git, str(resolved.retained_git_dir), branch, base_sha,
+                    repository_url=resolved.origin_url,
                 )
 
         async def verify_checkpoint(task, repo, head_sha):

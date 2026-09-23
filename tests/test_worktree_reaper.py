@@ -300,6 +300,50 @@ class TestPruneBranchesRetainFailedDays:
 
 
 class TestPruneBranches:
+    async def test_remote_auth_failure_keeps_local_branch(self, tmp_path, base_repo):
+        from unittest.mock import AsyncMock, patch
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            _git(["branch", "aq/keep", "main"], cwd=base_repo)
+            mgr = o._worktree_slots()
+            mgr.config.prune_remote_branches = True
+            unknown = RemoteRefResult(RemoteRefState.ERROR, error="App credential unavailable")
+            with patch.object(mgr.git, "als_remote_ref", AsyncMock(return_value=unknown)):
+                pruned = await mgr.prune_branches(
+                    await o.db.get_workspace("ws-base"), default_branch="main"
+                )
+            assert pruned == []
+            assert "aq/keep" in _git(["branch", "--list"], cwd=base_repo)
+        finally:
+            await o.shutdown()
+
+    async def test_moved_remote_branch_keeps_local_branch(self, tmp_path, base_repo):
+        from unittest.mock import AsyncMock, patch
+
+        from src.git.manager import RemoteRefResult, RemoteRefState
+
+        o = await _orch(tmp_path)
+        try:
+            await _seed(o, base_repo)
+            _git(["branch", "aq/keep", "main"], cwd=base_repo)
+            mgr = o._worktree_slots()
+            mgr.config.prune_remote_branches = True
+            moved = RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40)
+            with patch.object(mgr.git, "als_remote_ref", AsyncMock(return_value=moved)):
+                with patch.object(mgr.git, "adelete_remote_ref_exact", AsyncMock()) as delete:
+                    pruned = await mgr.prune_branches(
+                        await o.db.get_workspace("ws-base"), default_branch="main"
+                    )
+            assert pruned == []
+            delete.assert_not_awaited()
+            assert "aq/keep" in _git(["branch", "--list"], cwd=base_repo)
+        finally:
+            await o.shutdown()
+
     async def test_prunes_merged_aq_branches_keeps_unmerged(
         self, tmp_path, base_repo,
     ):

@@ -428,7 +428,7 @@ class _LocalPushGit:
     def __getattr__(self, name):
         return getattr(self.delegate, name)
 
-    async def apush_oid_with_app_auth(self, checkout_path, **kwargs):
+    async def apush_repository_oid(self, checkout_path, **kwargs):
         self.pushes.append({"checkout_path": checkout_path, **kwargs})
         result = await self.delegate.arun_git_result(
             [
@@ -442,7 +442,7 @@ class _LocalPushGit:
         assert result.returncode == 0, result.stderr
         return kwargs["tip_oid"]
 
-    async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+    async def afetch_repository_oid(self, destination_git_dir, **kwargs):
         self.fetches.append(kwargs["oid"])
         result = await self.delegate.arun_git_result(
             [
@@ -970,9 +970,9 @@ async def test_candidate_network_awaits_run_after_database_commit(db, tmp_path):
             return await super().exact_head_ref(branch)
 
     class GuardedGit(_LocalPushGit):
-        async def apush_oid_with_app_auth(self, *args, **kwargs):
+        async def apush_repository_oid(self, *args, **kwargs):
             assert depth == 0
-            return await super().apush_oid_with_app_auth(*args, **kwargs)
+            return await super().apush_repository_oid(*args, **kwargs)
 
     app = GuardedApp(origin)
     app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
@@ -1652,8 +1652,8 @@ async def test_remote_success_after_lease_expiry_is_observation_reconciled(db, t
     now = {"value": 100.0}
 
     class ExpiringPushGit(_LocalPushGit):
-        async def apush_oid_with_app_auth(self, checkout_path, **kwargs):
-            result = await super().apush_oid_with_app_auth(checkout_path, **kwargs)
+        async def apush_repository_oid(self, checkout_path, **kwargs):
+            result = await super().apush_repository_oid(checkout_path, **kwargs)
             now["value"] = 1001.0
             return result
 
@@ -1701,8 +1701,8 @@ async def test_lost_force_with_lease_response_reconciles_without_second_push(
     now = {"value": 100.0}
 
     class LostResponseGit(_LocalPushGit):
-        async def apush_oid_with_app_auth(self, checkout_path, **kwargs):
-            await super().apush_oid_with_app_auth(checkout_path, **kwargs)
+        async def apush_repository_oid(self, checkout_path, **kwargs):
+            await super().apush_repository_oid(checkout_path, **kwargs)
             if expire_authority:
                 now["value"] = 1001.0
             raise RuntimeError("transport lost the successful push response")
@@ -1881,8 +1881,8 @@ async def test_mutation_remains_authorized_beyond_old_sixty_second_window(db, tm
     now = {"value": 100.0}
 
     class SlowBoundedPushGit(_LocalPushGit):
-        async def apush_oid_with_app_auth(self, checkout_path, **kwargs):
-            result = await super().apush_oid_with_app_auth(checkout_path, **kwargs)
+        async def apush_repository_oid(self, checkout_path, **kwargs):
+            result = await super().apush_repository_oid(checkout_path, **kwargs)
             now["value"] = 165.0
             return result
 

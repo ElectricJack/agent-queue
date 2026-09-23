@@ -324,10 +324,9 @@ class IntegrationCleanupService:
         if current != row["expected_sha"]:
             return "conflict", "remote ref moved after delivery"
         try:
-            await self.git.adelete_ref_with_app_auth(
+            await self.git.adelete_repository_ref(
                 str(self.retained_store(row["repository_id"])),
                 repository=binding,
-                token=await app.installation_token(),
                 branch=short,
                 expected_old_oid=row["expected_sha"],
             )

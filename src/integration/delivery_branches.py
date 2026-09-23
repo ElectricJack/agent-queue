@@ -62,7 +62,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, RemoteRefState
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.models import TaskStatus
 
@@ -103,7 +103,6 @@ ACTIVE_BATCH_LIFECYCLES = (
 #: Promotion intents in these states have finished with their refs.
 SETTLED_INTENT_STATES = ("committed", "conflict", "superseded")
 #: Refs deleted per ``git push``.
-PUSH_CHUNK = 50
 
 
 def branch_of(ref: Any) -> str | None:
@@ -437,22 +436,19 @@ async def delete_branches(
         backup_dir, targets, bundled=set(unreachable), bundle=bundle,
         repository_id=repository_id, now=now,
     )
-    for start in range(0, len(ordered), PUSH_CHUNK):
-        chunk = ordered[start : start + PUSH_CHUNK]
-        args = ["push", "--porcelain", "--no-verify", "origin"]
-        args += [f"--force-with-lease=refs/heads/{b}:{targets[b]['head']}" for b in chunk]
-        args += [f":refs/heads/{b}" for b in chunk]
-        # A rejected lease makes the whole push exit non-zero; the listing
-        # below is what decides each branch.
-        await git.arun_git_result(args, cwd=str(store))
-    listed = await run_git(store, "ls-remote", "--heads", "origin")
-    remote = {}
-    for line in listed.splitlines():
-        sha, _, ref = line.partition("\t")
-        remote[ref.removeprefix("refs/heads/")] = sha
     outcomes = {}
     for branch in ordered:
-        current = remote.get(branch)
+        try:
+            await git.adelete_remote_ref_exact(
+                str(store), branch, targets[branch]["head"]
+            )
+        except GitError:
+            # A moved ref or uncertain transfer is resolved by the exact read.
+            pass
+        observed = await git.als_remote_ref(str(store), branch)
+        if observed.state is RemoteRefState.ERROR:
+            raise GitError(observed.error or "remote cleanup state is unknown")
+        current = observed.oid
         if current is None:
             outcomes[branch] = "deleted"
         elif current == targets[branch]["head"]:

@@ -2479,12 +2479,10 @@ class CandidateService:
             expected_handoff=expected_handoff,
         ):
             return False
-        token = await self.app_client.installation_token()
         try:
-            await self.git.apush_oid_with_app_auth(
+            await self.git.apush_repository_oid(
                 str(store),
                 repository=self.app_client.repository,
-                token=token,
                 tip_oid=desired_sha,
                 branch=target_branch.removeprefix("refs/heads/"),
                 expected_old_oid=expected_old_sha,
@@ -3284,11 +3282,9 @@ class CandidateService:
                 and await self._commit_exists(store, oid)):
             await self._pin(store, destination_ref, oid)
             return
-        token = await self.app_client.installation_token()
-        await self.git.afetch_exact_oid_with_app_auth(
+        await self.git.afetch_repository_oid(
             str(store),
             repository=self.app_client.repository,
-            token=token,
             oid=oid,
             destination_ref=destination_ref,
         )

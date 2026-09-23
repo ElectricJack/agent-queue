@@ -15,11 +15,13 @@ from src.integration.parent_ci import ParentCIService
 @pytest.mark.parametrize('old', [None, 'a' * 40])
 async def test_parent_snapshot_is_exact_and_idempotent(tmp_path, old):
     git = SimpleNamespace(
-        afetch_exact_oid_with_app_auth=AsyncMock(return_value='a' * 40),
-        apush_oid_with_app_auth=AsyncMock(return_value='a' * 40),
+        afetch_repository_oid=AsyncMock(return_value='a' * 40),
+        apush_repository_oid=AsyncMock(return_value='a' * 40),
     )
     client = SimpleNamespace(
-        exact_head_ref=AsyncMock(return_value=old),
+        exact_head_ref=AsyncMock(
+            side_effect=[None, 'a' * 40] if old is None else [old]
+        ),
         installation_token=AsyncMock(return_value=None),
         repository=object(),
     )
@@ -30,18 +32,18 @@ async def test_parent_snapshot_is_exact_and_idempotent(tmp_path, old):
     )
     assert result is True
     if old is None:
-        push = git.apush_oid_with_app_auth.call_args.kwargs
+        push = git.apush_repository_oid.call_args.kwargs
         assert push['tip_oid'] == 'a' * 40
         assert push['expected_old_oid'] == '0' * 40
     else:
-        git.apush_oid_with_app_auth.assert_not_called()
+        git.apush_repository_oid.assert_not_called()
 
 
 @pytest.mark.parametrize('old,current', [('b' * 40, True), (None, False)])
 async def test_parent_snapshot_never_overwrites_or_publishes_stale_subject(tmp_path, old, current):
     git = SimpleNamespace(
-        afetch_exact_oid_with_app_auth=AsyncMock(return_value='a' * 40),
-        apush_oid_with_app_auth=AsyncMock(),
+        afetch_repository_oid=AsyncMock(return_value='a' * 40),
+        apush_repository_oid=AsyncMock(),
     )
     client = SimpleNamespace(
         exact_head_ref=AsyncMock(return_value=old),
@@ -51,7 +53,7 @@ async def test_parent_snapshot_never_overwrites_or_publishes_stale_subject(tmp_p
         git, client, tmp_path, 'aq/parent/parent/episode/1/' + 'a' * 40,
         'a' * 40, AsyncMock(return_value=current),
     )
-    git.apush_oid_with_app_auth.assert_not_called()
+    git.apush_repository_oid.assert_not_called()
 
 
 
@@ -76,8 +78,8 @@ async def test_legacy_parent_tick_publishes_exact_ci_and_fenced_event(ci_db, tmp
     client = SimpleNamespace(exact_head_ref=exact, repository=object(),
                              installation_token=AsyncMock(return_value=None))
     backend = SimpleNamespace(
-        db=ci_db, git=SimpleNamespace(afetch_exact_oid_with_app_auth=fetch,
-                                    apush_oid_with_app_auth=AsyncMock(side_effect=push)),
+        db=ci_db, git=SimpleNamespace(afetch_repository_oid=fetch,
+                                    apush_repository_oid=AsyncMock(side_effect=push)),
         _load_trust=AsyncMock(return_value=(trust(), client)),
         _store=lambda _: tmp_path, clock=lambda: 100.0,
     )
@@ -101,7 +103,7 @@ async def test_legacy_parent_tick_publishes_exact_ci_and_fenced_event(ci_db, tmp
         assert events[0]['payload']['head_sha'] == SHA
         assert events[0]['payload']['generation'] == 3
         assert len(events[0]['payload']['evidence_ids']) == 2
-        backend.git.apush_oid_with_app_auth.assert_awaited_once()
+        backend.git.apush_repository_oid.assert_awaited_once()
 
 
 async def test_first_parent_initializes_a_real_bare_ci_store(tmp_path):

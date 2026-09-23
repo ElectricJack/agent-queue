@@ -445,7 +445,7 @@ async def recover_completed_pr_links(db, promotion, project_id: str) -> list[str
     # project lock before the repository lock, so retaining the latter while
     # waiting for SQL here would deadlock filing and the integration sweep.
     async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
-        await promotion._fetch_all_heads(resolved.retained_git_dir)
+        await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
     for row in rows:
         try:
             async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
