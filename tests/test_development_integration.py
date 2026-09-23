@@ -326,6 +326,76 @@ async def test_recover_child_publishes_past_delivered_dependency_without_ref(set
     assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
 
 
+@pytest.mark.parametrize("receipt_state", ["delivered", "adopted"])
+@pytest.mark.parametrize("recover", [False, True])
+async def test_non_default_receipt_releases_deleted_dependency_ref(setup, receipt_state, recover):
+    """A manifest on a cleaned-up assembly or candidate ref proves target ancestry."""
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    git(source, "push", "origin", f"{previous}:main")
+    now = time.time()
+    await service.save({
+        "id": "previous-receipt", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/aq/development/parent/old",
+        "expected_sha": None, "prepared_sha": previous,
+        "state": receipt_state,
+        "manifest": [{"task_id": "previous", "source_sha": previous}],
+        "evidence": {"kind": "assembly"}, "reason": "historical assembly",
+        "created_at": now, "updated_at": now,
+    })
+    git(source, "push", "origin", "--delete", "previous")
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+
+    result = (
+        await service.recover_child("p", "later") if recover else await service.sweep("p")
+    )
+
+    assert result["outcome"] == "delivered"
+    if recover:
+        assert result["recovered_task_id"] == "later"
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+    assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
+    assert any(
+        member["task_id"] == "previous"
+        for row in await service.rows("p")
+        if row["target_ref"] == "refs/heads/main" and row["state"] == "delivered"
+        for member in row["manifest"]
+    )
+
+
+async def test_recover_child_isolated_from_conflicting_sibling(setup):
+    db, service, _source, remote, _repo = setup
+    await feature(setup, "main-change", filename="base.txt", content="on main\n")
+    await service.sweep("p")
+    await db.create_task(Task(
+        id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED,
+    ))
+    await feature(setup, "conflict", filename="base.txt", content="conflicts\n")
+    clean = await feature(setup, "clean")
+    async with db.immediate() as conn:
+        await db.set_parent("conflict", "epic", conn=conn)
+        await db.set_parent("clean", "epic", conn=conn)
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta("clean", PUBLISHER_SKIP_KEY))["reason"] == (
+        "parent_unavailable"
+    )
+
+    result = await service.recover_child("p", "clean")
+
+    assert result["outcome"] == "delivered"
+    assert result["source_sha"] == clean
+    assert result["sibling_conflicts"] == ["conflict"]
+    assert git(remote, "merge-base", "--is-ancestor", clean, "main") == ""
+    assert await db.get_task_meta("clean", PUBLISHER_SKIP_KEY) is None
+    assert any(
+        row["state"] == "parked" and any(
+            member["task_id"] == "conflict" for member in row["manifest"]
+        ) for row in await service.rows("p")
+    )
+
+
 async def test_old_delivery_does_not_clear_parked_newer_dependency(setup):
     db, service, source, _remote, _repo = setup
     await feature(setup, "previous")

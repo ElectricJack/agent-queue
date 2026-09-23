@@ -571,7 +571,7 @@ class DevelopmentIntegration:
                 "manifest": manifest,
             }
 
-    async def sweep(self, project_id, *, retry=False):
+    async def sweep(self, project_id, *, retry=False, recover_child_id=None):
         project = await self.db.get_project(project_id)
         if project is None or project.hierarchical_integration_mode != "development":
             raise ValueError("project is not in development mode")
@@ -601,6 +601,7 @@ class DevelopmentIntegration:
                     for r in history
                     if r["state"] == "parked"
                     for m in r["manifest"]
+                    if m["task_id"] != recover_child_id
                 }
                 if not retry
                 else set()
@@ -616,6 +617,7 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 tasks.c.branch_name.is_not(None),
+                                *([tasks.c.id == recover_child_id] if recover_child_id else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
                                 # but do not wait for our own earlier publication.
@@ -661,18 +663,73 @@ class DevelopmentIntegration:
                     ordered.append(task)
                     remaining.pop(task["id"])
             parked_sources = {}
-            for task_id, source_sha in parked:
-                parked_sources.setdefault(task_id, set()).add(source_sha)
+            for row in history:
+                if row["state"] != "parked" or retry:
+                    continue
+                for member in _manifest_members(row["manifest"]):
+                    if member["task_id"] != recover_child_id:
+                        parked_sources.setdefault(member["task_id"], []).append(
+                            (member.get("source_sha"), row["created_at"])
+                        )
             unavailable = set(parked_sources)
-            # A parked attempt is historical.  Once a later receipt reached this
-            # exact target, the task is satisfied even if cleanup removed its ref.
+            # A later delivery supersedes historical parked attempts. A newer
+            # parked revision remains unavailable even after its source ref is
+            # removed, unless that revision also reached the pinned target.
             for dependency_id in tuple(unavailable):
                 delivered_source = await self._delivered_source(
                     store, history, dependency_id, base,
-                    repository_id=repo.id, target_ref=target,
+                    repository_id=repo.id,
                 )
-                if delivered_source and parked_sources[dependency_id] == {delivered_source}:
+                if not delivered_source:
+                    continue
+                delivered_at = max(
+                    row["created_at"]
+                    for row in history
+                    if row["state"] in {"delivered", "adopted"}
+                    and row["repository_id"] == repo.id
+                    and any(
+                        member["task_id"] == dependency_id
+                        and member.get("source_sha") == delivered_source
+                        for member in _manifest_members(row["manifest"])
+                    )
+                )
+                unresolved = False
+                for source_sha, created_at in parked_sources[dependency_id]:
+                    if created_at > delivered_at and not (
+                        is_valid_git_oid(source_sha)
+                        and await self.git.ais_ancestor(str(store), source_sha, base)
+                    ):
+                        unresolved = True
+                        break
+                if not unresolved:
                     unavailable.discard(dependency_id)
+            # A dependency may no longer be a candidate at all: its worker
+            # branch was cleaned up or its task was archived. Bind an already
+            # contained source to the default ref so readiness can release
+            # descendants without consulting that missing branch.
+            candidate_ids = {task["id"] for task in candidates}
+            dependency_ids = set().union(*dependencies.values()) if dependencies else set()
+            for dependency_id in sorted(dependency_ids):
+                if dependency_id in candidate_ids or dependency_id in unavailable:
+                    continue
+                source = await self._delivered_source(
+                    store, history, dependency_id, base, repository_id=repo.id
+                )
+                completion = await self.db.get_task_completion(dependency_id)
+                latest = await self._completion_source(store, completion, history=history)
+                if latest and latest != source and not await self.git.ais_ancestor(
+                    str(store), latest, base
+                ):
+                    unavailable.add(dependency_id)
+                    continue
+                if source is None and latest and await self.git.ais_ancestor(
+                    str(store), latest, base
+                ):
+                    source = latest
+                if source is None:
+                    unavailable.add(dependency_id)
+                elif (dependency_id, source) not in done:
+                    manifest.append({"task_id": dependency_id, "source_sha": source})
             head = base
             parent_heads = {}
             blocked_parents = set()
@@ -731,7 +788,7 @@ class DevelopmentIntegration:
                     # Prefer the newest delivered/adopted receipt whose exact
                     # member is already on this sweep's pinned base.
                     source = await self._delivered_source(
-                        store, history, task["id"], base, repository_id=repo.id, target_ref=target
+                        store, history, task["id"], base, repository_id=repo.id
                     )
                 key = (task["id"], source)
                 if not source:
@@ -929,7 +986,9 @@ class DevelopmentIntegration:
             or task.status != TaskStatus.COMPLETED or not task.branch_name
         ):
             raise ValueError(f"{child_id} is not a completed source task in {project_id}")
-        result = await self.sweep(project_id, retry=retry)
+        # Recovery is an explicit retry of this child. Selecting only its branch
+        # lets a sibling's parent-assembly conflict be handled independently.
+        result = await self.sweep(project_id, retry=retry, recover_child_id=child_id)
         project = await self.db.get_project(project_id)
         repo = await self.db.get_repo(project.integration_repository_id)
         store = await self.store(repo)
@@ -938,20 +997,46 @@ class DevelopmentIntegration:
         history = await self.rows(project_id)
         source = await self._delivered_source(
             store, history, child_id, base,
-            repository_id=repo.id, target_ref=target,
+            repository_id=repo.id,
+        )
+        bound_to_main = any(
+            row["state"] in {"delivered", "adopted"}
+            and row["repository_id"] == repo.id
+            and row["target_ref"] == target
+            and any(
+                member["task_id"] == child_id and member.get("source_sha") == source
+                for member in _manifest_members(row["manifest"])
+            )
+            for row in history
         )
         completion = await self.db.get_task_completion(child_id)
         latest = await self._completion_source(store, completion, history=history)
         branch = await self.remote(
             store, "refs/heads/" + task.branch_name.removeprefix("refs/heads/")
         )
-        if source is None or (latest and latest != source) or (branch and branch != source):
+        if (source is None or not bound_to_main or (latest and latest != source)
+                or (branch and branch != source)):
             skip = await self.db.get_task_meta(child_id, PUBLISHER_SKIP_KEY)
             raise ValueError(
                 f"{child_id} remains unpublished after sweep: "
                 f"{skip or 'no receipt for the current source'}"
             )
-        return {**result, "recovered_task_id": child_id, "source_sha": source}
+        sibling_conflicts = []
+        if task.parent_task_id:
+            for row in history:
+                if row["state"] != "parked" or "conflict" not in row["reason"]:
+                    continue
+                for member in _manifest_members(row["manifest"]):
+                    sibling_id = member["task_id"]
+                    if sibling_id == child_id:
+                        continue
+                    sibling = await self.db.get_task(sibling_id)
+                    if sibling and sibling.parent_task_id == task.parent_task_id:
+                        sibling_conflicts.append(sibling_id)
+        return {
+            **result, "recovered_task_id": child_id, "source_sha": source,
+            "sibling_conflicts": sorted(set(sibling_conflicts)),
+        }
 
     async def reconcile_parked(self, repo, store, accepted_head):
         """Dispatch only failures still unresolved after the whole batch was assembled.
@@ -1047,13 +1132,17 @@ class DevelopmentIntegration:
                     return proof["source_sha"]
         return None
 
-    async def _delivered_source(self, store, history, task_id, base, *, repository_id, target_ref):
-        """Return a delivered manifest source for *task_id* that reached *base*."""
+    async def _delivered_source(self, store, history, task_id, base, *, repository_id):
+        """Return a receipted source for *task_id* already contained in *base*.
+
+        A candidate or parent assembly may have been delivered to a temporary
+        ref and later merged into the target. Its manifest and target ancestry
+        remain proof after normal branch cleanup removes the source ref.
+        """
         for row in reversed(history):
             if (
                 row["state"] not in {"delivered", "adopted"}
                 or row["repository_id"] != repository_id
-                or row["target_ref"] != target_ref
             ):
                 continue
             for member in reversed(_manifest_members(row["manifest"])):
