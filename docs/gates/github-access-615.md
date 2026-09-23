@@ -187,6 +187,13 @@ Independent GitHub reads confirmed merge by `ElectricJack` at
 `725b217262412548cc1b7ce60ebcb6093accf30f`, and HTTP 404 for the
 deleted task-branch ref.
 
+For a live foreign-target check, the existing-login daemon also onboarded the
+disposable App fixture repository as a **different** project,
+`foreign-gh615-20260923`. Asking `aq git pr-merge` for that project with the
+login repository's PR 2 URL refused it because the PR reference did not match
+the project's authorized repository. Both repositories' `main` OIDs were
+unchanged by the refused call.
+
 Separate disposable daemons on ports `18157` and `18158` tested environment
 credential discovery. Each had an empty `GH_CONFIG_DIR`, no stored login,
 and exactly one credential variable in its daemon environment. The
@@ -206,7 +213,7 @@ after verification. No token value was logged or placed in this record.
 | Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified in two PRs; AQ task close `BLOCKED` on both |
 | Existing-login `GH_TOKEN` and `GITHUB_TOKEN` discovery in separate instances | Live auth-status and private URL onboarding passed; no remote writes in these two instances |
 | App denial with valid ambient PAT and independent no-fallback audit | `not_run`; current App failure alone does not prove this case |
-| Foreign PR/cross-project rejection | `not_run` live; mock-only evidence above |
+| Foreign PR/cross-project rejection | Live AQ refusal on a PR URL from the other disposable project; both `main` OIDs unchanged |
 | Stale-revision refusal | Live production-method refusal on PR 2, with remote `main` unchanged before the later validated merge |
 | Final fixture cleanup | Pending App permission approval and remaining validation |
 
