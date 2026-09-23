@@ -67,6 +67,7 @@ import asyncio
 import logging
 import math
 import os
+import random
 import re
 import signal
 import subprocess
@@ -128,6 +129,10 @@ def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int 
 
 class GitError(Exception):
     pass
+
+
+class _AuthenticatedGitTimeout(GitError):
+    """A contained Git attempt timed out and may be retried within its deadline."""
 
 
 class RemoteRefState(StrEnum):
@@ -406,6 +411,7 @@ def _require_authorized_repository(configured_url: str, repository_url: str, *, 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
+    _APP_GIT_RETRY_MIN_BUDGET = 1.0
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
@@ -1748,6 +1754,7 @@ class GitManager:
                 repository_url=source_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
             clone_args = ["-c", "core.hooksPath=/dev/null", "clone"]
             if bare:
@@ -1865,6 +1872,7 @@ class GitManager:
                 repository_url=source_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
             destination_git_dir = await self._arun(
                 ["rev-parse", "--absolute-git-dir"], cwd=checkout_path
@@ -3191,6 +3199,7 @@ class GitManager:
             output = await self._arun_authenticated_git(
                 ["ls-remote", "--heads", destination_url, f"refs/heads/{branch}"],
                 home=home, repository_url=destination_url, token=token, deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
         lines = output.decode("ascii", errors="replace").splitlines()
         if not lines:
@@ -3546,6 +3555,7 @@ class GitManager:
                 repository_url=destination_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=fetch_timeout,
             )
             verified = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
@@ -3603,6 +3613,42 @@ class GitManager:
         repository_url: str,
         token: str | None,
         deadline: float,
+        budget_seconds: float | None = None,
+    ) -> bytes:
+        """Retry one timed-out acquisition without extending its original deadline."""
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        # Reserve time for one fresh attempt. A short caller budget keeps its
+        # original single-attempt behavior rather than forcing two tiny runs.
+        retry_available = remaining >= 8 * self._APP_GIT_RETRY_MIN_BUDGET
+        first_deadline = loop.time() + remaining * 0.75 if retry_available else deadline
+        for attempt in range(2 if retry_available else 1):
+            attempt_deadline = first_deadline if attempt == 0 else deadline
+            try:
+                return await self._arun_authenticated_git_once(
+                    args, home=home, repository_url=repository_url, token=token,
+                    deadline=attempt_deadline, budget_seconds=budget_seconds,
+                    attempt=attempt + 1,
+                )
+            except _AuthenticatedGitTimeout as exc:
+                if not retry_available or attempt or deadline - loop.time() <= self._APP_GIT_RETRY_MIN_BUDGET:
+                    raise GitError(str(exc)) from None
+                delay = random.uniform(0.2, 0.7)
+                if deadline - loop.time() - delay <= self._APP_GIT_RETRY_MIN_BUDGET:
+                    raise GitError(str(exc)) from None
+                await asyncio.sleep(delay)
+        raise AssertionError("authenticated Git retry loop exhausted")
+
+    async def _arun_authenticated_git_once(
+        self,
+        args: list[str],
+        *,
+        home: Path,
+        repository_url: str,
+        token: str | None,
+        deadline: float,
+        budget_seconds: float | None,
+        attempt: int,
     ) -> bytes:
         """Run one contained network Git command against a pinned repository URL."""
         if not (
@@ -3613,6 +3659,10 @@ class GitManager:
         if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         uses_existing_auth = token is None
+        loop = asyncio.get_running_loop()
+        run_started = loop.time()
+        initial_remaining = max(0.0, deadline - run_started)
+        configured_budget = budget_seconds if budget_seconds is not None else initial_remaining
         token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
         with _zeroized_credential(token_buffer):
             topology = (
@@ -3627,6 +3677,8 @@ class GitManager:
             stderr = b""
             broker_timeout: float | None = None
             broker_budget: float | None = None
+            phase = "budget_preflight"
+            operation_timeout = asyncio.timeout_at(deadline)
             try:
                 request_fd: int | None = None
                 if not uses_existing_auth:
@@ -3672,7 +3724,8 @@ class GitManager:
                     else repository_url
                 )
                 command.extend(git_url if arg == repository_url else arg for arg in args)
-                async with asyncio.timeout_at(deadline):
+                async with operation_timeout:
+                    phase = "subprocess_spawn"
                     process = await asyncio.create_subprocess_exec(
                         self._APP_GIT_EXECUTABLE,
                         *command,
@@ -3688,6 +3741,7 @@ class GitManager:
                         request_channel.close()
                         request_channel = None
                     if broker_channel is not None and topology is not None:
+                        phase = "credential_broker_start"
                         broker_budget = self._remaining_app_push_budget(deadline)
                         broker_timeout = min(
                             broker_budget, self._APP_CREDENTIAL_BROKER_TIMEOUT
@@ -3705,8 +3759,11 @@ class GitManager:
                             )
                         )
                         broker_channel = None
+                    phase = "git_communicate"
                     output, stderr = await process.communicate()
+                    phase = "process_cleanup"
                     await self._kill_app_git_group(process)
+                    phase = "credential_broker_settle"
                     served = (
                         await self._settle_app_credential_broker(broker_task)
                         if broker_task is not None
@@ -3714,6 +3771,16 @@ class GitManager:
                     )
                     broker_task = None
             except BaseException as exc:
+                failure_time = loop.time()
+                broker_state = "not_started"
+                if broker_task is not None:
+                    if broker_task.done():
+                        try:
+                            broker_state = "served" if broker_task.result() else "not_served"
+                        except (asyncio.CancelledError, Exception):
+                            broker_state = "failed"
+                    else:
+                        broker_state = "pending"
                 if process is not None:
                     await self._kill_app_git_group(process)
                 if broker_task is not None:
@@ -3721,6 +3788,19 @@ class GitManager:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 detail = _safe_authenticated_git_detail(str(exc), token)
+                if isinstance(exc, asyncio.TimeoutError):
+                    timeout_detail = (
+                        f"phase={phase}, attempt={attempt}, "
+                        f"configured_budget={configured_budget:.1f}s, "
+                        f"budget_at_run_start={initial_remaining:.1f}s, "
+                        f"elapsed_in_run={failure_time - run_started:.1f}s, "
+                        f"remaining_budget={max(0.0, deadline - failure_time):.1f}s, "
+                        f"outer_deadline_expired={operation_timeout.expired()}, "
+                        f"broker_state={broker_state}"
+                    )
+                    if broker_timeout is not None:
+                        timeout_detail += f", broker_timeout={broker_timeout:.1f}s"
+                    detail = f"{timeout_detail}; {detail}" if detail else timeout_detail
                 suffix = f": {detail}" if detail else ""
                 if stderr:
                     tail = _safe_authenticated_git_detail(
@@ -3728,7 +3808,8 @@ class GitManager:
                     )
                     if tail:
                         suffix += f"; stderr tail: {tail}"
-                raise GitError(
+                error_type = _AuthenticatedGitTimeout if isinstance(exc, asyncio.TimeoutError) else GitError
+                raise error_type(
                     f"authenticated Git acquisition failed: exception "
                     f"{type(exc).__name__}{suffix}"
                 ) from None
@@ -4893,6 +4974,7 @@ class GitManager:
                     output = await self._arun_authenticated_git(
                         ["ls-remote", "--symref", source_url, "HEAD"],
                         home=home, repository_url=source_url, token=token, deadline=deadline,
+                        budget_seconds=self._GIT_TIMEOUT,
                     )
                 for line in output.decode("ascii", errors="replace").splitlines():
                     if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
