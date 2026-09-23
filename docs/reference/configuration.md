@@ -90,6 +90,46 @@ aq system config schema
 | dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. See [dashboard server settings](#dashboard-server-settings). |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
 
+## GitHub credentials
+
+GitHub CLI (`gh`) must be installed on the daemon host for GitHub API and
+delivery operations in **both** modes. `aq install` does not install `gh`.
+Choose one credential source; AQ does not require both:
+
+| Configuration | Effective credential |
+|---|---|
+| No `integration.github_app` | The daemon OS user's existing `gh` credentials: `GH_TOKEN`, then `GITHUB_TOKEN`, then its stored login. AQ leaves that login unchanged. |
+| `integration.github_app` configured | An installation token scoped to the authorized repository, supplied as `GH_TOKEN` for each AQ-owned invocation. The stored login and parent environment are unchanged. App failures never fall back to a PAT or SSH key. |
+
+For App mode, install the App on the repositories AQ will use, make its private
+key readable only by the daemon OS user, and set the existing configuration
+fields (there is no new setting or database migration):
+
+~~~yaml
+integration:
+  github_app:
+    client_id: ${AQ_GITHUB_APP_CLIENT_ID}
+    app_id: 12345
+    installation_id: 67890
+    private_key_path: /home/aq/.agent-queue/github-app.pem
+~~~
+
+Replace the example IDs and key path with your installation's values; keep
+secrets out of the YAML and version control. App mode supports AQ operations
+on an authorized existing repository, including App-backed task and integration
+delivery. It does not provide user-wide repository search, owner selection,
+user identity, repository creation or profile gists. The current onboarding
+flow can validate an explicit URL but still refuses an App-backed clone; see
+[project onboarding](../guides/project-onboarding.md#github-on-the-daemon-host).
+
+The daemon constructs its GitHub credential provider from the effective
+configuration at startup. Changing the mode, App identity, installation or
+private-key reference requires a **daemon restart**; `aq system reload-config`
+does not switch live requests to the new credentials. Ordinary installation
+token refresh happens in memory without a restart. GitHub health reports CLI
+availability and credential mode separately from access to a specific
+repository; App mode does not depend on `gh auth status` or a personal login.
+
 ## Provider availability settings
 
 Two blocks configure what happens when a provider runs out of usage, loses its login
@@ -291,6 +331,11 @@ aq system reload-config
 | Changes applied without daemon restart | Changes that require restart |
 |---|---|
 | agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
+
+The `integration` restart classification includes `integration.github_app`.
+Changing a process environment token or App key reference also requires a
+daemon restart to create a new effective provider; an expiring App
+installation token refreshes automatically within that provider.
 
 The dashboard/CLI editor reads raw YAML so ${NAME} references survive an edit. Its
 round-trip writer preserves comments, order, and quote style outside the changed section;

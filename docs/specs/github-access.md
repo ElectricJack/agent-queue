@@ -11,8 +11,11 @@ issue: https://github.com/ElectricJack/agent-queue/issues/615
 
 Date: 2026-09-22
 
-Status: proposed design; the single execution path and credential precedence
-are agreed direction. The refactor is not implemented.
+Status: staged implementation. Shared credential selection, `gh` runner,
+repository operations and AQ Git delivery are present in the source tree;
+App-backed onboarding clone and the final compatibility-path removal remain
+open. The disposable private-repository App-only acceptance run in §11 has
+not been recorded. The inventory in §1 describes the original baseline.
 
 Issue: [#615 — GitHub App credentials do not cover gh-based PR operations](https://github.com/ElectricJack/agent-queue/issues/615)
 
@@ -23,15 +26,17 @@ the daemon user's existing `gh` credentials, including a personal access token
 (PAT). An existing repository's supported AQ workflow must work with either
 credential source, without requiring both.
 
-This is a design record for future behavior. See
+This is the design and remaining acceptance record. See
 [Integration](../concepts/integration.md) and
 [Project onboarding](../guides/project-onboarding.md) for current behavior.
 
 ## 1. Problem and evidence
 
-The current code has several GitHub execution paths:
+At the inventory baseline, the code had several GitHub execution paths. The
+table records the problem that started this migration, not the current module
+boundaries:
 
-| Area | Current implementation | Gap |
+| Area | Baseline implementation | Gap |
 | --- | --- | --- |
 | Integration services | `GitHubAppClient` performs HTTP requests; `GitHubCLIClient` subclasses it and overrides transport | Authentication choice also selects the transport implementation |
 | Ordinary PR and CI operations | `GitManager` invokes `gh` with its shared subprocess environment | App tokens never reach these calls |
@@ -44,15 +49,15 @@ Source: [src/git/github_app.py](../../src/git/github_app.py),
 [src/git/manager.py](../../src/git/manager.py),
 [src/projects/github.py](../../src/projects/github.py), and
 [src/commands/profile_commands.py](../../src/commands/profile_commands.py).
-The App/CLI client selection is currently inside
+At that baseline, App/CLI client selection was inside
 [src/orchestrator/core.py](../../src/orchestrator/core.py).
 
 Two details affect the scope. `_create_pr_for_task` in
 [src/orchestrator/git_ops.py](../../src/orchestrator/git_ops.py) is deprecated
 and has no production caller; repairing that helper alone would not repair
-normal worker delivery. The shipped
+normal worker delivery. The baseline
 [completion protocol](../../src/prime/templates/completion_protocol.md)
-instructs workers to run `git push` themselves. Also, `_apr_delivery_diff`
+instructed workers to run `git push` themselves. Also, `_apr_delivery_diff`
 fetches the exact commits needed to approve a merge; authenticating only the
 final `gh pr merge` command would still leave private-repository merges broken.
 

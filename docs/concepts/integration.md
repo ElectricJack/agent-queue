@@ -58,6 +58,32 @@ front, because they explain most of the behaviour on this page:
 > review-and-merge path, and a development-mode project suppresses that path
 > entirely — see [Modes](#modes).
 
+## GitHub access during delivery
+
+GitHub API operations and authenticated Git transfer use the daemon's selected
+credential source. Install GitHub CLI (`gh`) on the daemon host in either mode.
+Without `integration.github_app`, AQ uses that OS user's existing `gh` login or
+token (`GH_TOKEN`, then `GITHUB_TOKEN`, then stored login). With an App
+configured, AQ supplies a repository-scoped installation token for each
+AQ-owned `gh` call and isolates Git transfer credentials. It does not overwrite
+the stored login, expose the token to worker shells or retry an App failure
+with a PAT or SSH key. See [configuration](../reference/configuration.md#github-credentials)
+for setup and the daemon restart boundary.
+
+The credential only authorizes access to a repository. Task and project scope,
+branch ownership, exact revisions, leases, CI evidence and integration trust
+still decide whether AQ may publish. Strict-mode App attestation retains its
+trust manifest, producer identity and hosted-variable checks; existing-login
+mode retains its policy-derived checks. The shared GitHub client and runner
+are mapped in the [projects and workspaces module catalog](../reference/modules/workspaces.md#git-boundaries).
+
+App-backed worker and integration delivery are implemented for an already
+registered, authorized GitHub repository. App-only onboarding by URL can
+validate access, but its clone step remains unavailable in this staged
+migration. The final removal of compatibility clients and a live disposable
+private-repository acceptance run are still outstanding; see the
+[design and acceptance plan](../specs/github-access.md#11-verification-and-acceptance).
+
 ## A realistic example
 
 Assumes the daemon is running. Substitute your own project id — the output

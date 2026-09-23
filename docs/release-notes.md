@@ -9,6 +9,49 @@ entries are dated by the day the change reached `main` rather than numbered.
 A wheel installation gets the same change when it upgrades to a release built
 after that date.
 
+## 2026-09-22 — GitHub credentials share AQ's `gh` path (staged)
+
+AQ now selects one GitHub credential mode at daemon startup for its
+repository-bound operations. GitHub CLI (`gh`) is required on the daemon host
+for **both** modes; the installer does not install it. Choose either setup:
+
+| Setup | Operator action | AQ behavior |
+|---|---|---|
+| Existing login only | Leave `integration.github_app` unset. Keep the daemon OS user's stored `gh` login/PAT or `GH_TOKEN` / `GITHUB_TOKEN` as before. | `gh` uses `GH_TOKEN`, then `GITHUB_TOKEN`, then its stored login. AQ does not alter stored authentication. |
+| GitHub App only | Install the App on the repository and configure the existing `integration.github_app` fields and readable private key; restart the daemon. | AQ supplies a repository-scoped installation token as `GH_TOKEN` for each operation. A personal login or SSH key is not required for supported AQ operations on an already registered repository. |
+
+If both credential sources are present, the configured App wins for AQ's
+operations. Binding, token or permission failures are reported; AQ never
+retries with a PAT or SSH key. The token is not put in `gh`'s stored login,
+the daemon's parent environment or a worker shell. Task authority, immutable
+revisions, lease checks, CI policy and integration trust remain in force.
+
+**Upgrade:** no setting rename or database migration is needed. Install `gh`
+before using GitHub features, then restart the daemon after changing the App
+mode, installation, identity or private-key reference. Token expiry is handled
+in memory. [Configuration](reference/configuration.md#github-credentials),
+[onboarding](guides/project-onboarding.md#github-on-the-daemon-host) and
+[integration](concepts/integration.md#github-access-during-delivery) give the
+current setup and source boundaries.
+
+**Current limits:** App mode can validate an explicit repository URL but the
+onboarding clone step still returns `github_operation_unsupported`. Existing
+local repositories may be linked and already registered repositories can use
+App-backed AQ delivery. User-wide search, owner selection, repository
+creation, user identity and profile gists remain existing-login features;
+App mode reports them unavailable instead of consulting a personal login.
+The compatibility `GitHubAppClient` / `GitHubCLIClient` constructors and any
+superseded launch paths are scheduled for the final removal task. A live
+disposable private-repository App-only acceptance run has not been recorded,
+so this entry does not certify that end-to-end gate.
+
+**Deployment-guide follow-up:** `deploy/README.md` belongs to
+`feature/cloud-deploy` and is absent from this checkout. When that branch is
+integrated, update its deployment prerequisites to install `gh` in both modes,
+describe the startup restart boundary, and state that an App failure does not
+fall back to the deployment host's PAT or SSH credentials. No parallel deploy
+tree is added here.
+
 ## 2026-09-21 — The daemon is API only; the dashboard has its own server
 
 **In one line:** open the dashboard at **`http://127.0.0.1:8082/`**. The daemon
