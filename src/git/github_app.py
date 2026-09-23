@@ -39,7 +39,7 @@ _PERMISSIONS = {
     "administration": "read",
     "pull_requests": "write",
     "issues": "write",
-    "variables": "read",
+    "actions_variables": "read",
 }
 
 

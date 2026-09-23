@@ -1083,7 +1083,7 @@ async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables
     assert blockers == expected
 
 
-async def test_daemon_functional_preflight_mints_token_with_variables_read(
+async def test_daemon_functional_preflight_mints_token_with_actions_variables_read(
     db, monkeypatch
 ):
     trust = {
@@ -1124,7 +1124,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
                 }
                 return HttpResponse(200, {}, json.dumps(body).encode())
             if "/actions/variables/" in url:
-                if (self.token_permissions or {}).get("variables") != "read":
+                if (self.token_permissions or {}).get("actions_variables") != "read":
                     return HttpResponse(403, {}, b'{"message":"forbidden"}')
                 name = url.rsplit("/", 1)[-1]
                 value = (
@@ -1210,7 +1210,7 @@ async def test_daemon_functional_preflight_mints_token_with_variables_read(
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
 
 
