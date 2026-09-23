@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -85,7 +85,7 @@ def _installation_response(token: str, *, expires: str = "2030-01-01T00:00:00Z")
 async def test_mints_narrow_installation_token_after_app_and_repository_binding():
     private, public = _private_key()
     now = 1_800_000_000.0
-    expires = (datetime.fromtimestamp(now, timezone.utc) + timedelta(hours=1)).isoformat()
+    expires = (datetime.fromtimestamp(now, UTC) + timedelta(hours=1)).isoformat()
     permissions = {
         "checks": "write",
         "actions": "read",
