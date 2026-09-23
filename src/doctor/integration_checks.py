@@ -606,8 +606,12 @@ async def _fix_stranded_fences(ctx: DoctorContext) -> CheckResult:
     return result
 
 
-async def _find_stranded_dependents(ctx: DoctorContext) -> list[dict]:
-    """Find completed candidates held behind a cleaned-up commits-less delivery.
+async def _find_stranded_dependents(
+    ctx: DoctorContext,
+    *,
+    candidate_statuses: tuple[TaskStatus, ...] = (TaskStatus.COMPLETED,),
+) -> list[dict]:
+    """Find candidates held behind a cleaned-up commits-less delivery.
 
     A delivered manifest normally makes its source durable enough to survive
     branch cleanup. Older publisher builds consulted an empty completion first,
@@ -643,7 +647,7 @@ async def _find_stranded_dependents(ctx: DoctorContext) -> list[dict]:
                     select(tasks.c.id, tasks.c.project_id)
                     .where(
                         tasks.c.project_id.in_(development),
-                        tasks.c.status == TaskStatus.COMPLETED.value,
+                        tasks.c.status.in_(tuple(status.value for status in candidate_statuses)),
                     )
                 )
             )
