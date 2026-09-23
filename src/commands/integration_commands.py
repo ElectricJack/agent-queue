@@ -1886,7 +1886,12 @@ class IntegrationCommandsMixin:
         if refusal is not None:
             return _failure("unauthorized", refusal)
         try:
-            return await self._development_integration().sweep(args["project_id"], retry=args.get("retry", False))
+            service = self._development_integration()
+            if args.get("recover_child"):
+                return await service.recover_child(
+                    args["project_id"], args["recover_child"], retry=args.get("retry", False)
+                )
+            return await service.sweep(args["project_id"], retry=args.get("retry", False))
         except (ValueError, RuntimeError, KeyError) as exc:
             return _failure("blocked", str(exc))
 

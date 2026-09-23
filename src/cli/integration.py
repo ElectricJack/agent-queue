@@ -272,11 +272,14 @@ def integration_adopt(ctx, project_id, task_ids, target_ref, head_sha, accept_eq
 @integration.command("sweep")
 @click.argument("project_id")
 @click.option("--retry", is_flag=True, help="Retry parked source revisions.")
+@click.option("--recover-child", help="Retry and verify delivery of a completed child task.")
 @click.pass_context
 @_handle_errors
-def integration_development_sweep(ctx, project_id, retry):
+def integration_development_sweep(ctx, project_id, retry, recover_child):
     """Build and publish a development batch now."""
-    _execute(ctx, "integration_development_sweep", {"project_id": project_id, "retry": retry})
+    _execute(ctx, "integration_development_sweep", {
+        "project_id": project_id, "retry": retry, "recover_child": recover_child,
+    })
 
 
 @integration.command("cancel-preserving")

@@ -28,6 +28,11 @@ def _client(result):
         (["status", "p"], "integration_status", {"project_id": "p"}),
         (["flush", "p"], "integration_flush", {"project_id": "p"}),
         (
+            ["sweep", "p", "--recover-child", "child"],
+            "integration_development_sweep",
+            {"project_id": "p", "retry": False, "recover_child": "child"},
+        ),
+        (
             [
                 "resolve-candidate-member",
                 "--resolved-head-sha",

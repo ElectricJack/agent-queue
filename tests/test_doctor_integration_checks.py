@@ -818,6 +818,29 @@ async def test_publisher_stalled_lets_one_failing_tick_pass(db):
     assert result.severity is Severity.OK
 
 
+async def test_publisher_stalled_warns_after_repeated_candidate_skip(db):
+    await _development_project(db)
+    await db.create_task(Task(
+        id="child", project_id="p", title="child", description="",
+        branch_name="aq/child", status=TaskStatus.COMPLETED,
+    ))
+    evidence = {
+        "reason": "dependency_unavailable", "dependency_id": "parent",
+        "consecutive_ticks": 2, "first_skipped_at": time.time() - 600,
+    }
+    await db.set_task_meta("child", "development_publisher_skip", evidence)
+    assert (await run_check(db, "integration.development_publisher_stalled")).severity is Severity.OK
+
+    await db.set_task_meta("child", "development_publisher_skip", {
+        **evidence, "consecutive_ticks": 3,
+    })
+    result = await run_check(db, "integration.development_publisher_stalled")
+    assert result.severity is Severity.WARN
+    assert "child" in result.detail and "parent" in result.detail
+    assert "dependency_unavailable" in result.detail
+    assert result.data["stalls"][0]["dependency_id"] == "parent"
+
+
 async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
     """A repair closed pass whose branch no batch ever picked up."""
     from src.models import TaskCompletion

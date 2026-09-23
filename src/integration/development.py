@@ -61,6 +61,7 @@ BRANCH_CLEANUP_RETRY_SECONDS = 300.0
 BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
+PUBLISHER_SKIP_KEY = "development_publisher_skip"
 
 
 def armed_for_branch_cleanup(evidence):
@@ -590,7 +591,8 @@ class DevelopmentIntegration:
             done = {
                 (m["task_id"], m.get("source_sha"))
                 for r in history
-                if r["state"] in {"delivered", "adopted"} and r["target_ref"] == target
+                if r["state"] in {"delivered", "adopted"}
+                and r["repository_id"] == repo.id and r["target_ref"] == target
                 for m in r["manifest"]
             }
             parked = (
@@ -658,10 +660,23 @@ class DevelopmentIntegration:
                 for task in eligible:
                     ordered.append(task)
                     remaining.pop(task["id"])
-            unavailable = {task_id for task_id, _ in parked}
+            parked_sources = {}
+            for task_id, source_sha in parked:
+                parked_sources.setdefault(task_id, set()).add(source_sha)
+            unavailable = set(parked_sources)
+            # A parked attempt is historical.  Once a later receipt reached this
+            # exact target, the task is satisfied even if cleanup removed its ref.
+            for dependency_id in tuple(unavailable):
+                delivered_source = await self._delivered_source(
+                    store, history, dependency_id, base,
+                    repository_id=repo.id, target_ref=target,
+                )
+                if delivered_source and parked_sources[dependency_id] == {delivered_source}:
+                    unavailable.discard(dependency_id)
             head = base
             parent_heads = {}
             blocked_parents = set()
+            processed, skipped = set(), {}
             assembly_id = uuid4().hex[:12]
             # Fetch above pins one remote snapshot. Do not make a network request
             # for every historical task branch on every sweep.
@@ -670,8 +685,10 @@ class DevelopmentIntegration:
             )
             source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
             for task in ordered:
+                processed.add(task["id"])
                 if task["parent_task_id"] in blocked_parents:
                     unavailable.add(task["id"])
+                    skipped[task["id"]] = ("parent_unavailable", task["parent_task_id"])
                     continue
                 unavailable_dependencies = dependencies.get(task["id"], set()) & unavailable
                 if unavailable_dependencies:
@@ -687,6 +704,9 @@ class DevelopmentIntegration:
                             },
                         )
                     unavailable.add(task["id"])
+                    skipped[task["id"]] = (
+                        "dependency_unavailable", sorted(unavailable_dependencies)[0]
+                    )
                     continue
                 source = source_heads.get(
                     "refs/remotes/origin/" + task["branch_name"].removeprefix("refs/heads/")
@@ -716,12 +736,14 @@ class DevelopmentIntegration:
                 key = (task["id"], source)
                 if not source:
                     unavailable.add(task["id"])
+                    skipped[task["id"]] = ("source_unavailable", None)
                     continue
                 contained_in_main = await self.git.ais_ancestor(str(store), source, base)
                 if key in parked and not contained_in_main:
                     unavailable.add(task["id"])
+                    skipped[task["id"]] = ("source_parked", None)
                     continue
-                if key in done:
+                if key in done and contained_in_main:
                     unavailable.discard(task["id"])
                     continue
                 member = {
@@ -813,12 +835,14 @@ class DevelopmentIntegration:
                     if parent_id:
                         blocked_parents.add(parent_id)
                     unavailable.add(task["id"])
+                    skipped[task["id"]] = ("merge_conflict", None)
                     continue
                 head = await self.run_git(store, "rev-parse", "HEAD")
                 unavailable.discard(task["id"])
                 manifest.append(member)
                 if len(manifest) >= policy.max_batch_size:
                     break
+            await self._record_candidate_skips(processed, skipped)
             await self.run_git(store, "checkout", "--detach", "--force", head)
             if not manifest:
                 await self.reconcile_parked(repo, store, base)
@@ -873,6 +897,61 @@ class DevelopmentIntegration:
                 repo, store, head if result["outcome"] == "delivered" else base
             )
             return result
+
+    async def _record_candidate_skips(self, processed, skipped):
+        """Keep consecutive skip evidence across ticks and daemon restarts."""
+        previous = await self.db.get_task_meta_bulk(sorted(processed), PUBLISHER_SKIP_KEY)
+        now = time.time()
+        for task_id in sorted(processed):
+            reason = skipped.get(task_id)
+            old = previous.get(task_id)
+            if reason is None:
+                if old is not None:
+                    await self.db.delete_task_meta(task_id, PUBLISHER_SKIP_KEY)
+                continue
+            kind, dependency_id = reason
+            same = isinstance(old, dict) and (
+                old.get("reason") == kind and old.get("dependency_id") == dependency_id
+            )
+            await self.db.set_task_meta(task_id, PUBLISHER_SKIP_KEY, {
+                "reason": kind,
+                "dependency_id": dependency_id,
+                "consecutive_ticks": old.get("consecutive_ticks", 0) + 1 if same else 1,
+                "first_skipped_at": old.get("first_skipped_at", now) if same else now,
+                "last_skipped_at": now,
+            })
+
+    async def recover_child(self, project_id, child_id, *, retry=False):
+        """Run a supervised sweep and prove the named child's delivery."""
+        task = await self.db.get_task(child_id)
+        if (
+            task is None or task.project_id != project_id
+            or task.status != TaskStatus.COMPLETED or not task.branch_name
+        ):
+            raise ValueError(f"{child_id} is not a completed source task in {project_id}")
+        result = await self.sweep(project_id, retry=retry)
+        project = await self.db.get_project(project_id)
+        repo = await self.db.get_repo(project.integration_repository_id)
+        store = await self.store(repo)
+        target = "refs/heads/" + repo.default_branch
+        base = await self.remote(store, target)
+        history = await self.rows(project_id)
+        source = await self._delivered_source(
+            store, history, child_id, base,
+            repository_id=repo.id, target_ref=target,
+        )
+        completion = await self.db.get_task_completion(child_id)
+        latest = await self._completion_source(store, completion, history=history)
+        branch = await self.remote(
+            store, "refs/heads/" + task.branch_name.removeprefix("refs/heads/")
+        )
+        if source is None or (latest and latest != source) or (branch and branch != source):
+            skip = await self.db.get_task_meta(child_id, PUBLISHER_SKIP_KEY)
+            raise ValueError(
+                f"{child_id} remains unpublished after sweep: "
+                f"{skip or 'no receipt for the current source'}"
+            )
+        return {**result, "recovered_task_id": child_id, "source_sha": source}
 
     async def reconcile_parked(self, repo, store, accepted_head):
         """Dispatch only failures still unresolved after the whole batch was assembled.

@@ -158,11 +158,14 @@ class IntegrationAdoptArgs(CommandArgs):
 class IntegrationDevelopmentSweepArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     retry: bool = False
+    recover_child: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationOperationalValue(CommandValue):
     id: str | None = None
     head_sha: str | None = None
+    recovered_task_id: str | None = None
+    source_sha: str | None = None
     manifest: tuple[dict[str, Any], ...] = ()
     evidence: dict[str, Any] | None = None
     policy: dict[str, Any] | None = None

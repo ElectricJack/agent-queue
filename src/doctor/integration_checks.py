@@ -50,6 +50,7 @@ _WINDOW_SECONDS = 24 * 60 * 60
 #: transient: the batch state it reads is durable, so the same tick that failed
 #: will keep failing until someone looks.  One tick is allowed to be noise.
 _STALL_TICKS = 2
+_SKIP_STALL_TICKS = 3
 
 #: A repair branch closes ``pass`` and the very next sweep should collect it.
 #: An hour is twelve sweeps at the default five-minute interval — long enough
@@ -800,9 +801,9 @@ async def _check_stranded_dependents(ctx: DoctorContext) -> CheckResult:
 
 
 async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
-    """Two durable symptoms of a development publisher that stopped making progress.
+    """Durable symptoms of a development publisher that stopped making progress.
 
-    Both are read straight out of state the publisher already writes, so the
+    They are read straight out of state the publisher already writes, so the
     check works against a stopped daemon and needs no process-local memory.
     """
     from sqlalchemy import func, select
@@ -812,6 +813,7 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
         development_deliveries,
         projects,
         task_completion_records,
+        task_metadata,
         tasks,
     )
 
@@ -872,6 +874,17 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 .group_by(task_completion_records.c.task_id)
             )
         ).all()
+        skips = (
+            await conn.execute(
+                select(tasks.c.id, tasks.c.project_id, task_metadata.c.value)
+                .select_from(task_metadata.join(tasks, task_metadata.c.task_id == tasks.c.id))
+                .where(
+                    task_metadata.c.key == "development_publisher_skip",
+                    tasks.c.project_id.in_(development),
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                )
+            )
+        ).all()
 
     findings, collected = [], set()
     for row in rows:
@@ -920,6 +933,30 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 "first_failed_at": completed_at,
             }
         )
+    for task_id, project_id, raw in skips:
+        try:
+            skip = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        ticks = skip.get("consecutive_ticks", 0)
+        if ticks < _SKIP_STALL_TICKS:
+            continue
+        dependency_id = skip.get("dependency_id")
+        reason = skip.get("reason", "unknown")
+        findings.append({
+            "project_id": project_id,
+            "batch_id": None,
+            "cause": "candidate_skipped",
+            "detail": (
+                f"child {task_id} skipped because dependency {dependency_id} is {reason}"
+                if dependency_id else f"child {task_id} skipped: {reason}"
+            ),
+            "consecutive_ticks": ticks,
+            "task_ids": [task_id],
+            "dependency_id": dependency_id,
+            "reason": reason,
+            "first_failed_at": skip.get("first_skipped_at"),
+        })
     findings.sort(key=lambda f: (f["first_failed_at"] or 0))
     return findings
 
@@ -940,14 +977,23 @@ async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
         )
     first = stalls[0]
     where = f"batch {first['batch_id']}" if first["batch_id"] else f"project {first['project_id']}"
-    return CheckResult(
-        id="integration.development_publisher_stalled",
-        severity=Severity.ERROR,
-        detail=(
-            f"{len(stalls)} development publisher stall(s) — e.g. {where} "
-            f"({first['project_id']}): {first['cause']}: {first['detail']}. "
+    skipped_only = all(stall["cause"] == "candidate_skipped" for stall in stalls)
+    if skipped_only:
+        advice = (
+            f"Run `aq integration sweep {first['project_id']} --recover-child "
+            f"{first['task_ids'][0]}` to retry and verify publication"
+        )
+    else:
+        advice = (
             "The publisher cannot clear this by itself; read the batch with "
             "`aq integration status` and resolve or cancel it"
+        )
+    return CheckResult(
+        id="integration.development_publisher_stalled",
+        severity=Severity.WARN if skipped_only else Severity.ERROR,
+        detail=(
+            f"{len(stalls)} development publisher stall(s) — e.g. {where} "
+            f"({first['project_id']}): {first['cause']}: {first['detail']}. {advice}"
         ),
         fixable=False,
         data={"count": len(stalls), "stalls": stalls[:50]},

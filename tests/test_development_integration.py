@@ -12,7 +12,9 @@ from src.git.manager import GitManager
 from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.tables import gates, projects, task_gates, tasks
 from src.event_bus import EventBus
-from src.integration.development import DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy
+from src.integration.development import (
+    PUBLISHER_SKIP_KEY, DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy,
+)
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
 
@@ -301,6 +303,50 @@ async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(se
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
+async def test_recover_child_publishes_past_delivered_dependency_without_ref(setup):
+    """An older parked attempt cannot override a later delivered receipt."""
+    db, service, source, remote, _repo = setup
+    previous = await feature(setup, "previous")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    await _park(service, "old-attempt", [{"task_id": "previous", "source_sha": previous}])
+    git(source, "push", "origin", "--delete", "previous")
+    # A completed dependency need not be a current publication candidate.
+    # Its durable receipt, rather than a live task branch, proves delivery.
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "previous").values(branch_name=None))
+    later = await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+
+    result = await service.recover_child("p", "later")
+
+    assert result["outcome"] == "delivered"
+    assert result["recovered_task_id"] == "later"
+    assert result["source_sha"] == later
+    assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+    assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
+
+
+async def test_old_delivery_does_not_clear_parked_newer_dependency(setup):
+    db, service, source, _remote, _repo = setup
+    await feature(setup, "previous")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    git(source, "checkout", "previous")
+    (source / "new-revision.txt").write_text("new revision\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "new revision")
+    newer = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "previous")
+    await _park(service, "newer-attempt", [{"task_id": "previous", "source_sha": newer}])
+    git(source, "push", "origin", "--delete", "previous")
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "previous").values(branch_name=None))
+    await feature(setup, "later")
+    await db.add_dependency("later", "previous")
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta("later", PUBLISHER_SKIP_KEY))["dependency_id"] == "previous"
+
+
 async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup, caplog):
     """A parked source stays unavailable; only delivered receipts release a chain."""
     import logging
@@ -321,6 +367,13 @@ async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup,
     )
     assert all(member["task_id"] != "dependent" for row in await service.rows("p")
                for member in row["manifest"])
+
+    await service.sweep("p")
+    await service.sweep("p")
+    skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert skip["dependency_id"] == "blocked"
+    assert skip["reason"] == "dependency_unavailable"
+    assert skip["consecutive_ticks"] == 3
 
 
 @pytest.mark.parametrize("blocker", ["human_gate", "unfinished_dependency"])
