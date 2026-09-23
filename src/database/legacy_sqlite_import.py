@@ -35,6 +35,7 @@ from src.database.tables import (
     doc_review_dispatches,
     doc_review_revisions,
     doc_reviews,
+    epic_dependencies,
     escalation_actions,
     escalation_deliveries,
     escalation_messages,
@@ -140,13 +141,16 @@ logger = logging.getLogger(__name__)
 
 # Tables in FK-safe insertion order.
 #
-# This list must cover every table in ``tables.metadata`` — a missing table is
-# silently dropped data for anyone migrating a SQLite install to PostgreSQL.
-# ``tests/test_legacy_sqlite_import.py`` asserts the two sets match so the list
-# cannot drift when a new table is added to ``tables.py``.
+# This list and _EXCLUDED_TABLES must cover every table in ``tables.metadata`` —
+# an unlisted table is silently dropped data for anyone migrating a SQLite
+# install to PostgreSQL. ``tests/test_migrate_sqlite_to_pg.py`` checks coverage.
 #
 # Circular and self-referential FKs are handled by inserting the offending
 # columns as NULL (see ``_DEFERRED_COLS``) and restoring them afterwards.
+# No tables are excluded today. If a future table should not be copied, name it
+# here with a reason so its omission is explicit and reviewable.
+_EXCLUDED_TABLES: frozenset[str] = frozenset()
+
 _ORDERED_TABLES = [
     # No FK dependencies
     system_config,
@@ -223,6 +227,8 @@ _ORDERED_TABLES = [
     # FK → projects, repos, agents, agent_profiles, workflows
     # (preferred_workspace_id and parent_task_id deferred)
     tasks,
+    # Soft references to tasks on both columns; copy after the task rows.
+    epic_dependencies,
     # FK → projects, playbook_v2_runs, tasks
     task_assignment_routes,
     # FK → projects, agents, tasks

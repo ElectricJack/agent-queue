@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.database.legacy_sqlite_import import _DEFERRED_COLS, _ORDERED_TABLES
+from src.database.legacy_sqlite_import import _DEFERRED_COLS, _EXCLUDED_TABLES, _ORDERED_TABLES
 from src.database.tables import metadata
 from tests.pg_dsn import ensure_worker_postgres_dsn
 
@@ -18,16 +18,25 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 def test_ordered_tables_covers_every_table() -> None:
-    """Every table in the schema is migrated — no drift when tables.py grows."""
+    """Every schema table is imported or has a documented exclusion."""
     listed = {t.name for t in _ORDERED_TABLES}
     defined = {t.name for t in metadata.tables.values()}
 
-    assert not defined - listed, (
-        f"tables missing from _ORDERED_TABLES (their data would be silently "
-        f"dropped by the SQLite→Postgres migration): {sorted(defined - listed)}"
+    assert not defined - listed - _EXCLUDED_TABLES, (
+        "tables missing from _ORDERED_TABLES and _EXCLUDED_TABLES (their data "
+        "would be silently dropped by the SQLite→Postgres migration): "
+        f"{sorted(defined - listed - _EXCLUDED_TABLES)}"
     )
     assert not listed - defined, f"_ORDERED_TABLES lists unknown tables: {sorted(listed - defined)}"
-    assert set(_ORDERED_TABLES) == set(metadata.tables.values())
+    assert not _EXCLUDED_TABLES - defined, (
+        f"_EXCLUDED_TABLES lists unknown tables: {sorted(_EXCLUDED_TABLES - defined)}"
+    )
+    assert not listed & _EXCLUDED_TABLES, (
+        f"tables cannot be both imported and excluded: {sorted(listed & _EXCLUDED_TABLES)}"
+    )
+    assert set(_ORDERED_TABLES) == {
+        table for table in metadata.tables.values() if table.name not in _EXCLUDED_TABLES
+    }
 
 
 def test_ordered_tables_has_no_duplicates() -> None:
@@ -38,6 +47,8 @@ def test_ordered_tables_has_no_duplicates() -> None:
 def test_insertion_order_is_fk_safe() -> None:
     """Each table's FK targets are inserted earlier, or the column is deferred."""
     position = {t.name: i for i, t in enumerate(_ORDERED_TABLES)}
+    # epic_dependencies uses soft task references, so the FK walk cannot check it.
+    assert position["epic_dependencies"] > position["tasks"]
 
     violations = []
     for table in _ORDERED_TABLES:
@@ -113,6 +124,13 @@ async def _seeded_source(tmp_path) -> str:
                 "VALUES ('a','a','worker','p',0)"
             )
         )
+        await conn.execute(
+            text(
+                "INSERT INTO epic_dependencies "
+                "(dependent_task_id, dependency_task_id, declared_at) "
+                "VALUES ('c','p',0)"
+            )
+        )
         # playbook_activations -> playbook_artifacts is a plain (non-deferred)
         # FK, so the copy only works if both tables are in _ORDERED_TABLES and
         # the artifact is inserted first.
@@ -160,12 +178,21 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
         counts = await migrate_sqlite_to_postgres(path, POSTGRES_DSN)
         assert set(counts) == {table.name for table in _ORDERED_TABLES}
         assert counts["tasks"] == 2 and counts["agents"] == 1
+        assert counts["epic_dependencies"] == 1
         async with target._engine.connect() as conn:
             assert (
                 await conn.execute(text("SELECT parent_task_id FROM tasks WHERE id='c'"))
             ).scalar() == "p"
             assert (
                 await conn.execute(text("SELECT current_task_id FROM agents WHERE id='a'"))
+            ).scalar() == "p"
+            assert (
+                await conn.execute(
+                    text(
+                        "SELECT dependency_task_id FROM epic_dependencies "
+                        "WHERE dependent_task_id='c'"
+                    )
+                )
             ).scalar() == "p"
             assert (
                 await conn.execute(
