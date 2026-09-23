@@ -72,6 +72,7 @@ from src.database.tables import (
     tasks,
     workspaces,
 )
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.finished_owners import (
     StopConfirmer,
@@ -326,7 +327,7 @@ class OwnerRecovery:
         self, row: dict[str, Any], evidence: dict[str, Any], *, dry_run: bool
     ) -> _Plan:
         branch = row["ref"].removeprefix("refs/heads/")
-        checkout, default_branch, row_path = await self._checkout_for(row)
+        checkout, default_branch, row_path, repository_url = await self._checkout_for(row)
         evidence.update(
             checkout=checkout,
             origin_sha=None,
@@ -348,15 +349,15 @@ class OwnerRecovery:
         workspace_clean = True
         row_inspected = False
         async with self._mutex(checkout):
-            fetch = await self.git.arun_git_result(
-                ["fetch", "origin"], cwd=checkout, lock_held=True
-            )
-            if fetch.returncode != 0:
+            try:
+                await self.git.afetch_origin(
+                    checkout, repository_url=repository_url, lock_held=True
+                )
+            except (GitError, GitHubAccessError) as exc:
                 raise _Refusal(
                     ORIGIN_UNREACHABLE,
-                    "git fetch origin failed: "
-                    + (fetch.stderr or fetch.stdout or "no output").strip(),
-                )
+                    f"git fetch origin failed: {exc}",
+                ) from exc
             remote = await self.git.als_remote_ref(checkout, branch)
             if remote.state is RemoteRefState.ERROR:
                 raise _Refusal(ORIGIN_UNREACHABLE, f"reading origin/{branch}: {remote.error}")
@@ -443,7 +444,7 @@ class OwnerRecovery:
                         sha = await self._snapshot(path, sha, row["id"])
                     shas.append(sha)
                 evidence["preserved_sha"] = await self._push_preserved(
-                    checkout, preserved_ref, shas, row["id"]
+                    checkout, preserved_ref, shas, row["id"], repository_url
                 )
                 evidence["preserved_ref"] = preserved_ref
             for path in detach:
@@ -457,18 +458,23 @@ class OwnerRecovery:
             evidence["planned"] = planned
         return _Plan(preserved=bool(preserve), workspace_clean=workspace_clean)
 
-    async def _checkout_for(self, row: dict[str, Any]) -> tuple[str | None, str, str | None]:
-        """``(base checkout, default branch, the row's own checkout path)``.
+    async def _checkout_for(self, row: dict[str, Any]) -> tuple[str | None, str, str | None, str]:
+        """Base checkout, default branch, row checkout, authorized repository URL.
 
         The base is the row's workspace's base clone when it has one, else a
         project-repo base workspace of a project integrating the repository.
         """
         async with self.db._engine.connect() as conn:
-            default_branch = (
+            repository = (
                 await conn.execute(
-                    select(repos.c.default_branch).where(repos.c.id == row["repository_id"])
+                    select(repos.c.default_branch, repos.c.url).where(
+                        repos.c.id == row["repository_id"]
+                    )
                 )
-            ).scalar_one_or_none() or "main"
+            ).one_or_none()
+            if repository is None:
+                raise _Refusal(ORIGIN_UNREACHABLE, "repository is unavailable")
+            default_branch = repository.default_branch or "main"
             candidates: list[str] = []
             row_path = None
             if row["workspace_id"]:
@@ -514,7 +520,7 @@ class OwnerRecovery:
                     ).scalars()
                 )
         checkout = next((path for path in candidates if os.path.isdir(path)), None)
-        return checkout, default_branch, row_path
+        return checkout, default_branch, row_path, repository.url
 
     async def _live_work_dirs(self) -> set[str]:
         async with self.db._engine.connect() as conn:
@@ -597,7 +603,8 @@ class OwnerRecovery:
         return result.stdout.strip()
 
     async def _push_preserved(
-        self, checkout: str, ref: str, shas: list[str], owner_row_id: str
+        self, checkout: str, ref: str, shas: list[str], owner_row_id: str,
+        repository_url: str,
     ) -> str:
         """Put every sha in *shas* on origin's *ref*, never forcing; return its tip.
 
@@ -613,14 +620,15 @@ class OwnerRecovery:
         held = existing.oid if existing.state is RemoteRefState.PRESENT else None
         if held is not None:
             if await self.git.arev_parse(checkout, f"{held}^{{commit}}") is None:
-                fetched = await self.git.arun_git_result(
-                    ["fetch", "origin", f"refs/heads/{ref}"], cwd=checkout, lock_held=True
-                )
-                if fetched.returncode != 0:
+                try:
+                    await self.git.afetch_origin(
+                        checkout, repository_url=repository_url, lock_held=True
+                    )
+                except (GitError, GitHubAccessError) as exc:
                     raise _Refusal(
                         ORIGIN_UNREACHABLE,
-                        f"fetching origin/{ref}: {(fetched.stderr or '').strip()}",
-                    )
+                        f"fetching origin/{ref}: {exc}",
+                    ) from exc
             missing = [
                 sha
                 for sha in shas

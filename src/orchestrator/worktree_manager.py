@@ -52,7 +52,8 @@ except ImportError:  # pragma: no cover - Windows dev boxes
 from dataclasses import dataclass, field
 
 from src.config import WorktreesConfig
-from src.git.manager import GitError, _validate_ref
+from src.git.github_contracts import GitHubAccessError
+from src.git.manager import GitError, RemoteRefState, _validate_ref
 from src.models import (
     RepoSourceType,
     WORKTREE_SENTINEL_NAME,
@@ -1379,6 +1380,36 @@ class WorktreeSlotManager:
                 logger.warning("Skipping branch cleanup; worktree inventory failed in %s: %s", base_path, exc)
                 return []
             attached = {entry["branch"] for entry in worktrees if entry.get("branch")}
+
+            async def remote_cleanup_ready(branch: str) -> bool:
+                if not self.config.prune_remote_branches:
+                    return True
+                observed = await self.git.als_remote_ref(base_path, branch)
+                if observed.state is RemoteRefState.ERROR:
+                    logger.warning(
+                        "Keeping local branch %s; remote state is unknown: %s",
+                        branch, observed.error,
+                    )
+                    return False
+                if observed.state is RemoteRefState.ABSENT:
+                    return True
+                local_oid = await self.git.arev_parse(
+                    base_path, f"refs/heads/{branch}"
+                )
+                if local_oid is None or observed.oid != local_oid:
+                    logger.warning(
+                        "Keeping local branch %s; remote ref differs from local tip", branch
+                    )
+                    return False
+                try:
+                    await self.git.adelete_remote_ref_exact(
+                        base_path, branch, observed.oid
+                    )
+                except (GitError, GitHubAccessError) as exc:
+                    logger.warning("Keeping local branch %s; remote delete failed: %s", branch, exc)
+                    return False
+                return True
+
             try:
                 merged = await self.git.alist_merged_branches(
                     base_path, into=default_branch, prefix=BRANCH_PREFIX
@@ -1390,6 +1421,8 @@ class WorktreeSlotManager:
             deleted: list[str] = []
             for br in merged:
                 if br in attached:
+                    continue
+                if not await remote_cleanup_ready(br):
                     continue
                 try:
                     await self.git.adelete_local_branch(base_path, br)
@@ -1444,20 +1477,14 @@ class WorktreeSlotManager:
                     status_val = getattr(status, "value", status)
                     if status_val != TaskStatus.FAILED.value:
                         continue
+                    if not await remote_cleanup_ready(br):
+                        continue
                     try:
                         await self.git.adelete_local_branch(base_path, br, force=True)
                         deleted.append(br)
                     except GitError as e:
                         logger.warning("force-delete branch %s failed: %s", br, e)
 
-            if self.config.prune_remote_branches and deleted:
-                for br in deleted:
-                    try:
-                        await self.git._arun(
-                            ["push", "origin", "--delete", br], cwd=base_path
-                        )
-                    except GitError as e:
-                        logger.debug("remote delete %s failed: %s", br, e)
         return deleted
 
     async def adopt_existing(self, project) -> AdoptReport:

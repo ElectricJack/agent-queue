@@ -173,16 +173,21 @@ class DevelopmentIntegration:
         path = self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
-            await self.run_git(path.parent, "clone", "--no-checkout", "--", repo.url, str(path))
+            await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
-        await self.run_git(path, "fetch", "--prune", "origin")
+        await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
         return path
 
     async def remote(self, store, ref):
         await self.run_git(store, "check-ref-format", ref)
-        value = await self.run_git(store, "ls-remote", "--refs", "origin", ref)
-        return value.split()[0] if value else None
+        from src.git.manager import RemoteRefState
+
+        branch = ref.removeprefix("refs/heads/")
+        observed = await self.git.als_remote_ref(str(store), branch)
+        if observed.state is RemoteRefState.ERROR:
+            raise GitError(observed.error or "remote head observation failed")
+        return observed.oid
 
     async def save(self, row):
         async with self.db._engine.begin() as conn:
@@ -387,12 +392,9 @@ class DevelopmentIntegration:
             raise ValueError("development publication must preserve target history")
         await self.change(row["id"], state="publishing")
         # Lease binds the actual remote old SHA; zero means ref must not exist.
-        await self.run_git(
-            store,
-            "push",
-            f"--force-with-lease={target_ref}:{expected or '0' * 40}",
-            "origin",
-            f"{head}:{target_ref}",
+        await self.git.apush_validated_ref(
+            str(store), head, target_ref.removeprefix("refs/heads/"),
+            expected_old_oid=expected or "0" * 40,
         )
         confirmed = await self.remote(store, target_ref)
         if confirmed != head:

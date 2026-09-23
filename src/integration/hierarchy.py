@@ -53,7 +53,9 @@ CheckpointVerifier = Callable[[dict, RepoConfig, str], Awaitable[str] | str]
 AncestryVerifier = Callable[[RepoConfig, str, str], Awaitable[bool] | bool]
 
 
-async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: str) -> str:
+async def materialize_exact_branch(
+    git, checkout: str, branch: str, base_sha: str, *, repository_url: str
+) -> str:
     """Create *branch* at *base_sha*, refusing any unexpected existing tip."""
     from src.git.manager import GitError, RemoteRefState
 
@@ -74,11 +76,15 @@ async def materialize_exact_branch(git, checkout: str, branch: str, base_sha: st
         ["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=checkout, lock_held=True
     )
     if present.returncode != 0:
-        fetched = await git.arun_git_result(
-            ["fetch", "--no-tags", "origin", base_sha], cwd=checkout, lock_held=True
+        await git.afetch_origin(
+            checkout, repository_url=repository_url, lock_held=True,
+            all_heads=True,
         )
-        if fetched.returncode != 0:
-            raise GitError(fetched.stderr or "could not fetch pinned materialization base")
+        present = await git.arun_git_result(
+            ["cat-file", "-e", f"{base_sha}^{{commit}}"], cwd=checkout, lock_held=True
+        )
+        if present.returncode != 0:
+            raise GitError("could not fetch pinned materialization base")
     try:
         await git.apush_validated_ref(checkout, base_sha, branch)
     except GitError:

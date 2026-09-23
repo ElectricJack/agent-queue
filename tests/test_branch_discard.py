@@ -104,15 +104,15 @@ class _Git:
         self.ancestor_calls = 0
         self.list_heads_calls = 0
 
-    async def afetch_exact_oid_with_app_auth(
-        self, checkout, *, repository, token, oid, destination_ref
+    async def afetch_repository_oid(
+        self, checkout, *, repository, oid, destination_ref
     ) -> str:
         self.fetches.append(oid)
         self.refs[destination_ref] = oid
         return oid
 
-    async def adelete_ref_with_app_auth(
-        self, checkout, *, repository, token, branch, expected_old_oid
+    async def adelete_repository_ref(
+        self, checkout, *, repository, branch, expected_old_oid
     ):
         if self.error is not None:
             raise self.error

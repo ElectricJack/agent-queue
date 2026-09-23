@@ -120,7 +120,9 @@ class ReviewEvidenceProducer:
             raise HierarchyError("invalid", "review repository project changed")
         await self.promotion._ensure_retained_repository(resolved)
         async with self.promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
-            await self.promotion._fetch_all_heads(resolved.retained_git_dir)
+            await self.promotion._fetch_all_heads(
+                resolved.retained_git_dir, resolved.origin_url
+            )
             remote = await self.promotion.git.als_remote_ref(
                 str(resolved.retained_git_dir), subject.branch_name
             )

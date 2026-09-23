@@ -22,6 +22,7 @@ from src.git.manager import (
     GitError,
     GitManager,
     PullRequestIdentity,
+    RemoteRefState,
 )
 from src.orchestrator.worktree_manager import WorktreeSlotManager
 
@@ -180,6 +181,94 @@ async def test_app_push_missing_token_never_uses_checkout_transport(tmp_path, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode,token", [
+    (GitHubCredentialMode.APP, "app-token"),
+    (GitHubCredentialMode.EXISTING_LOGIN, None),
+])
+async def test_remote_head_read_uses_selected_isolated_credential(
+    tmp_path, monkeypatch, mode, token
+):
+    checkout, _source, _trap, base, _tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    access = _BoundAppAccess(token=token, mode=mode)
+    manager = GitManager(github_access=access)
+    captured = []
+
+    async def isolated(args, **kwargs):
+        captured.append((args, kwargs))
+        return f"{base}\trefs/heads/main\n".encode()
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", isolated)
+    monkeypatch.setattr(
+        manager, "arun_git_result",
+        AsyncMock(side_effect=AssertionError("checkout Git may not read GitHub refs")),
+    )
+    remote = await manager.als_remote_ref(str(checkout), "main")
+
+    assert remote.state is RemoteRefState.PRESENT and remote.oid == base
+    assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")]
+    assert captured[0][1]["token"] == token
+    assert captured[0][1]["repository_url"] == "https://github.com/acme/widgets.git"
+
+
+@pytest.mark.asyncio
+async def test_remote_head_read_does_not_fall_back_after_app_auth_failure(tmp_path, monkeypatch):
+    checkout, _source, _trap, _base, _tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    manager = GitManager(github_access=_BoundAppAccess(token=None))
+    monkeypatch.setattr(
+        manager, "arun_git_result",
+        AsyncMock(side_effect=AssertionError("ambient Git may not run")),
+    )
+    remote = await manager.als_remote_ref(str(checkout), "main")
+    assert remote.state is RemoteRefState.ERROR
+    assert "App credential is unavailable" in (remote.error or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [
+    GitHubCredentialMode.APP, GitHubCredentialMode.EXISTING_LOGIN,
+])
+async def test_exact_repository_transfers_select_credential_for_each_operation(
+    monkeypatch, mode
+):
+    access = _BoundAppAccess(mode=mode)
+    binding = GitHubRepositoryBinding(303, "acme/widgets")
+    issued = []
+
+    async def fresh(repository):
+        issued.append(repository)
+        return f"generation-{len(issued)}" if mode is GitHubCredentialMode.APP else None
+
+    access.installation_token = fresh
+    manager = GitManager(github_access=access)
+    fetch = AsyncMock(return_value="a" * 40)
+    push = AsyncMock(return_value="a" * 40)
+    delete = AsyncMock(return_value="a" * 40)
+    monkeypatch.setattr(manager, "afetch_exact_oid_with_app_auth", fetch)
+    monkeypatch.setattr(manager, "apush_oid_with_app_auth", push)
+    monkeypatch.setattr(manager, "adelete_ref_with_app_auth", delete)
+
+    await manager.afetch_repository_oid(
+        "/tmp/store.git", repository=binding, oid="a" * 40,
+        destination_ref="refs/aq/test",
+    )
+    await manager.apush_repository_oid(
+        "/tmp/store.git", repository=binding, tip_oid="a" * 40,
+        branch="aq/test", expected_old_oid="0" * 40,
+    )
+    await manager.adelete_repository_ref(
+        "/tmp/store.git", repository=binding, branch="aq/test",
+        expected_old_oid="a" * 40,
+    )
+
+    assert issued == [binding] * 3
+    expected = [f"generation-{i}" for i in range(1, 4)] if mode is GitHubCredentialMode.APP else [None] * 3
+    assert [fetch.call_args.kwargs["token"], push.call_args.kwargs["token"],
+            delete.call_args.kwargs["token"]] == expected
+
+
+@pytest.mark.asyncio
 async def test_observed_push_uses_isolated_destination_not_checkout_remote(tmp_path, monkeypatch):
     checkout, target, trap, _base, tip = _git_push_case(tmp_path)
     _git(["remote", "add", "origin", str(trap)], checkout)
@@ -236,6 +325,26 @@ async def test_isolated_clone_preserves_configured_remote_and_ignores_global_rew
     )
     assert not (destination / ".git" / "objects" / "info" / "alternates").exists()
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
+
+
+@pytest.mark.asyncio
+async def test_isolated_bare_clone_retains_origin_without_credentials(tmp_path):
+    _checkout, source, _trap, base, _tip = _git_push_case(tmp_path)
+    destination = tmp_path / "retained.git"
+
+    await GitManager()._aclone_with_auth_to_url(
+        "https://github.com/acme/widgets.git", str(destination),
+        source_url=source.as_uri(), token="local-test-token", bare=True,
+    )
+
+    assert _git(["rev-parse", "--is-bare-repository"], destination) == "true"
+    assert _git(["rev-parse", "refs/heads/main"], destination) == base
+    assert _git(["config", "--get", "remote.origin.url"], destination) == (
+        "https://github.com/acme/widgets.git"
+    )
+    assert _git(["config", "--get", "remote.origin.fetch"], destination) == (
+        "+refs/heads/*:refs/remotes/origin/*"
+    )
 
 
 @pytest.mark.asyncio

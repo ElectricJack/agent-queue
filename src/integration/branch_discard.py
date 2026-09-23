@@ -261,7 +261,6 @@ class BranchDiscardService:
         client = await self._github_client(binding)
         if client is None or self.git is None:
             return "retryable", "authenticated discard transport is unavailable"
-        token = await client.installation_token()
         head = await client.exact_head_ref(branch)
         if head is None:
             return "complete", None
@@ -273,16 +272,14 @@ class BranchDiscardService:
         await self._backup_before_delete(
             row,
             binding=binding,
-            token=token,
             branch=branch,
             head=head,
             main_head=main_head,
         )
         try:
-            await self.git.adelete_ref_with_app_auth(
+            await self.git.adelete_repository_ref(
                 str(self.retained_store(row["repository_id"])),
                 repository=binding,
-                token=token,
                 branch=branch,
                 expected_old_oid=head,
             )
@@ -336,7 +333,6 @@ class BranchDiscardService:
         row: dict[str, Any],
         *,
         binding: GitHubRepositoryBinding,
-        token: str,
         branch: str,
         head: str,
         main_head: str,
@@ -356,17 +352,15 @@ class BranchDiscardService:
         # The retained store may not hold the head or the default-branch head
         # yet; both must be local before anything can be proven, bundled or
         # deleted against.
-        await self.git.afetch_exact_oid_with_app_auth(
+        await self.git.afetch_repository_oid(
             str(store),
             repository=binding,
-            token=token,
             oid=head,
             destination_ref=f"refs/aq/discard-backup/heads/{branch}",
         )
-        await self.git.afetch_exact_oid_with_app_auth(
+        await self.git.afetch_repository_oid(
             str(store),
             repository=binding,
-            token=token,
             oid=main_head,
             destination_ref="refs/aq/discard-backup/default",
         )

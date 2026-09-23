@@ -692,19 +692,27 @@ async def test_materialization_creates_only_absent_or_exact_remote_ref(tmp_path)
     _git(["commit", "-am", "new base"], work)
     base = _git(["rev-parse", "HEAD"], work)
     _git(["push", "origin", f"{base}:refs/heads/main"], work)
-    assert await materialize_exact_branch(git, str(retained), "aq/fetched", base) == base
+    assert await materialize_exact_branch(
+        git, str(retained), "aq/fetched", base, repository_url=str(remote)
+    ) == base
     assert _git(["rev-parse", "refs/heads/aq/fetched"], remote) == base
 
-    assert await materialize_exact_branch(git, str(work), "aq/child", base) == base
+    assert await materialize_exact_branch(
+        git, str(work), "aq/child", base, repository_url=str(remote)
+    ) == base
     assert _git(["rev-parse", "refs/heads/aq/child"], remote) == base
-    assert await materialize_exact_branch(git, str(work), "aq/child", base) == base
+    assert await materialize_exact_branch(
+        git, str(work), "aq/child", base, repository_url=str(remote)
+    ) == base
 
     (work / "value.txt").write_text("other\n")
     _git(["commit", "-am", "other"], work)
     other = _git(["rev-parse", "HEAD"], work)
     _git(["push", "--force", "origin", f"{other}:refs/heads/aq/child"], work)
     with pytest.raises(HierarchyError) as conflict:
-        await materialize_exact_branch(git, str(work), "aq/child", base)
+        await materialize_exact_branch(
+            git, str(work), "aq/child", base, repository_url=str(remote)
+        )
     assert conflict.value.code == "delivery_target_fixed"
     assert _git(["rev-parse", "refs/heads/aq/child"], remote) == other
 

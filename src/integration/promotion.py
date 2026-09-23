@@ -19,6 +19,7 @@ from src.commands.principal import (
     current_principal,
     matches_session_instance,
 )
+from src.git.github_contracts import GitHubAccessError
 from src.git.manager import GitError, GitManager, RemoteRefState
 from src.integration.models import BranchKey, ConflictResolutionInput, Fence, PromotionInput, PromotionValue
 from src.integration.ownership import BranchOwnership
@@ -166,7 +167,7 @@ class PromotionService:
         await self._ensure_retained_repository(repository)
 
         async with self.git.arepository_transaction(str(repository.retained_git_dir)):
-            await self._fetch_all_heads(repository.retained_git_dir)
+            await self._fetch_all_heads(repository.retained_git_dir, repository.origin_url)
             await self._assert_remote_source(
                 repository.retained_git_dir,
                 context["source_branch"],
@@ -328,7 +329,9 @@ class PromotionService:
             if remote.state is RemoteRefState.ABSENT:
                 raise PromotionTargetMoved("target branch is absent")
             if remote.oid != intent["expected_target"]:
-                if await self._prepared_reachable(repository.retained_git_dir, intent, remote.oid):
+                if await self._prepared_reachable(
+                    repository.retained_git_dir, intent, remote.oid, repository.origin_url
+                ):
                     return await self._finalize(intent, remote.oid)
                 raise PromotionTargetMoved("target branch moved from the prepared old tip")
 
@@ -743,7 +746,9 @@ class PromotionService:
                 raise PromotionInvariantError("target branch disappeared during reconciliation")
             if remote.oid == intent["expected_target"]:
                 raise PromotionNotApplied("prepared push has not been applied")
-            if not await self._prepared_reachable(repository.retained_git_dir, intent, remote.oid):
+            if not await self._prepared_reachable(
+                repository.retained_git_dir, intent, remote.oid, repository.origin_url
+            ):
                 raise PromotionInvariantError("target diverged from the prepared promotion")
         return await self._finalize(intent, remote.oid)
 
@@ -762,22 +767,9 @@ class PromotionService:
                 raise PromotionNotApplied("reserved resolution push has not been applied")
             if remote.oid != intent["resolution_head_sha"]:
                 raise PromotionInvariantError("target diverged from the reserved resolution")
-            recovery_ref = f"refs/aq/integration-intents/{intent['id']}"
-            fetch = await self.git.arun_git_result(
-                [
-                    "fetch",
-                    "--no-tags",
-                    "origin",
-                    f"+refs/heads/{intent['target_branch']}:{recovery_ref}",
-                ],
-                cwd=str(repository.retained_git_dir),
-                env={"LC_ALL": "C"},
-                lock_held=True,
-            )
-            if fetch.returncode != 0:
-                raise PromotionRuntimeError((fetch.stderr or "target fetch failed").strip())
+            await self._fetch_all_heads(repository.retained_git_dir, repository.origin_url)
             fetched = await self.git.arun_git_result(
-                ["rev-parse", "--verify", recovery_ref],
+                ["rev-parse", "--verify", f"refs/remotes/origin/{intent['target_branch']}"],
                 cwd=str(repository.retained_git_dir),
                 env={"LC_ALL": "C"},
                 lock_held=True,
@@ -958,16 +950,10 @@ class PromotionService:
         store.parent.mkdir(parents=True, exist_ok=True)
         async with self.git.arepository_transaction(str(store)):
             if not store.exists():
-                result = await self.git.arun_git_result(
-                    ["clone", "--bare", "--", repository.origin_url, str(store)],
-                    cwd=str(store.parent),
-                    env={"LC_ALL": "C"},
-                    lock_held=True,
-                )
-                if result.returncode != 0:
-                    raise PromotionRuntimeError(
-                        (result.stderr or result.stdout or "retained clone failed").strip()
-                    )
+                try:
+                    await self.git.acreate_bare_checkout(repository.origin_url, str(store))
+                except (GitError, GitHubAccessError) as exc:
+                    raise PromotionRuntimeError(f"retained clone failed: {exc}") from exc
             bare = await self.git.arun_git_result(
                 ["rev-parse", "--is-bare-repository"],
                 cwd=str(store),
@@ -988,15 +974,14 @@ class PromotionService:
             ):
                 raise PromotionInvariantError("retained repository identity changed")
 
-    async def _fetch_all_heads(self, store: Path) -> None:
-        result = await self.git.arun_git_result(
-            ["fetch", "--no-tags", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-            cwd=str(store),
-            env={"LC_ALL": "C"},
-            lock_held=True,
-        )
-        if result.returncode != 0:
-            raise PromotionRuntimeError((result.stderr or "git fetch failed").strip())
+    async def _fetch_all_heads(self, store: Path, origin_url: str) -> None:
+        try:
+            await self.git.afetch_origin(
+                str(store), repository_url=origin_url, lock_held=True,
+                all_heads=True,
+            )
+        except (GitError, GitHubAccessError) as exc:
+            raise PromotionRuntimeError(f"git fetch failed: {exc}") from exc
 
     async def _assert_remote_source(self, store: Path, branch: str, expected: str) -> None:
         result = await self.git.als_remote_ref(str(store), branch)
@@ -1254,22 +1239,12 @@ class PromotionService:
         if result.returncode != 0:
             raise PromotionRuntimeError((result.stderr or "recovery ref update failed").strip())
 
-    async def _prepared_reachable(self, store: Path, intent: dict, remote_oid: str) -> bool:
-        fetch = await self.git.arun_git_result(
-            [
-                "fetch",
-                "--no-tags",
-                "origin",
-                f"+refs/heads/{intent['target_branch']}:refs/aq/reconcile/{intent['id']}",
-            ],
-            cwd=str(store),
-            env={"LC_ALL": "C"},
-            lock_held=True,
-        )
-        if fetch.returncode != 0:
-            raise PromotionRuntimeError((fetch.stderr or "target fetch failed").strip())
+    async def _prepared_reachable(
+        self, store: Path, intent: dict, remote_oid: str, origin_url: str
+    ) -> bool:
+        await self._fetch_all_heads(store, origin_url)
         fetched = await self.git.arun_git_result(
-            ["rev-parse", f"refs/aq/reconcile/{intent['id']}"],
+            ["rev-parse", f"refs/remotes/origin/{intent['target_branch']}"],
             cwd=str(store),
             env={"LC_ALL": "C"},
             lock_held=True,

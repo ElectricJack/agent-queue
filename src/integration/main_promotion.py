@@ -41,7 +41,8 @@ from src.git.manager import (
     GitManager,
     is_valid_git_oid,
 )
-from src.git.github_contracts import GitHubRepositoryBinding
+from src.git.github import GitHubAccess
+from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
@@ -401,14 +402,20 @@ class RootPromotionService:
                 head_sha=intent["prepared_sha"],
             )
         repository = await self._repository(intent["repository_id"])
-        expected_origin = f"https://github.com/{binding.full_name}.git"
+        try:
+            valid_origin = repository.url.startswith(
+                ("https://", "git@", "ssh://")
+            )
+            GitHubAccess.validate_repository_reference(binding, repository.url)
+        except GitHubAccessError:
+            valid_origin = False
         if (
             binding.forge_host != "github.com"
-            or repository.url != expected_origin
+            or not valid_origin
             or attestation.repository_numeric_id != binding.repository_id
             or attestation.repository_full_name != binding.full_name
         ):
-            raise RootPromotionInvariantError("root promotion App repository is not canonical")
+            raise RootPromotionInvariantError("root promotion repository is not canonical")
         remote = await client.exact_head_ref(
             intent["target_branch"].removeprefix("refs/heads/")
         )
@@ -483,7 +490,9 @@ class RootPromotionService:
                 intent_id=intent_id, receipt_ids=await self._receipt_ids(intent_id),
                 head_sha=intent["prepared_sha"],
             )
-        token = await client.installation_token()
+        # Refresh before the durable prewrite marker so its deadline is checked
+        # after credential acquisition. The transfer selects again at push time.
+        await client.installation_token()
         authority_deadline = await self._mark_prewrite(
             intent, nonce, current_attestation
         )
@@ -495,10 +504,9 @@ class RootPromotionService:
             )
         await self._crash("after_prewrite_marker")
         try:
-            await self.git.apush_oid_with_app_auth(
+            await self.git.apush_repository_oid(
                 str(store),
                 repository=client.repository,
-                token=token,
                 tip_oid=intent["prepared_sha"],
                 branch=intent["target_branch"].removeprefix("refs/heads/"),
                 expected_old_oid=intent["expected_target"],
@@ -1298,11 +1306,9 @@ class RootPromotionService:
     async def _import_observed_main(
         self, store: Path, intent: dict[str, Any], remote: str, client: Any
     ) -> None:
-        token = await client.installation_token()
-        imported = await self.git.afetch_exact_oid_with_app_auth(
+        imported = await self.git.afetch_repository_oid(
             str(store),
             repository=client.repository,
-            token=token,
             oid=remote,
             destination_ref=f"refs/aq/root-main-observed/{intent['id']}",
         )

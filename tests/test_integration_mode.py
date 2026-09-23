@@ -30,6 +30,7 @@ from src.models import (
     Workspace,
 )
 from src.orchestrator import Orchestrator
+from src.git.github_contracts import GitHubRepositoryBinding
 from tests.db_fixtures import lease_dsn
 
 
@@ -49,7 +50,9 @@ async def orch(tmp_path):
     o = Orchestrator(config, runtimes=_NullRuntimeFactory())
     await o.initialize()
 
-    await o.db.create_project(Project(id="p-1", name="alpha"))
+    await o.db.create_project(Project(
+        id="p-1", name="alpha", repo_url="https://github.com/org/repo.git"
+    ))
     ws_path = str(tmp_path / "workspaces" / "ws1")
     os.makedirs(ws_path, exist_ok=True)
     await o.db.create_workspace(
@@ -68,6 +71,10 @@ async def orch(tmp_path):
     mock_git.aget_current_branch = AsyncMock(return_value="feature-1")
     mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
     mock_git.afind_open_pr = AsyncMock(return_value="https://github.com/org/repo/pull/42")
+    mock_git.bind_github_repository = AsyncMock(
+        return_value=GitHubRepositoryBinding(1, "org/repo")
+    )
+    mock_git.afetch_origin = AsyncMock()
     mock_git.ais_ancestor = AsyncMock(return_value=False)
     # Default: the task branch carries work, so the PR gate applies.
     mock_git.acount_commits_ahead = AsyncMock(return_value=1)
@@ -346,7 +353,8 @@ class TestPhaseVerifyByMode:
         )
 
         async def find_open_pr(
-            _workspace, _branch, *, head_ref=None, include_workspace_head=True
+            _workspace, _branch, *, head_ref=None, include_workspace_head=True,
+            repository=None,
         ):
             if include_workspace_head:
                 return "https://github.com/org/repo/pull/unrelated-main"
@@ -382,6 +390,7 @@ class TestPhaseVerifyByMode:
             "feature/delivery",
             head_ref="refs/heads/feature/delivery",
             include_workspace_head=False,
+            repository=GitHubRepositoryBinding(1, "org/repo"),
         )
 
     async def test_pr_mode_rejects_distinct_assigned_and_current_work(self, orch):
@@ -414,6 +423,7 @@ class TestPhaseVerifyByMode:
             "feature/assigned",
             head_ref="refs/heads/feature/assigned",
             include_workspace_head=False,
+            repository=GitHubRepositoryBinding(1, "org/repo"),
         )
 
     async def test_pr_mode_uses_remote_only_assigned_ref_but_logical_pr_branch(self, orch):
@@ -439,6 +449,7 @@ class TestPhaseVerifyByMode:
             "feature/assigned",
             head_ref="refs/remotes/origin/feature/assigned",
             include_workspace_head=False,
+            repository=GitHubRepositoryBinding(1, "org/repo"),
         )
         assert any(
             call.args[1] == "refs/remotes/origin/feature/assigned"
@@ -492,7 +503,8 @@ class TestPhaseVerifyByMode:
         orch.git.ais_ancestor = AsyncMock(return_value=False)
 
         async def find_open_pr(
-            _workspace, _branch, *, head_ref=None, include_workspace_head=True
+            _workspace, _branch, *, head_ref=None, include_workspace_head=True,
+            repository=None,
         ):
             if include_workspace_head:
                 return "https://github.com/org/repo/pull/stale-alt"

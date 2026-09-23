@@ -335,14 +335,15 @@ class PushGit(PinningGit):
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         return await super().arun_git_result(args, **_kwargs)
 
-    async def afetch_exact_oid_with_app_auth(self, _store, **kwargs):
+    async def afetch_repository_oid(self, _store, **kwargs):
         return kwargs["oid"]
 
-    async def apush_oid_with_app_auth(self, _store, **kwargs):
+    async def apush_repository_oid(self, _store, **kwargs):
+        token = await self.app.installation_token()
         assert kwargs["tip_oid"] == HEAD
         assert kwargs["branch"] == "main"
         assert kwargs["expected_old_oid"] == BASE
-        assert kwargs["token"] == "dummy-installation-token"
+        assert token == "dummy-installation-token"
         if self.app.remote != BASE:
             raise RuntimeError("expected old changed")
         self.pushes.append(kwargs)
@@ -350,11 +351,12 @@ class PushGit(PinningGit):
 
 
 class GitHubCLIPushGit(PushGit):
-    async def apush_oid_with_app_auth(self, _store, **kwargs):
+    async def apush_repository_oid(self, _store, **kwargs):
+        token = await self.app.installation_token()
         assert kwargs["tip_oid"] == HEAD
         assert kwargs["branch"] == "main"
         assert kwargs["expected_old_oid"] == BASE
-        assert kwargs["token"] is None
+        assert token is None
         if self.app.remote != BASE:
             raise RuntimeError("expected old changed")
         self.pushes.append(kwargs)
@@ -368,11 +370,11 @@ class InFlightPushGit(PushGit):
         self.release = asyncio.Event()
         self.attempts = 0
 
-    async def apush_oid_with_app_auth(self, *args, **kwargs):
+    async def apush_repository_oid(self, *args, **kwargs):
         self.attempts += 1
         self.entered.set()
         await self.release.wait()
-        return await super().apush_oid_with_app_auth(*args, **kwargs)
+        return await super().apush_repository_oid(*args, **kwargs)
 
 
 def _root_attestation_payload() -> AttestationPayload:
@@ -544,7 +546,7 @@ async def test_root_promotion_caches_authenticated_clients_per_repository_bindin
 
 
 class RootTrustGit:
-    async def afetch_exact_oid_with_app_auth(self, _store, **kwargs):
+    async def afetch_repository_oid(self, _store, **kwargs):
         return kwargs["oid"]
 
     async def arun_git_result(self, args, **_kwargs):
@@ -680,12 +682,13 @@ class RealDeadlinePushGit(PushGit):
 
         self.transport._apush_oid_with_app_auth_to_url = local_isolated_push
 
-    async def apush_oid_with_app_auth(self, _store, **kwargs):
+    async def apush_repository_oid(self, _store, **kwargs):
         deadline = kwargs["authority_deadline"]
+        token = await self.app.installation_token()
         result = await self.transport.apush_oid_with_app_auth(
             str(self.checkout),
             repository=kwargs["repository"],
-            token=kwargs["token"],
+            token=token,
             tip_oid=self.tip,
             branch=kwargs["branch"],
             expected_old_oid=self.base,
@@ -1026,7 +1029,7 @@ async def test_gh_live_candidate_receipt_allows_exact_oid_main_promotion(prepare
     assert result.head_sha == HEAD
     assert provider.remote == HEAD
     assert provider.posts == 0
-    assert provider.token_calls == 1
+    assert provider.token_calls == 2
     assert len(git.pushes) == 1
 
 
@@ -1449,7 +1452,7 @@ async def test_exact_tested_sha_main_push_finalizes_every_member_without_post_ci
     assert result.outcome == "promoted"
     assert result.head_sha == HEAD
     assert len(result.receipt_ids) == 2
-    assert app.remote == HEAD and len(git.pushes) == 1 and app.token_calls == 1
+    assert app.remote == HEAD and len(git.pushes) == 1 and app.token_calls == 2
     async with db._engine.connect() as conn:
         intent = (await conn.execute(select(integration_promotion_intents))).mappings().one()
         mutation = (await conn.execute(select(integration_candidate_ref_mutations))).mappings().one()
@@ -1498,7 +1501,20 @@ async def test_exact_tested_sha_main_push_finalizes_every_member_without_post_ci
         ]
     assert replay == result
     assert after_replay == before_replay
-    assert len(git.pushes) == 1 and app.token_calls == 1
+    assert len(git.pushes) == 1 and app.token_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_root_main_accepts_authorized_ssh_repository_url(prepared_db):
+    db, data_dir = prepared_db
+    await db.update_repo("repo", url="git@github.com:acme/widgets.git")
+    app = FakeAppClient()
+    result = await RootPromotionService(
+        db, data_dir=data_dir, git_manager=PushGit(app), app_client=app,
+        clock=lambda: 10.0,
+    ).promote("batch", 0)
+    assert result.outcome == "promoted"
+    assert app.remote == HEAD
 
 
 @pytest.mark.asyncio
@@ -1816,7 +1832,7 @@ async def test_prewrite_accepts_exact_post_refresh_push_horizon(prepared_db):
     result = await service.reconcile(prepared.intent_id)
 
     assert result.outcome == "promoted"
-    assert len(git.pushes) == 1 and app.token_calls == 1
+    assert len(git.pushes) == 1 and app.token_calls == 2
     assert isinstance(git.pushes[0]["authority_deadline"], float)
     async with db._engine.connect() as conn:
         claim = (
@@ -2379,11 +2395,11 @@ async def test_authenticated_descendant_is_imported_before_real_ancestry_proof(p
             await conn.execute(update(integration_candidate_publications).values(head_sha=head))
 
     class LocalExactFetchGit(GitManager):
-        async def afetch_exact_oid_with_app_auth(self, destination_git_dir, **kwargs):
+        async def afetch_repository_oid(self, destination_git_dir, **kwargs):
             return await self._afetch_exact_oid_with_app_auth_to_url(
                 destination_git_dir,
                 destination_url=origin.as_uri(),
-                token=kwargs["token"],
+                token="dummy-installation-token",
                 oid=kwargs["oid"],
                 destination_ref=kwargs["destination_ref"],
             )

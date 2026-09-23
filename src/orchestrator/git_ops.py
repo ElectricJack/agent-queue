@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from src.git.manager import GitError
 from src.notifications.builder import build_task_detail
@@ -2098,8 +2099,22 @@ class GitOpsMixin:
             # ── Step 2: fetch + merge default into the slot branch ────
             if has_remote:
                 try:
-                    await self.git._arun(["fetch", "origin"], cwd=workspace)
-                except GitError as e:
+                    repo = await self.db.get_repo(task.repo_id) if task.repo_id else None
+                    project = await self.db.get_project(task.project_id)
+                    repository_url = (
+                        repo.url if repo and repo.project_id == task.project_id
+                        else project.repo_url if project and not task.repo_id else ""
+                    )
+                    if not repository_url:
+                        local_origin = await self.git.aget_remote_url(workspace)
+                        if local_origin and Path(local_origin).exists():
+                            repository_url = local_origin
+                    if not repository_url:
+                        raise GitError("task has no authorized repository for origin fetch")
+                    await self.git.afetch_origin(
+                        workspace, repository_url=repository_url
+                    )
+                except Exception as e:
                     logger.error("Task %s: fetch origin failed: %s", task.id, e)
                     return PhaseResult.STOP
 

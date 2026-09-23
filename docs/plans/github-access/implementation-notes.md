@@ -123,6 +123,28 @@ The inventory also checked remote reads through `als_remote_ref`, direct
 helpers. Secondary destinations such as submodules and LFS are not silently in
 scope and must not inherit a repository token.
 
+### Step 4 transfer call sites
+
+These entries name the recovery, publication and cleanup operations migrated by
+`clear-meadow.3`. `GitManager` selects a credential for each exact transfer;
+remote observations use its isolated authenticated read. A failed selection or
+read remains an error or retryable result, never proof that a ref is absent.
+
+| Entry | Caller and network operation | Transfer path and retained safeguard |
+|---|---|---|
+| REC-1 | `owner_recovery.py` refreshes origin, observes the owner and preserved refs, and publishes WIP. | `afetch_origin` uses the repository row URL; `als_remote_ref` and `apush_validated_ref` retain remote errors, fast-forward proof and the owner row on failure. |
+| REC-2 | `completion_recovery.py` observes a failed task's branch and refreshes retained integration heads. | `als_remote_ref` and `PromotionService._fetch_all_heads` use selected credentials; uncertain state retains the checkpoint and operation. |
+| REC-3 | `provider_failover.py` and `stranded_work.py` publish checkpoints or failed-close commits through `git_ops.py` and `GitManager`. | `apush_validated_delivery` or `apush_head_to` selects the credential at the push; a failed push leaves the local commit, claim and handoff intact. `task_checkpoint.py` imports only a local git-dir path. |
+| INT-1 | `promotion.py` creates and refreshes the retained store; `review_evidence.py` and completion recovery share its fetch. | `acreate_bare_checkout` and `afetch_origin` use the frozen origin URL; remote OID comparisons still fence reconciliation. |
+| INT-2 | `hierarchy.py` materializes a branch from a missing pinned base. | `afetch_origin` uses the resolved repository URL and rechecks the exact commit before `apush_validated_ref`. |
+| INT-3 | `candidates.py`, `attestation.py`, `parent_ci.py` and `main_promotion.py` import exact objects and publish candidate, CI and main refs. | `afetch_repository_oid` and `apush_repository_oid` select per transfer; frozen attestations, subject checks, explicit old OIDs and main's prewrite deadline remain in place. |
+| INT-4 | `development.py` clones and refreshes its store, observes heads and publishes snapshots. | `acreate_checkout`, `afetch_origin`, `als_remote_ref` and `apush_validated_ref` retain its journal and explicit expected-old lease. |
+| INT-5 | `git_ops.py` refreshes a slot before its merge and branch publication. | `afetch_origin` uses the task or project repository URL; a local linked origin is allowed only when it resolves to an existing filesystem path. Fetch failure stops integration before any merge or push. |
+| CLN-1 | `branch_discard.py` backs up the branch and main OIDs before lease deletion. | Each `afetch_repository_oid` and `adelete_repository_ref` selects separately; missing backup or changed owner/ref parks deletion. |
+| CLN-2 | `cleanup.py` deletes delivered source refs. | `adelete_repository_ref` keeps default-branch and live-owner refusals, exact SHA lease and retryable claim on authentication failure. |
+| CLN-3 | `delivery_branches.py` removes logged, bundled delivered branches. | `adelete_remote_ref_exact` observes and lease-deletes each branch; `als_remote_ref` classifies the result and refuses unknown remote state. |
+| CLN-4 | `worktree_manager.py` optionally prunes remote refs for merged or old failed task branches. | `als_remote_ref` and `adelete_remote_ref_exact` run before local deletion; an authentication error or remote tip differing from the local branch keeps the local branch. |
+
 ## Constructor fallback register
 
 These constructors are migration hazards because a standalone service can
