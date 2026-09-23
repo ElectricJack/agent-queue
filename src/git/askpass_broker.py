@@ -170,9 +170,17 @@ def _is_packaged_helper(
     git_pid: int,
     topology: GitCredentialTopology,
     repository: str,
+    remote_name: str,
+    remote_url: str,
     expected_prompt: str,
 ) -> bool:
+    """Match Git's exact remote argv while retaining the authorized repository binding."""
     if pid <= 0 or uid != os.geteuid():
+        return False
+    if remote_url != repository and (
+        not repository.startswith("https://")
+        or remote_url != repository.replace("https://", "https://x-access-token@", 1)
+    ):
         return False
     try:
         if not _matches_pin(Path(f"/proc/{git_pid}/exe"), topology.git):
@@ -200,8 +208,8 @@ def _is_packaged_helper(
         return False
     if parent_arguments != [
         os.fsencode(topology.remote_helper_argv0),
-        repository.encode(),
-        repository.encode(),
+        remote_name.encode(),
+        remote_url.encode(),
     ]:
         return False
     return _has_ancestor(parent, git_pid)
@@ -251,10 +259,12 @@ async def serve_one_credential(
     topology: GitCredentialTopology,
     authority: str,
     repository: str,
+    remote_name: str,
+    remote_url: str,
     prompt: str,
     timeout: float,
 ) -> bool:
-    """Release ``token`` once to a validated helper-private reply descriptor."""
+    """Release ``token`` once; ``remote_url`` is the exact URL passed to Git."""
     try:
         expected = request_payload(authority, repository, prompt)
         loop = asyncio.get_running_loop()
@@ -286,6 +296,8 @@ async def serve_one_credential(
                 git_pid=git_pid,
                 topology=topology,
                 repository=repository,
+                remote_name=remote_name,
+                remote_url=remote_url,
                 expected_prompt=prompt,
             ):
                 os.close(reply_fd)
