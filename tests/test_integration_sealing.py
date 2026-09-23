@@ -876,6 +876,7 @@ async def test_seal_freezes_source_ref_and_retention_from_authoritative_checkpoi
 
 async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coalescing(db):
     from src.integration.scheduler import IntegrationScheduler, TrainService
+    from src.integration.settling import note_approval
 
     await _enable_train(db)
     await _seed_leaf(db, "root", "b" * 40)
@@ -885,7 +886,9 @@ async def test_nonempty_seal_retains_first_request_for_manual_and_periodic_coale
     sealed = await TrainService(db).seal("p", first["request_id"], 20.0)
 
     manual = await scheduler.mark_due("p", 30.0, "manual")
-    periodic = await scheduler.mark_due("p", 40.0, "periodic")
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=40.0)
+    periodic = await scheduler.mark_due("p", 340.0, "periodic")
 
     assert sealed["outcome"] == "sealed"
     for replay in (manual, periodic):

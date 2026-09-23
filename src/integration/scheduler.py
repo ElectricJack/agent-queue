@@ -24,6 +24,7 @@ from src.git.manager import GitError, _validate_ref
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
+from src.integration.settling import settled
 from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -123,6 +124,10 @@ class IntegrationScheduler:
             await self._maintain_batch_lease_on(conn, project_id, schedule, now)
             if trigger == "periodic" and not schedule["enabled"]:
                 return self._result("disabled", project_id, schedule)
+            if trigger == "periodic" and not await settled(
+                conn, project_id=project_id, now=now
+            ):
+                return {"outcome": "not_due", "project_id": project_id, "reason": "settling"}
 
             periodic_due = trigger == "periodic" and now >= schedule["next_due_at"]
             if periodic_due:

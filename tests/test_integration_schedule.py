@@ -16,6 +16,7 @@ from src.database.tables import (
     projects,
 )
 from src.integration.scheduler import IntegrationScheduler
+from src.integration.settling import note_approval
 from src.models import Project
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.profiles.capabilities import CapabilityPolicy
@@ -56,12 +57,51 @@ async def _schedule_row(db):
         )
 
 
+async def test_periodic_sweep_waits_for_settling_but_manual_bypasses_it(db):
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
+
+    unarmed = await scheduler.mark_due(project_id="p", now=300.0, trigger="periodic")
+    assert unarmed == {"outcome": "not_due", "project_id": "p", "reason": "settling"}
+    assert (await _schedule_row(db))["next_due_at"] == 300.0
+
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=300.0)
+    waiting = await scheduler.mark_due(project_id="p", now=599.0, trigger="periodic")
+    assert waiting == unarmed
+    assert (await _schedule_row(db))["next_due_at"] == 300.0
+
+    manual = await scheduler.mark_due(project_id="p", now=599.0, trigger="manual")
+    assert manual["outcome"] == "due"
+    assert manual["trigger"] == "manual"
+
+
+async def test_periodic_sweep_runs_when_window_fires(db):
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=300.0)
+
+    due = await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
+    assert due == {
+        "outcome": "due",
+        "project_id": "p",
+        "request_id": "integration-sweep:p:1",
+        "trigger": "periodic",
+        "requested_at": 600.0,
+        "request_sequence": 1,
+        "next_due_at": 900.0,
+    }
+
+
 async def test_missed_windows_and_manual_calls_coalesce_until_release(db):
     scheduler = IntegrationScheduler(db)
     configured = await scheduler.configure(
         project_id="p", now=0.0, enabled=True, interval_seconds=300
     )
     assert configured["next_due_at"] == 300.0
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=3300.0)
 
     first = await scheduler.mark_due(project_id="p", now=3600.0, trigger="periodic")
     assert first == {
@@ -170,6 +210,9 @@ async def test_promoted_before_release_preserves_first_catchup_for_all_cleanup_s
             )
         )
 
+    if catchup_trigger == "periodic":
+        async with db.immediate() as conn:
+            await note_approval(conn, project_id="p", now=300.0)
     caught_up = await scheduler.mark_due(
         project_id="p", now=catchup_at, trigger=catchup_trigger
     )
@@ -182,6 +225,9 @@ async def test_promoted_before_release_preserves_first_catchup_for_all_cleanup_s
 
     later_trigger = "periodic" if catchup_trigger == "manual" else "manual"
     later_at = 600.0 if later_trigger == "periodic" else catchup_at + 1.0
+    if later_trigger == "periodic":
+        async with db.immediate() as conn:
+            await note_approval(conn, project_id="p", now=300.0)
     await scheduler.mark_due(project_id="p", now=later_at, trigger=later_trigger)
     row = await _schedule_row(db)
     assert row["catchup_trigger"] == catchup_trigger
@@ -285,6 +331,8 @@ async def test_interval_edit_resets_boundary_and_preserves_first_request(db):
     )
     assert configured["next_due_at"] == 140.0
     assert configured["outstanding_request_id"] == first["request_id"]
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=-160.0)
     coalesced = await scheduler.mark_due(
         project_id="p", now=140.0, trigger="periodic"
     )
@@ -327,6 +375,8 @@ async def test_not_due_and_restart_duplicate_delivery_are_durable(tmp_path):
     await first_scheduler.configure(
         project_id="p", now=0.0, enabled=True, interval_seconds=300
     )
+    async with first_db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=0.0)
     not_due = await first_scheduler.mark_due(
         project_id="p", now=299.0, trigger="periodic"
     )
