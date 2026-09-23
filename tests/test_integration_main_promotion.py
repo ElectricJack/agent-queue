@@ -38,6 +38,7 @@ from src.database.tables import (
     task_delivery_receipts,
 )
 from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubCredentialIdentity
 from src.git.manager import GitError, GitManager
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.candidates import CandidateBuildResult, CandidateService
@@ -440,6 +441,7 @@ def _root_ci_receipt_payload() -> CIReceiptPayload:
 class RootAttestationProvider:
     def __init__(self):
         self.config = SimpleNamespace(app_id=101)
+        self.credential_identity = GitHubCredentialIdentity.app(101)
         self.repository = GitHubRepositoryBinding(99, "acme/widgets")
         self.records = []
         self.posts = 0
@@ -472,6 +474,7 @@ class GitHubCLIRootProvider(RootAttestationProvider):
     def __init__(self):
         super().__init__()
         self.config = SimpleNamespace(auth_mode="gh")
+        self.credential_identity = GitHubCredentialIdentity.existing_login()
         self.remote = BASE
         self.reads = 0
         self.token_calls = 0
