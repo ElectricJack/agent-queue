@@ -120,6 +120,68 @@ class GitHubAccess:
                 "use YAML directly or configure an existing gh login and restart the daemon",
             )
 
+    async def create_repository(
+        self,
+        name: str,
+        *,
+        private: bool = True,
+        org: str | None = None,
+        description: str = "",
+    ) -> str:
+        """Create an account repository using the startup-selected existing login."""
+        if self.credential_identity.mode is GitHubCredentialMode.APP:
+            raise GitHubAccessError(
+                "github_operation_unsupported",
+                "Repository creation is unavailable with a configured GitHub App; "
+                "configure an existing gh login and restart the daemon",
+            )
+
+        from src.projects.github import GitHubError, parse_github_repository
+
+        if not isinstance(name, str) or name.startswith("-") or (
+            org is not None and not isinstance(org, str)
+        ):
+            raise GitHubAccessError("conflict_or_invalid", "GitHub repository name was invalid")
+        try:
+            target = parse_github_repository(f"{org or 'placeholder'}/{name}")
+        except GitHubError as exc:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub repository name was invalid") from exc
+        full_name = target.full_name if org else name
+
+        auth = await self.runner.run(
+            ["auth", "status"], hostname="github.com", timeout=30, check=False
+        )
+        if auth.returncode:
+            raise GitHubAccessError(
+                "credentials",
+                "GitHub CLI is not authenticated. Run `gh auth login` on the host to configure credentials.",
+            )
+
+        command = ["repo", "create", full_name, "--private" if private else "--public"]
+        if description:
+            command.extend(("--description", description))
+        result = await self.runner.run(command, hostname="github.com", timeout=60, check=False)
+        if result.returncode:
+            if "already exists" in result.stderr.lower():
+                raise GitHubAccessError("conflict_or_invalid", "GitHub repository already exists")
+            raise _command_error(result.returncode, result.stderr)
+        output = result.stdout.decode("utf-8", errors="replace")
+        for line in (*output.splitlines(), *result.stderr.splitlines()):
+            url = line.strip()
+            if not url.startswith("https://"):
+                continue
+            try:
+                created = parse_github_repository(url)
+            except GitHubError:
+                continue
+            if created.name.lower() == name.lower() and (
+                org is None or created.owner.lower() == org.lower()
+            ):
+                return url
+        raise GitHubAccessError(
+            "conflict_or_invalid", "GitHub repository creation did not return the requested URL"
+        )
+
     async def create_profile_gist(self, profile_id: str, name: str, yaml_text: str) -> str:
         """Publish a public profile gist through the startup-owned credential authority."""
         self._require_account_gists()

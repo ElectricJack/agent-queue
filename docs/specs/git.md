@@ -78,9 +78,9 @@ This is the method used by all production code for git operations. All event-loo
 async def _arun_subprocess(self, cmd: list[str], cwd: str | None = None, timeout: int | None = None) -> CompletedProcess
 ```
 
-Async helper for non-git commands (e.g. `gh` CLI). Uses `asyncio.create_subprocess_exec()` with `asyncio.wait_for()` for timeout handling. Returns a `subprocess.CompletedProcess` with decoded `stdout` and `stderr` strings. On timeout, kills the subprocess and raises `subprocess.TimeoutExpired`. On missing executable, raises `FileNotFoundError`.
+Async helper for non-git subprocesses. GitHub commands use the startup-owned `GhRunner` instead. Returns a `subprocess.CompletedProcess` with decoded `stdout` and `stderr` strings. On timeout, kills the subprocess and raises `subprocess.TimeoutExpired`. On missing executable, raises `FileNotFoundError`.
 
-Used by async counterparts of `create_pr`, `check_pr_merged`, `check_gh_auth`, `create_github_repo`, and `commit_all` (for `git diff --cached --quiet`).
+Used for local Git probes and for `commit_all`'s `git diff --cached --quiet` check.
 
 Several public methods intentionally catch `GitError` and suppress it (e.g. a failed `pull` that has no upstream tracking is silently ignored). Each such suppression is documented in the relevant method section below.
 
@@ -508,7 +508,7 @@ is ready for the next task. The orchestrator's `_merge_and_push` calls `recover_
 
 ## 7. GitHub PR and Repo Operations
 
-These methods use the `gh` CLI rather than `git`. They require `gh` to be installed and authenticated with appropriate repository access. The synchronous versions call `subprocess.run` directly; the async versions use `_arun_subprocess`. Both raise `GitError` on non-zero exit codes (except `check_gh_auth` which returns a boolean).
+Production async GitHub operations use the startup-owned `GitHubAccess` and its shared `GhRunner`. They require `gh` on the daemon host and the credentials selected at startup. Repository creation is an existing-login account operation; a configured App reports `github_operation_unsupported` before launch.
 
 ### `create_pr(checkout_path, branch, title, body, base="main")`
 
@@ -593,23 +593,13 @@ rollup verdict. It exists because two PRs each green on their own base
 back to back into a red `main` that no pre-merge run could have observed.
 See [the merge-gating guide](../guides/merge-gating.md).
 
-### `check_gh_auth()`
+### `acreate_github_repo(name, *, private=True, org=None, description="")`
 
-Checks whether the `gh` CLI is authenticated. Returns `True` if `gh auth status` exits successfully, `False` otherwise (including timeout and missing executable). Async counterpart: `acheck_gh_auth`.
+The async `acreate_github_repo` method delegates to the startup-owned `GitHubAccess.create_repository` and its shared `GhRunner`. It returns the HTTPS URL of the newly created repository.
 
-- Used to pre-validate before attempting repository creation, so callers can surface a helpful error message rather than a cryptic `gh` failure.
-- Uses a 30-second timeout (shorter than the default `_GIT_TIMEOUT`).
-- Does not raise exceptions; always returns a boolean.
-
-### `create_github_repo(name, *, private=True, org=None, description="")`
-
-Creates a GitHub repository via the `gh` CLI. Returns the HTTPS URL of the newly created repository. Async counterpart: `acreate_github_repo`.
-
-- Constructs `gh repo create <org/name or name>` with `--private` or `--public`.
-- Optionally includes `--description <description>`.
-- Uses a 60-second timeout.
-- Parses the URL from stdout (or stderr for some `gh` versions) by scanning for lines starting with `https://` or `http://`.
-- Raises `GitError` if `gh` exits with a non-zero code, times out, or if no URL is found in the output.
+- Existing-login mode checks `gh auth status`, then creates the repository with a 60-second deadline and validates the returned HTTPS URL.
+- App mode returns `github_operation_unsupported` before launching `gh` or consulting a personal login.
+- The command accepts optional organization and description arguments.
 
 ---
 
@@ -746,8 +736,7 @@ Every public method on `GitManager` has an async counterpart prefixed with `a`. 
 | `has_non_plan_changes` | `ahas_non_plan_changes` |
 | `get_default_branch` | `aget_default_branch` |
 | `get_recent_commits` | `aget_recent_commits` |
-| `check_gh_auth` | `acheck_gh_auth` |
-| `create_github_repo` | `acreate_github_repo` |
+| — | `acreate_github_repo` |
 | `_is_worktree` | `_ais_worktree` |
 | `_rebase_onto_default` | `_arebase_onto_default` |
 

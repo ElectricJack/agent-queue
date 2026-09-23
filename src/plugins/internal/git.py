@@ -1321,6 +1321,7 @@ class GitPlugin(InternalPlugin):
 
     async def cmd_create_github_repo(self, args: dict) -> dict:
         from src.git.manager import GitError
+        from src.git.github_contracts import GitHubAccessError
 
         name = args.get("name")
         if not name:
@@ -1328,15 +1329,12 @@ class GitPlugin(InternalPlugin):
         private = args.get("private", True)
         org = args.get("org")
         description = args.get("description", "")
-        git = self._git
-        if not await git.acheck_gh_auth():
-            return {
-                "error": "GitHub CLI is not authenticated. Run `gh auth login` on the host to configure credentials."
-            }
         try:
-            url = await git.acreate_github_repo(
+            url = await self._git.acreate_github_repo(
                 name, private=private, org=org, description=description
             )
+        except GitHubAccessError as e:
+            return {"error": str(e), "error_code": e.category}
         except GitError as e:
             return {"error": str(e)}
         return {"created": True, "repo_url": url, "name": name}
