@@ -96,33 +96,16 @@ class GitHubAccessError(RuntimeError):
 
 
 def credential_identity_from_client(client: Any) -> GitHubCredentialIdentity:
-    """Read the shared identity, with a temporary legacy-client adapter.
+    """Read the shared credential identity from the composed client.
 
-    Production clients expose ``credential_identity`` directly.  The fallback
-    keeps staged integration services and their injected test doubles working
-    until the transport subclass split is removed by the final migration.
+    Both credential sources are surfaced by the single ``GitHubClient`` as an
+    explicit ``credential_identity``; legacy adapters had that identity
+    carried by their transport instead, which the final migration removed.
     """
 
     identity = getattr(client, "credential_identity", None)
     if isinstance(identity, GitHubCredentialIdentity):
         return identity
-
-    config = getattr(client, "config", None)
-    legacy_mode = getattr(client, "auth_mode", None)
-    if legacy_mode is None:
-        legacy_mode = getattr(config, "auth_mode", None)
-    if legacy_mode == "gh":
-        return GitHubCredentialIdentity.existing_login()
-
-    app_id = getattr(config, "app_id", None)
-    installation_id = getattr(config, "installation_id", None)
-    if isinstance(app_id, int) and not isinstance(app_id, bool) and app_id > 0:
-        return GitHubCredentialIdentity.app(app_id, installation_id)
-
-    # Legacy CLI-shaped fakes had neither configuration nor an explicit
-    # identity.  They represented the existing daemon login.
-    if config is None:
-        return GitHubCredentialIdentity.existing_login()
     raise ValueError("GitHub client credential identity is unavailable")
 
 

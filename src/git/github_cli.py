@@ -12,9 +12,9 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import Protocol
 
-from src.git.github import MAX_PAGINATION_BYTES, MAX_RESPONSE_BYTES, GitHubClient
+from src.git.github import MAX_RESPONSE_BYTES
 from src.git.github_contracts import (
     GitHubAccessError as GitHubAppError,
     GitHubCredentialIdentity,
@@ -594,77 +594,6 @@ class GhRunner:
             raise _ProcessCleanupError
 
 
-class GitHubCLIClient(GitHubClient):
-    """Compatibility constructor for the daemon user's existing ``gh`` login."""
-
-    auth_mode: ClassVar[str] = "gh"
-
-    def __init__(
-        self,
-        repository: GitHubRepositoryBinding,
-        *,
-        executable: str = "gh",
-        env: Mapping[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
-        runner: GhRunner | None = None,
-    ) -> None:
-        self.executable = executable
-        self._env = dict(os.environ if env is None else env)
-        self.timeout = timeout
-        selected_runner = runner or GhRunner(
-            ExistingLoginCredentials(),
-            executable=executable,
-            env=self._env,
-            timeout=timeout,
-            max_stdout_bytes=max_response_bytes + MAX_DIAGNOSTIC_BYTES,
-        )
-        super().__init__(
-            repository,
-            runner=selected_runner,
-            max_response_bytes=max_response_bytes,
-            max_pagination_bytes=max_pagination_bytes,
-        )
-
-    @classmethod
-    async def bind_repository(
-        cls,
-        full_name: str,
-        *,
-        executable: str = "gh",
-        env: Mapping[str, str] | None = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        max_response_bytes: int = MAX_RESPONSE_BYTES,
-        max_pagination_bytes: int = MAX_PAGINATION_BYTES,
-    ) -> GitHubCLIClient:
-        provisional = GitHubRepositoryBinding(1, full_name)
-        client = cls(
-            provisional,
-            executable=executable,
-            env=env,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            max_pagination_bytes=max_pagination_bytes,
-        )
-        payload = await client.request_json("GET", f"repos/{full_name}")
-        repository_id = payload.get("id")
-        if (
-            isinstance(repository_id, bool)
-            or not isinstance(repository_id, int)
-            or repository_id <= 0
-            or payload.get("full_name") != full_name
-        ):
-            raise GitHubAppError("credentials", "authenticated repository identity did not match")
-        client.repository = GitHubRepositoryBinding(repository_id, full_name)
-        return client
-
-    async def installation_token(self, *, force_refresh: bool = False) -> None:
-        """Signal that Git must use the existing ``gh`` credential, not a token."""
-        del force_refresh
-        return None
-
-
 def _scrub_diagnostic(diagnostic: bytes, *, secrets: Sequence[str] = ()) -> str:
     scrubbed = diagnostic.decode("utf-8", "replace")
     for secret in sorted((secret for secret in secrets if secret), key=len, reverse=True):
@@ -702,5 +631,4 @@ __all__ = [
     "GhResult",
     "GhRunner",
     "GhSelectedCredential",
-    "GitHubCLIClient",
 ]
