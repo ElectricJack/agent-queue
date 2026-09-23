@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from ..models.review_record import ReviewRecord
     from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
     from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
+    from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
     from ..models.review_show_response_revision import ReviewShowResponseRevision
     from ..models.review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 
@@ -30,6 +31,7 @@ class ReviewShowResponse:
         revisions (list[ReviewShowResponseRevisionsItem] | Unset):
         comments (list[ReviewShowResponseCommentsType0Item] | None | Unset):
         diff (list[ReviewShowResponseDiffType0Item] | None | Unset):
+        dispatches (list[ReviewShowResponseDispatchesItem] | Unset):
     """
 
     review: ReviewRecord
@@ -39,6 +41,7 @@ class ReviewShowResponse:
     revisions: list[ReviewShowResponseRevisionsItem] | Unset = UNSET
     comments: list[ReviewShowResponseCommentsType0Item] | None | Unset = UNSET
     diff: list[ReviewShowResponseDiffType0Item] | None | Unset = UNSET
+    dispatches: list[ReviewShowResponseDispatchesItem] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -81,6 +84,13 @@ class ReviewShowResponse:
         else:
             diff = self.diff
 
+        dispatches: list[dict[str, Any]] | Unset = UNSET
+        if not isinstance(self.dispatches, Unset):
+            dispatches = []
+            for dispatches_item_data in self.dispatches:
+                dispatches_item = dispatches_item_data.to_dict()
+                dispatches.append(dispatches_item)
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -98,6 +108,8 @@ class ReviewShowResponse:
             field_dict["comments"] = comments
         if diff is not UNSET:
             field_dict["diff"] = diff
+        if dispatches is not UNSET:
+            field_dict["dispatches"] = dispatches
 
         return field_dict
 
@@ -106,6 +118,7 @@ class ReviewShowResponse:
         from ..models.review_record import ReviewRecord
         from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
         from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
+        from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
         from ..models.review_show_response_revision import ReviewShowResponseRevision
         from ..models.review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 
@@ -171,6 +184,15 @@ class ReviewShowResponse:
 
         diff = _parse_diff(d.pop("diff", UNSET))
 
+        _dispatches = d.pop("dispatches", UNSET)
+        dispatches: list[ReviewShowResponseDispatchesItem] | Unset = UNSET
+        if _dispatches is not UNSET:
+            dispatches = []
+            for dispatches_item_data in _dispatches:
+                dispatches_item = ReviewShowResponseDispatchesItem.from_dict(dispatches_item_data)
+
+                dispatches.append(dispatches_item)
+
         review_show_response = cls(
             review=review,
             revision=revision,
@@ -179,6 +201,7 @@ class ReviewShowResponse:
             revisions=revisions,
             comments=comments,
             diff=diff,
+            dispatches=dispatches,
         )
 
         review_show_response.additional_properties = d

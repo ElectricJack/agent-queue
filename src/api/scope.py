@@ -79,11 +79,13 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # live repair assignment and separately fences pool calls by claim
         # epoch.  No caller-selected integration identity reaches the service.
         "integration_resolve_candidate_member",
-        # Document-review agents may author/read/list/withdraw only.
+        # A worker's comment write is checked again against the dispatch
+        # ledger and its live held task by ReviewCommandsMixin.
         "review_submit",
         "review_show",
         "review_list",
         "review_withdraw",
+        "review_comment",
     }
 )
 

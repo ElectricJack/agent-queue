@@ -77,6 +77,7 @@ somehow declares none.
     "pr_merge",
     "prime",
     "review_list",
+    "review_comment",
     "review_show",
     "review_submit",
     "review_withdraw",

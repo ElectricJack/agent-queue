@@ -50,6 +50,7 @@ class ReviewShowResponse(BaseModel):
     vault_state: str
     comments: list[dict[str, Any]] | None = None
     diff: list[dict[str, Any]] | None = None
+    dispatches: list[dict[str, Any]] = []
 
 
 class ReviewListResponse(BaseModel):
@@ -81,6 +82,12 @@ class ReviewDelegateResponse(BaseModel):
     decider: str
 
 
+class ReviewDispatchResponse(BaseModel):
+    success: bool = True
+    review_id: str
+    dispatches: list[dict[str, Any]]
+
+
 class ReviewImportEditsResponse(BaseModel):
     success: bool = True
     review_id: str
@@ -95,5 +102,6 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_decide": ReviewDecideResponse,
     "review_comment": ReviewCommentResponse,
     "review_delegate": ReviewDelegateResponse,
+    "review_dispatch": ReviewDispatchResponse,
     "review_import_edits": ReviewImportEditsResponse,
 }

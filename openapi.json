@@ -10386,6 +10386,53 @@
         }
       }
     },
+    "/api/review/dispatch": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+        "description": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+        "operationId": "review_dispatch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDispatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDispatchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/import-edits": {
       "post": {
         "tags": [
@@ -42465,6 +42512,102 @@
         ],
         "title": "ReviewDelegateResponse"
       },
+      "ReviewDispatchRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "to": {
+            "items": {},
+            "type": "array",
+            "title": "To",
+            "description": ""
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision",
+            "description": ""
+          },
+          "with_comments": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "With Comments",
+            "description": ""
+          },
+          "focus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focus",
+            "description": ""
+          },
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Force",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "to"
+        ],
+        "title": "ReviewDispatchRequest"
+      },
+      "ReviewDispatchResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id"
+          },
+          "dispatches": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Dispatches"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "dispatches"
+        ],
+        "title": "ReviewDispatchResponse"
+      },
       "ReviewImportEditsRequest": {
         "properties": {
           "review_id": {
@@ -42753,6 +42896,15 @@
               }
             ],
             "title": "Diff"
+          },
+          "dispatches": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Dispatches",
+            "default": []
           }
         },
         "additionalProperties": true,

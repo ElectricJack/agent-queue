@@ -981,7 +981,11 @@ class CommandHandler(
                         decision.namespace,
                         principal.policy.fingerprint(),
                     )
-                elif not decision.allowed:
+                elif not decision.allowed and not (
+                    name == "review_comment"
+                    and isinstance(args.get("review_id"), str)
+                    and await self._held_review_dispatch(args["review_id"]) is not None
+                ):
                     logger.warning(
                         "capability_denied cmd=%s principal=%s session=%s profile=%s "
                         "ns=%s fingerprint=%s",

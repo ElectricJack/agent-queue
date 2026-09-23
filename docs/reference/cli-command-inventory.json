@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 372,
+    "leaf_commands": 373,
     "registration": {
       "generated": 261,
-      "handwritten": 111
+      "handwritten": 112
     },
     "ownership": {
-      "core": 333,
+      "core": 334,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 371
+      "supported": 372
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 261,
-      "registration": 97
+      "registration": 98
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 312
+      "untested": 313
     }
   },
   "commands": [
@@ -2819,6 +2819,7 @@
         "optional": [
           "--project-id",
           "--branch",
+          "--expected-remote-oid",
           "--workspace",
           "--json",
           "--brief",
@@ -2853,6 +2854,7 @@
         "optional": [
           "--project-id",
           "--branch-name",
+          "--expected-remote-oid",
           "--workspace",
           "--json",
           "--brief",
@@ -3578,6 +3580,7 @@
         ],
         "optional": [
           "--retry",
+          "--recover-child",
           "--json",
           "--brief",
           "--api-url"
@@ -7446,6 +7449,41 @@
           "--to"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review dispatch",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.reviews.review_dispatch",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--review-id",
+          "--to"
+        ],
+        "optional": [
+          "--revision",
+          "--with-comments",
+          "--focus",
+          "--force",
           "--json",
           "--brief",
           "--api-url"

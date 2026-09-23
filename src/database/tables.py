@@ -742,6 +742,23 @@ doc_review_comments = Table(
     Index("idx_doc_review_comments_review", "review_id", "revision"),
 )
 
+# The reviewer task is a soft reference so archiving it never erases the
+# dispatch history or the review's activity. A forced repeat gets a new row.
+doc_review_dispatches = Table(
+    "doc_review_dispatches",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("review_id", Text, nullable=False),
+    Column("profile_id", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("with_comments", Boolean, nullable=False),
+    Column("focus", Text, nullable=True),
+    Column("task_id", Text, nullable=False, unique=True),
+    Column("dispatched_by", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index("idx_doc_review_dispatches_review", "review_id", "profile_id", "revision"),
+)
+
 task_labels = Table(
     "task_labels",
     metadata,

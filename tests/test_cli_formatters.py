@@ -220,6 +220,10 @@ def test_review_show_renders_markdown_header_and_comments():
             },
             "revision": {"revision": 2, "content": "# Proposed release\n\nShip it carefully."},
             "vault_state": "diverged",
+            "dispatches": [{
+                "profile_id": "astra-high-codex", "revision": 2,
+                "with_comments": False, "task_id": "review-task", "task_state": "IN_PROGRESS",
+            }],
             "comments": [
                 {
                     "quote": "Ship it carefully.",
@@ -238,6 +242,8 @@ def test_review_show_renders_markdown_header_and_comments():
     assert "Proposed release" in out and "Ship it carefully." in out
     assert "Safety" in out and "revision 3" in out
     assert "Add a rollback step." in out
+    assert "astra-high-codex" in out and "clean room" in out
+    assert "review-task" in out and "IN_PROGRESS" in out
 
 
 def test_review_list_renders_table_and_empty_message():

@@ -514,6 +514,20 @@ def format_review_detail(data: Any) -> Group:
         Panel(header, title="[bold bright_white]Document review[/]", border_style="bright_blue"),
         Markdown(content),
     ]
+    dispatches = _review_value(data, "dispatches", []) or []
+    if dispatches:
+        activity = Table(title="Adversarial review dispatches", border_style="bright_black")
+        for name in ("Profile", "Revision", "Comments", "Task", "State"):
+            activity.add_column(name)
+        for dispatch in dispatches:
+            activity.add_row(
+                _review_text(dispatch, "profile_id"),
+                _review_text(dispatch, "revision"),
+                "included" if _review_value(dispatch, "with_comments") else "clean room",
+                _review_text(dispatch, "task_id"),
+                _review_text(dispatch, "task_state"),
+            )
+        renderables.append(activity)
     comments = _review_value(data, "comments", []) or []
     for index, comment in enumerate(comments, 1):
         heading_path = _review_value(comment, "heading_path", []) or []

@@ -127,6 +127,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "question_list",
     "render_prompt",
     "review_comment",
+    "review_dispatch",
     "review_decide",
     "review_delegate",
     "review_import_edits",

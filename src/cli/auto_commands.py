@@ -91,6 +91,7 @@ HANDCRAFTED_COVERAGE = {
     "question_escalate",
     # reviews.py — reads the local markdown file before calling the API.
     "review_submit",
+    "review_dispatch",
     # projects.py — composite/UX-heavy commands only
     "edit_project",
     "set_default_branch",

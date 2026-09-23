@@ -984,6 +984,10 @@ from .review_decide_response_422 import ReviewDecideResponse422
 from .review_delegate_request import ReviewDelegateRequest
 from .review_delegate_response import ReviewDelegateResponse
 from .review_delegate_response_422 import ReviewDelegateResponse422
+from .review_dispatch_request import ReviewDispatchRequest
+from .review_dispatch_response import ReviewDispatchResponse
+from .review_dispatch_response_422 import ReviewDispatchResponse422
+from .review_dispatch_response_dispatches_item import ReviewDispatchResponseDispatchesItem
 from .review_import_edits_request import ReviewImportEditsRequest
 from .review_import_edits_response import ReviewImportEditsResponse
 from .review_import_edits_response_422 import ReviewImportEditsResponse422
@@ -996,6 +1000,7 @@ from .review_show_response import ReviewShowResponse
 from .review_show_response_422 import ReviewShowResponse422
 from .review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
 from .review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
+from .review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
 from .review_show_response_revision import ReviewShowResponseRevision
 from .review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 from .review_submit_request import ReviewSubmitRequest
@@ -2270,6 +2275,10 @@ __all__ = (
     "ReviewDelegateRequest",
     "ReviewDelegateResponse",
     "ReviewDelegateResponse422",
+    "ReviewDispatchRequest",
+    "ReviewDispatchResponse",
+    "ReviewDispatchResponse422",
+    "ReviewDispatchResponseDispatchesItem",
     "ReviewImportEditsRequest",
     "ReviewImportEditsResponse",
     "ReviewImportEditsResponse422",
@@ -2282,6 +2291,7 @@ __all__ = (
     "ReviewShowResponse422",
     "ReviewShowResponseCommentsType0Item",
     "ReviewShowResponseDiffType0Item",
+    "ReviewShowResponseDispatchesItem",
     "ReviewShowResponseRevision",
     "ReviewShowResponseRevisionsItem",
     "ReviewSubmitRequest",
