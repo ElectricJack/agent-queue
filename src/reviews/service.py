@@ -622,6 +622,15 @@ class ReviewService:
             "revisions": await self.db.list_review_revisions(review_id),
             "vault_state": state,
         }
+        dispatches = await self.db.list_review_dispatches(review_id)
+        for dispatch in dispatches:
+            task = await self.db.get_task(dispatch["task_id"])
+            if task is not None:
+                dispatch["task_state"] = task.status.value
+            else:
+                archived = await self.db.get_archived_task(dispatch["task_id"])
+                dispatch["task_state"] = archived["status"] if archived else "missing"
+        out["dispatches"] = dispatches
         if comments:
             out["comments"] = await self.db.list_review_comments(review_id)
         if diff_from is not None:

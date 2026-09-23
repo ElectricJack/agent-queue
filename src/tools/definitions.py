@@ -94,6 +94,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "review_withdraw": "review",
     "review_decide": "review",
     "review_comment": "review",
+    "review_dispatch": "review",
     "review_delegate": "review",
     "review_import_edits": "review",
     # digest — hourly activity digest preview and schedule health
@@ -6443,6 +6444,23 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "body": {"type": "string", "minLength": 1, "maxLength": 16000},
                 },
                 "required": ["review_id", "revision", "body"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_dispatch",
+            "description": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "to": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "with_comments": {"type": "boolean"},
+                    "focus": {"type": "string", "maxLength": 4000},
+                    "force": {"type": "boolean"},
+                },
+                "required": ["review_id", "to"],
                 "additionalProperties": False,
             },
         },

@@ -365,6 +365,182 @@ async def test_permission_matrix_for_local_supervisor_and_workers(env):
         assert "scope" in refused["error"] or "another project" in refused["error"]
 
 
+async def test_dispatch_pins_revision_records_activity_and_preserves_gate(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Safe rollout", "content": "# Rollout\n",
+    })
+    review_id = submitted["review_id"]
+    before = await db.get_review(review_id)
+    dispatched = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker"], "revision": 1,
+        "with_comments": False, "focus": "migration rollback",
+    })
+    assert dispatched["success"], dispatched
+    record = dispatched["dispatches"][0]
+    task = await db.get_task(record["task_id"])
+    assert task.profile_id == "worker"
+    assert task.task_type.value == "research"
+    assert f"aq review show --review-id {review_id} --revision 1`" in task.description
+    assert "--comments" not in task.description
+    assert "migration rollback" in task.description
+    assert "ADVERSARIAL" in task.description
+    assert record["with_comments"] is False
+    assert (await db.get_task_meta(task.id, "review_dispatch"))["with_comments"] is False
+    after = await db.get_review(review_id)
+    assert (after["state"], after["decider"], after["gate_id"]) == (
+        before["state"], before["decider"], before["gate_id"],
+    )
+    shown = await handler.execute("review_show", {"review_id": review_id})
+    assert shown["dispatches"][0]["task_id"] == task.id
+    assert shown["dispatches"][0]["task_state"] == task.status.value
+
+    revised = await handler.execute("review_submit", {
+        "review_id": review_id, "content": "# Revised rollout\n", "changes": "detail",
+    })
+    assert revised["revision"] == 2
+    assert (await db.get_task(task.id)).description == task.description
+    repeated = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker"], "revision": 1,
+    })
+    assert repeated["error_code"] == "duplicate_dispatch"
+    forced = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker"], "revision": 1, "force": True,
+    })
+    assert forced["success"], forced
+    assert forced["dispatches"][0]["task_id"] != task.id
+    assert "--comments" in (await db.get_task(forced["dispatches"][0]["task_id"])).description
+    assert len((await handler.execute("review_show", {"review_id": review_id}))["dispatches"]) == 2
+
+
+async def test_dispatch_refusals_and_capacity_warning(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "plan", "title": "Plan", "content": "# Plan\n",
+    })
+    review_id = submitted["review_id"]
+    unknown = await handler.execute("review_dispatch", {"review_id": review_id, "to": ["missing"]})
+    assert unknown["error_code"] == "unknown_profile"
+    await db.create_profile(AgentProfile(
+        id="disabled-pool", name="Disabled", harness="codex", lifecycle="pool",
+        enabled=False, aq_commands=["review_show"], harness_tools=[], plugin_tools=[],
+    ))
+    disabled = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["disabled-pool"],
+    })
+    assert disabled["error_code"] == "disabled_profile"
+    await db.create_profile(AgentProfile(
+        id="no-review", name="No review", harness="codex", lifecycle="pool",
+        aq_commands=[], harness_tools=[], plugin_tools=[],
+    ))
+    cannot_read = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["no-review"],
+    })
+    assert cannot_read["error_code"] == "profile_cannot_review"
+    await db.create_profile(AgentProfile(
+        id="zero-pool", name="Zero", harness="codex", lifecycle="pool",
+        max_active=0, aq_commands=["review_show"], harness_tools=[], plugin_tools=[],
+    ))
+    fanout = await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker", "zero-pool"],
+    })
+    assert fanout["success"], fanout
+    assert len(fanout["dispatches"]) == 2
+    assert fanout["dispatches"][1]["capacity_warning"] == "pool zero-pool has max_active=0"
+    assert (await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker"],
+    }))["error_code"] == "duplicate_dispatch"
+    assert (await handler.execute("review_withdraw", {
+        "review_id": review_id, "reason": "cancel",
+    }))["success"]
+    closed = await handler.execute("review_dispatch", {"review_id": review_id, "to": ["worker"]})
+    assert closed["error_code"] == "review_closed"
+    assert "withdrawn" in closed["error"]
+
+
+async def test_only_held_dispatched_worker_can_comment_on_pinned_revision(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Read me", "content": "# Section\nClaim.\n",
+    })
+    review_id = submitted["review_id"]
+    other = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Other", "content": "# Other\n",
+    })
+    task_id = (await handler.execute("review_dispatch", {
+        "review_id": review_id, "to": ["worker"],
+    }))["dispatches"][0]["task_id"]
+    unassigned = await _scoped(handler, "review_comment", {
+        "review_id": review_id, "revision": 1, "quote": "Claim.", "body": "Unsupported",
+    }, session_id="worker")
+    assert unassigned["error_code"] == "not_dispatched"
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test", force=True)
+    await db.update_session("peer-worker", task_id=task_id)
+    wrong = await _scoped(handler, "review_comment", {
+        "review_id": other["review_id"], "revision": 1, "heading_path": ["Other"], "body": "No",
+    }, session_id="peer-worker", task_id=task_id)
+    assert wrong["error_code"] == "not_dispatched"
+    # A deployed vault profile may predate the new static grant. The task's
+    # dispatch record still permits exactly this comment under enforcement.
+    profile = await db.get_profile("worker")
+    await db.update_profile("worker", aq_commands=[
+        name for name in profile.aq_commands if name != "review_comment"
+    ])
+    handler.config.security.capability_enforcement = "enforce"
+    unanchored = await _scoped(handler, "review_comment", {
+        "review_id": review_id, "revision": 1, "body": "Needs an anchor",
+    }, session_id="peer-worker", task_id=task_id)
+    assert unanchored["error_code"] == "anchor_required"
+    wrong_revision = await _scoped(handler, "review_comment", {
+        "review_id": review_id, "revision": 2, "quote": "Claim.", "body": "Wrong revision",
+    }, session_id="peer-worker", task_id=task_id)
+    assert wrong_revision["error_code"] == "wrong_revision"
+    finding = await _scoped(handler, "review_comment", {
+        "review_id": review_id, "revision": 1, "quote": "Claim.", "body": "Unsupported claim",
+    }, session_id="peer-worker", task_id=task_id)
+    assert finding["success"], finding
+    comments = await db.list_review_comments(review_id)
+    assert comments[-1]["body"] == "Unsupported claim"
+    assert "adversarial reviewer" in comments[-1]["author"]
+    await db.update_profile("worker", aq_commands=profile.aq_commands)
+    await db.update_session("peer-worker", last_claim_epoch=99)
+    stale = await _scoped(handler, "review_comment", {
+        "review_id": review_id, "revision": 1, "quote": "Claim.", "body": "Stale claim",
+    }, session_id="peer-worker", task_id=task_id)
+    assert stale["error_code"] == "not_dispatched"
+    assert (await _scoped(handler, "review_decide", {
+        "review_id": review_id, "revision": 1, "decision": "approve",
+    }, session_id="peer-worker", task_id=task_id))["error"].startswith("out of scope")
+
+
+def test_dispatch_cli_repeats_to_and_selects_clean_room(monkeypatch):
+    from click.testing import CliRunner
+
+    from src.cli.app import cli
+    from src.cli import reviews
+
+    captured = {}
+
+    def execute(_ctx, command, params):
+        captured.update(command=command, params=params)
+        return {"success": True, "review_id": "rev-one", "dispatches": []}
+
+    monkeypatch.setattr(reviews, "_execute", execute)
+    result = CliRunner().invoke(cli, [
+        "review", "dispatch", "--review-id", "rev-one", "--to", "astra-high-codex",
+        "--to", "deep-high-claude", "--revision", "3", "--no-comments",
+        "--focus", "security", "--force", "--json",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "command": "review_dispatch",
+        "params": {
+            "review_id": "rev-one", "to": ["astra-high-codex", "deep-high-claude"],
+            "revision": 3, "with_comments": False, "focus": "security", "force": True,
+        },
+    }
+
+
 async def test_changes_requested_routes_feedback_to_each_author_state(env):
     handler, db = env
 

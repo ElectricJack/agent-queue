@@ -63,3 +63,35 @@ def review_submit(
         "resolves": list(resolves),
     }
     emit(ctx, _execute(ctx, "review_submit", {key: value for key, value in params.items() if value is not None}))
+
+
+@review.command("dispatch")
+@click.option("--review-id", required=True)
+@click.option("--to", "profiles", multiple=True, required=True)
+@click.option("--revision", type=click.IntRange(min=1), default=None)
+@click.option("--with-comments/--no-comments", default=True)
+@click.option("--focus", default=None)
+@click.option("--force", is_flag=True, default=False)
+@click.pass_context
+@_handle_errors
+def review_dispatch(
+    ctx: click.Context,
+    review_id: str,
+    profiles: tuple[str, ...],
+    revision: int | None,
+    with_comments: bool,
+    focus: str | None,
+    force: bool,
+) -> None:
+    """Send a pinned review revision to one or more adversarial reviewers."""
+    params = {
+        "review_id": review_id,
+        "to": list(profiles),
+        "with_comments": with_comments,
+        "force": force,
+    }
+    if revision is not None:
+        params["revision"] = revision
+    if focus is not None:
+        params["focus"] = focus
+    emit(ctx, _execute(ctx, "review_dispatch", params))

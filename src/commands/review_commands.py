@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import uuid
 from typing import Any
 
 from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
@@ -292,9 +294,19 @@ class ReviewCommandsMixin:
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
-        label, error = await self._review_decider_label(review)
-        if error:
-            return error
+        if self._is_worker():
+            dispatch = await self._held_review_dispatch(review["id"])
+            if dispatch is None:
+                return _error("not_dispatched", "this worker holds no dispatch for this review")
+            if args.get("revision") != dispatch["revision"]:
+                return _error("wrong_revision", "comment on the revision pinned to this dispatch")
+            if not args.get("quote") and not args.get("heading_path"):
+                return _error("anchor_required", "a dispatched reviewer must anchor each finding")
+            label = f"adversarial reviewer session:{(current_principal() or TRUSTED_LOCAL).session_id}"
+        else:
+            label, error = await self._review_decider_label(review)
+            if error:
+                return error
         try:
             return {
                 "success": True,
@@ -309,6 +321,189 @@ class ReviewCommandsMixin:
             }
         except ReviewError as error:
             return _error(error.code, error.message)
+
+    async def _held_review_dispatch(self, review_id: str) -> dict | None:
+        """A grant bound to the authenticated live session's current task."""
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.SESSION or principal.elevated:
+            return None
+        session = await self.db.get_session(principal.session_id or "")
+        if (
+            session is None
+            or session.task_id is None
+            or session.project_id != principal.project_id
+            or session.instance_token != principal.session_instance_token
+            or session.lifecycle not in {"task", "pool"}
+            or session.state not in {"starting", "running"}
+            or session.desired_state != "running"
+        ):
+            return None
+        task = await self.db.get_task(session.task_id)
+        if (
+            task is None
+            or task.project_id != session.project_id
+            or task.status is not TaskStatus.IN_PROGRESS
+            or (session.agent_id is not None and task.assigned_agent_id != session.agent_id)
+            or (
+                session.last_claim_epoch is not None
+                and task.claim_epoch != session.last_claim_epoch
+            )
+        ):
+            return None
+        dispatch = await self.db.get_review_dispatch_for_task(task.id)
+        return dispatch if dispatch is not None and dispatch["review_id"] == review_id else None
+
+    async def _cmd_review_dispatch(self, args: dict) -> dict:
+        principal = current_principal() or TRUSTED_LOCAL
+        if not (
+            principal.kind is PrincipalKind.LOCAL
+            or (principal.kind is PrincipalKind.SESSION and principal.elevated)
+        ):
+            return _error("operator_only", "review dispatch requires an operator or supervisor")
+        review, error = await self._review_for_caller(args.get("review_id"))
+        if error:
+            return error
+        targets = args.get("to") or []
+        if isinstance(targets, str):
+            targets = [targets]
+        if not isinstance(targets, list) or not targets or any(
+            not isinstance(target, str) or not target.strip() for target in targets
+        ):
+            return _error("profile_required", "at least one --to profile is required")
+        if len(set(targets)) != len(targets):
+            return _error("duplicate_profile", "--to profiles must be distinct in one dispatch")
+        profiles = []
+        for profile_id in targets:
+            profile = await self.db.get_profile(profile_id)
+            if profile is None:
+                return _error("unknown_profile", f"profile {profile_id!r} was not found")
+            if not profile.enabled:
+                return _error("disabled_profile", f"profile {profile_id!r} is disabled")
+            if reason := self._task_execution_profile_error(profile):
+                return _error("invalid_profile", reason)
+            if profile.lifecycle not in {"pool", "task"}:
+                return _error(
+                    "invalid_profile", f"profile {profile_id!r} cannot execute a queued task"
+                )
+            if profile.aq_commands is not None and "review_show" not in profile.aq_commands:
+                return _error(
+                    "profile_cannot_review",
+                    f"profile {profile_id!r} cannot read reviews (missing review_show grant)",
+                )
+            profiles.append(profile)
+
+        requested_revision = args.get("revision")
+        with_comments = bool(args.get("with_comments", True))
+        focus = str(args.get("focus") or "").strip()
+        if len(focus) > 4000:
+            return _error("focus_too_large", "focus must be at most 4000 characters")
+        results = []
+        creation_error = None
+        async with self.db.immediate() as lock_conn:
+            current = await self.db.lock_review_for_dispatch(review["id"], conn=lock_conn)
+            if current is None:
+                return _error("not_found", f"review {review['id']!r} was not found")
+            if current["state"] not in {"in_review", "changes_requested"}:
+                return _error("review_closed", f"review {review['id']!r} is {current['state']}")
+            revision = current["current_revision"] if requested_revision is None else requested_revision
+            if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                return _error("revision_not_found", f"invalid review revision {revision!r}")
+            if await self.db.get_review_revision(review["id"], revision, conn=lock_conn) is None:
+                return _error("revision_not_found", f"review {review['id']!r} has no revision {revision}")
+            existing = await self.db.list_review_dispatches(review["id"], conn=lock_conn)
+            if not args.get("force"):
+                for profile in profiles:
+                    if any(d["profile_id"] == profile.id and d["revision"] == revision for d in existing):
+                        return _error(
+                            "duplicate_dispatch",
+                            f"review {review['id']} revision {revision} was already dispatched to {profile.id}; use --force to repeat",
+                        )
+            for profile in profiles:
+                show_command = f"aq review show --review-id {review['id']} --revision {revision}"
+                if with_comments:
+                    show_command += " --comments"
+                description = (
+                    f"ADVERSARIAL review of {current['kind']}: {current['title']}\n\n"
+                    f"Read the pinned revision with `{show_command}`.\n"
+                    "Find defects, unstated assumptions, missing acceptance criteria, and "
+                    "claims unsupported by the code. Verify claims against the repository "
+                    "rather than trusting the document. Agreement is allowed, but be specific.\n"
+                    "Post each finding with `aq review comment --review-id "
+                    f"{review['id']} --revision {revision} --quote ... --body ...` "
+                    "or use `--heading-path` to anchor a section.\n"
+                    "Close this task with a verdict summary: material defects found, or none. "
+                    "Do not decide the review gate.\n"
+                )
+                if not with_comments:
+                    description += "This is a clean-room read; do not request the existing comment thread.\n"
+                if focus:
+                    description += f"\nFocus: {focus}\n"
+                dispatch = {
+                    "id": f"dsp-{uuid.uuid4().hex}",
+                    "review_id": review["id"],
+                    "profile_id": profile.id,
+                    "revision": revision,
+                    "with_comments": with_comments,
+                    "focus": focus or None,
+                    "dispatched_by": principal.describe(),
+                    "created_at": time.time(),
+                }
+
+                async def record(conn, task_id, _parent_id, *, entry=dispatch):
+                    await self.db.insert_review_dispatch({**entry, "task_id": task_id}, conn=conn)
+                    await self.db._upsert_meta(
+                        task_id,
+                        "review_dispatch",
+                        {
+                            "review_id": entry["review_id"],
+                            "revision": entry["revision"],
+                            "profile_id": entry["profile_id"],
+                            "with_comments": entry["with_comments"],
+                            "focus": entry["focus"],
+                        },
+                        conn=conn,
+                    )
+
+                created = await self._cmd_create_task({
+                    "project_id": current["project_id"],
+                    "title": f"Adversarial review: {current['title']}",
+                    "description": description,
+                    "profile_id": profile.id,
+                    "task_type": "research",
+                    "root": True,
+                    "_after_create_on": record,
+                    **({"intelligence_class": profile.default_class} if profile.default_class else {}),
+                })
+                if not created.get("success"):
+                    creation_error = _error(
+                        "task_creation_failed", created.get("error", "could not create task")
+                    )
+                    break
+                capacity_reason = None
+                if profile.lifecycle == "pool":
+                    if profile.max_active == 0:
+                        capacity_reason = f"pool {profile.id} has max_active=0"
+                    elif not getattr(self.config.swarm, "enabled", True):
+                        capacity_reason = "worker pools are disabled"
+                result = {**dispatch, "task_id": created["task_id"], "task_state": created["status"]}
+                if capacity_reason:
+                    result["capacity_warning"] = capacity_reason
+                results.append(result)
+        for result in results:
+            await self._emit_review_event(
+                "review.dispatched",
+                {
+                    "review_id": review["id"],
+                    "project_id": review["project_id"],
+                    "task_id": result["task_id"],
+                    "profile_id": result["profile_id"],
+                    "revision": result["revision"],
+                    "with_comments": result["with_comments"],
+                },
+            )
+        if creation_error is not None:
+            return {**creation_error, "review_id": review["id"], "dispatches": results}
+        return {"success": True, "review_id": review["id"], "dispatches": results}
 
     async def _cmd_review_delegate(self, args: dict) -> dict:
         if (current_principal() or TRUSTED_LOCAL).kind is not PrincipalKind.LOCAL:

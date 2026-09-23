@@ -62,7 +62,8 @@ for, so two decisions racing on different revisions cannot both succeed.
 | `aq review show --review-id <id> [--revision N] [--comments]` | yes | Print the current (or a given) revision, and with `--comments` the whole comment thread with each comment's quote, heading path, revision, and resolved state. |
 | `aq review decide --review-id <id> --revision N --decision approve --note "…"` | yes | Approve. Resolves the gate, releases dependent tasks, rewrites the vault file. |
 | `aq review decide --review-id <id> --revision N --decision request_changes --note "…"` | yes | Reject the revision and attach the note as feedback to the authoring task. |
-| `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
+| `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
+| `aq review dispatch --review-id <id> --to <profile> [--to <profile> …] [--revision N] [--with-comments\|--no-comments] [--focus "…"] [--force]` | yes | Send a pinned revision to one task per selected profile for adversarial review. The default includes prior comments; `--no-comments` gives a clean read. A repeat for the same profile and revision needs `--force`. The result warns when a selected pool has no capacity. |
 | `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision. Only you and the original author may withdraw. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
 | `aq review import-edits --review-id <id>` | yes (`local_operator_only`) | Turn your out-of-band Obsidian edit into revision N+1. Refuses if the current revision is already decided. |
@@ -76,20 +77,27 @@ see [§ The worker's side](#the-workers-side).
 Only two principals may approve or request changes: **you** (the local
 operator, whether you act from the dashboard or a local CLI) and, if you
 delegated the review, the live named supervisor session for that project.
-Nobody else, by design. The supervisor's `decide` and `comment` are refused
-at the API for every session principal before the elevated-session bypass is
-considered, so a supervisor cannot grant itself authority.
+Dispatch gives a worker permission to comment only on the review and revision
+recorded for its held task; it never gives that worker decision authority.
 
 | Action | You (dashboard or local CLI) | Supervisor | Other agents |
 |---|---|---|---|
 | `submit`, `show`, `list` | yes | yes | yes (`submit` only from their own task) |
 | `withdraw` | yes | yes | the authoring task only |
-| `decide`, `comment` | yes | **only when `decider` is `user_or_supervisor`** | no |
+| `decide` | yes | **only when `decider` is `user_or_supervisor`** | no |
+| `comment` | yes | **only when `decider` is `user_or_supervisor`** | dispatched reviewer on its pinned revision |
+| `dispatch` | yes | yes | no |
 | `delegate`, `import-edits` | yes | no | no |
 
 A delegated decision is recorded as `decided_by: "supervisor (delegated)"`
 plus the session id, so the audit trail always shows who actually pressed the
 button.
+
+Dispatch leaves the review state, decider, and gate unchanged. `aq review show`
+lists each selected profile, pinned revision, comment mode, task id, and task
+state. The reviewer reads the exact revision from its task instructions,
+anchors each finding with `--quote` or `--heading-path`, then closes its task
+with a verdict summary. The operator still decides the gate.
 
 **Delegation, set once per project.** You can delegate all new reviews in a
 project to the supervisor with `aq project edit --review-delegate-to supervisor`
@@ -172,6 +180,8 @@ most likely to meet:
 | `bad_title` / `bad_kind` | `--title` was missing or too short, or `--kind` was not one of `spec`, `plan`, `other`. | Re-run with a sensible title and a known kind. |
 | `not_found` | The id does not exist under your principal's scope. | `aq review list` to find the right id. |
 | `not_decider` | You tried to `decide` or `comment` on a review whose `decider` does not include your principal. | `aq review delegate --review-id <id> --to user` (if you are Jack) or wait for the supervisor to accept the delegation. |
+| `not_dispatched` / `wrong_revision` | A worker tried to comment without holding the matching dispatch task, or on a different revision. | Read the pinned revision in the task description and comment from that task's session. |
+| `duplicate_dispatch` | The profile has already been asked to review this revision. | Inspect `aq review show`, or pass `--force` for a deliberate repeat. |
 | `local_operator_only` | A session-scoped principal tried to `delegate` or `import-edits`, or the supervisor tried to set `review_delegate_to`. | Re-run the command as the local operator. |
 | `vault_diverged` | The vault file no longer matches the current revision's hash. | `aq review import-edits --review-id <id>` to promote your Obsidian edits, then decide. |
 | `review_gate` | The task you filed with `--after-review <id>` hit the open gate and the scheduler refused to route it. | Approve the review, or `aq review withdraw --review-id <id> --reason "…"`. |

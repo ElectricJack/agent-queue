@@ -17,7 +17,9 @@ import random
 
 from sqlalchemy import and_, exists, insert, or_, select, update
 
-from src.database.tables import doc_review_comments, doc_review_revisions, doc_reviews, task_gates
+from src.database.tables import (
+    doc_review_comments, doc_review_dispatches, doc_review_revisions, doc_reviews, task_gates,
+)
 from src.task_names import ADJECTIVES, NOUNS
 
 __all__ = ["ReviewQueriesMixin"]
@@ -78,6 +80,40 @@ class ReviewQueriesMixin:
                 .first()
             )
         return dict(row) if row else None
+
+    async def lock_review_for_dispatch(self, review_id: str, *, conn) -> dict | None:
+        """Serialize dispatches and hold the review state stable through task creation."""
+        row = (
+            await conn.execute(
+                select(doc_reviews).where(doc_reviews.c.id == review_id).with_for_update()
+            )
+        ).mappings().first()
+        return dict(row) if row else None
+
+    async def list_review_dispatches(self, review_id: str, *, conn=None) -> list[dict]:
+        stmt = (
+            select(doc_review_dispatches)
+            .where(doc_review_dispatches.c.review_id == review_id)
+            .order_by(doc_review_dispatches.c.created_at, doc_review_dispatches.c.id)
+        )
+        if conn is not None:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        else:
+            async with self._engine.begin() as owned:
+                rows = (await owned.execute(stmt)).mappings().fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_review_dispatch_for_task(self, task_id: str) -> dict | None:
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(doc_review_dispatches).where(doc_review_dispatches.c.task_id == task_id)
+                )
+            ).mappings().first()
+        return dict(row) if row else None
+
+    async def insert_review_dispatch(self, dispatch: dict, *, conn) -> None:
+        await conn.execute(insert(doc_review_dispatches).values(**dispatch))
 
     async def list_reviews(
         self,
@@ -153,23 +189,19 @@ class ReviewQueriesMixin:
     async def insert_review_revision(self, *, revision: dict, conn) -> None:
         await conn.execute(insert(doc_review_revisions).values(**revision))
 
-    async def get_review_revision(self, review_id: str, revision: int) -> dict | None:
+    async def get_review_revision(self, review_id: str, revision: int, *, conn=None) -> dict | None:
         """One revision, with its content."""
-        async with self._engine.begin() as conn:
-            row = (
-                (
-                    await conn.execute(
-                        select(doc_review_revisions).where(
-                            and_(
-                                doc_review_revisions.c.review_id == review_id,
-                                doc_review_revisions.c.revision == revision,
-                            )
-                        )
-                    )
-                )
-                .mappings()
-                .first()
+        stmt = select(doc_review_revisions).where(
+            and_(
+                doc_review_revisions.c.review_id == review_id,
+                doc_review_revisions.c.revision == revision,
             )
+        )
+        if conn is not None:
+            row = (await conn.execute(stmt)).mappings().first()
+        else:
+            async with self._engine.begin() as owned:
+                row = (await owned.execute(stmt)).mappings().first()
         return dict(row) if row else None
 
     async def list_review_revisions(self, review_id: str) -> list[dict]:
