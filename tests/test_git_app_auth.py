@@ -139,6 +139,62 @@ async def test_app_configuration_keeps_local_clone_local(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_validated_push_uses_bound_app_destination_and_exact_creation_lease(
+    tmp_path, monkeypatch
+):
+    checkout, _source, _trap, _base, tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "git@github.com:acme/widgets.git"], checkout)
+    access = _BoundAppAccess()
+    manager = GitManager(github_access=access)
+    observed = AsyncMock(side_effect=[None, tip])
+    monkeypatch.setattr(manager, "_aobserved_remote_head", observed)
+    transferred = []
+
+    async def capture(checkout_path, **kwargs):
+        transferred.append((checkout_path, kwargs))
+        return kwargs["tip_oid"]
+
+    monkeypatch.setattr(manager, "_apush_oid_with_app_auth_to_url", capture)
+    await manager.apush_validated_ref(str(checkout), "HEAD", "task/app")
+
+    assert access.requested == ["git@github.com:acme/widgets.git"]
+    assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")]
+    assert transferred[0][1]["destination_url"] == "https://github.com/acme/widgets.git"
+    assert transferred[0][1]["token"] == "app-token"
+    assert transferred[0][1]["tip_oid"] == tip
+    assert transferred[0][1]["expected_old_oid"] == "0" * 40
+
+
+@pytest.mark.asyncio
+async def test_app_push_missing_token_never_uses_checkout_transport(tmp_path, monkeypatch):
+    checkout, _source, _trap, _base, _tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "git@github.com:acme/widgets.git"], checkout)
+    manager = GitManager(github_access=_BoundAppAccess(token=None))
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("push transport ran without an App token")
+
+    monkeypatch.setattr(manager, "_atransfer_exact_ref", forbidden)
+    with pytest.raises(GitError, match="App credential is unavailable"):
+        await manager.apush_validated_ref(str(checkout), "HEAD", "task/app")
+
+
+@pytest.mark.asyncio
+async def test_observed_push_uses_isolated_destination_not_checkout_remote(tmp_path, monkeypatch):
+    checkout, target, trap, _base, tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", str(trap)], checkout)
+    manager = GitManager()
+    monkeypatch.setattr(
+        manager, "_apush_destination", AsyncMock(return_value=(target.as_uri(), "dummy-token"))
+    )
+
+    assert await manager.apush_validated_ref(str(checkout), "HEAD", "main") == tip
+
+    assert _git(["rev-parse", "refs/heads/main"], target) == tip
+    assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
+
+
+@pytest.mark.asyncio
 async def test_existing_login_keeps_operator_ssh_clone_without_gh_binding(tmp_path, monkeypatch):
     access = _BoundAppAccess(token=None, mode=GitHubCredentialMode.EXISTING_LOGIN)
     manager = GitManager(github_access=access)

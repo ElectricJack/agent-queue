@@ -1076,6 +1076,21 @@ class TestActiveProjectFallback:
         assert result["pushed"] == "feature/auto"
         assert result["project_id"] == project_id
 
+    async def test_git_push_passes_explicit_lease(self, handler, mock_git, project_with_repo):
+        project_id, _, checkout_path = project_with_repo
+        oid = "a" * 40
+        result = await handler.execute(
+            "git_push",
+            {"project_id": project_id, "branch": "feature/leased", "expected_remote_oid": oid},
+        )
+        assert result["pushed"] == "feature/leased"
+        mock_git.apush_branch.assert_awaited_once_with(
+            checkout_path, "feature/leased",
+            expected_remote_oid=oid,
+            event_bus=handler._bus,
+            project_id=project_id,
+        )
+
     async def test_git_create_branch_infers_active_project(
         self, handler, mock_git, project_with_repo
     ):

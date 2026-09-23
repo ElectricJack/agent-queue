@@ -71,6 +71,7 @@ import re
 import signal
 import subprocess
 import tempfile
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -197,6 +198,7 @@ class PullRequestIdentity:
 #: shell metacharacters and a leading ``-`` are all rejected.
 _REFNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _OID_RE = re.compile(r"^[0-9a-f]{40}$")
+_ZERO_OID = "0" * 40
 
 
 def is_valid_git_oid(value: object) -> bool:
@@ -2095,6 +2097,7 @@ class GitManager:
         branch_name: str,
         *,
         force_with_lease: bool = False,
+        expected_remote_oid: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> None:
@@ -2105,15 +2108,22 @@ class GitManager:
         must use :meth:`apush_validated_delivery` with its target base.
         """
         _validate_ref(branch_name)
-        remote_ref_before = await self._aremote_ref_before_push(
-            checkout_path, branch_name, event_bus=event_bus
-        )
-
+        if expected_remote_oid is not None:
+            if not isinstance(expected_remote_oid, str) or not _OID_RE.fullmatch(
+                expected_remote_oid.lower()
+            ):
+                raise GitError("invalid expected remote OID")
+            if force_with_lease:
+                raise GitError("choose an explicit expected remote OID or force_with_lease")
+            expected_remote_oid = expected_remote_oid.lower()
         tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
-        args = ["push", "origin", f"{tip}:refs/heads/{branch_name}"]
-        if force_with_lease:
-            args.insert(2, "--force-with-lease")
-        await self._arun(args, cwd=checkout_path)
+        remote_ref_before = await self._apush_oid(
+            checkout_path,
+            tip,
+            branch_name,
+            force_with_lease=force_with_lease or expected_remote_oid is not None,
+            expected_old_oid=expected_remote_oid,
+        )
 
         await self._aemit_push_event(
             checkout_path,
@@ -2312,16 +2322,24 @@ class GitManager:
         delete_remote: bool = True,
     ) -> None:
         _validate_ref(branch_name)
+        if delete_remote:
+            deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+            destination_url, token = await self._apush_destination(checkout_path, "origin")
+            observed = await self._aobserved_remote_head(
+                checkout_path, branch_name, remote="origin", destination_url=destination_url,
+                token=token, deadline=deadline,
+            )
+            if observed is not None:
+                await self._atransfer_exact_ref(
+                    checkout_path, None, branch_name, observed,
+                    remote="origin", destination_url=destination_url, token=token,
+                    deadline=deadline, lock_held=False,
+                )
         try:
             await self._arun(["branch", "-d", branch_name], cwd=checkout_path)
         except GitError:
             try:
                 await self._arun(["branch", "-D", branch_name], cwd=checkout_path)
-            except GitError:
-                pass
-        if delete_remote:
-            try:
-                await self._arun(["push", "origin", "--delete", branch_name], cwd=checkout_path)
             except GitError:
                 pass
 
@@ -2840,10 +2858,8 @@ class GitManager:
         paths. Automatic task delivery must use
         :meth:`apush_validated_delivery` instead.
         """
-        remote_ref_before = await self._aremote_ref_before_push(
-            checkout_path, branch, event_bus=event_bus
-        )
-        tip = await self.apush_validated_ref(checkout_path, "HEAD", branch)
+        tip = await self._aresolve_delivery_tip(checkout_path, "HEAD")
+        remote_ref_before = await self._apush_oid(checkout_path, tip, branch)
         await self._aemit_push_event(
             checkout_path,
             branch,
@@ -2905,15 +2921,217 @@ class GitManager:
         branch: str,
         *,
         force_with_lease: bool = False,
-    ) -> None:
-        """Push an already-resolved commit without consulting a mutable ref."""
+        expected_old_oid: str | None = None,
+        remote: str = "origin",
+        lock_held: bool = False,
+    ) -> str | None:
+        """Publish an immutable commit under an observed, exact remote lease.
+
+        Ordinary pushes also prove ancestry before using the lease. A lease
+        alone permits non-fast-forward replacement, so it is never a substitute
+        for that proof. The post-transfer read settles an uncertain response
+        before callers emit a push event.
+        """
         if not _OID_RE.fullmatch(tip.lower()):
             raise GitError("invalid immutable push tip")
         branch = _validate_ref(branch)
-        args = ["push", "origin", f"{tip}:refs/heads/{branch}"]
-        if force_with_lease:
-            args.insert(2, "--force-with-lease")
-        await self._arun(args, cwd=checkout_path)
+        if force_with_lease and expected_old_oid is None:
+            expected_old_oid = await self._alocal_tracking_oid(checkout_path, remote, branch)
+        deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
+        destination_url, token = await self._apush_destination(checkout_path, remote)
+        observed = await self._aobserved_remote_head(
+            checkout_path, branch, remote=remote, destination_url=destination_url,
+            token=token, deadline=deadline,
+        )
+        explicit_expected = expected_old_oid is not None
+        if explicit_expected:
+            if not isinstance(expected_old_oid, str) or _OID_RE.fullmatch(expected_old_oid) is None:
+                raise GitError("invalid expected target OID")
+            if observed != (None if expected_old_oid == _ZERO_OID else expected_old_oid):
+                raise GitError("remote head differs from expected target")
+        else:
+            expected_old_oid = observed or _ZERO_OID
+        if observed is not None and not force_with_lease:
+            try:
+                await self._aensure_remote_ancestor(
+                    checkout_path, observed, tip, remote=remote,
+                    destination_url=destination_url, token=token, deadline=deadline,
+                    lock_held=lock_held,
+                )
+            except GitError as exc:
+                if not explicit_expected:
+                    raise
+                raise GitError("delivery tip is not a descendant of its expected target") from exc
+        await self._atransfer_exact_ref(
+            checkout_path, tip, branch, expected_old_oid,
+            remote=remote, destination_url=destination_url, token=token,
+            deadline=deadline, lock_held=lock_held,
+        )
+        return observed
+
+    async def _alocal_tracking_oid(self, checkout_path: str, remote: str, branch: str) -> str:
+        """Preserve the caller's known tip for a requested branch rewrite."""
+        remote = _validate_ref(remote, field="remote")
+        try:
+            oid = await self._arun(
+                ["rev-parse", "--verify", f"refs/remotes/{remote}/{branch}"],
+                cwd=checkout_path,
+            )
+        except GitError:
+            return _ZERO_OID
+        if _OID_RE.fullmatch(oid) is None:
+            raise GitError("invalid remote-tracking tip for force-with-lease")
+        return oid
+
+    async def _apush_destination(
+        self, checkout_path: str, remote: str
+    ) -> tuple[str | None, str | None]:
+        """Bind a named remote or frozen origin URL to its credential source."""
+        if isinstance(remote, str) and remote.startswith(
+            ("/", "./", "../", "file://", "https://", "http://", "ssh://", "git@")
+        ):
+            if any(ord(char) < 32 for char in remote):
+                raise GitError("invalid remote URL")
+            configured_url = remote
+        else:
+            remote = _validate_ref(remote, field="remote")
+            configured_url = await self._arun(
+                ["config", "--get", f"remote.{remote}.url"], cwd=checkout_path
+            )
+        if self._uses_existing_ssh(configured_url):
+            return None, None
+        binding = await self._abind_git_repository(configured_url)
+        if binding is None:
+            if (
+                self.github_access is not None
+                and self.github_access.auth.mode is GitHubCredentialMode.APP
+                and "github.com" in configured_url.lower()
+            ):
+                raise GitError("authorized GitHub repository is required for App push")
+            return None, None
+        assert self.github_access is not None
+        self.github_access.validate_repository_reference(binding, configured_url)
+        return f"https://github.com/{binding.full_name}.git", await self._atoken_for_repository(binding)
+
+    async def _aobserved_remote_head(
+        self,
+        checkout_path: str,
+        branch: str,
+        *,
+        remote: str,
+        destination_url: str | None,
+        token: str | None,
+        deadline: float,
+    ) -> str | None:
+        branch = _validate_ref(branch)
+        if destination_url is None:
+            result = await self.als_remote_ref(checkout_path, branch, remote=remote)
+            if result.state is RemoteRefState.ERROR:
+                raise GitError(result.error or "remote head observation failed")
+            return result.oid
+        with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+            home = Path(temporary)
+            home.chmod(0o700)
+            output = await self._arun_authenticated_git(
+                ["ls-remote", "--heads", destination_url, f"refs/heads/{branch}"],
+                home=home, repository_url=destination_url, token=token, deadline=deadline,
+            )
+        lines = output.decode("ascii", errors="replace").splitlines()
+        if not lines:
+            return None
+        if len(lines) != 1:
+            raise GitError("remote returned duplicate refs")
+        oid, separator, ref = lines[0].partition("\t")
+        if separator != "\t" or ref != f"refs/heads/{branch}" or _OID_RE.fullmatch(oid) is None:
+            raise GitError("remote returned an invalid head")
+        return oid
+
+    async def _aensure_remote_ancestor(
+        self,
+        checkout_path: str,
+        old_oid: str,
+        tip: str,
+        *,
+        remote: str,
+        destination_url: str | None,
+        token: str | None,
+        deadline: float,
+        lock_held: bool,
+    ) -> None:
+        if await self.arev_parse(checkout_path, f"{old_oid}^{{commit}}") != old_oid:
+            if destination_url is None:
+                runner = self._arun_unlocked if lock_held else self._arun
+                await runner(["fetch", "--no-tags", remote, old_oid], cwd=checkout_path)
+            else:
+                git_dir = await self._arun(
+                    ["rev-parse", "--absolute-git-dir"], cwd=checkout_path
+                )
+                temporary_ref = f"refs/aq/push-observed/{uuid.uuid4().hex}"
+                try:
+                    await self._afetch_exact_oid_with_app_auth_to_url(
+                        git_dir, destination_url=destination_url, token=token,
+                        oid=old_oid, destination_ref=temporary_ref,
+                        timeout_seconds=self._remaining_app_push_budget(deadline),
+                    )
+                finally:
+                    if await self.arev_parse(checkout_path, temporary_ref) == old_oid:
+                        await self._arun(
+                            ["update-ref", "-d", temporary_ref, old_oid], cwd=checkout_path
+                        )
+        if not await self._apush_is_ancestor(checkout_path, old_oid, tip):
+            raise GitError("normal push would not fast-forward the remote head")
+
+    async def _apush_is_ancestor(self, checkout_path: str, old_oid: str, tip: str) -> bool:
+        """Check the real commit graph, ignoring worker-controlled replace refs."""
+        result = await self._arun_git_result_unlocked(
+            ["merge-base", "--is-ancestor", old_oid, tip], cwd=checkout_path,
+            stdin=None,
+            env={"GIT_NO_REPLACE_OBJECTS": "1", "GIT_GRAFT_FILE": "/dev/null"},
+            timeout=self._GIT_TIMEOUT,
+        )
+        if result.returncode not in (0, 1):
+            raise GitError("could not prove push ancestry")
+        return result.returncode == 0
+
+    async def _atransfer_exact_ref(
+        self,
+        checkout_path: str,
+        tip: str | None,
+        branch: str,
+        expected_old_oid: str,
+        *,
+        remote: str,
+        destination_url: str | None,
+        token: str | None,
+        deadline: float,
+        lock_held: bool,
+    ) -> None:
+        async def observe() -> str | None:
+            return await self._aobserved_remote_head(
+                checkout_path, branch, remote=remote, destination_url=destination_url,
+                token=token, deadline=deadline,
+            )
+
+        try:
+            if destination_url is None:
+                runner = self._arun_unlocked if lock_held else self._arun
+                refspec = f"{tip}:refs/heads/{branch}" if tip is not None else f":refs/heads/{branch}"
+                await runner(
+                    ["push", remote,
+                     f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}", refspec],
+                    cwd=checkout_path,
+                )
+            else:
+                await self._apush_oid_with_app_auth_to_url(
+                    checkout_path, destination_url=destination_url, token=token,
+                    tip_oid=tip, branch=branch, expected_old_oid=expected_old_oid,
+                    _deadline=deadline,
+                )
+        except (GitError, asyncio.TimeoutError):
+            if await observe() != tip:
+                raise
+        if await observe() != tip:
+            raise GitError("remote head did not confirm exact transfer outcome")
 
     async def apush_validated_delivery(
         self,
@@ -2949,10 +3167,7 @@ class GitManager:
             paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
-        remote_ref_before = await self._aremote_ref_before_push(
-            checkout_path, branch, event_bus=event_bus
-        )
-        await self._apush_oid(
+        remote_ref_before = await self._apush_oid(
             checkout_path,
             tip,
             branch,
@@ -2996,33 +3211,16 @@ class GitManager:
             if not isinstance(oid, str) or not _OID_RE.fullmatch(oid.lower()):
                 raise GitError(f"invalid {name} OID")
 
-        # Fetch the target branch without updating a local branch or relying
-        # on a tracking ref for authority.  This makes the expected old tip's
-        # commit available for the ancestry proof even in a fresh checkout;
-        # the explicit lease below remains the remote-movement guard.
-        runner = self._arun_unlocked if lock_held else self._arun
-        await runner(["fetch", "--no-tags", remote, f"refs/heads/{branch}"], cwd=checkout_path)
-        for oid in (base_oid, tip_oid, expected_old_oid):
+        for oid in (base_oid, tip_oid):
             await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
-        if await self.ais_ancestor(checkout_path, base_oid, tip_oid, strict=True) is not True:
+        if not await self._apush_is_ancestor(checkout_path, base_oid, tip_oid):
             raise GitError("delivery tip is not a descendant of its expected base")
-        if (
-            await self.ais_ancestor(checkout_path, expected_old_oid, tip_oid, strict=True)
-            is not True
-        ):
-            raise GitError("delivery tip is not a descendant of its expected target")
         paths = await self.areserved_paths_in_diff(checkout_path, base_oid, tip_oid)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
-
-        await runner(
-            [
-                "push",
-                remote,
-                f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
-                f"{tip_oid}:refs/heads/{branch}",
-            ],
-            cwd=checkout_path,
+        await self._apush_oid(
+            checkout_path, tip_oid, branch, expected_old_oid=expected_old_oid,
+            remote=remote, lock_held=lock_held,
         )
         return tip_oid
 
@@ -3622,6 +3820,8 @@ class GitManager:
                 "http.proxy=",
                 "-c",
                 "https.proxy=",
+                "-c",
+                "http.followRedirects=false",
                 "-c",
                 "protocol.allow=never",
                 "-c",
