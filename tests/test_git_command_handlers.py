@@ -1091,6 +1091,40 @@ class TestActiveProjectFallback:
             project_id=project_id,
         )
 
+    async def test_push_reports_the_exact_published_oid(self, handler, mock_git, project_with_repo):
+        """The OID a later explicit lease names comes back from the push itself."""
+        project_id, _, _ = project_with_repo
+        tip = "c" * 40
+        mock_git.apush_branch.return_value = tip
+
+        pushed = await handler.execute(
+            "git_push", {"project_id": project_id, "branch": "feature/x"}
+        )
+        aliased = await handler.execute(
+            "push_branch", {"project_id": project_id, "branch_name": "feature/x"}
+        )
+
+        assert pushed == {"project_id": project_id, "pushed": "feature/x", "oid": tip}
+        assert aliased == {
+            "project_id": project_id, "branch": "feature/x", "status": "pushed", "oid": tip,
+        }
+
+    async def test_push_branch_alias_passes_explicit_lease(
+        self, handler, mock_git, project_with_repo
+    ):
+        project_id, _, checkout_path = project_with_repo
+        oid = "0" * 40
+        await handler.execute(
+            "push_branch",
+            {"project_id": project_id, "branch_name": "feature/new", "expected_remote_oid": oid},
+        )
+        mock_git.apush_branch.assert_awaited_once_with(
+            checkout_path, "feature/new",
+            expected_remote_oid=oid,
+            event_bus=handler._bus,
+            project_id=project_id,
+        )
+
     async def test_git_create_branch_infers_active_project(
         self, handler, mock_git, project_with_repo
     ):

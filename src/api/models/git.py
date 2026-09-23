@@ -119,6 +119,9 @@ class GitPullResponse(BaseModel):
 class GitPushResponse(BaseModel):
     project_id: str
     pushed: str = ""
+    #: The exact commit the push published — the value a later
+    #: ``expected_remote_oid`` lease names after a local squash.
+    oid: str | None = None
 
 
 class MergeBranchResponse(BaseModel):
@@ -134,6 +137,7 @@ class PushBranchResponse(BaseModel):
     project_id: str
     branch: str = ""
     status: str = ""
+    oid: str | None = None
 
 
 class GitRemoteUrlResponse(BaseModel):

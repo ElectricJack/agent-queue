@@ -328,6 +328,70 @@ def _delivery_source_rev(source: str) -> str:
     return f"refs/heads/{source}^{{commit}}"
 
 
+def _expected_remote_oid(value: str | None, force_with_lease: bool) -> str | None:
+    """Normalize a caller's explicit remote lease before any network access.
+
+    The all-zero OID means "create only if absent". It is exclusive with a
+    tracking-ref ``force_with_lease``: a caller names the tip it expects, or
+    asks for the remote-tracking one, never both.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _OID_RE.fullmatch(value.lower()):
+        raise GitError("invalid expected remote OID")
+    if force_with_lease:
+        raise GitError("choose an explicit expected remote OID or force_with_lease")
+    return value.lower()
+
+
+def _is_local_repository(reference: str) -> bool:
+    """The same local-path test :meth:`GitManager._abind_git_repository` uses."""
+    return reference.startswith(("/", "./", "../", "file://")) or Path(reference).exists()
+
+
+def _github_full_name(reference: str) -> str | None:
+    """Case-folded ``owner/name`` for a GitHub reference, else ``None``."""
+    from src.projects.github import GitHubError, parse_github_repository
+
+    if _is_local_repository(reference):
+        return None
+    try:
+        return parse_github_repository(reference).full_name.lower()
+    except GitHubError:
+        return None
+
+
+def _repository_location(reference: str, base: str) -> str:
+    """Comparable location of a local or non-GitHub repository reference."""
+    reference = reference.strip()
+    if _is_local_repository(reference):
+        path = reference.removeprefix("file://")
+        return os.path.realpath(os.path.join(base, path))
+    reference = reference.rstrip("/")
+    return reference.removesuffix(".git")
+
+
+def _require_authorized_repository(configured_url: str, repository_url: str, *, base: str) -> None:
+    """Refuse a checkout remote naming anything but the authorized repository.
+
+    A worker controls its checkout's Git configuration, so the remote URL it
+    holds is a claim to check against the task/project record, never the
+    authority itself. This runs before any repository binding or credential
+    selection. GitHub names compare case-insensitively, as GitHub does; SSH
+    and HTTPS spellings of one repository are the same repository.
+    """
+    authorized = _github_full_name(repository_url)
+    configured = _github_full_name(configured_url)
+    if authorized is not None or configured is not None:
+        matches = authorized == configured
+    else:
+        matches = _repository_location(configured_url, base) == _repository_location(
+            repository_url, base
+        )
+    if not matches:
+        raise GitError("push destination is not the authorized repository")
+
+
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
@@ -2145,22 +2209,16 @@ class GitManager:
         expected_remote_oid: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
-    ) -> None:
+    ) -> str:
         """Push a named branch for an explicit, non-delivery Git command.
 
         This primitive pins the branch to an object ID but intentionally does
         not apply the daemon delivery-path policy. Automatic task delivery
         must use :meth:`apush_validated_delivery` with its target base.
+        Returns the exact commit ID that was published.
         """
         _validate_ref(branch_name)
-        if expected_remote_oid is not None:
-            if not isinstance(expected_remote_oid, str) or not _OID_RE.fullmatch(
-                expected_remote_oid.lower()
-            ):
-                raise GitError("invalid expected remote OID")
-            if force_with_lease:
-                raise GitError("choose an explicit expected remote OID or force_with_lease")
-            expected_remote_oid = expected_remote_oid.lower()
+        expected_remote_oid = _expected_remote_oid(expected_remote_oid, force_with_lease)
         tip = await self._aresolve_delivery_tip(checkout_path, branch_name)
         remote_ref_before = await self._apush_oid(
             checkout_path,
@@ -2178,6 +2236,7 @@ class GitManager:
             event_bus=event_bus,
             project_id=project_id,
         )
+        return tip
 
     async def _aremote_ref_before_push(
         self,
@@ -2860,12 +2919,19 @@ class GitManager:
         return result.oid if result.state is RemoteRefState.PRESENT else None
 
     async def als_remote_ref(
-        self, checkout_path: str, branch: str, *, remote: str = "origin"
+        self, checkout_path: str, branch: str, *, remote: str = "origin",
+        repository_url: str | None = None,
     ) -> RemoteRefResult:
-        """Read one exact remote head without conflating absence and I/O failure."""
+        """Read one exact remote head without conflating absence and I/O failure.
+
+        ``repository_url`` confines the read to that authorized repository;
+        a checkout remote naming another one is an error, not an observation.
+        """
         branch = _validate_ref(branch)
         try:
-            destination_url, token = await self._apush_destination(checkout_path, remote)
+            destination_url, token = await self._apush_destination(
+                checkout_path, remote, repository_url=repository_url
+            )
             if destination_url is not None:
                 oid = await self._aobserved_remote_head(
                     checkout_path, branch, remote=remote,
@@ -3051,13 +3117,16 @@ class GitManager:
         expected_old_oid: str | None = None,
         remote: str = "origin",
         lock_held: bool = False,
+        repository_url: str | None = None,
     ) -> str | None:
         """Publish an immutable commit under an observed, exact remote lease.
 
         Ordinary pushes also prove ancestry before using the lease. A lease
         alone permits non-fast-forward replacement, so it is never a substitute
         for that proof. The post-transfer read settles an uncertain response
-        before callers emit a push event.
+        before callers emit a push event. ``repository_url`` names the
+        authorized repository; every destination resolution for this push is
+        checked against it before a credential is selected.
         """
         if not _OID_RE.fullmatch(tip.lower()):
             raise GitError("invalid immutable push tip")
@@ -3065,10 +3134,12 @@ class GitManager:
         if force_with_lease and expected_old_oid is None:
             expected_old_oid = await self._alocal_tracking_oid(checkout_path, remote, branch)
         deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
-        destination_url, token = await self._apush_destination(checkout_path, remote)
+        destination_url, token = await self._apush_destination(
+            checkout_path, remote, repository_url=repository_url
+        )
         observed = await self._aobserved_remote_head(
             checkout_path, branch, remote=remote, destination_url=destination_url,
-            token=token, deadline=deadline,
+            token=token, deadline=deadline, repository_url=repository_url,
         )
         explicit_expected = expected_old_oid is not None
         if explicit_expected:
@@ -3092,7 +3163,7 @@ class GitManager:
         await self._atransfer_exact_ref(
             checkout_path, tip, branch, expected_old_oid,
             remote=remote, destination_url=destination_url, token=token,
-            deadline=deadline, lock_held=lock_held,
+            deadline=deadline, lock_held=lock_held, repository_url=repository_url,
         )
         return observed
 
@@ -3111,9 +3182,16 @@ class GitManager:
         return oid
 
     async def _apush_destination(
-        self, checkout_path: str, remote: str
+        self, checkout_path: str, remote: str, *, repository_url: str | None = None,
     ) -> tuple[str | None, str | None]:
-        """Bind a named remote or frozen origin URL to its credential source."""
+        """Bind a named remote or frozen origin URL to its credential source.
+
+        With ``repository_url`` the checkout's remote must name that
+        authorized repository, and the credential is selected for the
+        authorized record rather than for whatever the checkout configures.
+        The comparison runs before binding, so a remote retargeted at another
+        repository never reaches credential selection.
+        """
         if isinstance(remote, str) and remote.startswith(
             ("/", "./", "../", "file://", "https://", "http://", "ssh://", "git@")
         ):
@@ -3124,6 +3202,21 @@ class GitManager:
             remote = _validate_ref(remote, field="remote")
             configured_url = await self._arun(
                 ["config", "--get", f"remote.{remote}.url"], cwd=checkout_path
+            )
+        if repository_url is not None:
+            if not isinstance(repository_url, str) or not repository_url or any(
+                ord(char) < 32 for char in repository_url
+            ):
+                raise GitError("invalid authorized repository URL")
+            _require_authorized_repository(configured_url, repository_url, base=checkout_path)
+            if self._uses_existing_ssh(configured_url):
+                return None, None
+            binding = await self._abind_git_repository(repository_url)
+            if binding is None:
+                return None, None
+            return (
+                f"https://github.com/{binding.full_name}.git",
+                await self._atoken_for_repository(binding),
             )
         if self._uses_existing_ssh(configured_url):
             return None, None
@@ -3149,10 +3242,15 @@ class GitManager:
         destination_url: str | None,
         token: str | None,
         deadline: float,
+        repository_url: str | None = None,
     ) -> str | None:
         branch = _validate_ref(branch)
         if destination_url is None:
-            result = await self.als_remote_ref(checkout_path, branch, remote=remote)
+            # The re-read of the checkout remote is held to the same authority.
+            confinement = {} if repository_url is None else {"repository_url": repository_url}
+            result = await self.als_remote_ref(
+                checkout_path, branch, remote=remote, **confinement
+            )
             if result.state is RemoteRefState.ERROR:
                 raise GitError(result.error or "remote head observation failed")
             return result.oid
@@ -3232,11 +3330,12 @@ class GitManager:
         token: str | None,
         deadline: float,
         lock_held: bool,
+        repository_url: str | None = None,
     ) -> None:
         async def observe() -> str | None:
             return await self._aobserved_remote_head(
                 checkout_path, branch, remote=remote, destination_url=destination_url,
-                token=token, deadline=deadline,
+                token=token, deadline=deadline, repository_url=repository_url,
             )
 
         try:
@@ -3268,6 +3367,8 @@ class GitManager:
         branch: str,
         *,
         force_with_lease: bool = False,
+        expected_remote_oid: str | None = None,
+        repository_url: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
     ) -> str:
@@ -3282,11 +3383,19 @@ class GitManager:
         default was never pushed), so there is no merge-base to diff from and
         nothing on origin has vetted the tree. The reserved gate then covers
         every tracked path in the tip (:meth:`areserved_paths_in_tree`).
+
+        ``expected_remote_oid`` is the caller's explicit lease for a rewrite
+        of its own branch (the squash workflow): the push lands only while
+        the remote still holds exactly that OID, and all zeros means the
+        branch must still be absent. Without it an existing remote head must
+        be an ancestor of the tip. ``repository_url`` confines the push to
+        that authorized repository (see :meth:`_apush_destination`).
         """
         source_ref = _validate_rev(source_ref, field="delivery source")
         if base_ref is not None:
             base_ref = _validate_rev(base_ref, field="delivery base")
         branch = _validate_ref(branch)
+        expected_remote_oid = _expected_remote_oid(expected_remote_oid, force_with_lease)
         tip = await self._aresolve_delivery_tip(checkout_path, source_ref)
         if base_ref is None:
             paths = await self.areserved_paths_in_tree(checkout_path, tip)
@@ -3298,7 +3407,9 @@ class GitManager:
             checkout_path,
             tip,
             branch,
-            force_with_lease=force_with_lease,
+            force_with_lease=force_with_lease or expected_remote_oid is not None,
+            expected_old_oid=expected_remote_oid,
+            repository_url=repository_url,
         )
         await self._aemit_push_event(
             checkout_path,

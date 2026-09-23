@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -17,16 +17,24 @@ class GitPushResponse:
     Attributes:
         project_id (str):
         pushed (str | Unset):  Default: ''.
+        oid (None | str | Unset):
     """
 
     project_id: str
     pushed: str | Unset = ""
+    oid: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         project_id = self.project_id
 
         pushed = self.pushed
+
+        oid: None | str | Unset
+        if isinstance(self.oid, Unset):
+            oid = UNSET
+        else:
+            oid = self.oid
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -37,6 +45,8 @@ class GitPushResponse:
         )
         if pushed is not UNSET:
             field_dict["pushed"] = pushed
+        if oid is not UNSET:
+            field_dict["oid"] = oid
 
         return field_dict
 
@@ -47,9 +57,19 @@ class GitPushResponse:
 
         pushed = d.pop("pushed", UNSET)
 
+        def _parse_oid(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        oid = _parse_oid(d.pop("oid", UNSET))
+
         git_push_response = cls(
             project_id=project_id,
             pushed=pushed,
+            oid=oid,
         )
 
         git_push_response.additional_properties = d

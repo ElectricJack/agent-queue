@@ -5140,8 +5140,8 @@
         "tags": [
           "git"
         ],
-        "summary": "Push a branch to the remote origin.",
-        "description": "Push a branch to the remote origin.",
+        "summary": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
+        "description": "Push a branch to origin; an explicit expected remote OID permits a guarded rewrite.",
         "operationId": "git_push",
         "requestBody": {
           "content": {
@@ -27547,7 +27547,7 @@
               }
             ],
             "title": "Branch",
-            "description": "Source branch (default: current)"
+            "description": "Source branch (default: the held task's branch for a worker session, else the current branch)"
           },
           "base": {
             "anyOf": [
@@ -27915,7 +27915,19 @@
               }
             ],
             "title": "Branch",
-            "description": "Branch to push (optional, defaults to current)"
+            "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+          },
+          "expected_remote_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Remote Oid",
+            "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
           "workspace": {
             "anyOf": [
@@ -27943,6 +27955,17 @@
             "type": "string",
             "title": "Pushed",
             "default": ""
+          },
+          "oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oid"
           }
         },
         "type": "object",
@@ -40336,7 +40359,19 @@
               }
             ],
             "title": "Branch Name",
-            "description": "Branch to push (optional, defaults to current)"
+            "description": "Branch to push (optional; defaults to the held task's branch for a worker session, else the current branch)"
+          },
+          "expected_remote_oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Remote Oid",
+            "description": "Exact remote branch OID expected before the push (40 hex digits); the push may then rewrite the branch, and is refused if the remote holds anything else. All zeros means the branch must still be absent."
           },
           "workspace": {
             "anyOf": [
@@ -40369,6 +40404,17 @@
             "type": "string",
             "title": "Status",
             "default": ""
+          },
+          "oid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oid"
           }
         },
         "type": "object",

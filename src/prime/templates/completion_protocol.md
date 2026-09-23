@@ -27,8 +27,9 @@ recorded source base. Preserve the final tree, author attribution, and test
 results. Keep local history edits in your worktree. Publish the final commit
 through `aq git push`, then close; review must bind the pushed SHA.
 If you already pushed the branch before squashing, save the pushed commit's
-full OID at the successful push (for example, `git rev-parse HEAD` before that
-push). After squashing, use `aq git push --expected-remote-oid <pushed-oid>`.
+full OID at the successful push (`aq git push` reports it as `oid`; it is
+`git rev-parse HEAD` at that push). After squashing, use
+`aq git push --expected-remote-oid <pushed-oid>`.
 The daemon uses an explicit lease on your own task branch and refuses a push
 if the remote moved. Do not retry with a newly guessed OID or an unconditional
 force push; report the conflict. An all-zero 40-digit OID is only for creating

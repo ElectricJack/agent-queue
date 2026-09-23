@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from attrs import define as _attrs_define
 from attrs import field as _attrs_field
@@ -18,11 +18,13 @@ class PushBranchResponse:
         project_id (str):
         branch (str | Unset):  Default: ''.
         status (str | Unset):  Default: ''.
+        oid (None | str | Unset):
     """
 
     project_id: str
     branch: str | Unset = ""
     status: str | Unset = ""
+    oid: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +33,12 @@ class PushBranchResponse:
         branch = self.branch
 
         status = self.status
+
+        oid: None | str | Unset
+        if isinstance(self.oid, Unset):
+            oid = UNSET
+        else:
+            oid = self.oid
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -43,6 +51,8 @@ class PushBranchResponse:
             field_dict["branch"] = branch
         if status is not UNSET:
             field_dict["status"] = status
+        if oid is not UNSET:
+            field_dict["oid"] = oid
 
         return field_dict
 
@@ -55,10 +65,20 @@ class PushBranchResponse:
 
         status = d.pop("status", UNSET)
 
+        def _parse_oid(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        oid = _parse_oid(d.pop("oid", UNSET))
+
         push_branch_response = cls(
             project_id=project_id,
             branch=branch,
             status=status,
+            oid=oid,
         )
 
         push_branch_response.additional_properties = d

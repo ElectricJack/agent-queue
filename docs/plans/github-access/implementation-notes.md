@@ -145,6 +145,21 @@ read remains an error or retryable result, never proof that a ref is absent.
 | CLN-3 | `delivery_branches.py` removes logged, bundled delivered branches. | `adelete_remote_ref_exact` observes and lease-deletes each branch; `als_remote_ref` classifies the result and refuses unknown remote state. |
 | CLN-4 | `worktree_manager.py` optionally prunes remote refs for merged or old failed task branches. | `als_remote_ref` and `adelete_remote_ref_exact` run before local deletion; an authentication error or remote tip differing from the local branch keeps the local branch. |
 
+### Step 4 worker delivery commands
+
+These entries name the daemon-backed publication commands migrated by
+`clear-meadow.4`. The HTTP scope (`_check_worker_git_scope`) and the profile
+capability gate run first; the command then repeats the ownership decision
+from persisted state before any repository is bound, since binding already
+selects the GitHub credential.
+
+| Entry | Command and network operation | Authority and retained safeguard |
+|---|---|---|
+| WRK-1 | `git_push` / `push_branch` from a worker session publish its task branch. | Checkout = the session's worktree (an explicit `workspace` is refused); branch = the held task's `branch_name` or `aq/<task-id>`; repository = the task's repository row (same project only), else the project's `repo_url`, else an existing local origin path — never a network remote named by the checkout alone. The push goes through `apush_validated_delivery` (reserved-path gate from `refs/remotes/origin/<default>`, one resolved OID), and `_apush_destination(repository_url=…)` refuses a checkout remote naming any other repository before binding or token selection, on every re-read of the remote during the push. The result reports the published `oid`. |
+| WRK-2 | The squash/lease workflow (`aq git push --expected-remote-oid <oid>`). | `expected_remote_oid` reaches `apush_validated_delivery` and `apush_branch`: validated before any network access, exact lease (all zeros = create only if absent), no ancestry requirement only when the lease is named; an ordinary push still must fast-forward. |
+| WRK-3 | `git_create_pr` from a worker session. | Head = the held task's branch (not the checkout's `HEAD`); base must be the project default; the repository bound is the task's authorized GitHub repository, and a local-only authority refuses before binding. |
+| WRK-4 | Operator and supervisor `git_push` / `push_branch` / `git_create_pr`. | Unchanged selection (named or current branch of the selected workspace, project `repo_url` for PRs); `push_branch` gains the same lease parameter and both pushes report `oid`. |
+
 ## Constructor fallback register
 
 These constructors are migration hazards because a standalone service can

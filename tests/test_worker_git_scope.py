@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import create_autospec
 
 import pytest
@@ -23,6 +24,7 @@ from src.api.scope import (
 )
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
+from src.git.github_contracts import GitHubRepositoryBinding
 from src.git.manager import GitManager
 from src.plugins.internal.git import _build_tool_definitions
 from src.profiles.drift import diff_profile, merge_profile_grants, vault_profile_path
@@ -31,6 +33,7 @@ from src.models import (
     AgentProfile,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -103,12 +106,23 @@ async def test_worker_pushes_its_own_branch(env):
     assert await check_request_scope("git_push", args, scope, db=db) is None
 
 
-@pytest.mark.parametrize("command", ["git_push", "push_branch"])
-@pytest.mark.parametrize("explicit_branch", [False, True])
-async def test_worker_push_uses_claimed_worktree_and_task_branch(
-    env, tmp_path, internal_plugins_handler, command, explicit_branch,
-):
+# --- the command: publication derived from the held task ------------------
+
+_TIP = "c" * 40
+_REPOSITORY = "https://github.com/acme/widgets"
+_BRANCH_KEY = {"git_push": "branch", "push_branch": "branch_name", "git_create_pr": "branch"}
+
+
+@pytest.fixture
+async def worker_git(env, tmp_path, internal_plugins_handler):
+    """A worker session's command path with a mocked GitManager.
+
+    The HTTP scope is trusted and its ``_scope`` is forwarded as-is; tests
+    that pass arguments the HTTP layer would refuse are exercising the
+    command's own, second check.
+    """
     db, scope = env
+    await db.update_project("p", repo_url=_REPOSITORY)
     base = tmp_path / "base-checkout"
     base.mkdir()
     await db.create_workspace(Workspace(
@@ -118,6 +132,10 @@ async def test_worker_push_uses_claimed_worktree_and_task_branch(
     git = create_autospec(GitManager, instance=True)
     git.avalidate_checkout.return_value = True
     git.aget_current_branch.return_value = "main"
+    git.aref_exists.return_value = True
+    git.apush_validated_delivery.return_value = _TIP
+    git.bind_github_repository.return_value = GitHubRepositoryBinding(303, "acme/widgets")
+    git.acreate_pr.return_value = f"{_REPOSITORY}/pull/7"
     config = AppConfig(
         discord=DiscordConfig(bot_token="test-token", guild_id="123"),
         workspace_dir=str(tmp_path),
@@ -126,20 +144,248 @@ async def test_worker_push_uses_claimed_worktree_and_task_branch(
     )
     handler = await internal_plugins_handler(db=db, config=config, git=git)
 
-    # The HTTP scope is trusted; the missing session_id argument reproduces
-    # the path that previously fell through to the first project workspace.
-    args = {"_scope": {
-        "kind": "session", "session_id": scope.session_id,
-        "task_id": scope.task_id, "project_id": scope.project_id,
-    }}
-    if explicit_branch:
-        args["branch" if command == "git_push" else "branch_name"] = "aq/calm-ember-48"
-    result = await handler.execute(command, args)
+    def scoped(**args):
+        return {"_scope": {
+            "kind": "session", "session_id": scope.session_id,
+            "task_id": scope.task_id, "project_id": scope.project_id,
+        }, **args}
 
-    assert "error" not in result
+    return SimpleNamespace(
+        db=db, git=git, handler=handler, scoped=scoped, work_dir=str(tmp_path),
+    )
+
+
+def _assert_no_network(git) -> None:
+    """Nothing that binds a repository, selects a credential or transfers ran."""
+    for name in ("apush_validated_delivery", "apush_branch", "bind_github_repository",
+                 "acreate_pr"):
+        getattr(git, name).assert_not_awaited()
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+@pytest.mark.parametrize("explicit_branch", [False, True])
+async def test_worker_push_uses_claimed_worktree_and_task_branch(
+    worker_git, command, explicit_branch,
+):
+    w = worker_git
+    # The missing session_id argument reproduces the path that previously fell
+    # through to the first project workspace; HEAD on ``main`` is ignored.
+    args = w.scoped()
+    if explicit_branch:
+        args[_BRANCH_KEY[command]] = "aq/calm-ember-48"
+    result = await w.handler.execute(command, args)
+
+    assert "error" not in result, result
     assert result.get("pushed", result.get("branch")) == "aq/calm-ember-48"
-    assert git.apush_branch.await_args.args == (str(tmp_path), "aq/calm-ember-48")
-    git.aget_current_branch.assert_not_awaited()
+    assert result["oid"] == _TIP
+    w.git.apush_validated_delivery.assert_awaited_once_with(
+        w.work_dir, "refs/remotes/origin/main", "aq/calm-ember-48", "aq/calm-ember-48",
+        expected_remote_oid=None, repository_url=_REPOSITORY,
+        event_bus=w.handler._bus, project_id="p",
+    )
+    w.git.apush_branch.assert_not_awaited()
+    w.git.aget_current_branch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("command", ["git_push", "push_branch"])
+async def test_worker_lease_reaches_the_validated_delivery_push(worker_git, command):
+    w = worker_git
+    oid = "a" * 40
+    result = await w.handler.execute(command, w.scoped(expected_remote_oid=oid))
+
+    assert result["oid"] == _TIP
+    assert w.git.apush_validated_delivery.await_args.kwargs["expected_remote_oid"] == oid
+
+
+async def test_worker_push_without_a_fetched_default_is_a_root_delivery(worker_git):
+    w = worker_git
+    w.git.aref_exists.return_value = False
+    await w.handler.execute("git_push", w.scoped())
+    assert w.git.apush_validated_delivery.await_args.args[1] is None
+
+
+@pytest.mark.parametrize("command,args,error", [
+    ("git_push", {"branch": "main"}, "is not this session's task branch"),
+    ("push_branch", {"branch_name": "aq/someone-else-99"}, "is not this session's task branch"),
+    ("git_create_pr", {"title": "t", "branch": "aq/someone-else-99"},
+     "is not this session's task branch"),
+    ("git_create_pr", {"title": "t", "base": "release/1.0"},
+     "is not the project's default branch"),
+    ("git_push", {"workspace": "base"}, "workspace is not this session's worktree"),
+    ("git_create_pr", {"title": "t", "workspace": "base"},
+     "workspace is not this session's worktree"),
+])
+async def test_foreign_publication_fails_before_credential_use(worker_git, command, args, error):
+    w = worker_git
+    result = await w.handler.execute(command, w.scoped(**args))
+    assert error in result["error"]
+    _assert_no_network(w.git)
+
+
+async def test_task_repository_from_another_project_fails_before_credential_use(worker_git):
+    w = worker_git
+    await w.db.create_repo(RepoConfig(
+        id="foreign", project_id="other", source_type=RepoSourceType.CLONE,
+        url="https://github.com/evil/other",
+    ))
+    await w.db.update_task("t1", repo_id="foreign")
+    for command, args in (("git_push", {}), ("git_create_pr", {"title": "t"})):
+        result = await w.handler.execute(command, w.scoped(**args))
+        assert result["error"] == "task repository is not authorized for this project"
+    _assert_no_network(w.git)
+
+
+async def test_task_repository_row_is_the_publication_target(worker_git):
+    w = worker_git
+    await w.db.create_repo(RepoConfig(
+        id="service", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/acme/service",
+    ))
+    await w.db.update_task("t1", repo_id="service")
+
+    await w.handler.execute("git_push", w.scoped())
+    await w.handler.execute("git_create_pr", w.scoped(title="t"))
+
+    assert (w.git.apush_validated_delivery.await_args.kwargs["repository_url"]
+            == "https://github.com/acme/service")
+    w.git.bind_github_repository.assert_awaited_once_with("https://github.com/acme/service")
+
+
+async def test_a_network_origin_is_never_its_own_authority(worker_git):
+    """No recorded repository: the checkout's remote cannot stand in for one."""
+    w = worker_git
+    await w.db.update_project("p", repo_url="")
+    w.git.aget_remote_url.return_value = "https://github.com/evil/other.git"
+    result = await w.handler.execute("git_push", w.scoped())
+    assert result["error"] == "task has no authorized repository"
+    _assert_no_network(w.git)
+
+
+async def test_a_local_origin_may_stand_in_for_a_missing_record(worker_git, tmp_path):
+    w = worker_git
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    await w.db.update_project("p", repo_url="")
+    w.git.aget_remote_url.return_value = str(origin)
+
+    await w.handler.execute("git_push", w.scoped())
+    assert w.git.apush_validated_delivery.await_args.kwargs["repository_url"] == str(origin)
+
+    result = await w.handler.execute("git_create_pr", w.scoped(title="t"))
+    assert result["error"] == "Project has no authorized GitHub repository"
+    w.git.bind_github_repository.assert_not_awaited()
+
+
+async def test_worker_pr_uses_the_task_branch_and_repository(worker_git):
+    w = worker_git
+    result = await w.handler.execute("git_create_pr", w.scoped(title="Fix it", body="why"))
+
+    assert result == {
+        "project_id": "p", "pr_url": f"{_REPOSITORY}/pull/7",
+        "branch": "aq/calm-ember-48", "base": "main",
+    }
+    w.git.bind_github_repository.assert_awaited_once_with(_REPOSITORY)
+    assert w.git.acreate_pr.await_args.args == (
+        w.work_dir, "aq/calm-ember-48", "Fix it", "why", "main",
+    )
+    assert w.git.acreate_pr.await_args.kwargs["repository"] == GitHubRepositoryBinding(
+        303, "acme/widgets"
+    )
+    w.git.aget_current_branch.assert_not_awaited()
+
+
+async def test_a_session_that_no_longer_holds_its_task_publishes_nothing(worker_git):
+    w = worker_git
+    await w.db.transition_task("t1", TaskStatus.COMPLETED, context="test")
+    for command, args in (("git_push", {}), ("git_create_pr", {"title": "t"})):
+        result = await w.handler.execute(command, w.scoped(**args))
+        assert result["error"] == "No active task branch for this session"
+    _assert_no_network(w.git)
+
+
+async def test_ungranted_publication_is_denied_before_the_command_runs(worker_git):
+    w = worker_git
+    await w.db.upsert_profile(AgentProfile(
+        id="coder", name="coder", harness="claude", needs_workspace=False,
+        default_class="standard-low", harness_tools=[], aq_commands=[],
+        plugin_tools=["git_log"],
+    ))
+    for command, args in (
+        ("git_push", {}), ("push_branch", {}), ("git_create_pr", {"title": "t"}),
+    ):
+        result = await w.handler.execute(command, w.scoped(**args))
+        assert result["error_code"] == "capability_denied", result
+    _assert_no_network(w.git)
+
+
+async def test_worker_squash_lease_workflow_through_the_command(
+    env, tmp_path, internal_plugins_handler,
+):
+    """The documented push → squash → ``--expected-remote-oid`` flow, end to end."""
+    import subprocess
+
+    def git(*args: str, cwd: Path = tmp_path) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.name=Test", "-c", "user.email=t@t.test", *args],
+            cwd=cwd, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    def commit(content: str) -> str:
+        (tmp_path / "work.txt").write_text(content)
+        git("add", "work.txt")
+        git("commit", "-m", content)
+        return git("rev-parse", "HEAD")
+
+    db, scope = env
+    origin = tmp_path.parent / f"{tmp_path.name}-origin.git"
+    git("init", "--bare", "--initial-branch=main", str(origin))
+    # The session's worktree (env's work_dir) is a clone of the project origin.
+    git("init", "--initial-branch=main")
+    git("remote", "add", "origin", str(origin))
+    commit("base")
+    git("push", "origin", "main")
+    await db.update_project("p", repo_url=str(origin))
+    config = AppConfig(
+        discord=DiscordConfig(bot_token="test-token", guild_id="123"),
+        workspace_dir=str(tmp_path),
+        database=DatabaseConfig(url=lease_dsn("worker-git.db")),
+        data_dir=str(tmp_path.parent / f"{tmp_path.name}-data"),
+    )
+    handler = await internal_plugins_handler(db=db, config=config, git=GitManager())
+
+    async def push(**args):
+        return await handler.execute("git_push", {"_scope": {
+            "kind": "session", "session_id": scope.session_id,
+            "task_id": scope.task_id, "project_id": scope.project_id,
+        }, **args})
+
+    def remote_tip() -> str:
+        return git("rev-parse", "refs/heads/aq/calm-ember-48", cwd=origin)
+
+    git("switch", "-c", "aq/calm-ember-48")
+    commit("first")
+    first = (await push())["oid"]
+    assert first == git("rev-parse", "HEAD") == remote_tip()
+
+    commit("second")
+    git("reset", "--soft", "main")
+    squashed = commit("squashed")
+    assert "fast-forward" in (await push())["error"]
+    assert (await push(expected_remote_oid=first))["oid"] == squashed == remote_tip()
+    # A stale lease is refused; the remote keeps the squashed commit.
+    assert "expected target" in (await push(expected_remote_oid=first))["error"]
+    assert remote_tip() == squashed
+
+
+async def test_push_branch_alias_is_held_to_the_task_branch(env):
+    db, scope = env
+    args = {"branch_name": "aq/calm-ember-48", "expected_remote_oid": "a" * 40}
+    assert await check_request_scope("push_branch", args, scope, db=db) is None
+    assert args["project_id"] == "p"
+    assert (
+        await check_request_scope("push_branch", {"branch_name": "main"}, scope, db=db)
+        == "out of scope: branch mismatch"
+    )
 
 
 async def test_explicit_lease_stays_on_the_held_task_branch(env):
@@ -267,7 +513,8 @@ async def test_shipped_worker_grants_match_the_push_and_pr_contract():
 
     root = Path(__file__).resolve().parents[1]
     names = {item["name"]: item for item in _build_tool_definitions()}
-    assert "expected_remote_oid" in names["git_push"]["input_schema"]["properties"]
+    for command in ("git_push", "push_branch"):
+        assert "expected_remote_oid" in names[command]["input_schema"]["properties"]
     assert {"title", "body"} <= set(names["git_create_pr"]["input_schema"]["properties"])
     for command in ("git_push", "git_create_pr"):
         assert classify_capability(

@@ -253,7 +253,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
 _WORKER_GIT_READ_COMMANDS = frozenset({
     "get_git_status", "git_diff", "git_log", "git_branch", "git_changed_files",
 })
-_WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "git_create_pr"})
+#: ``push_branch`` is ``git_push``'s alias; it names its head ``branch_name``.
+_WORKER_GIT_WRITE_COMMANDS = frozenset({"git_push", "push_branch", "git_create_pr"})
 _WORKER_GIT_COMMANDS = _WORKER_GIT_READ_COMMANDS | _WORKER_GIT_WRITE_COMMANDS
 
 
@@ -350,8 +351,8 @@ async def _check_worker_git_scope(
         and args["name"] not in branches
     ):
         return "out of scope: branch mismatch"
-    if command in {"git_push", "git_create_pr"}:
-        branch = args.get("branch")
+    if command in _WORKER_GIT_WRITE_COMMANDS:
+        branch = args.get("branch_name" if command == "push_branch" else "branch")
         if branch is not None and branch not in branches:
             return "out of scope: branch mismatch"
     if command == "git_create_pr":

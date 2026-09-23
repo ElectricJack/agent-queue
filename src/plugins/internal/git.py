@@ -7,8 +7,10 @@ The largest internal plugin — 19 commands covering all git operations.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
-from src.commands.principal import PrincipalKind, current_principal
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, current_principal
 from src.plugins.base import InternalPlugin, PluginContext
 
 
@@ -18,6 +20,12 @@ from src.plugins.base import InternalPlugin, PluginContext
 # ---------------------------------------------------------------------------
 
 TOOL_CATEGORY = "git"
+
+_EXPECTED_REMOTE_OID_DESCRIPTION = (
+    "Exact remote branch OID expected before the push (40 hex digits); the push "
+    "may then rewrite the branch, and is refused if the remote holds anything "
+    "else. All zeros means the branch must still be absent."
+)
 
 
 def _build_tool_definitions() -> list[dict]:
@@ -77,11 +85,14 @@ def _build_tool_definitions() -> list[dict]:
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch": {
                         "type": "string",
-                        "description": "Branch to push (optional, defaults to current)",
+                        "description": (
+                            "Branch to push (optional; defaults to the held task's "
+                            "branch for a worker session, else the current branch)"
+                        ),
                     },
                     "expected_remote_oid": {
                         "type": "string",
-                        "description": "Exact remote branch OID expected before push (40 hex digits; all zero for absent branch)",
+                        "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
                     },
                     "workspace": {
                         "type": "string",
@@ -134,7 +145,13 @@ def _build_tool_definitions() -> list[dict]:
                 "properties": {
                     "title": {"type": "string", "description": "PR title"},
                     "body": {"type": "string", "description": "PR body/description"},
-                    "branch": {"type": "string", "description": "Source branch (default: current)"},
+                    "branch": {
+                        "type": "string",
+                        "description": (
+                            "Source branch (default: the held task's branch for a "
+                            "worker session, else the current branch)"
+                        ),
+                    },
                     "base": {
                         "type": "string",
                         "description": "Target branch (default: project default)",
@@ -305,7 +322,14 @@ def _build_tool_definitions() -> list[dict]:
                     "project_id": {"type": "string", "description": "Project ID"},
                     "branch_name": {
                         "type": "string",
-                        "description": "Branch to push (optional, defaults to current)",
+                        "description": (
+                            "Branch to push (optional; defaults to the held task's "
+                            "branch for a worker session, else the current branch)"
+                        ),
+                    },
+                    "expected_remote_oid": {
+                        "type": "string",
+                        "description": _EXPECTED_REMOTE_OID_DESCRIPTION,
                     },
                     "workspace": {
                         "type": "string",
@@ -478,7 +502,7 @@ def _fmt_git_action(data: dict):
     text = Text()
     text.append("✅ ", style="bold")
     text.append(f"{status}", style="bold green")
-    for key in ("branch", "message", "pr_url", "output", "pull_output"):
+    for key in ("branch", "pushed", "oid", "message", "pr_url", "output", "pull_output"):
         val = data.get(key)
         if val:
             text.append(f"\n  {key}: ", style="dim")
@@ -519,6 +543,51 @@ def _build_cli_formatters():
 
 
 CLI_FORMATTERS = _build_cli_formatters
+
+
+# ---------------------------------------------------------------------------
+# Worker publication
+# ---------------------------------------------------------------------------
+
+
+def _worker_principal() -> ExecutionPrincipal | None:
+    """The calling worker session, or ``None`` for operators and supervisors."""
+    principal = current_principal()
+    if (
+        principal is not None
+        and principal.kind == PrincipalKind.SESSION
+        and not principal.elevated
+    ):
+        return principal
+    return None
+
+
+def _is_github_repository(repository_url: str) -> bool:
+    """Whether a recorded repository is one the GitHub client can address."""
+    from src.projects.github import GitHubError, parse_github_repository
+
+    if repository_url.startswith(("/", "./", "../", "file://")) or Path(repository_url).exists():
+        return False
+    try:
+        parse_github_repository(repository_url)
+    except GitHubError:
+        return False
+    return True
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerPublication:
+    """What a worker session may publish, derived from persisted state only.
+
+    The held task's branch, to the task's authorized repository, gated by
+    the project's default branch.  Nothing here comes from the worker's
+    checkout configuration or from a client argument that was not checked
+    against the held task.
+    """
+
+    branch: str
+    repository_url: str
+    default_branch: str
 
 
 # ---------------------------------------------------------------------------
@@ -572,49 +641,143 @@ class GitPlugin(InternalPlugin):
 
     async def _resolve(self, args: dict):
         """Resolve repo path with active project fallback."""
-        principal = current_principal()
-        if (
-            principal is not None
-            and principal.kind == PrincipalKind.SESSION
-            and not principal.elevated
-        ):
+        principal = _worker_principal()
+        if principal is not None:
             # The authenticated session owns the checkout.  Do not let a
-            # missing command argument select the project's base workspace.
+            # missing command argument select the project's base workspace,
+            # nor an explicit one select another checkout.
             if not principal.session_id or not principal.project_id:
                 return None, None, {"error": "No active session worktree for this project"}
             if args.get("session_id") not in (None, principal.session_id):
                 return None, None, {"error": "session_id does not match the active session"}
             if args.get("project_id") not in (None, principal.project_id):
                 return None, None, {"error": "project_id does not match the active session"}
+            if args.get("workspace") is not None:
+                return None, None, {"error": "workspace is not this session's worktree"}
             args["session_id"] = principal.session_id
             args["project_id"] = principal.project_id
         return await self._ws.resolve_repo_path(args, self._ctx.active_project_id)
 
-    async def _default_push_branch(self, checkout_path: str) -> str | None:
-        """Use the held task's branch for a worker, even if HEAD has moved."""
+    async def _worker_publication(
+        self,
+        principal: ExecutionPrincipal,
+        checkout_path: str,
+        project,
+        requested_branch: str | None,
+    ) -> _WorkerPublication:
+        """Authorize a worker's push or PR before any credential is selected.
+
+        The HTTP scope check already confines a worker token to its task
+        branch; this repeats the decision at the command so an in-process
+        caller carrying a session principal is held to the same rule.
+        """
         from src.api.auth import RequestScope
         from src.api.scope import held_task_for_session
         from src.git.manager import GitError
 
-        principal = current_principal()
-        if (
-            principal is not None
-            and principal.kind == PrincipalKind.SESSION
-            and not principal.elevated
-        ):
-            task = await held_task_for_session(
-                self._db._db,
-                RequestScope(
-                    kind="session",
-                    session_id=principal.session_id,
-                    task_id=principal.task_id,
-                    project_id=principal.project_id,
-                ),
+        task = await held_task_for_session(
+            self._db._db,
+            RequestScope(
+                kind="session",
+                session_id=principal.session_id,
+                task_id=principal.task_id,
+                project_id=principal.project_id,
+            ),
+        )
+        if task is None:
+            raise GitError("No active task branch for this session")
+        own_branches = {f"aq/{task.id}"}
+        if task.branch_name:
+            own_branches.add(task.branch_name)
+        branch = requested_branch or task.branch_name or f"aq/{task.id}"
+        if branch not in own_branches:
+            raise GitError(f"branch '{branch}' is not this session's task branch")
+        return _WorkerPublication(
+            branch=branch,
+            repository_url=await self._task_repository_url(task, project, checkout_path),
+            default_branch=(project.repo_default_branch if project else None) or "main",
+        )
+
+    async def _task_repository_url(self, task, project, checkout_path: str) -> str:
+        """The task's authorized repository, as the daemon's own delivery resolves it.
+
+        Mirrors ``src/orchestrator/git_ops.py``: the task's repository row
+        (which must belong to the task's project), else the project's
+        repository.  A task with neither may publish only to a local origin
+        path — never to a network remote named by the checkout alone.
+        """
+        from src.git.manager import GitError
+
+        if task.repo_id:
+            repo = await self._db._db.get_repo(task.repo_id)
+            if repo is None or repo.project_id != task.project_id:
+                raise GitError("task repository is not authorized for this project")
+            repository_url = repo.url
+        else:
+            repository_url = project.repo_url if project else ""
+        if not repository_url:
+            local_origin = await self._git.aget_remote_url(checkout_path)
+            if local_origin and Path(local_origin).exists():
+                repository_url = local_origin
+        if not repository_url:
+            raise GitError("task has no authorized repository")
+        return repository_url
+
+    async def _push(
+        self,
+        checkout_path: str,
+        project,
+        args: dict,
+        requested_branch: str | None,
+    ) -> tuple[str, str | None]:
+        """Publish one branch and return ``(branch, pushed OID)``.
+
+        An operator or supervisor pushes the named (or current) branch of the
+        selected workspace.  A worker session publishes only its held task's
+        branch, through the validated delivery gate, to its task's authorized
+        repository; ``expected_remote_oid`` is the explicit lease for its
+        squash/rewrite workflow in both cases.
+        """
+        from src.git.manager import GitError
+
+        git = self._git
+        expected_remote_oid = args.get("expected_remote_oid")
+        principal = _worker_principal()
+        if principal is None:
+            branch = requested_branch or await git.aget_current_branch(checkout_path)
+            if not branch:
+                raise GitError("Could not determine current branch")
+            oid = await git.apush_branch(
+                checkout_path,
+                branch,
+                expected_remote_oid=expected_remote_oid,
+                event_bus=self._ctx._bus,
+                project_id=args.get("project_id"),
             )
-            if task is None:
-                raise GitError("No active task branch for this session")
-            return task.branch_name or f"aq/{task.id}"
-        return await self._git.aget_current_branch(checkout_path)
+            return branch, oid
+
+        publication = await self._worker_publication(
+            principal, checkout_path, project, requested_branch
+        )
+        # The same reserved-path gate the daemon applies to task delivery,
+        # measured from the default branch this checkout last fetched.
+        base_ref: str | None = f"refs/remotes/origin/{publication.default_branch}"
+        base_exists = await git.aref_exists(checkout_path, base_ref)
+        if base_exists is None:
+            raise GitError("could not inspect the delivery base")
+        if not base_exists:
+            base_ref = None
+        oid = await git.apush_validated_delivery(
+            checkout_path,
+            base_ref,
+            publication.branch,
+            publication.branch,
+            expected_remote_oid=expected_remote_oid,
+            repository_url=publication.repository_url,
+            event_bus=self._ctx._bus,
+            project_id=args.get("project_id"),
+        )
+        return publication.branch, oid
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
@@ -826,21 +989,11 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
-        git = self._git
         try:
-            branch = args.get("branch") or await self._default_push_branch(checkout_path)
-            if not branch:
-                return {"error": "Could not determine current branch"}
-            await git.apush_branch(
-                checkout_path,
-                branch,
-                expected_remote_oid=args.get("expected_remote_oid"),
-                event_bus=self._ctx._bus,
-                project_id=args.get("project_id"),
-            )
+            branch, oid = await self._push(checkout_path, project, args, args.get("branch"))
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args.get("project_id", ""), "pushed": branch}
+        return {"project_id": args.get("project_id", ""), "pushed": branch, "oid": oid}
 
     async def cmd_git_create_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
@@ -895,14 +1048,35 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         git = self._git
-        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
-        if not branch:
-            return {"error": "Could not determine current branch"}
-        base = args.get("base") or (project.repo_default_branch if project else "main") or "main"
+        principal = _worker_principal()
         try:
-            if project is None or not project.repo_url:
-                return {"error": "Project has no authorized GitHub repository"}
-            repository = await git.bind_github_repository(project.repo_url)
+            if principal is None:
+                branch = args.get("branch") or await git.aget_current_branch(checkout_path)
+                if not branch:
+                    return {"error": "Could not determine current branch"}
+                base = (
+                    args.get("base")
+                    or (project.repo_default_branch if project else "main")
+                    or "main"
+                )
+                if project is None or not project.repo_url:
+                    return {"error": "Project has no authorized GitHub repository"}
+                repository_url = project.repo_url
+            else:
+                # Everything a worker may name is checked against the held
+                # task before the repository is bound, since binding already
+                # selects the GitHub credential.
+                publication = await self._worker_publication(
+                    principal, checkout_path, project, args.get("branch")
+                )
+                branch = publication.branch
+                base = args.get("base") or publication.default_branch
+                if base != publication.default_branch:
+                    return {"error": f"base '{base}' is not the project's default branch"}
+                repository_url = publication.repository_url
+                if not _is_github_repository(repository_url):
+                    return {"error": "Project has no authorized GitHub repository"}
+            repository = await git.bind_github_repository(repository_url)
             pr_url = await git.acreate_pr(
                 checkout_path,
                 branch,
@@ -1096,20 +1270,18 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
-        git = self._git
         try:
-            branch_name = args.get("branch_name") or await self._default_push_branch(checkout_path)
-            if not branch_name:
-                return {"error": "Could not determine current branch"}
-            await git.apush_branch(
-                checkout_path,
-                branch_name,
-                event_bus=self._ctx._bus,
-                project_id=args.get("project_id"),
+            branch_name, oid = await self._push(
+                checkout_path, project, args, args.get("branch_name")
             )
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args["project_id"], "branch": branch_name, "status": "pushed"}
+        return {
+            "project_id": args["project_id"],
+            "branch": branch_name,
+            "status": "pushed",
+            "oid": oid,
+        }
 
     async def cmd_merge_branch(self, args: dict) -> dict:
         from src.git.manager import GitError

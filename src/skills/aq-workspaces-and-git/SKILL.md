@@ -70,16 +70,19 @@ Commit rules:
   small independent things, five commits is better than one giant one.
 
 For a review workflow that asks you to squash a branch already pushed,
-record the full OID of the successful earlier push (`git rev-parse HEAD` at
-that push). After the local squash, run:
+record the full OID of the successful earlier push (the `oid` that
+`aq git push` reports, which is `git rev-parse HEAD` at that push). After the
+local squash, run:
 
 ```bash
 aq git push --expected-remote-oid <previously-pushed-oid>
 ```
 
 This is an exact lease on your task branch. If the remote moved, stop and
-report the conflict. An all-zero 40-digit OID creates a branch only if it is
-still absent. Do not force push reviewed or delivered history.
+report the conflict. `aq git push` publishes only your held task's branch, to
+your task's repository, and refuses daemon-owned paths such as `.aq/`; it never
+hands your shell a credential. An all-zero 40-digit OID creates a branch only
+if it is still absent. Do not force push reviewed or delivered history.
 
 ## Opening a PR
 

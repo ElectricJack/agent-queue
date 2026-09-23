@@ -2038,3 +2038,175 @@ async def test_cancelling_git_operation_reaps_process(mgr, tmp_path, monkeypatch
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+
+
+# ------------------------------------------------------------------
+# Worker delivery: explicit lease + authorized repository
+# ------------------------------------------------------------------
+
+
+class _AuthorizedAppAccess:
+    """App-mode access double that records every binding and credential."""
+
+    def __init__(self) -> None:
+        from src.git.github_contracts import GitHubCredentialMode
+
+        self.auth = SimpleNamespace(mode=GitHubCredentialMode.APP)
+        self.bound: list[str] = []
+        self.token_requests: list[GitHubRepositoryBinding] = []
+
+    async def bind_repository(self, reference: str) -> GitHubRepositoryBinding:
+        self.bound.append(reference)
+        return GitHubRepositoryBinding(303, "acme/widgets")
+
+    async def installation_token(self, repository: GitHubRepositoryBinding) -> str:
+        self.token_requests.append(repository)
+        return "app-token"
+
+
+class TestValidatedDeliveryLease:
+    """``apush_validated_delivery`` carries the squash workflow's explicit lease."""
+
+    @pytest.mark.asyncio
+    async def test_lease_rewrites_only_from_the_named_remote_tip(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/squash")
+        first = _commit_file(clone, "work.txt", "first", "first")
+        assert await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            repository_url=bare_repo,
+        ) == first
+        _commit_file(clone, "work.txt", "second", "second")
+        _git(["reset", "--soft", "main"], cwd=clone)
+        squashed = _commit_file(clone, "work.txt", "second", "squashed")
+
+        # Without a lease the rewrite is an ordinary non-fast-forward push.
+        with pytest.raises(GitError, match="fast-forward"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            )
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+                expected_remote_oid="b" * 40,
+            )
+        assert _git(["rev-parse", "refs/heads/task/squash"], cwd=bare_repo) == first
+
+        assert await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/squash", "task/squash",
+            expected_remote_oid=first.upper(), repository_url=bare_repo,
+        ) == squashed
+        assert _git(["rev-parse", "refs/heads/task/squash"], cwd=bare_repo) == squashed
+
+    @pytest.mark.asyncio
+    async def test_zero_lease_creates_only_an_absent_branch(self, clone, bare_repo, mgr):
+        await mgr.aprepare_for_task(clone, "task/create")
+        first = _commit_file(clone, "work.txt", "first", "first")
+        await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "task/create", "task/create",
+            expected_remote_oid="0" * 40,
+        )
+        assert _git(["rev-parse", "refs/heads/task/create"], cwd=bare_repo) == first
+        _commit_file(clone, "work.txt", "second", "second")
+        with pytest.raises(GitError, match="expected target"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/create", "task/create",
+                expected_remote_oid="0" * 40,
+            )
+        assert _git(["rev-parse", "refs/heads/task/create"], cwd=bare_repo) == first
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lease,kwargs,match", [
+        ("not-an-oid", {}, "invalid expected remote OID"),
+        ("a" * 40, {"force_with_lease": True}, "explicit expected remote OID or force"),
+    ])
+    async def test_malformed_lease_is_refused_before_any_remote_access(
+        self, mgr, monkeypatch, lease, kwargs, match,
+    ):
+        destination = AsyncMock()
+        monkeypatch.setattr(mgr, "_apush_destination", destination)
+        with pytest.raises(GitError, match=match):
+            await mgr.apush_validated_delivery(
+                "/repo", "refs/remotes/origin/main", "task/x", "task/x",
+                expected_remote_oid=lease, **kwargs,
+            )
+        destination.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reserved_paths_are_refused_before_any_remote_access(self, clone, mgr):
+        await mgr.aprepare_for_task(clone, "task/reserved")
+        pathlib.Path(clone, ".aq").mkdir()
+        _commit_file(clone, ".aq/claim.json", "{}", "claim")
+        with pytest.raises(GitError, match="reserved delivery paths"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/reserved", "task/reserved",
+                repository_url="https://github.com/acme/widgets",
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_retargeted_local_origin_is_not_the_authorized_repository(
+        self, clone, bare_repo, mgr, tmp_path,
+    ):
+        other = str(tmp_path / "other.git")
+        _git(["init", "--bare", "--initial-branch=main", other], cwd=str(tmp_path))
+        _git(["remote", "set-url", "origin", other], cwd=clone)
+        await mgr.aprepare_for_task(clone, "task/elsewhere")
+        _commit_file(clone, "work.txt", "work", "work")
+
+        with pytest.raises(GitError, match="not the authorized repository"):
+            await mgr.apush_validated_delivery(
+                clone, "refs/remotes/origin/main", "task/elsewhere", "task/elsewhere",
+                repository_url=bare_repo,
+            )
+        assert _git(["for-each-ref", "refs/heads/task/elsewhere"], cwd=other) == ""
+
+
+class TestAuthorizedPushDestination:
+    """The checkout's remote is checked against the record before any credential."""
+
+    @staticmethod
+    def _checkout(tmp_path, origin: str) -> str:
+        checkout = tmp_path / "checkout"
+        checkout.mkdir()
+        _git(["init", "--initial-branch=main"], cwd=str(checkout))
+        _git(["remote", "add", "origin", origin], cwd=str(checkout))
+        return str(checkout)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", [
+        "https://github.com/evil/other.git",
+        "git@github.com:acme/widgets-fork.git",
+        "/srv/mirror.git",
+    ])
+    async def test_foreign_origin_fails_before_binding_or_token(self, tmp_path, origin):
+        access = _AuthorizedAppAccess()
+        mgr = GitManager(github_access=access)
+        checkout = self._checkout(tmp_path, origin)
+
+        with pytest.raises(GitError, match="not the authorized repository"):
+            await mgr._apush_destination(
+                checkout, "origin", repository_url="https://github.com/acme/widgets"
+            )
+        result = await mgr.als_remote_ref(
+            checkout, "aq/t1", repository_url="https://github.com/acme/widgets"
+        )
+        assert result.state is RemoteRefState.ERROR
+        assert access.bound == []
+        assert access.token_requests == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("origin", [
+        "git@github.com:acme/widgets.git",
+        "https://github.com/ACME/Widgets.git",
+    ])
+    async def test_matching_origin_binds_the_authorized_record(self, tmp_path, origin):
+        access = _AuthorizedAppAccess()
+        mgr = GitManager(github_access=access)
+        checkout = self._checkout(tmp_path, origin)
+
+        destination = await mgr._apush_destination(
+            checkout, "origin", repository_url="https://github.com/acme/widgets"
+        )
+
+        assert destination == ("https://github.com/acme/widgets.git", "app-token")
+        assert access.bound == ["https://github.com/acme/widgets"]
+        assert access.token_requests == [GitHubRepositoryBinding(303, "acme/widgets")]
