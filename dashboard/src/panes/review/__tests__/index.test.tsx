@@ -35,6 +35,13 @@ const response = {
   revision: { revision: 2, content: "---\nstatus: draft\n---\n# Review title\n\n## Goal\n\nVisible body", changes_note: "Expanded the goal" },
   revisions: [{ revision: 1 }, { revision: 2, changes_note: "Expanded the goal" }],
   vault_state: "ok",
+  response_route: {
+    kind: "new_task",
+    summary: "Response task: fast-high-codex (fast-high; project default).",
+    class_summaries: {
+      "standard-high": "Response task: standard-high-codex (standard-high; class match).",
+    },
+  },
   comments: [],
   diff: [{ op: "removed", text: "old paragraph" }, { op: "added", text: "new paragraph" }],
 };
@@ -114,12 +121,15 @@ describe("review pane", () => {
 
   it("submits the selected response route with requested changes", async () => {
     renderPane();
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("fast-high-codex");
     fireEvent.change(screen.getByLabelText("Response intelligence class"), {
       target: { value: "standard-high" },
     });
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("standard-high-codex (standard-high; class match)");
     fireEvent.change(screen.getByLabelText("Response profile"), {
       target: { value: "standard-high-codex" },
     });
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("explicit choice");
     fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
     await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
       review_id: "rev-x", revision: 2, decision: "request_changes",
@@ -127,19 +137,39 @@ describe("review pane", () => {
     }));
   });
 
-  it("shows the route saved on a decided revision", () => {
+  it("shows the route saved on a decided revision beside the decision controls", () => {
     hooks.useReview.mockImplementation(() => ({
       data: {
         ...response,
-        revisions: [{ revision: 1 }, {
-          revision: 2, responder_class: "standard-high", responder_profile_source: "class_match",
-        }],
+        response_route: { ...response.response_route,
+          summary: "Response task: standard-high-codex (standard-high; class match)." },
       },
       isLoading: false,
       error: null,
     }));
     renderPane();
-    expect(screen.getByText("Response route: standard-high (class match)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("standard-high-codex (standard-high; class match)");
+  });
+
+  it("says when feedback returns to the author without creating a task", () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, response_route: {
+        kind: "author_task", class_summaries: {},
+        summary: "No response task is created; author revises task author.",
+      } },
+      isLoading: false,
+      error: null,
+    }));
+    renderPane();
+    expect(screen.getByLabelText("Response route")).toHaveTextContent(
+      "No response task is created; author revises task author.",
+    );
+    fireEvent.change(screen.getByLabelText("Response intelligence class"), {
+      target: { value: "standard-high" },
+    });
+    expect(screen.getByLabelText("Response route")).toHaveTextContent(
+      "Chosen response class: standard-high; no new task uses this choice.",
+    );
   });
 
   it("shows the live revision banner", async () => {

@@ -40,6 +40,17 @@ class ReviewSubmitResponse(BaseModel):
     vault_path: str
 
 
+class ReviewResponseRoute(BaseModel):
+    kind: str
+    summary: str
+    class_id: str | None = None
+    profile_id: str | None = None
+    source: str | None = None
+    selected_class: str | None = None
+    selected_profile: str | None = None
+    class_summaries: dict[str, str] = {}
+
+
 class ReviewShowResponse(BaseModel):
     model_config = {"extra": "allow"}
 
@@ -51,6 +62,7 @@ class ReviewShowResponse(BaseModel):
     comments: list[dict[str, Any]] | None = None
     diff: list[dict[str, Any]] | None = None
     dispatches: list[dict[str, Any]] = []
+    response_route: ReviewResponseRoute
 
 
 class ReviewListResponse(BaseModel):

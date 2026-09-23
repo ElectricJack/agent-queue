@@ -995,6 +995,8 @@ from .review_list_request import ReviewListRequest
 from .review_list_response import ReviewListResponse
 from .review_list_response_422 import ReviewListResponse422
 from .review_record import ReviewRecord
+from .review_response_route import ReviewResponseRoute
+from .review_response_route_class_summaries import ReviewResponseRouteClassSummaries
 from .review_show_request import ReviewShowRequest
 from .review_show_response import ReviewShowResponse
 from .review_show_response_422 import ReviewShowResponse422
@@ -2286,6 +2288,8 @@ __all__ = (
     "ReviewListResponse",
     "ReviewListResponse422",
     "ReviewRecord",
+    "ReviewResponseRoute",
+    "ReviewResponseRouteClassSummaries",
     "ReviewShowRequest",
     "ReviewShowResponse",
     "ReviewShowResponse422",

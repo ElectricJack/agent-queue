@@ -508,6 +508,8 @@ def format_review_detail(data: Any) -> Group:
         "Vault state",
         _review_text(data, "vault_state"),
     )
+    response_route = _review_value(data, "response_route", {})
+    header.add_row("Response", _review_text(response_route, "summary"), "", "")
 
     content = _review_text(revision, "content", "")
     renderables: list[Any] = [

@@ -10,6 +10,7 @@ from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.review_record import ReviewRecord
+    from ..models.review_response_route import ReviewResponseRoute
     from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
     from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
     from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
@@ -27,6 +28,7 @@ class ReviewShowResponse:
         review (ReviewRecord):
         revision (ReviewShowResponseRevision):
         vault_state (str):
+        response_route (ReviewResponseRoute):
         success (bool | Unset):  Default: True.
         revisions (list[ReviewShowResponseRevisionsItem] | Unset):
         comments (list[ReviewShowResponseCommentsType0Item] | None | Unset):
@@ -37,6 +39,7 @@ class ReviewShowResponse:
     review: ReviewRecord
     revision: ReviewShowResponseRevision
     vault_state: str
+    response_route: ReviewResponseRoute
     success: bool | Unset = True
     revisions: list[ReviewShowResponseRevisionsItem] | Unset = UNSET
     comments: list[ReviewShowResponseCommentsType0Item] | None | Unset = UNSET
@@ -50,6 +53,8 @@ class ReviewShowResponse:
         revision = self.revision.to_dict()
 
         vault_state = self.vault_state
+
+        response_route = self.response_route.to_dict()
 
         success = self.success
 
@@ -98,6 +103,7 @@ class ReviewShowResponse:
                 "review": review,
                 "revision": revision,
                 "vault_state": vault_state,
+                "response_route": response_route,
             }
         )
         if success is not UNSET:
@@ -116,6 +122,7 @@ class ReviewShowResponse:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.review_record import ReviewRecord
+        from ..models.review_response_route import ReviewResponseRoute
         from ..models.review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
         from ..models.review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
         from ..models.review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
@@ -128,6 +135,8 @@ class ReviewShowResponse:
         revision = ReviewShowResponseRevision.from_dict(d.pop("revision"))
 
         vault_state = d.pop("vault_state")
+
+        response_route = ReviewResponseRoute.from_dict(d.pop("response_route"))
 
         success = d.pop("success", UNSET)
 
@@ -197,6 +206,7 @@ class ReviewShowResponse:
             review=review,
             revision=revision,
             vault_state=vault_state,
+            response_route=response_route,
             success=success,
             revisions=revisions,
             comments=comments,

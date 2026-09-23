@@ -42813,6 +42813,87 @@
         ],
         "title": "ReviewRecord"
       },
+      "ReviewResponseRoute": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "class_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "selected_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Class"
+          },
+          "selected_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Profile"
+          },
+          "class_summaries": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Class Summaries",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "summary"
+        ],
+        "title": "ReviewResponseRoute"
+      },
       "ReviewShowRequest": {
         "properties": {
           "review_id": {
@@ -42929,6 +43010,9 @@
             "type": "array",
             "title": "Dispatches",
             "default": []
+          },
+          "response_route": {
+            "$ref": "#/components/schemas/ReviewResponseRoute"
           }
         },
         "additionalProperties": true,
@@ -42936,7 +43020,8 @@
         "required": [
           "review",
           "revision",
-          "vault_state"
+          "vault_state",
+          "response_route"
         ],
         "title": "ReviewShowResponse"
       },
