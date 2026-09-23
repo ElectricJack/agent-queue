@@ -284,7 +284,33 @@ class TestComments:
         first = _comment("c-1", created_at=100.0)
         await db.insert_review_comment(second)
         await db.insert_review_comment(first)
-        assert await db.list_review_comments("rev-bright-harbor") == [first, second]
+        rows = await db.list_review_comments("rev-bright-harbor")
+        # Ordered by the creation clock (created_at), which differs here, not
+        # by the order the inserts ran in.
+        assert [c["id"] for c in rows] == ["c-1", "c-2"]
+        assert [c["created_at"] for c in rows] == [100.0, 200.0]
+        # created_seq records insertion order (c-2 went in first), independent
+        # of the clock: it is the tiebreak a coarse clock cannot provide.
+        assert [c["created_seq"] for c in rows] == [2, 1]
+        assert rows[0] == {**first, "created_seq": 2}
+        assert rows[1] == {**second, "created_seq": 1}
+
+    async def test_tied_timestamps_are_ordered_by_creation_not_id(self, db):
+        # A coarse or frozen clock can hand two comments the same created_at.
+        # The list must then read in the order they were made (created_seq),
+        # not in the order of their random ids: c-b's id sorts before c-a's,
+        # so the old created_at, id ordering would have returned them reversed.
+        await _submit(db)
+        a = _comment("c-b", created_at=100.0)
+        b = _comment("c-a", created_at=100.0)
+        await db.insert_review_comment(a)
+        await db.insert_review_comment(b)
+        rows = await db.list_review_comments("rev-bright-harbor")
+        assert [c["id"] for c in rows] == ["c-b", "c-a"]
+        assert [c["created_at"] for c in rows] == [100.0, 100.0]
+        assert [c["created_seq"] for c in rows] == [1, 2]
+        assert rows[0] == {**a, "created_seq": 1}
+        assert rows[1] == {**b, "created_seq": 2}
 
     async def test_comment_body_length_is_checked(self, db):
         await _submit(db)

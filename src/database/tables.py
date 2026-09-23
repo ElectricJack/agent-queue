@@ -742,7 +742,11 @@ doc_review_comments = Table(
     Column("author", Text, nullable=False),  # principal label
     Column("resolved_in_revision", Integer, nullable=True),
     Column("created_at", Float, nullable=False),
+    # 1-based position within this review's comments, assigned at insert;
+    # the creation order that survived a clock that hands out equal stamps.
+    Column("created_seq", Integer, nullable=False),
     CheckConstraint("length(body) BETWEEN 1 AND 16000", name="ck_doc_review_comments_body"),
+    CheckConstraint("created_seq >= 1", name="ck_doc_review_comments_created_seq"),
     Index("idx_doc_review_comments_review", "review_id", "revision"),
 )
 
