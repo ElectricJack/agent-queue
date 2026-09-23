@@ -332,6 +332,9 @@ async def test_hierarchy_non_slot_prep_uses_exact_origin_under_owner_fence(
         async def ahas_remote(self, _path):
             return True
 
+        async def afetch_origin(self, _path, *, repository_url):
+            assert repository_url == ""
+
         async def _arun(self, args, *, cwd):
             calls.append((args, cwd))
             return "c" * 40 if args == ["rev-parse", "HEAD"] else ""

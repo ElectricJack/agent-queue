@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:362438d622eebf2d1e2fcef49ce5082b6f30e080f84fb196aa6d69cc23a48a67` |
+| Contract fingerprint | `sha256:401c65f899809c4de365d3d93a8b07f2dd52dc59a07be286a7eeb2bf03cfe2ed` |
 
 ## Parameters
 
@@ -32,6 +32,8 @@ Redacted in receipts and explanations: `reason`.
 |---|---|---|
 | `id` | `string \| null` | — |
 | `head_sha` | `string \| null` | — |
+| `recovered_task_id` | `string \| null` | — |
+| `source_sha` | `string \| null` | — |
 | `manifest` | `object[]` | — |
 | `evidence` | `object \| null` | — |
 | `policy` | `object \| null` | — |
@@ -80,7 +82,7 @@ Redacted in receipts and explanations: `reason`.
 | `count` | `integer \| null` | — |
 | `outcomes` | `object[]` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`.
+Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`.
 
 ## Outcomes
 

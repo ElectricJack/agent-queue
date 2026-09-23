@@ -18,6 +18,7 @@ import pytest
 from src.event_bus import EventBus
 from src.event_schemas import validate_event
 from src.git.manager import GitError, GitManager
+from src.git.github import PullRequestCreation
 from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
 PR_REPOSITORY = GitHubRepositoryBinding(1, "test/repo")
@@ -84,7 +85,9 @@ def clone(tmp_path, bare_repo):
 def mgr():
     manager = GitManager()
     client = MagicMock()
-    client.create_pull_request = AsyncMock(return_value="https://github.com/test/repo/pull/1")
+    client.create_pull_request_result = AsyncMock(
+        return_value=PullRequestCreation("https://github.com/test/repo/pull/1", created=True)
+    )
     manager._github_client = MagicMock(return_value=client)
     return manager
 
@@ -403,7 +406,9 @@ class TestPRCreatedEventPayload:
 
         fake_url = "https://github.com/test/repo/pull/42"
 
-        mgr._github_client.return_value.create_pull_request.return_value = fake_url
+        mgr._github_client.return_value.create_pull_request_result.return_value = (
+            PullRequestCreation(fake_url, created=True)
+        )
 
         pr_url = await mgr.acreate_pr(
             clone,
@@ -432,7 +437,9 @@ class TestPRCreatedEventPayload:
 
         fake_url = "https://github.com/org/repo/pull/123"
 
-        mgr._github_client.return_value.create_pull_request.return_value = fake_url
+        mgr._github_client.return_value.create_pull_request_result.return_value = (
+            PullRequestCreation(fake_url, created=True)
+        )
 
         await mgr.acreate_pr(
             clone, "feat/x", "Title", "Body", event_bus=bus, project_id="p1",
@@ -490,7 +497,7 @@ class TestFailedOperationsNoEvent:
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
-        mgr._github_client.return_value.create_pull_request.side_effect = GitHubAccessError(
+        mgr._github_client.return_value.create_pull_request_result.side_effect = GitHubAccessError(
             "credentials", "authorization required"
         )
 
@@ -507,7 +514,7 @@ class TestFailedOperationsNoEvent:
         received: list[dict] = []
         bus.subscribe("git.pr.created", lambda data: received.append(data))
 
-        mgr._github_client.return_value.create_pull_request.side_effect = GitHubAccessError(
+        mgr._github_client.return_value.create_pull_request_result.side_effect = GitHubAccessError(
             "transient", "GitHub PR creation timed out"
         )
 
@@ -565,8 +572,8 @@ class TestEventPayloadsPassSchema:
     async def test_pr_event_passes_schema(self, clone, mgr, bus, collector):
         """git.pr.created event payload validates against its schema."""
 
-        mgr._github_client.return_value.create_pull_request.return_value = (
-            "https://github.com/test/repo/pull/99"
+        mgr._github_client.return_value.create_pull_request_result.return_value = (
+            PullRequestCreation("https://github.com/test/repo/pull/99", created=True)
         )
 
         await mgr.acreate_pr(
@@ -628,8 +635,8 @@ class TestEventBusSubscriberIntegration:
         )
 
         # 3) PR event (mocked)
-        mgr._github_client.return_value.create_pull_request.return_value = (
-            "https://github.com/test/repo/pull/7"
+        mgr._github_client.return_value.create_pull_request_result.return_value = (
+            PullRequestCreation("https://github.com/test/repo/pull/7", created=True)
         )
         await mgr.acreate_pr(
             clone, "task/wild-integ", "Wild PR", "Body",
@@ -892,8 +899,10 @@ class TestConcurrentAgentIsolation:
         # We need a separate GitManager for the PR mock to not interfere
         pr_mgr = GitManager()
         pr_client = MagicMock()
-        pr_client.create_pull_request = AsyncMock(
-            return_value="https://github.com/test/repo/pull/55"
+        pr_client.create_pull_request_result = AsyncMock(
+            return_value=PullRequestCreation(
+                "https://github.com/test/repo/pull/55", created=True
+            )
         )
         pr_mgr._github_client = MagicMock(return_value=pr_client)
 

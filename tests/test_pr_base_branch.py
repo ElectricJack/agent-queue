@@ -78,6 +78,7 @@ async def orch(request, tmp_path):
     # fails closed when it cannot; a bare MagicMock is not awaitable, so the
     # merge under test would never be reached.
     o.git.avalidate_pr_for_merge = AsyncMock(return_value=PR_IDENTITY)
+    o.git.acheck_pr_merged = AsyncMock(return_value=False)
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
     o.command_handler = CommandHandler(o, cfg)

@@ -257,6 +257,12 @@ class TestGateSweepBehavior:
             return True
 
         monkeypatch.setattr(orch, "_poll_pr_merged", fake_poll)
+
+        async def fake_reached_default(pr_url, *, project_id=None):
+            assert (pr_url, project_id) == ("https://gh/pr/1", "p-1")
+            return True
+
+        monkeypatch.setattr(orch, "_pr_reached_default_branch", fake_reached_default)
         await orch._sweep_gates()
         assert (await orch.db.get_gate(gid))["status"] == "resolved"
         assert (await orch.db.get_task("t")).is_blocked is False

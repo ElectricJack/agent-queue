@@ -277,6 +277,8 @@ class TestTwoAgentsAcquireBranchIsolated:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -767,6 +769,8 @@ class TestThreeOrMoreAgentsConcurrent:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -1230,6 +1234,8 @@ class TestGitMutexRegistration:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(
@@ -1295,6 +1301,8 @@ class TestGitMutexRegistration:
         mock_git = MagicMock()
         mock_git.avalidate_checkout = AsyncMock(return_value=True)
         mock_git.ahas_remote = AsyncMock(return_value=True)
+        mock_git.afetch_origin = AsyncMock()
+        mock_git._arun = AsyncMock(return_value="")
         mock_git.ahas_uncommitted_changes = AsyncMock(return_value=False)
         stub_repo_root_identity(mock_git)
         mock_git.aget_git_path = AsyncMock(

@@ -1777,7 +1777,7 @@ async def test_async_merge_pr_handles_invalid_method_failure_and_sha(mgr, monkey
     result = await mgr.amerge_pr("/repo", pr_url, method="rebase", repository=REPOSITORY)
     assert result == {"success": True, "sha": sha, "error": None}
     client.merge_pull_request.assert_awaited_with(
-        pr_url, method="rebase", expected_head_oid="b" * 40
+        pr_url, method="rebase", expected_head_oid="b" * 40, expected_base_ref="main"
     )
 
 

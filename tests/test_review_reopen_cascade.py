@@ -227,6 +227,12 @@ async def test_pr_merged_sweep_unblocks_downstream(orchestrator_factory, monkeyp
 
     monkeypatch.setattr(orch, "_poll_pr_merged", fake_poll_pr_merged)
 
+    async def fake_reached_default(pr_url: str, *, project_id: str | None = None) -> bool:
+        assert (pr_url, project_id) == (pr, "p")
+        return True
+
+    monkeypatch.setattr(orch, "_pr_reached_default_branch", fake_reached_default)
+
     # Force the sweep interval so the throttle doesn't skip execution.
     orch._last_gate_sweep = 0.0
     orch.config.work_graph.gate_sweep_interval_seconds = 1
