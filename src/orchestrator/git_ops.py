@@ -225,7 +225,7 @@ class GitOpsMixin:
         if delivery_failure:
             return self._aggregate_verifier_retry(ctx, delivery_failure[0])
 
-        completion = await ParentCompletion(self.db).complete_parent(
+        completion = await ParentCompletion(self.db, git_manager=self.git).complete_parent(
             parent_id, int(checkpoint["generation"]), head
         )
         if completion["outcome"] not in {"completed", "already_completed"}:

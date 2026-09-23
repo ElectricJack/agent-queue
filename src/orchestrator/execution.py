@@ -1600,7 +1600,9 @@ class ExecutionMixin:
                                 ]
                                 ctx.verification_feedback = ctx.verification_issues[0]
                             else:
-                                completion = await ParentCompletion(self.db).complete_parent(
+                                completion = await ParentCompletion(
+                                    self.db, git_manager=self.git
+                                ).complete_parent(
                                     task.id, int(checkpoint["generation"]), head
                                 )
                                 if completion["outcome"] == "completed":

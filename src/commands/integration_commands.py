@@ -1025,6 +1025,7 @@ class IntegrationCommandsMixin:
             default_head_resolver=resolve_head,
             branch_materializer=materialize,
             checkpoint_verifier=verify_checkpoint,
+            git_manager=self.orchestrator.git,
         )
 
     def _integration_repair_service(self):

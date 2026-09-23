@@ -276,6 +276,7 @@ class HierarchyIntegration:
         checkpoint_verifier: CheckpointVerifier | None = None,
         ancestry_verifier: AncestryVerifier | None = None,
         ownership: BranchOwnership | None = None,
+        git_manager=None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
@@ -284,7 +285,7 @@ class HierarchyIntegration:
         self.checkpoint_verifier = checkpoint_verifier
         self.ancestry_verifier = ancestry_verifier
         self.ownership = ownership or BranchOwnership(db)
-        self.parent_completion = ParentCompletion(db, clock=clock)
+        self.parent_completion = ParentCompletion(db, git_manager=git_manager, clock=clock)
         self.clock = clock
 
     async def file_children(

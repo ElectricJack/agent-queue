@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 import re
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -38,13 +39,17 @@ from src.playbooks.artifact_ref import ArtifactRef
 
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
+logger = logging.getLogger(__name__)
 
 
 class ParentCompletion:
     """Conn-owned primitives for one parent's durable collection episode."""
 
-    def __init__(self, db, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self, db, *, git_manager=None, clock: Callable[[], float] = time.time
+    ) -> None:
         self.db = db
+        self.git_manager = git_manager
         self.clock = clock
 
     async def reserve_episode_on(
@@ -1004,6 +1009,38 @@ class ParentCompletion:
         return readiness | {"outcome": "woken", "owner_id": expected_owner}
 
     async def complete_parent(
+        self, task_id: str, generation: int, head_sha: str
+    ) -> dict[str, Any]:
+        result = await self._complete_parent_transition(task_id, generation, head_sha)
+        if result["outcome"] not in {"completed", "already_completed"} or self.git_manager is None:
+            return result
+
+        async with self.db._engine.connect() as conn:
+            route = (
+                await conn.execute(
+                    select(tasks.c.parent_task_id, projects.c.hierarchical_integration_mode)
+                    .join(projects, projects.c.id == tasks.c.project_id)
+                    .where(tasks.c.id == task_id)
+                )
+            ).one_or_none()
+        if route is None or route.parent_task_id is not None or route.hierarchical_integration_mode != "train":
+            return result
+
+        from src.integration.epic_pr import EpicPullRequestService
+
+        try:
+            pr = await EpicPullRequestService(
+                self.db, git_manager=self.git_manager, clock=self.clock
+            ).open_for_epic(task_id)
+        except Exception as exc:
+            logger.exception("Could not open pull request for completed epic %s", task_id)
+            return {"outcome": "pr_open_failed", "task_id": task_id, "reason": str(exc)}
+        logger.info("Parent %s pull request outcome: %s", task_id, pr["outcome"])
+        if pr["outcome"] in {"branch_missing", "repository_missing", "unknown_epic"}:
+            return {"outcome": "pr_open_refused", "task_id": task_id, "reason": pr["outcome"]}
+        return result
+
+    async def _complete_parent_transition(
         self, task_id: str, generation: int, head_sha: str
     ) -> dict[str, Any]:
         from src.database.queries.task_queries import _INTEGRATION_COMPLETION_TOKEN
