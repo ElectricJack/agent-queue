@@ -173,6 +173,17 @@ chunk. Task `prime-forge` tracks a bounded full-response repair. AQ made no
 clone or remote write in this attempt. Held-branch push, App PR, CI and merge
 remain `not_run` live. The credential daemon was stopped after the check.
 
+The App daemon was launched from a clean environment: `GH_TOKEN`,
+`GITHUB_TOKEN` and `GH_ENTERPRISE_TOKEN` were unset, `GH_CONFIG_DIR` pointed
+to an empty directory, global and system Git configuration were disabled,
+and SSH identity discovery was disabled. Running `gh auth status` inside that
+same sanitized environment exited 1 with “You are not logged into any GitHub
+hosts.” This establishes the no-ambient-login precondition; it does **not**
+establish that the App token covers `gh pr create`, PR view/poll,
+`gh api` check-run reads, `gh pr merge`, or delivery Git push. Those
+issue-#615 operations remain `not_run` through AQ because onboarding fails
+first. The current result does not change the no-completion recommendation.
+
 ### Existing-login result: remote PR and merge verified, AQ close blocked
 
 The other isolated daemon reported `credential_mode=existing_login`,
@@ -258,6 +269,7 @@ after verification. No token value was logged or placed in this record.
 | --- | --- |
 | App registration update and installation token mint | App and installation now have requested grants; direct fixed-source mint HTTP 201 for the selected fixture repo |
 | AQ App token bootstrap and URL onboarding | `fail`: HTTP 201 token response truncated to 239 of 6774 bytes by one read; `github_clone` preflight still failed |
+| App-only `gh pr create`, PR view/poll, `gh api` checks, `gh pr merge`, and delivery push without ambient login | `not_run` through AQ after bootstrap failure; clean ambient environment verified by `gh auth status` exit 1 |
 | App-only held-branch push, PR, CI, immutable merge, integration and WIP publication | `not_run` after App token HTTP 422 |
 | App token expiry refresh and concurrent repository separation | `not_run` live; mock-only evidence above |
 | Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified in two PRs; AQ task close `BLOCKED` on both |
