@@ -327,6 +327,7 @@ def _review_row(task_id: str, head: str, *, evidence_id: str, **overrides):
         "reviewed_tree_sha": f"{int(head, 16) + 10_000:040x}",
         "reviewer_task_id": f"reviewer-{task_id}",
         "reviewer_session_attempt_id": None,
+        "reviewer_identity": None,
         "review_kind": "leaf",
         "generation": 1,
         "verdict": "approved",
@@ -656,9 +657,80 @@ async def test_root_projection_excludes_each_common_near_miss(db, receipt_branch
             after=None,
             limit=100,
         )
+        delivered = await db.delivered_root_task_ids_on(
+            conn, project_id="p", repository_id="repo"
+        )
 
     expected = ["already-delivered", "good"] if receipt_branch.endswith("/other") else ["good"]
     assert [row["task_id"] for row in page] == expected
+    assert delivered == (set() if receipt_branch.endswith("/other") else {"already-delivered"})
+
+
+async def test_seal_orders_declared_dependencies_and_defers_missing_ones(db):
+    from src.integration.epic_dependencies import declare
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    for index, task_id in enumerate(("a", "b", "c", "d"), start=1):
+        await _seed_leaf(db, task_id, f"{index:040x}")
+    async with db.immediate() as conn:
+        await declare(conn, dependent_task_id="a", dependency_task_id="b", now=1.0)
+        await declare(conn, dependent_task_id="d", dependency_task_id="missing", now=1.0)
+
+    request = await _request(db)
+    result = await TrainService(db, page_size=2).seal("p", request["request_id"], 20.0)
+    async with db.immediate() as conn:
+        members = (
+            await conn.execute(
+                select(integration_batch_members.c.task_id)
+                .where(integration_batch_members.c.batch_id == result["batch_id"])
+                .order_by(integration_batch_members.c.ordinal)
+            )
+        ).scalars().all()
+
+    assert result["outcome"] == "sealed"
+    assert members == ["b", "a", "c"]
+
+
+async def test_seal_accepts_delivered_dependency_after_source_task_is_archived(db):
+    from src.integration.epic_dependencies import declare
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "dependent", "b" * 40)
+    async with db.immediate() as conn:
+        await declare(
+            conn,
+            dependent_task_id="dependent",
+            dependency_task_id="archived-dependency",
+            now=1.0,
+        )
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="archived-dependency-receipt",
+                domain_key="archived-dependency-receipt",
+                source_task_id="archived-dependency",
+                target_task_id=None,
+                repository_id="repo",
+                target_branch="refs/heads/main",
+                disposition="code",
+                created_at=1.0,
+            )
+        )
+
+    request = await _request(db)
+    result = await TrainService(db).seal("p", request["request_id"], 20.0)
+    async with db.immediate() as conn:
+        members = (
+            await conn.execute(
+                select(integration_batch_members.c.task_id).where(
+                    integration_batch_members.c.batch_id == result["batch_id"]
+                )
+            )
+        ).scalars().all()
+
+    assert result["outcome"] == "sealed"
+    assert members == ["dependent"]
 
 
 async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):

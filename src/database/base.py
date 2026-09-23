@@ -671,6 +671,9 @@ class DatabaseBackend(Protocol):
         after: tuple[str, str] | None,
         limit: int,
     ) -> list[dict]: ...
+    async def delivered_root_task_ids_on(
+        self, conn: AsyncConnection, *, project_id: str, repository_id: str
+    ) -> set[str]: ...
     async def latest_exact_reviews_on(
         self, conn: AsyncConnection, candidates: list[dict]
     ) -> dict[tuple[str, str, str, str, int], dict]: ...
