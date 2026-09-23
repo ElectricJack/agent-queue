@@ -545,10 +545,41 @@ async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_g
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        with pytest.raises(GitError, match="acquisition failed"):
+        with pytest.raises(GitError, match="acquisition failed") as caught:
             await task
+        message = str(caught.value)
+        assert "phase=git_communicate" in message
+        assert "configured_budget=1.0s" in message
+        assert "outer_deadline_expired=True" in message
+        assert "broker_state=" in message
     assert not _process_group_exists(leader)
     assert not Path(f"/proc/{child}").exists()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_expired_budget_identifies_preflight(tmp_path, monkeypatch):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    async def slow_topology(**_kwargs):
+        await asyncio.sleep(0.02)
+        return object()
+
+    monkeypatch.setattr(manager, "_app_git_credential_topology", slow_topology)
+    with pytest.raises(GitError, match="acquisition failed") as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token="test-token",
+            deadline=asyncio.get_running_loop().time() + 0.005,
+            budget_seconds=0.005,
+        )
+    message = str(caught.value)
+    assert "phase=budget_preflight" in message
+    assert "outer_deadline_expired=False" in message
+    assert "broker_state=not_started" in message
 
 
 @pytest.mark.asyncio

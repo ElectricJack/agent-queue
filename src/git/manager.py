@@ -1748,6 +1748,7 @@ class GitManager:
                 repository_url=source_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
             clone_args = ["-c", "core.hooksPath=/dev/null", "clone"]
             if bare:
@@ -1865,6 +1866,7 @@ class GitManager:
                 repository_url=source_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
             destination_git_dir = await self._arun(
                 ["rev-parse", "--absolute-git-dir"], cwd=checkout_path
@@ -3191,6 +3193,7 @@ class GitManager:
             output = await self._arun_authenticated_git(
                 ["ls-remote", "--heads", destination_url, f"refs/heads/{branch}"],
                 home=home, repository_url=destination_url, token=token, deadline=deadline,
+                budget_seconds=self._GIT_TIMEOUT,
             )
         lines = output.decode("ascii", errors="replace").splitlines()
         if not lines:
@@ -3546,6 +3549,7 @@ class GitManager:
                 repository_url=destination_url,
                 token=token,
                 deadline=deadline,
+                budget_seconds=fetch_timeout,
             )
             verified = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
@@ -3603,6 +3607,7 @@ class GitManager:
         repository_url: str,
         token: str | None,
         deadline: float,
+        budget_seconds: float | None = None,
     ) -> bytes:
         """Run one contained network Git command against a pinned repository URL."""
         if not (
@@ -3613,6 +3618,10 @@ class GitManager:
         if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
         uses_existing_auth = token is None
+        loop = asyncio.get_running_loop()
+        run_started = loop.time()
+        initial_remaining = max(0.0, deadline - run_started)
+        configured_budget = budget_seconds if budget_seconds is not None else initial_remaining
         token_buffer = bytearray(token.encode("utf-8")) if token is not None else bytearray()
         with _zeroized_credential(token_buffer):
             topology = (
@@ -3627,6 +3636,8 @@ class GitManager:
             stderr = b""
             broker_timeout: float | None = None
             broker_budget: float | None = None
+            phase = "budget_preflight"
+            operation_timeout = asyncio.timeout_at(deadline)
             try:
                 request_fd: int | None = None
                 if not uses_existing_auth:
@@ -3672,7 +3683,8 @@ class GitManager:
                     else repository_url
                 )
                 command.extend(git_url if arg == repository_url else arg for arg in args)
-                async with asyncio.timeout_at(deadline):
+                async with operation_timeout:
+                    phase = "subprocess_spawn"
                     process = await asyncio.create_subprocess_exec(
                         self._APP_GIT_EXECUTABLE,
                         *command,
@@ -3688,6 +3700,7 @@ class GitManager:
                         request_channel.close()
                         request_channel = None
                     if broker_channel is not None and topology is not None:
+                        phase = "credential_broker_start"
                         broker_budget = self._remaining_app_push_budget(deadline)
                         broker_timeout = min(
                             broker_budget, self._APP_CREDENTIAL_BROKER_TIMEOUT
@@ -3705,8 +3718,11 @@ class GitManager:
                             )
                         )
                         broker_channel = None
+                    phase = "git_communicate"
                     output, stderr = await process.communicate()
+                    phase = "process_cleanup"
                     await self._kill_app_git_group(process)
+                    phase = "credential_broker_settle"
                     served = (
                         await self._settle_app_credential_broker(broker_task)
                         if broker_task is not None
@@ -3714,6 +3730,16 @@ class GitManager:
                     )
                     broker_task = None
             except BaseException as exc:
+                failure_time = loop.time()
+                broker_state = "not_started"
+                if broker_task is not None:
+                    if broker_task.done():
+                        try:
+                            broker_state = "served" if broker_task.result() else "not_served"
+                        except (asyncio.CancelledError, Exception):
+                            broker_state = "failed"
+                    else:
+                        broker_state = "pending"
                 if process is not None:
                     await self._kill_app_git_group(process)
                 if broker_task is not None:
@@ -3721,6 +3747,18 @@ class GitManager:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 detail = _safe_authenticated_git_detail(str(exc), token)
+                if isinstance(exc, asyncio.TimeoutError):
+                    timeout_detail = (
+                        f"phase={phase}, configured_budget={configured_budget:.1f}s, "
+                        f"budget_at_run_start={initial_remaining:.1f}s, "
+                        f"elapsed_in_run={failure_time - run_started:.1f}s, "
+                        f"remaining_budget={max(0.0, deadline - failure_time):.1f}s, "
+                        f"outer_deadline_expired={operation_timeout.expired()}, "
+                        f"broker_state={broker_state}"
+                    )
+                    if broker_timeout is not None:
+                        timeout_detail += f", broker_timeout={broker_timeout:.1f}s"
+                    detail = f"{timeout_detail}; {detail}" if detail else timeout_detail
                 suffix = f": {detail}" if detail else ""
                 if stderr:
                     tail = _safe_authenticated_git_detail(
@@ -4893,6 +4931,7 @@ class GitManager:
                     output = await self._arun_authenticated_git(
                         ["ls-remote", "--symref", source_url, "HEAD"],
                         home=home, repository_url=source_url, token=token, deadline=deadline,
+                        budget_seconds=self._GIT_TIMEOUT,
                     )
                 for line in output.decode("ascii", errors="replace").splitlines():
                     if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
