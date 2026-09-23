@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from src.config import GitHubAppConfig
 from src.git.github_app import (
+    AiohttpTransport,
     AppTokenProvider,
     GitHubAppError,
     GitHubRepositoryBinding,
@@ -46,6 +47,84 @@ class ScriptedTransport:
         return self.responses.pop(0)
 
 
+class PartialReadContent:
+    def __init__(self, chunks: list[bytes]):
+        self.chunks = list(chunks)
+        self.read_sizes: list[int] = []
+
+    async def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.pop(0)
+        assert len(chunk) <= size
+        return chunk
+
+
+class FakeAiohttpResponse:
+    def __init__(self, chunks: list[bytes], *, status: int = 201):
+        self.status = status
+        self.headers = {"Content-Type": "application/json"}
+        self.content = PartialReadContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+
+class FakeAiohttpSession:
+    def __init__(self, response: FakeAiohttpResponse):
+        self.response = response
+        self.request_kwargs = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+    def request(self, *_args, **kwargs):
+        self.request_kwargs = kwargs
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_reads_entire_partial_success_response(monkeypatch):
+    payload = json.dumps({"padding": "x" * 6700}).encode()
+    response = FakeAiohttpResponse([payload[:239], payload[239:400], payload[400:]])
+    session = FakeAiohttpSession(response)
+    monkeypatch.setattr("src.git.github_app.aiohttp.ClientSession", lambda **_kwargs: session)
+
+    result = await AiohttpTransport().request(
+        "POST",
+        "https://api.github.com/app/installations/202/access_tokens",
+        headers={},
+        max_bytes=8192,
+    )
+
+    assert result.status == 201
+    assert json.loads(result.body) == {"padding": "x" * 6700}
+    assert response.content.read_sizes == [8193, 8193 - 239, 8193 - 400, 8193 - len(payload)]
+    assert session.request_kwargs["allow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_rejects_oversized_partial_response(monkeypatch):
+    response = FakeAiohttpResponse([b"abcd", b"efgh", b"i"])
+    session = FakeAiohttpSession(response)
+    monkeypatch.setattr("src.git.github_app.aiohttp.ClientSession", lambda **_kwargs: session)
+
+    with pytest.raises(GitHubAppError, match="size limit") as caught:
+        await AiohttpTransport().request(
+            "GET", "https://api.github.com/app", headers={}, max_bytes=8
+        )
+
+    assert caught.value.category == "transient"
+    assert response.content.read_sizes == [9, 5, 1]
+
+
 def _private_key() -> tuple[bytes, bytes]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private = key.private_bytes(
@@ -68,7 +147,7 @@ def _installation_response(token: str, *, expires: str = "2030-01-01T00:00:00Z")
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     return HttpResponse(
         201,
@@ -93,7 +172,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     token_response = HttpResponse(
         201,
@@ -103,7 +182,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
             '"repositories":[{"id":303,"full_name":"acme/widgets"}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
             '"administration":"read","pull_requests":"write",'
-            '"issues":"write","variables":"read","metadata":"read"}}' % expires
+            '"issues":"write","actions_variables":"read","metadata":"read"}}' % expires
         ).encode(),
     )
     transport = ScriptedTransport([HttpResponse(200, {}, b'{"id":101}'), token_response])
@@ -164,7 +243,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
             b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
             b'"permissions":{"checks":"write",'
             b'"actions":"read","contents":"write","administration":"write",'
-            b'"pull_requests":"write","issues":"write","variables":"read"}}',
+            b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
         ),
     ]
     provider = AppTokenProvider(
@@ -188,7 +267,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
                 b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
                 b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write","variables":"read"}}',
+                b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
             ),
         ]
     )
@@ -205,7 +284,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
 
 
 @pytest.mark.asyncio
-async def test_rejects_installation_token_without_variables_read_permission():
+async def test_rejects_installation_token_without_actions_variables_read_permission():
     private, _ = _private_key()
     transport = ScriptedTransport(
         [
@@ -246,7 +325,7 @@ async def test_binds_repository_by_name_with_one_narrow_installation_token():
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     transport = ScriptedTransport(
         [
@@ -290,7 +369,7 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
                 b'"repositories":[{"id":303,"full_name":"attacker/redirected"}],'
                 b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write","variables":"read"}}',
+                b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
             ),
         ]
     )

@@ -1996,6 +1996,24 @@
         }
       }
     },
+    "/api/reviews/pull-requests": {
+      "get": {
+        "summary": "Get Pending Pull Requests",
+        "operationId": "get_pending_pull_requests_api_reviews_pull_requests_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingPullRequestsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/message": {
       "post": {
         "tags": [
@@ -33968,6 +33986,81 @@
         "type": "object",
         "title": "PendingEventReplayDTO",
         "description": "What ``playbooks.v2_pending_event_replay_on_activation`` did here.\n\nAlways present on an activation response, including under the default\n``manual`` policy, so an empty backlog and a policy that never looked at\none are distinguishable without reading the daemon's config.\n``refused_reason`` is the fail-closed path: the policy is ``automatic``\nbut the activation was not a ready, enabled one \u2014 most importantly\n``question_required``, where an unreviewed playbook may not auto-consume\na backlog."
+      },
+      "PendingPullRequest": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "repository": {
+            "type": "string",
+            "title": "Repository"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "project_name": {
+            "type": "string",
+            "title": "Project Name"
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "unknown"
+            ],
+            "title": "State"
+          },
+          "opened_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opened At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "title",
+          "url",
+          "repository",
+          "project_id",
+          "project_name",
+          "task_id",
+          "state",
+          "opened_at"
+        ],
+        "title": "PendingPullRequest"
+      },
+      "PendingPullRequestsResponse": {
+        "properties": {
+          "pull_requests": {
+            "items": {
+              "$ref": "#/components/schemas/PendingPullRequest"
+            },
+            "type": "array",
+            "title": "Pull Requests"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pull_requests"
+        ],
+        "title": "PendingPullRequestsResponse"
       },
       "PhaseCreateRequest": {
         "properties": {

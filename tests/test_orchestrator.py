@@ -24,7 +24,7 @@ from src.runtimes.base import Runtime
 from src.config import DatabaseConfig, AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
-from src.git.manager import GitManager
+from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from tests.assignment_routing_helpers import install_already_routed
 from tests.db_fixtures import lease_dsn
 
@@ -1482,6 +1482,10 @@ class TestPhaseVerifyNormalTask:
         mock_git.afind_open_pr = AsyncMock(return_value=None)
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+        mock_git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)
@@ -1805,10 +1809,12 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead), then the final behind and
-        # ahead checks return "0".  The mock push cannot update the refs, so
-        # these three values model the complete successful verification.
-        orch.git._arun = AsyncMock(side_effect=["3", "0", "0"])
+        # The remote first differs from HEAD, then carries the exact pushed
+        # OID. The local origin/main tracking ref need not change.
+        orch.git.als_remote_ref = AsyncMock(side_effect=[
+            RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40),
+            RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40),
+        ])
 
         ws = await orch.db.get_workspace("ws-1")
         ctx = self._make_ctx(orch, task, ws.workspace_path)
@@ -1816,11 +1822,7 @@ class TestPhaseVerifyNormalTask:
         result = await orch._phase_verify(ctx)
         assert result == PhaseResult.CONTINUE
         orch.git.apush_validated_delivery.assert_awaited_once()
-        assert [call.args[0] for call in orch.git._arun.await_args_list] == [
-            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
-            ["rev-list", "HEAD..refs/remotes/origin/main", "--count"],
-            ["rev-list", "refs/remotes/origin/main..HEAD", "--count"],
-        ]
+        assert orch.git.als_remote_ref.await_count == 2
         # The auto-push goes through the delivery guard, which inspects the
         # tip against origin/<default> before pushing that exact OID.
         assert orch.git.apush_validated_delivery.await_args.args[1:] == (
@@ -1845,9 +1847,9 @@ class TestPhaseVerifyNormalTask:
         )
         await orch.db.create_task(task)
 
-        # Auto-push rev-list returns "3" (ahead) — triggers push
-        # Push fails, so scenario behind check gets "0", ahead check gets "3"
-        orch.git._arun = AsyncMock(side_effect=["3", "0", "3"])
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40)
+        )
         orch.git.apush_validated_delivery = AsyncMock(side_effect=Exception("push failed"))
 
         ws = await orch.db.get_workspace("ws-1")
@@ -1871,7 +1873,9 @@ class TestPhaseVerifyApprovalTask:
         o = Orchestrator(config, runtimes=MockAdapterFactory())
         await o.initialize()
 
-        await o.db.create_project(Project(id="p-1", name="alpha"))
+        await o.db.create_project(
+            Project(id="p-1", name="alpha", repo_url="https://github.com/org/repo.git")
+        )
         ws_path = str(tmp_path / "workspaces" / "ws1")
         os.makedirs(ws_path, exist_ok=True)
         await o.db.create_workspace(
@@ -1895,6 +1899,10 @@ class TestPhaseVerifyApprovalTask:
         # Default: the task branch carries work, so the PR gate applies.
         mock_git.acount_commits_ahead = AsyncMock(return_value=1)
         mock_git._arun = AsyncMock(return_value="0")
+        mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+        mock_git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
         mock_git.areserved_paths_in_index = AsyncMock(return_value=set())
         mock_git.areserved_paths_in_diff = AsyncMock(return_value=set())
         mock_git.acommit_all = AsyncMock(return_value=True)

@@ -656,6 +656,9 @@ from .pending_event_dto_event import PendingEventDTOEvent
 from .pending_event_dto_reason import PendingEventDTOReason
 from .pending_event_replay_dto import PendingEventReplayDTO
 from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
+from .pending_pull_request import PendingPullRequest
+from .pending_pull_request_state import PendingPullRequestState
+from .pending_pull_requests_response import PendingPullRequestsResponse
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
 from .phase_create_response_422 import PhaseCreateResponse422
@@ -1951,6 +1954,9 @@ __all__ = (
     "PendingEventDTOReason",
     "PendingEventReplayDTO",
     "PendingEventReplayDTOPolicy",
+    "PendingPullRequest",
+    "PendingPullRequestsResponse",
+    "PendingPullRequestState",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
     "PhaseCreateResponse422",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import ssl
@@ -24,6 +25,7 @@ from src.git.manager import (
     PullRequestIdentity,
     RemoteRefState,
 )
+from src.integration.development import DevelopmentIntegration
 from src.orchestrator.worktree_manager import WorktreeSlotManager
 
 
@@ -543,10 +545,253 @@ async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_g
         with pytest.raises(asyncio.CancelledError):
             await task
     else:
-        with pytest.raises(GitError, match="acquisition failed"):
+        with pytest.raises(GitError, match="acquisition failed") as caught:
             await task
+        message = str(caught.value)
+        assert "phase=git_communicate" in message
+        assert "configured_budget=1.0s" in message
+        assert "outer_deadline_expired=True" in message
+        assert "broker_state=" in message
     assert not _process_group_exists(leader)
     assert not Path(f"/proc/{child}").exists()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_expired_budget_identifies_preflight(tmp_path, monkeypatch):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    async def slow_topology(**_kwargs):
+        await asyncio.sleep(0.02)
+        return object()
+
+    monkeypatch.setattr(manager, "_app_git_credential_topology", slow_topology)
+    with pytest.raises(GitError, match="acquisition failed") as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token="test-token",
+            deadline=asyncio.get_running_loop().time() + 0.005,
+            budget_seconds=0.005,
+        )
+    message = str(caught.value)
+    assert "phase=budget_preflight" in message
+    assert "outer_deadline_expired=False" in message
+    assert "broker_state=not_started" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_retries_timeout_with_same_delivery_oid_and_lease(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    source = (tmp_path / "source.git").as_uri()
+    old_oid, tip_oid = "a" * 40, "b" * 40
+    started = []
+    process = SimpleNamespace(
+        returncode=0,
+        communicate=AsyncMock(return_value=(f"{old_oid}\trefs/heads/main\n".encode(), b"")),
+    )
+
+    async def start(*args, **kwargs):
+        started.append((args, kwargs))
+        if len(started) == 1:
+            raise asyncio.TimeoutError
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(manager_module.random, "uniform", lambda low, high: 0.2)
+    monkeypatch.setattr(manager, "_kill_app_git_group", AsyncMock())
+    monkeypatch.setattr(manager, "_apush_destination", AsyncMock(return_value=(source, None)))
+    monkeypatch.setattr(manager, "_aresolve_delivery_tip", AsyncMock(return_value=tip_oid))
+    monkeypatch.setattr(manager, "areserved_paths_in_diff", AsyncMock(return_value=[]))
+    transfer = AsyncMock()
+    monkeypatch.setattr(manager, "_atransfer_exact_ref", transfer)
+    monkeypatch.setattr(manager, "_aemit_push_event", AsyncMock())
+
+    result = await manager.apush_validated_delivery(
+        str(tmp_path), "main", "refs/heads/source", "main",
+        expected_remote_oid=old_oid, repository_url=source,
+    )
+
+    assert result == tip_oid
+    assert len(started) == 2
+    assert started[0][0] == started[1][0]
+    assert started[0][1]["env"] == started[1][1]["env"]
+    assert transfer.await_args.args[1] == tip_oid
+    assert transfer.await_args.args[3] == old_oid
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_timeout_stops_after_one_retry(tmp_path, monkeypatch):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+    source = (tmp_path / "source.git").as_uri()
+    starts = 0
+    attempt_deadlines = []
+    original_attempt = manager._arun_authenticated_git_once
+
+    async def record_attempt(*args, **kwargs):
+        attempt_deadlines.append(kwargs["deadline"])
+        return await original_attempt(*args, **kwargs)
+
+    async def time_out(*_args, **_kwargs):
+        nonlocal starts
+        starts += 1
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", time_out)
+    monkeypatch.setattr(manager_module.random, "uniform", lambda low, high: 0.2)
+    monkeypatch.setattr(manager, "_arun_authenticated_git_once", record_attempt)
+    overall_deadline = asyncio.get_running_loop().time() + 9
+    with pytest.raises(GitError, match="exception TimeoutError") as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token=None, deadline=overall_deadline,
+            budget_seconds=9,
+        )
+    assert starts == 2
+    assert attempt_deadlines[0] < attempt_deadlines[1] == overall_deadline
+    assert type(caught.value) is GitError
+    message = str(caught.value)
+    assert "attempt=2" in message
+    assert "phase=subprocess_spawn" in message
+    assert "configured_budget=9.0s" in message
+    assert "elapsed_in_run=" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_does_not_retry_auth_or_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+    source = (tmp_path / "source.git").as_uri()
+    starts = 0
+    process = SimpleNamespace(returncode=7, communicate=AsyncMock(return_value=(b"", b"auth failed")))
+
+    async def start(*_args, **_kwargs):
+        nonlocal starts
+        starts += 1
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(manager, "_kill_app_git_group", AsyncMock())
+    with pytest.raises(GitError, match="returncode 7"):
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token=None, deadline=asyncio.get_running_loop().time() + 5,
+        )
+    assert starts == 1
+    with pytest.raises(GitError, match="invalid GitHub App credential"):
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token="", deadline=asyncio.get_running_loop().time() + 5,
+        )
+    assert starts == 1
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_exit_and_scrubs_stderr_and_publisher_log(
+    tmp_path, caplog
+):
+    token = "private-installation-token"
+    fake_git = tmp_path / "failing-git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'fatal: unable to access "
+        "https://alice:password@github.com/acme/widgets.git' "
+        "'Authorization: Bearer private-installation-token' "
+        "'token=private-installation-token' 'fatal: upstream unavailable' >&2\n"
+        "exit 7\n"
+    )
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token=token,
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "returncode 7" in message
+    assert "fatal: upstream unavailable" in message
+    publisher = DevelopmentIntegration(None, data_dir=tmp_path, git=manager)
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        publisher._note_project_fault("agent-queue", caught.value)
+    for output in (message, caplog.text):
+        assert token not in output
+        assert "password" not in output
+        assert "alice:" not in output
+        assert "Authorization: Bearer" not in output
+        assert "https://alice:password@" not in output
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_broker_not_served(tmp_path):
+    fake_git = tmp_path / "no-prompt-git"
+    fake_git.write_text("#!/bin/sh\nexit 0\n")
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    manager._APP_CREDENTIAL_BROKER_TIMEOUT = 0.25
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", "https://github.com/acme/widgets.git", "HEAD"],
+            home=home,
+            repository_url="https://github.com/acme/widgets.git",
+            token="private-installation-token",
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "credential broker did not serve token" in message
+    assert "timeout=0.2s" in message or "timeout=0.3s" in message
+    assert "budget_at_start=" in message
+    assert "remaining_push_budget=" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_sanitized_exception(tmp_path, monkeypatch):
+    token = "private-installation-token"
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    async def fail_to_launch(*_args, **_kwargs):
+        raise RuntimeError(
+            "launch failed for https://alice:password@github.com/acme/widgets.git " + token
+        )
+
+    monkeypatch.setattr(manager, "_app_git_credential_topology", AsyncMock(return_value=object()))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_to_launch)
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token=token,
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "exception RuntimeError: launch failed" in message
+    assert token not in message
+    assert "alice:password" not in message
 
 
 @pytest.mark.asyncio
@@ -1088,6 +1333,8 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
                     topology=topology,
                     authority="x" * (MAX_REQUEST_BYTES + 1),
                     repository="https://github.com/acme/widgets.git",
+                    remote_name="https://github.com/acme/widgets.git",
+                    remote_url="https://github.com/acme/widgets.git",
                     prompt="Password for 'https://x-access-token@github.com': ",
                     timeout=0.1,
                 ),
@@ -1347,7 +1594,14 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
 
 
 @pytest.mark.asyncio
-async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
+@pytest.mark.parametrize(
+    "broker_url",
+    ["transport", "original", "other_repository", "wrong_alias"],
+)
+@pytest.mark.parametrize("operation", ["ls-remote", "clone"])
+async def test_supported_git_https_remote_helper_is_credential_origin(
+    tmp_path, broker_url, operation
+):
     requests = 0
 
     async def respond(reader, writer):
@@ -1394,7 +1648,8 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
     tls.load_cert_chain(certificate, private_key)
     server = await asyncio.start_server(respond, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
-    repository = f"https://x-access-token@127.0.0.1:{port}/acme/widgets.git"
+    repository = f"https://127.0.0.1:{port}/acme/widgets.git"
+    remote_url = repository.replace("https://", "https://x-access-token@", 1)
     authority = f"https://x-access-token@127.0.0.1:{port}"
     prompt = f"Password for '{authority}': "
     helper = Path(answer_prompt.__code__.co_filename).resolve()
@@ -1413,12 +1668,16 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
             "AQ_GIT_APP_REPOSITORY": repository,
         }
     )
+    git_args = (
+        ["ls-remote", remote_url]
+        if operation == "ls-remote"
+        else ["clone", "--bare", remote_url, str(tmp_path / "clone.git")]
+    )
     process = await asyncio.create_subprocess_exec(
         "/usr/bin/git",
         "-c",
         "http.sslVerify=false",
-        "ls-remote",
-        repository,
+        *git_args,
         cwd=tmp_path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -1437,8 +1696,19 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
                 topology=topology,
                 authority=authority,
                 repository=repository,
+                remote_name=(
+                    "wrong-alias"
+                    if broker_url == "wrong_alias"
+                    else "origin" if operation == "clone" else remote_url
+                ),
+                remote_url={
+                    "transport": remote_url,
+                    "original": repository,
+                    "other_repository": remote_url.replace("widgets", "other"),
+                    "wrong_alias": remote_url,
+                }[broker_url],
                 prompt=prompt,
-                timeout=2,
+                timeout=2 if broker_url == "transport" else 0.2,
             ),
             timeout=3,
         )
@@ -1448,7 +1718,7 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
         await server.wait_closed()
 
     stderr = await process.stderr.read()
-    assert served is True, (requests, stderr)
+    assert served is (broker_url == "transport"), (requests, stderr)
     assert token == bytearray()
     assert requests >= 1
 
