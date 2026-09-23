@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { NodeChange } from "@xyflow/react";
+import type { Edge, NodeChange } from "@xyflow/react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -18,6 +18,7 @@ interface FlowNode {
 
 interface FlowProps {
   nodes: FlowNode[];
+  edges: Edge[];
   children: ReactNode;
   onlyRenderVisibleElements?: boolean;
   onMove?: (event: unknown, viewport: { x: number; y: number; zoom: number }) => void;
@@ -518,6 +519,40 @@ describe("LayoutCanvas", () => {
       // Same object identity: nothing about the request depends on zoom, so
       // the layer does not even re-run its fetch effect.
       expect(tiles.params).toBe(atOne);
+    });
+
+    it("keeps an entered epic's dependency edge appearance through zoom out and back", () => {
+      tiles.store = mergeTiles(emptyStore(), ["0:0"], {
+        nodes: [
+          n("epic", "container", 0, 0, { w: 4, h: 3 }),
+          n("child-a", "card", 0.2, 0.5, { container_id: "epic", depth: 1 }),
+          n("child-b", "card", 2, 0.5, { container_id: "epic", depth: 1 }),
+        ],
+        edges: [{ from: "child-b", to: "child-a", dep_type: "parent-child", description: null, count: 3 }],
+        stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+      } as unknown as TilesResponse);
+      const originalRaf = globalThis.requestAnimationFrame;
+      const frames: FrameRequestCallback[] = [];
+      globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => frames.push(cb)) as typeof requestAnimationFrame;
+      try {
+        render(<MemoryRouter><LayoutCanvas {...base} focusId="epic" /></MemoryRouter>);
+        const appearance = () => flow.current!.edges.map((edge) => ({
+          id: edge.id, type: edge.type, style: edge.style, markerEnd: edge.markerEnd,
+          depType: edge.data?.depType,
+        }));
+        const expected = appearance();
+        expect(expected).toMatchObject([{ type: "smoothstep", depType: "parent-child" }]);
+        expect(flow.current!.edges[0]!.label).toBe("×3");
+        for (const zoom of [2, 1, 0.8, 0.5, 0.49, 0.2, 0.15, 0.49, 0.5, 1, 2]) {
+          act(() => flow.current!.onMove!(null, { x: 0, y: 0, zoom }));
+          expect(appearance()).toEqual(expected);
+          if (zoom < 0.5) expect(flow.current!.edges[0]!.label).toBeUndefined();
+          act(() => { for (const cb of frames.splice(0)) cb(0); });
+        }
+        expect(flow.current!.edges[0]!.label).toBe("×3");
+      } finally {
+        globalThis.requestAnimationFrame = originalRaf;
+      }
     });
 
     it("draws a container tile with an enter control and no expand/collapse toggle", () => {

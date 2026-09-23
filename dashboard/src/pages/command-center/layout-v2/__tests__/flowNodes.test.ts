@@ -232,16 +232,47 @@ describe("toFlowElements", () => {
     expect(byId(second, "a")).not.toBe(byId(first, "a"));
   });
 
-  it("drops to straight unlabelled edges at far zoom", () => {
-    const store = mergeTiles(emptyStore(), ["0:0"], {
-      nodes: [n("a", "card", 0, 0), n("b", "card", 2, 0)],
-      edges: [{ from: "b", to: "a", dep_type: "blocks", description: null, count: 3 }],
+  it("keeps every edge's type, style and arrowhead through the full zoom range", () => {
+    const root = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [n("epic", "collapsed", 0, 0), n("peer", "card", 3, 0), n("other", "card", 6, 0)],
+      edges: [
+        { from: "peer", to: "epic", dep_type: "blocks", description: null, count: 3 },
+        { from: "other", to: "peer", dep_type: "waits-for", description: null, count: 1 },
+      ],
       stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
     } as never);
-    expect(toFlowElements(store, ctx).edges[0]).toMatchObject({ type: "smoothstep", label: "\u00d73" });
-    const far = toFlowElements(store, { ...ctx, simpleEdges: true }).edges[0]!;
-    expect(far.type).toBe("straight");
-    expect(far.label).toBeUndefined();
+    const inside = mergeTiles(emptyStore(), ["0:0"], {
+      nodes: [
+        n("epic", "container", 0, 0, { w: 5, h: 4 }),
+        n("child-a", "card", 0.2, 0.5, { container_id: "epic", depth: 1 }),
+        n("child-b", "card", 2, 0.5, { container_id: "epic", depth: 1 }),
+        n("child-c", "card", 3.5, 2, { container_id: "epic", depth: 1 }),
+      ],
+      edges: [
+        { from: "child-b", to: "child-a", dep_type: "parent-child", description: null, count: 2 },
+        { from: "child-c", to: "child-b", dep_type: "conditional-blocks", description: null, count: 1 },
+        { from: "child-c", to: "child-a", dep_type: "discovered-from", description: null, count: 1 },
+      ],
+      stubs: [], stub_overflow: [], workers: [], gates: [], layout_version: 1,
+    } as never);
+    const appearance = (edges: ReturnType<typeof toFlowElements>["edges"]) => edges.map((edge) => ({
+      id: edge.id, source: edge.source, target: edge.target, type: edge.type,
+      style: edge.style, markerEnd: edge.markerEnd, depType: edge.data?.depType,
+    }));
+
+    // Both scopes use the same conversion path. The switch below 0.5 may
+    // remove count labels, but it must never reclassify or restyle an edge.
+    for (const [store, scope] of [[root, ctx], [inside, { ...ctx, focusId: "epic" }]] as const) {
+      let result = toFlowElements(store, scope);
+      const expected = appearance(result.edges);
+      expect(result.edges.some((edge) => edge.label === "×3" || edge.label === "×2")).toBe(true);
+      for (const zoom of [2, 1, 0.8, 0.5, 0.49, 0.2, 0.15, 0.49, 0.5, 1, 2]) {
+        result = toFlowElements(store, { ...scope, hideEdgeLabels: zoom < 0.5 }, result.cache);
+        expect(appearance(result.edges)).toEqual(expected);
+        if (zoom < 0.5) expect(result.edges.every((edge) => edge.label === undefined)).toBe(true);
+      }
+      expect(result.edges.some((edge) => edge.label === "×3" || edge.label === "×2")).toBe(true);
+    }
   });
   describe("inside an entered container", () => {
     // The daemon's real answer for smart-meadow: a 3x12 box whose six
