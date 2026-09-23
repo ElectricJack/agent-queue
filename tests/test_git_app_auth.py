@@ -1189,6 +1189,7 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
                     topology=topology,
                     authority="x" * (MAX_REQUEST_BYTES + 1),
                     repository="https://github.com/acme/widgets.git",
+                    remote_url="https://github.com/acme/widgets.git",
                     prompt="Password for 'https://x-access-token@github.com': ",
                     timeout=0.1,
                 ),
@@ -1448,7 +1449,13 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
 
 
 @pytest.mark.asyncio
-async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
+@pytest.mark.parametrize(
+    "broker_url",
+    ["transport", "original", "other_repository"],
+)
+async def test_supported_git_https_remote_helper_is_credential_origin(
+    tmp_path, broker_url
+):
     requests = 0
 
     async def respond(reader, writer):
@@ -1495,7 +1502,8 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
     tls.load_cert_chain(certificate, private_key)
     server = await asyncio.start_server(respond, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
-    repository = f"https://x-access-token@127.0.0.1:{port}/acme/widgets.git"
+    repository = f"https://127.0.0.1:{port}/acme/widgets.git"
+    remote_url = repository.replace("https://", "https://x-access-token@", 1)
     authority = f"https://x-access-token@127.0.0.1:{port}"
     prompt = f"Password for '{authority}': "
     helper = Path(answer_prompt.__code__.co_filename).resolve()
@@ -1519,7 +1527,7 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
         "-c",
         "http.sslVerify=false",
         "ls-remote",
-        repository,
+        remote_url,
         cwd=tmp_path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -1538,8 +1546,13 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
                 topology=topology,
                 authority=authority,
                 repository=repository,
+                remote_url={
+                    "transport": remote_url,
+                    "original": repository,
+                    "other_repository": remote_url.replace("widgets", "other"),
+                }[broker_url],
                 prompt=prompt,
-                timeout=2,
+                timeout=2 if broker_url == "transport" else 0.2,
             ),
             timeout=3,
         )
@@ -1549,7 +1562,7 @@ async def test_supported_git_https_remote_helper_is_credential_origin(tmp_path):
         await server.wait_closed()
 
     stderr = await process.stderr.read()
-    assert served is True, (requests, stderr)
+    assert served is (broker_url == "transport"), (requests, stderr)
     assert token == bytearray()
     assert requests >= 1
 
