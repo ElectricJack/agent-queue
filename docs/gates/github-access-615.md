@@ -87,10 +87,10 @@ Task `prime-grove` started a separate App daemon and a separate existing-login
 daemon against disposable private repositories on 2026-09-23 UTC. This is live
 GitHub evidence. **Current disposition: acceptance failed at App onboarding
 and AQ task close; issue #615 completion is not recommended.** The App
-installation permission update has propagated and direct token mint works,
-but AQ's bootstrap response read is incomplete. Source repairs are tracked
-as `agile-delta` (App permission key), `prime-forge` (response read) and
-`fair-stone` (task-close tracking ref). All isolated daemons were stopped after these checks. The disposable
+installation permission update has propagated and direct token mint works.
+The historical bootstrap failure and its source repairs are recorded below;
+the later rerun at `c7cf95f4f` is recorded at the end of this file. All
+isolated daemons were stopped after these checks. The disposable
 repositories and isolated fixture data are retained for the approved rerun;
 final cleanup is not yet claimed.
 
@@ -285,3 +285,64 @@ aq test tests/test_github_access_workflow.py
 tests/test_github_access_architecture.py tests/test_worker_git_scope.py`
 finished **126 passed, 3 skipped, exit 0** in 64.08 seconds. It remains
 mock-only evidence. No full-suite run was made.
+
+## App-only rerun after deployed repairs: `c7cf95f4f` (2026-09-23 UTC)
+
+This section supersedes the status table above for the latest attempt. The
+isolated source checkout was rebuilt at
+`c7cf95f4f33ec9f486dcf28323125e5570f910f9`, which contains the App
+permission-name repair, bounded HTTP response read, and PR delivery tracking
+repair. The App daemon used the retained disposable database and port `18155`.
+The launch environment contained no `GH_TOKEN`, `GITHUB_TOKEN`,
+`GH_ENTERPRISE_TOKEN`, Git credential helper, or usable SSH identity. Its
+`GH_CONFIG_DIR` was empty. Before daemon start, `gh auth status` in that exact
+environment exited `1` and said “You are not logged into any GitHub hosts.”
+The real GitHub CLI was `gh version 2.45.0` (Ubuntu
+`2.45.0-1ubuntu0.3`). AQ's auth-status command then reported
+`credential_mode=app`, `authenticated=true`, App ID `5052310` and installation
+ID `164168761`; the isolated daemon health endpoint returned HTTP `200`.
+
+| App-only step | Latest live result |
+| --- | --- |
+| `github_clone` of private repository `1384141153` | **Fail** in `prepare` for request `gh615-app-onboard-4`: `clone_failed`, Git exit `128`, credential broker did not serve token, and GitHub reported invalid username or token. The command progressed beyond the previous preflight failure. AQ did not expose the Git HTTP status. |
+| Fixture task, commit and held-branch push | `not_run`: onboarding created no project or checkout. No App delivery push occurred, so use of the App credential by `apush_validated_delivery` remains unverified live. |
+| `gh pr create`, PR view/poll, `gh api` check-runs, `gh pr merge`, AQ task close | `not_run`: no App PR was created. The App token alone has therefore not been proved to cover issue #615's `gh` operations. |
+| Independent remote state | A separate verifier read of the disposable App repository's `main` ref returned HTTP `200`, OID `206e0b7c1d93415ae470a34a3569dac3f099e84f` (unchanged from provisioning). Its PR list was empty. No App branch, PR or merge OID exists to report. |
+
+The clone failure is a source issue found by a credential-free probe. In
+[`src/git/manager.py`](../../src/git/manager.py), authenticated Git prepends
+`x-access-token@` to the repository URL so Git asks for a password. Git then
+invokes `git-remote-https` with that username-prefixed URL in both URL
+arguments. [`src/git/askpass_broker.py`](../../src/git/askpass_broker.py)
+compares those arguments to the **unprefixed** repository URL, rejects the
+legitimate helper, and never serves the App token. The probe recorded only
+the nonsecret URL and prompt; it did not mint or log a token. Repair task
+`steady-flare` tracks this blocker. The App fixture remains available for a
+rerun after repair.
+
+### Independent existing-login close check after `fair-stone`
+
+The stored-login daemon was also restarted from `c7cf95f4f` on its separate
+database and port `18156`. In the disposable login repository, held fixture
+task `prime-pinnacle` committed OID
+`3fb49599bcf424a95d26286867c5569e8b303344`; `aq git push` returned
+that OID for `aq/prime-pinnacle`, and an independent GitHub ref read matched.
+The first normal direct-mode `aq task close` was **refused** with
+`verification_failed`, leaving the task `IN_PROGRESS`: it said local `main`
+had unpushed commits, although a GitHub ref read already showed `main` at
+`3fb49599bcf424a95d26286867c5569e8b303344`. The local
+`origin/main` still pointed at
+`725b217262412548cc1b7ce60ebcb6093accf30f`. After a local
+`git fetch origin main` refreshed only that tracking ref, the second close
+returned `COMPLETED` and `pipeline_ok=true`. GitHub ref reads for both `main`
+and `aq/prime-pinnacle` returned HTTP `200` and the same exact new OID.
+This is a successful close **after manual ref refresh**, not an unattended
+task-close pass. Repair task `agile-quest` tracks the direct-mode false refusal.
+
+Both isolated daemons were stopped, and ports `18155` and `18156` were
+confirmed closed. The disposable repositories, installation and fixture data
+are retained for the next authorized rerun. No new automated suite was run:
+this task changed only this live evidence record, while the earlier
+`126 passed, 3 skipped` result remains explicitly mock-only. **Issue #615
+completion is not recommended** until the App-only PR, CI, merge and delivery
+steps succeed without ambient credentials.
