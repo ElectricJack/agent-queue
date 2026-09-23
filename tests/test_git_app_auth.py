@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import ssl
@@ -24,6 +25,7 @@ from src.git.manager import (
     PullRequestIdentity,
     RemoteRefState,
 )
+from src.integration.development import DevelopmentIntegration
 from src.orchestrator.worktree_manager import WorktreeSlotManager
 
 
@@ -547,6 +549,105 @@ async def test_authenticated_acquisition_timeout_or_cancellation_reaps_process_g
             await task
     assert not _process_group_exists(leader)
     assert not Path(f"/proc/{child}").exists()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_exit_and_scrubs_stderr_and_publisher_log(
+    tmp_path, caplog
+):
+    token = "private-installation-token"
+    fake_git = tmp_path / "failing-git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'fatal: unable to access "
+        "https://alice:password@github.com/acme/widgets.git' "
+        "'Authorization: Bearer private-installation-token' "
+        "'token=private-installation-token' 'fatal: upstream unavailable' >&2\n"
+        "exit 7\n"
+    )
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token=token,
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "returncode 7" in message
+    assert "fatal: upstream unavailable" in message
+    publisher = DevelopmentIntegration(None, data_dir=tmp_path, git=manager)
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        publisher._note_project_fault("agent-queue", caught.value)
+    for output in (message, caplog.text):
+        assert token not in output
+        assert "password" not in output
+        assert "alice:" not in output
+        assert "Authorization: Bearer" not in output
+        assert "https://alice:password@" not in output
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_broker_not_served(tmp_path):
+    fake_git = tmp_path / "no-prompt-git"
+    fake_git.write_text("#!/bin/sh\nexit 0\n")
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    manager._APP_CREDENTIAL_BROKER_TIMEOUT = 0.25
+    home = tmp_path / "home"
+    home.mkdir()
+
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", "https://github.com/acme/widgets.git", "HEAD"],
+            home=home,
+            repository_url="https://github.com/acme/widgets.git",
+            token="private-installation-token",
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "credential broker did not serve token" in message
+    assert "timeout=0.2s" in message or "timeout=0.3s" in message
+    assert "budget_at_start=" in message
+    assert "remaining_push_budget=" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_git_failure_reports_sanitized_exception(tmp_path, monkeypatch):
+    token = "private-installation-token"
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    async def fail_to_launch(*_args, **_kwargs):
+        raise RuntimeError(
+            "launch failed for https://alice:password@github.com/acme/widgets.git " + token
+        )
+
+    monkeypatch.setattr(manager, "_app_git_credential_topology", AsyncMock(return_value=object()))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fail_to_launch)
+    with pytest.raises(GitError) as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", (tmp_path / "source.git").as_uri(), "HEAD"],
+            home=home,
+            repository_url=(tmp_path / "source.git").as_uri(),
+            token=token,
+            deadline=asyncio.get_running_loop().time() + 5,
+        )
+
+    message = str(caught.value)
+    assert "exception RuntimeError: launch failed" in message
+    assert token not in message
+    assert "alice:password" not in message
 
 
 @pytest.mark.asyncio

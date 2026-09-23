@@ -115,6 +115,17 @@ def _zeroized_credential(buffer: bytearray):
         zeroize(buffer)
 
 
+def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int = 512) -> str:
+    """Keep useful failure text without returning a credential to callers or logs."""
+    from src.projects.github import scrub_secrets
+
+    if token:
+        value = value.replace(token, "***")
+    value = re.sub(r"(?im)(authorization\s*:\s*)[^\r\n]*", r"\1***", value)
+    safe = scrub_secrets(value)
+    return safe[-limit:].replace("\r", "\\r").replace("\n", "\\n")
+
+
 class GitError(Exception):
     pass
 
@@ -3613,6 +3624,9 @@ class GitManager:
             broker_channel = request_channel = None
             broker_task: asyncio.Task[bool] | None = None
             process: asyncio.subprocess.Process | None = None
+            stderr = b""
+            broker_timeout: float | None = None
+            broker_budget: float | None = None
             try:
                 request_fd: int | None = None
                 if not uses_existing_auth:
@@ -3665,7 +3679,7 @@ class GitManager:
                         cwd=str(home),
                         stdin=asyncio.subprocess.DEVNULL,
                         stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.PIPE,
                         env=environment,
                         pass_fds=(request_fd,) if request_fd is not None else (),
                         start_new_session=True,
@@ -3674,6 +3688,10 @@ class GitManager:
                         request_channel.close()
                         request_channel = None
                     if broker_channel is not None and topology is not None:
+                        broker_budget = self._remaining_app_push_budget(deadline)
+                        broker_timeout = min(
+                            broker_budget, self._APP_CREDENTIAL_BROKER_TIMEOUT
+                        )
                         broker_task = asyncio.create_task(
                             serve_one_credential(
                                 broker_channel,
@@ -3683,14 +3701,11 @@ class GitManager:
                                 authority=authority,
                                 repository=repository_url,
                                 prompt=f"Password for '{authority}': ",
-                                timeout=min(
-                                    self._remaining_app_push_budget(deadline),
-                                    self._APP_CREDENTIAL_BROKER_TIMEOUT,
-                                ),
+                                timeout=broker_timeout,
                             )
                         )
                         broker_channel = None
-                    output, _ = await process.communicate()
+                    output, stderr = await process.communicate()
                     await self._kill_app_git_group(process)
                     served = (
                         await self._settle_app_credential_broker(broker_task)
@@ -3705,14 +3720,41 @@ class GitManager:
                     await self._settle_app_credential_broker(broker_task)
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                raise GitError("authenticated Git acquisition failed") from exc
+                detail = _safe_authenticated_git_detail(str(exc), token)
+                suffix = f": {detail}" if detail else ""
+                if stderr:
+                    tail = _safe_authenticated_git_detail(
+                        stderr.decode("utf-8", errors="replace"), token
+                    )
+                    if tail:
+                        suffix += f"; stderr tail: {tail}"
+                raise GitError(
+                    f"authenticated Git acquisition failed: exception "
+                    f"{type(exc).__name__}{suffix}"
+                ) from None
             finally:
                 if request_channel is not None:
                     request_channel.close()
                 if broker_channel is not None:
                     broker_channel.close()
             if process.returncode != 0 or (repository_url.startswith("https://") and not served):
-                raise GitError("authenticated Git acquisition failed")
+                reasons = []
+                if process.returncode != 0:
+                    reasons.append(f"git exited with returncode {process.returncode}")
+                if repository_url.startswith("https://") and not served:
+                    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                    reasons.append(
+                        "credential broker did not serve token "
+                        f"(timeout={broker_timeout:.1f}s, "
+                        f"budget_at_start={broker_budget:.1f}s, "
+                        f"remaining_push_budget={remaining:.1f}s)"
+                    )
+                tail = _safe_authenticated_git_detail(
+                    stderr.decode("utf-8", errors="replace"), token
+                )
+                if tail:
+                    reasons.append(f"stderr tail: {tail}")
+                raise GitError("authenticated Git acquisition failed: " + "; ".join(reasons))
             return output
 
     @staticmethod
