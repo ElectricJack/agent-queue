@@ -8,13 +8,10 @@ survive reseed on next startup.
 
 from __future__ import annotations
 
-from dataclasses import fields
 from pathlib import Path
 
-from src.commands.task_commands import _check_capability_escalation
-from src.models import AgentProfile
 from src.profiles.capabilities import CapabilityPolicy
-from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
+from src.profiles.parser import parse_profile
 from src.vault import ensure_default_profiles, ensure_vault_layout
 
 SHIPPED_PROFILE_IDS = ("supervisor", "planner", "reviewer", "final-reviewer")
@@ -110,20 +107,22 @@ def test_seeded_supervisor_can_use_advertised_worker_message_surface(tmp_path):
         assert policy.allows_aq_command(command)
 
 
-def test_seeded_supervisor_can_delegate_to_every_shipped_worker(tmp_path):
-    """Delegation checks every namespace; plugin grants do not imply AQ grants."""
+def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_path):
+    """Supervisors route workers; they do not need the workers' Git permissions."""
     ensure_default_profiles(str(tmp_path))
-    profile_fields = {field.name for field in fields(AgentProfile)}
 
-    def load(profile_id):
+    def policy_for(profile_id):
         parsed = parse_profile(_vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8"))
-        values = parsed_profile_to_agent_profile(parsed)
-        return AgentProfile(**{key: value for key, value in values.items() if key in profile_fields})
+        assert parsed.capabilities is not None
+        return CapabilityPolicy.from_namespaces(**parsed.capabilities)
 
-    supervisor = load("supervisor")
+    supervisor = policy_for("supervisor")
+    for command in ("git_create_pr", "git_push"):
+        assert not supervisor.allows_plugin_tool(command)
     for profile_id in WORKER_PROFILE_IDS:
-        worker = load(profile_id)
-        assert _check_capability_escalation(supervisor, worker) == "", profile_id
+        worker = policy_for(profile_id)
+        for command in ("git_create_pr", "git_push"):
+            assert worker.allows_plugin_tool(command), (profile_id, command)
 
 
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
