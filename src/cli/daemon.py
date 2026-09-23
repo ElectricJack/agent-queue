@@ -24,11 +24,17 @@ from pathlib import Path
 
 import click
 
-from .app import cli, console
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
-from src.sessions.env import DAEMON_ENV_STRIP_KEYS
+from src.sessions.env import (
+    AQ_MARKER_KEYS,
+    DAEMON_ENV_STRIP_KEYS,
+    DB_ISOLATION_KEYS,
+)
+
+from .app import cli, console
 
 CONFIG_DIR = os.path.expanduser("~/.agent-queue")
+BACKUPS_DIR = os.path.join(CONFIG_DIR, "backups")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.yaml")
 LOG_PATH = os.path.join(CONFIG_DIR, "daemon.log")
 PID_FILE = os.path.join(CONFIG_DIR, "daemon.pid")
@@ -364,7 +370,11 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
             path_parts.append(candidate)
     env["PATH"] = os.pathsep.join(path_parts)
     strip_harness_session_markers(env)
-    for key in DAEMON_ENV_STRIP_KEYS:
+    # Every marker a harness or worker session may have set must die here,
+    # not just the narrow per-session block.  The session/DB keys that leak
+    # AQ_DB_SCOPE, AQ_DATABASE_URL and AGENT_QUEUE_DB into the daemon are the
+    # 2026-09-21 incident, so they are part of the default strip set.
+    for key in set(AQ_MARKER_KEYS) | set(DB_ISOLATION_KEYS) | set(DAEMON_ENV_STRIP_KEYS):
         env.pop(key, None)
     return env
 
@@ -372,7 +382,9 @@ def _daemon_environment(*, home: str | None = None) -> dict[str, str]:
 def _warn_harness_environment(command: str) -> None:
     """Explain that a daemon launched from a harness will be sanitized."""
     markers = sorted(
-        set(harness_session_markers(os.environ)).union(DAEMON_ENV_STRIP_KEYS).intersection(os.environ)
+        set(harness_session_markers(os.environ))
+        .union(AQ_MARKER_KEYS, DB_ISOLATION_KEYS, DAEMON_ENV_STRIP_KEYS)
+        .intersection(os.environ)
     )
     if markers:
         console.print(
@@ -398,6 +410,142 @@ def _refuse_worker_daemon_management() -> None:
         raise SystemExit(10)
 
 
+def _database_is_at_head() -> bool:
+    """Whether the stamped schema matches this checkout's Alembic head.
+
+    Fail-safe: an unreachable database, a missing table, or any other check
+    error returns ``False`` — that is the safe side, because the caller then
+    backs the database up rather than skipping it.  Mirrors ``aq db current``.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        from .db import _head_revisions, _load_config, _make_engine
+
+        async def _main() -> list[str]:
+            config = _load_config()
+            engine, _url = _make_engine(config)
+            try:
+                async with engine.connect() as conn:
+                    result = await conn.execute(text("SELECT version_num FROM alembic_version"))
+                    return sorted(row[0] for row in result.fetchall())
+            except SQLAlchemyError:
+                return []  # no alembic_version table — unstamped
+            finally:
+                await engine.dispose()
+
+        return asyncio.run(_main()) == _head_revisions()
+    except Exception:  # noqa: BLE001 — fail-safe: a check error must read as "not at head"
+        return False
+
+
+def _backup_database() -> None:
+    """Dump the configured Postgres database to BACKUPS_DIR.
+
+    Mirrors the operator wrapper: ``pg_dump`` inside the ``aq-postgres``
+    container is ``docker cp``-ed out, and a dump that is missing the marker
+    comment is refused as incomplete.  Any failure is a loud error — never a
+    silent skip.
+    """
+    import datetime
+
+    try:
+        os.makedirs(BACKUPS_DIR, exist_ok=True)
+    except OSError as exc:
+        raise SystemExit(12) from exc
+
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = os.path.join(BACKUPS_DIR, f"pre-deploy-{ts}.sql")
+    container, user, db = "aq-postgres", "agent_queue", "agent_queue"
+    tmp = f"/tmp/pre-deploy-{ts}.sql"
+
+    def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(args, capture_output=True, text=True, check=True)
+
+    try:
+        _docker("docker", "exec", container, "pg_dump", "-U", user, "-d", db, "-f", tmp)
+        _docker("docker", "cp", f"{container}:{tmp}", out)
+        _docker("docker", "exec", container, "rm", "-f", tmp)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(13) from exc
+
+    # The wrapper's integrity check: a real pg_dump carries that comment.
+    size = os.path.getsize(out) if os.path.exists(out) else 0
+    try:
+        with open(out, "rb") as handle:
+            if size > 4096:
+                handle.seek(-4096, os.SEEK_END)
+            tail = handle.read().decode("utf-8", "replace")
+    except OSError as exc:
+        raise SystemExit(14) from exc
+    if "unrestrict" not in tail:
+        raise SystemExit(15)
+    console.print(f"[green]Backup written[/] {out} ({size:,} bytes)")
+
+
+def _post_daemon_checks() -> None:
+    """Finish what the daemon's start left undone: readiness and the pool fix.
+
+    The operator wrapper waited for ``/ready`` (not just ``/health``) and then
+    ran the stale-worktree doctor fix, because a daemon that answers ``/health``
+    is not yet reconciling pools.  Both are now baked into ``aq start`` and
+    ``aq restart`` so the wrapper is unnecessary.
+    """
+    import urllib.error
+    import urllib.request
+
+    from .client import _resolve_api_url
+
+    api_base = _resolve_api_url()
+
+    def _ready_ok() -> bool:
+        try:
+            with urllib.request.urlopen(f"{api_base}/ready", timeout=5) as resp:
+                return resp.status == 200
+        except urllib.error.HTTPError:
+            return False
+        except (urllib.error.URLError, OSError):
+            return False
+
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        if _ready_ok():
+            console.print("[green]Daemon is ready.[/]")
+            break
+        time.sleep(1)
+    else:
+        console.print("[yellow]Daemon is up but still not /ready after 60s.[/]")
+
+    # Let the daemon repair the stale worktrees it owns.  Fail-safe: this is a
+    # postcondition, not a gate — a doctor transport error here must never
+    # undo a successful daemon start, so every failure is caught and downgraded.
+    try:
+        result = subprocess.run(
+            [
+                _resolve_agent_queue_bin(),
+                "doctor",
+                "--check",
+                "pools.stale_worktree_checkouts",
+                "--fix",
+            ],
+            env=_daemon_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=120,
+        )
+    except Exception as exc:  # noqa: BLE001 — a post-start failure must never kill the start
+        console.print(f"[dim]Post-start doctor fix skipped: {exc}[/]")
+        return
+    for line in result.stderr.strip().splitlines()[-3:]:
+        console.print(f"[dim]{line}[/]")
+    for line in result.stdout.strip().splitlines()[-3:]:
+        console.print(line)
+
+
 def start_daemon() -> bool:
     """Start the daemon. Returns True on success."""
     if not os.path.exists(CONFIG_PATH):
@@ -414,6 +562,13 @@ def start_daemon() -> bool:
     # nothing is listening *and* this is a checkout that ships a compose file.
     if _config_uses_postgres() and not _ensure_database():
         return False
+
+    # The operator wrapper backed this up before the restart whenever the
+    # schema was not confirmed at this checkout's head — because a daemon that
+    # then runs its migration is exactly when a bad schema revision can burn
+    # the live database.  Mirror that: back up first when not at head.
+    if _config_uses_postgres() and not _database_is_at_head():
+        _backup_database()
 
     # Acquire lock
     try:
@@ -516,6 +671,7 @@ def start_daemon() -> bool:
             return False
 
         console.print(f"[bold green]Daemon started[/] (PID {proc.pid})")
+        _post_daemon_checks()
         console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
         return True
     finally:
