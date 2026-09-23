@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from src.config import GitHubAppConfig
 from src.git.github_app import (
+    AiohttpTransport,
     AppTokenProvider,
     GitHubAppError,
     GitHubRepositoryBinding,
@@ -44,6 +45,84 @@ class ScriptedTransport:
     async def request(self, method, url, *, headers, json_body=None, max_bytes):
         self.requests.append((method, url, dict(headers), json_body, max_bytes))
         return self.responses.pop(0)
+
+
+class PartialReadContent:
+    def __init__(self, chunks: list[bytes]):
+        self.chunks = list(chunks)
+        self.read_sizes: list[int] = []
+
+    async def read(self, size: int) -> bytes:
+        self.read_sizes.append(size)
+        if not self.chunks:
+            return b""
+        chunk = self.chunks.pop(0)
+        assert len(chunk) <= size
+        return chunk
+
+
+class FakeAiohttpResponse:
+    def __init__(self, chunks: list[bytes], *, status: int = 201):
+        self.status = status
+        self.headers = {"Content-Type": "application/json"}
+        self.content = PartialReadContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+
+class FakeAiohttpSession:
+    def __init__(self, response: FakeAiohttpResponse):
+        self.response = response
+        self.request_kwargs = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return None
+
+    def request(self, *_args, **kwargs):
+        self.request_kwargs = kwargs
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_reads_entire_partial_success_response(monkeypatch):
+    payload = json.dumps({"padding": "x" * 6700}).encode()
+    response = FakeAiohttpResponse([payload[:239], payload[239:400], payload[400:]])
+    session = FakeAiohttpSession(response)
+    monkeypatch.setattr("src.git.github_app.aiohttp.ClientSession", lambda **_kwargs: session)
+
+    result = await AiohttpTransport().request(
+        "POST",
+        "https://api.github.com/app/installations/202/access_tokens",
+        headers={},
+        max_bytes=8192,
+    )
+
+    assert result.status == 201
+    assert json.loads(result.body) == {"padding": "x" * 6700}
+    assert response.content.read_sizes == [8193, 8193 - 239, 8193 - 400, 8193 - len(payload)]
+    assert session.request_kwargs["allow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_transport_rejects_oversized_partial_response(monkeypatch):
+    response = FakeAiohttpResponse([b"abcd", b"efgh", b"i"])
+    session = FakeAiohttpSession(response)
+    monkeypatch.setattr("src.git.github_app.aiohttp.ClientSession", lambda **_kwargs: session)
+
+    with pytest.raises(GitHubAppError, match="size limit") as caught:
+        await AiohttpTransport().request(
+            "GET", "https://api.github.com/app", headers={}, max_bytes=8
+        )
+
+    assert caught.value.category == "transient"
+    assert response.content.read_sizes == [9, 5, 1]
 
 
 def _private_key() -> tuple[bytes, bytes]:
