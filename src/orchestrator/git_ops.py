@@ -1296,6 +1296,7 @@ class GitOpsMixin:
         # ── Auto-remediate: push unpushed commits ───────────────────────
         # After auto-committing/merging (or if agent committed but forgot
         # to push), push to the remote to avoid unnecessary retries.
+        confirmed_merged_pr_url = None
         if has_remote and not has_uncommitted and not delivery_guard_blocked:
             # Determine the expected branch for this task type
             if is_intermediate or pr_mode:
@@ -1344,6 +1345,28 @@ class GitOpsMixin:
                             cwd=workspace,
                         )
                         needs_push = ahead_output.strip() != "0"
+                    if needs_push and pr_mode:
+                        # A merged PR may have deleted its remote head. Match
+                        # the exact delivery tip before treating that absence
+                        # as a branch that needs publishing again.
+                        repository = await self.git.bind_github_repository(repository_url)
+                        candidate_pr_url = await self.git.afind_open_pr(
+                            workspace,
+                            pr_delivery_branch,
+                            head_ref=pr_delivery_ref,
+                            include_workspace_head=False,
+                            repository=repository,
+                        )
+                        if candidate_pr_url and await self.git.acheck_pr_merged(
+                            workspace, candidate_pr_url, repository=repository
+                        ) is True:
+                            confirmed_merged_pr_url = candidate_pr_url
+                            needs_push = False
+                            logger.info(
+                                "Task %s: PR %s is merged; skipping delivery branch push",
+                                task.id,
+                                candidate_pr_url,
+                            )
                     if needs_push:
                         await self.git.apush_validated_delivery(
                             workspace,
@@ -1440,8 +1463,8 @@ class GitOpsMixin:
                     except Exception as exc:
                         failures.append((f"Could not authorize PR repository: {exc}", False))
                         repository = None
-                    pr_url = None
-                    if repository is not None:
+                    pr_url = confirmed_merged_pr_url
+                    if repository is not None and not pr_url:
                         pr_url = await self.git.afind_open_pr(
                             workspace,
                             pr_delivery_branch,
