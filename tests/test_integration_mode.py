@@ -82,6 +82,10 @@ async def orch(tmp_path):
     mock_git.aref_exists = AsyncMock(return_value=True)
     mock_git.areserved_paths_in_diff = AsyncMock(return_value=[])
     mock_git._arun = AsyncMock(return_value="0")
+    mock_git.arev_parse = AsyncMock(return_value="a" * 40)
+    mock_git.als_remote_ref = AsyncMock(
+        return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+    )
     mock_git.acommit_all = AsyncMock(return_value=True)
     mock_git.apush_branch = AsyncMock(return_value=None)
     mock_git.apush_validated_delivery = AsyncMock(return_value="a" * 40)
@@ -543,33 +547,81 @@ class TestPhaseVerifyByMode:
             "--count",
         ] in commands
 
-    async def test_pr_auto_push_inspects_exact_remote_and_delivery_base(self, orch):
+    @pytest.mark.parametrize(
+        "remote_ref",
+        [
+            RemoteRefResult(RemoteRefState.ABSENT),
+            RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40),
+        ],
+    )
+    async def test_pr_auto_push_inspects_exact_remote_and_delivery_base(self, orch, remote_ref):
         task = _pr_task("t-pr-exact-push", branch_name="feature-1")
         await orch.db.create_task(task)
 
-        async def git_output(args, cwd=None):
-            if args[:1] == ["rev-list"]:
-                return "1"
-            return "0"
-
-        orch.git._arun = AsyncMock(side_effect=git_output)
+        orch.git.als_remote_ref = AsyncMock(return_value=remote_ref)
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
         assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
-        assert [
-            "rev-list",
-            "refs/remotes/origin/feature-1..HEAD",
-            "--count",
-        ] in [call.args[0] for call in orch.git._arun.await_args_list]
+        orch.git.als_remote_ref.assert_awaited_once_with(
+            ws.workspace_path,
+            "feature-1",
+            repository_url="https://github.com/org/repo.git",
+        )
         orch.git.apush_validated_delivery.assert_awaited_once_with(
             ws.workspace_path,
             "refs/remotes/origin/main",
             "HEAD",
             "feature-1",
+            repository_url="https://github.com/org/repo.git",
             event_bus=orch.bus,
             project_id="p-1",
         )
+
+    async def test_pr_close_accepts_first_aq_push_without_tracking_ref(self, orch):
+        task = _pr_task("t-pr-aq-pushed")
+        await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        async def git_output(args, cwd=None):
+            if "refs/remotes/origin/feature-1..HEAD" in args:
+                raise GitError("unknown revision: refs/remotes/origin/feature-1")
+            return "0"
+
+        orch.git._arun = AsyncMock(side_effect=git_output)
+        # AQ git push publishes the exact branch OID without updating the
+        # held checkout's remote-tracking ref. The open PR is already green.
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40)
+        )
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.pr_url == "https://github.com/org/repo/pull/42"
+        orch.git.als_remote_ref.assert_awaited_once_with(
+            ws.workspace_path,
+            "feature-1",
+            repository_url="https://github.com/org/repo.git",
+        )
+        orch.git.apush_validated_delivery.assert_not_awaited()
+        assert all(
+            "refs/remotes/origin/feature-1..HEAD" not in call.args[0]
+            for call in orch.git._arun.await_args_list
+        )
+
+    async def test_pr_auto_push_remote_probe_error_fails_closed(self, orch, caplog):
+        task = _pr_task("t-pr-probe-error")
+        await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.ERROR, error="remote unavailable")
+        )
+
+        assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        assert "remote unavailable" in caplog.text
+        orch.git.apush_validated_delivery.assert_not_awaited()
 
     async def test_direct_mode_does_not_ignore_assigned_branch_from_default(self, orch):
         """Committed task work follows delivery even after checkout returned to main."""
