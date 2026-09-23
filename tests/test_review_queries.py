@@ -86,6 +86,9 @@ def _revision(review_id="rev-bright-harbor", revision=1, content="# Body\n", **o
         "submitted_task_id": "author-task",
         "changes_note": None,
         "submitted_at": time.time(),
+        "responder_class": None,
+        "responder_profile": None,
+        "responder_profile_source": None,
     }
     row.update(overrides)
     return row

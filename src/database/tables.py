@@ -724,6 +724,10 @@ doc_review_revisions = Table(
     Column("submitted_task_id", Text, nullable=True),
     Column("changes_note", Text, nullable=True),
     Column("submitted_at", Float, nullable=False),
+    # A decision belongs to the revision it judged, not the review's latest state.
+    Column("responder_class", Text, nullable=True),
+    Column("responder_profile", Text, nullable=True),
+    Column("responder_profile_source", Text, nullable=True),
 )
 
 doc_review_comments = Table(

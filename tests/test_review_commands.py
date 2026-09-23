@@ -12,6 +12,8 @@ from src.api.scope import check_command_scope
 from src.event_bus import EventBus
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
 from src.api.websocket import _FORWARDED_PREFIXES
+from src.vault import ensure_default_intelligence_classes
+from src.intelligence_classes import load_intelligence_classes
 
 
 async def _scoped(
@@ -595,3 +597,99 @@ async def test_changes_requested_routes_feedback_to_each_author_state(env):
     ))["success"]
     messages = await db.get_pending_messages("session", "supervisor-p")
     assert any("Assign this." in message.body for message in messages)
+
+
+async def test_response_routing_uses_decided_revision_class_and_project_default(env):
+    handler, db = env
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
+    for profile_id, class_id in (
+        ("fast-high-codex", "fast-high"),
+        ("standard-high-codex", "standard-high"),
+    ):
+        await db.create_profile(AgentProfile(
+            id=profile_id, name=profile_id, harness="codex", lifecycle="pool",
+            default_class=class_id, needs_workspace=False,
+            aq_commands=[], harness_tools=[], plugin_tools=[],
+        ))
+    await db.update_project("p", default_profile_id="fast-high-codex")
+
+    chosen = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Chosen route", "content": "# Chosen\n",
+    })
+    # A retired class may linger in a stale live registry; the vault check wins.
+    handler.orchestrator.intelligence_classes["retired-or-unknown"] = (
+        handler.orchestrator.intelligence_classes["standard-high"]
+    )
+    invalid = await handler.execute("review_decide", {
+        "review_id": chosen["review_id"], "revision": 1, "decision": "request_changes",
+        "responder_class": "retired-or-unknown",
+    })
+    assert invalid["error_code"] == "invalid_responder_class"
+    assert "fast-high" in invalid["error"] and "standard-high" in invalid["error"]
+    assert (await db.get_review(chosen["review_id"]))["state"] == "in_review"
+
+    await db.delete_task("author")
+    decided = await handler.execute("review_decide", {
+        "review_id": chosen["review_id"], "revision": 1, "decision": "request_changes",
+        "responder_class": "standard-high", "note": "Use this class.",
+    })
+    assert decided["success"], decided
+    revision = await db.get_review_revision(chosen["review_id"], 1)
+    assert (revision["responder_class"], revision["responder_profile_source"]) == (
+        "standard-high", "class_match",
+    )
+    response = next(task for task in await db.list_tasks(project_id="p")
+                    if task.title.startswith("Revise Chosen route"))
+    assert (response.profile_id, response.intelligence_class) == (
+        "standard-high-codex", "standard-high",
+    )
+
+    fallback = await handler.execute("review_submit", {
+        "task_id": "peer", "kind": "spec", "title": "Default route", "content": "# Default\n",
+    })
+    await db.delete_task("peer")
+    decided = await handler.execute("review_decide", {
+        "review_id": fallback["review_id"], "revision": 1, "decision": "request_changes",
+    })
+    assert decided["success"], decided
+    revision = await db.get_review_revision(fallback["review_id"], 1)
+    assert revision["responder_class"] is None
+    assert revision["responder_profile_source"] == "project_default"
+    response = next(task for task in await db.list_tasks(project_id="p")
+                    if task.title.startswith("Revise Default route"))
+    # Project defaults remain implicit on the task row; the claimant resolves it.
+    assert response.profile_id is None
+    assert (await db.get_project("p")).default_profile_id == "fast-high-codex"
+
+
+async def test_response_routing_accepts_explicit_matching_profile(env):
+    handler, db = env
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
+    await db.create_profile(AgentProfile(
+        id="standard-high-codex", name="Standard high", harness="codex", lifecycle="pool",
+        default_class="standard-high", needs_workspace=False,
+        aq_commands=[], harness_tools=[], plugin_tools=[],
+    ))
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Explicit route", "content": "# Explicit\n",
+    })
+    mismatch = await handler.execute("review_decide", {
+        "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
+        "responder_class": "fast-high", "responder_profile": "standard-high-codex",
+    })
+    assert mismatch["error_code"] == "invalid_responder_profile"
+    assert (await db.get_review(submitted["review_id"]))["state"] == "in_review"
+    await db.delete_task("author")
+    decided = await handler.execute("review_decide", {
+        "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
+        "responder_class": "standard-high", "responder_profile": "standard-high-codex",
+    })
+    assert decided["success"], decided
+    revision = await db.get_review_revision(submitted["review_id"], 1)
+    assert revision["responder_profile"] == "standard-high-codex"
+    assert revision["responder_profile_source"] == "explicit"
+    response = next(task for task in await db.list_tasks(project_id="p")
+                    if task.title.startswith("Revise Explicit route"))
+    assert response.profile_id == "standard-high-codex"

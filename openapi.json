@@ -42428,6 +42428,30 @@
             ],
             "title": "Note",
             "description": ""
+          },
+          "responder_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responder Class",
+            "description": "Intelligence class for the response to requested changes."
+          },
+          "responder_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Responder Profile",
+            "description": "Optional enabled worker profile for that class."
           }
         },
         "type": "object",

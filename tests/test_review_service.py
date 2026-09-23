@@ -41,8 +41,8 @@ class RecordingHooks:
         self.resolved.append((gate_id, resolved_by, resolution))
         return await self.db.resolve_gate(gate_id, resolved_by=resolved_by, resolution=resolution)
 
-    async def changes_requested(self, review, feedback):
-        self.changes.append((review["id"], feedback))
+    async def changes_requested(self, review, revision, feedback):
+        self.changes.append((review["id"], revision, feedback))
 
     def of(self, event_type: str) -> list[dict]:
         return [payload for kind, payload in self.events if kind == event_type]
@@ -380,8 +380,9 @@ async def test_request_changes_keeps_the_gate_open_and_hands_back_feedback(
     assert (await db.get_gate(gate_id))["status"] == "open"
     assert hooks.resolved == []
 
-    [(changed_id, feedback)] = hooks.changes
+    [(changed_id, decided_revision, feedback)] = hooks.changes
     assert changed_id == review_id
+    assert decided_revision["responder_profile_source"] == "project_default"
     assert feedback == ReviewService.feedback_text(review, "Two things.", 2)
     assert f"aq review show --review-id {review_id} --comments" in feedback
     assert "2 open comment(s)" in feedback
@@ -400,6 +401,28 @@ def test_feedback_text():
     assert "(no overall note)" in text
     assert "0 open comment(s)" in text
     assert "aq review submit --review-id rev-a-b --file <draft.md>" in text
+
+
+async def test_response_choice_belongs_to_each_decided_revision(svc, db):
+    submitted = await submit(svc)
+    review_id = submitted["review_id"]
+    await svc.decide(
+        review_id=review_id, revision=1, approve=False, note="First pass", decided_by=OPERATOR,
+        responder_class="standard-high", responder_profile="standard-high-codex",
+        responder_profile_source="explicit",
+    )
+    await revise(svc, review_id, DOC + "\nMore detail.\n")
+    await svc.decide(
+        review_id=review_id, revision=2, approve=False, note="Second pass", decided_by=OPERATOR,
+    )
+    first = await db.get_review_revision(review_id, 1)
+    second = await db.get_review_revision(review_id, 2)
+    assert (first["responder_class"], first["responder_profile"],
+            first["responder_profile_source"]) == (
+        "standard-high", "standard-high-codex", "explicit",
+    )
+    assert (second["responder_class"], second["responder_profile"],
+            second["responder_profile_source"]) == (None, None, "project_default")
 
 
 # ── 6. decide on a closed review ──────────────────────────────────────────

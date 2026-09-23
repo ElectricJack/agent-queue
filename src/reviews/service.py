@@ -83,8 +83,8 @@ class ReviewHooks:
     emit: Callable[[str, dict], Awaitable[None]]
     #: ``(gate_id, resolved_by, resolution)`` -> the task ids it unblocked.
     resolve_gate: Callable[[str, str, str], Awaitable[set[str]]]
-    #: ``(review row, feedback text)``: hand the feedback to the author (§5.3).
-    changes_requested: Callable[[dict, str], Awaitable[None]]
+    #: ``(review row, decided revision, feedback text)``: hand feedback to the author.
+    changes_requested: Callable[[dict, dict, str], Awaitable[None]]
 
 
 def _body(content: str) -> str:
@@ -332,7 +332,9 @@ class ReviewService:
     # -- decide ------------------------------------------------------------
 
     async def decide(
-        self, *, review_id: str, revision: int, approve: bool, note: str, decided_by: str
+        self, *, review_id: str, revision: int, approve: bool, note: str, decided_by: str,
+        responder_class: str | None = None, responder_profile: str | None = None,
+        responder_profile_source: str | None = None,
     ) -> dict:
         """Approve (resolving the gate) or request changes on the current revision."""
         review = await self._get(review_id)
@@ -374,10 +376,21 @@ class ReviewService:
                 },
                 conn=conn,
             )
+            if moved and not approve:
+                await self.db.set_review_revision_responder(
+                    review_id, revision,
+                    responder={
+                        "responder_class": responder_class,
+                        "responder_profile": responder_profile,
+                        "responder_profile_source": responder_profile_source or "project_default",
+                    },
+                    conn=conn,
+                )
         if not moved:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
+        current = await self._get_revision(review_id, revision)
         unblocked: set[str] = set()
         if approve:
             # The decision is committed; a failed gate resolution is left for
@@ -401,7 +414,7 @@ class ReviewService:
             )
             try:
                 await self.hooks.changes_requested(
-                    review, self.feedback_text(review, note, open_comments)
+                    review, current, self.feedback_text(review, note, open_comments)
                 )
             except Exception:
                 logger.exception("review %s: handing feedback to the author failed", review_id)
@@ -414,6 +427,11 @@ class ReviewService:
                 "decision": "approve" if approve else "request_changes",
                 "decided_by": decided_by,
                 "note": note,
+                "responder_class": current["responder_class"] if not approve else None,
+                "responder_profile": current["responder_profile"] if not approve else None,
+                "responder_profile_source": (
+                    current["responder_profile_source"] if not approve else None
+                ),
                 "unblocked_task_ids": unblocked_ids,
             },
         )

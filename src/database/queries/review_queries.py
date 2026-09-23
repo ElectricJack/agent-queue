@@ -189,6 +189,18 @@ class ReviewQueriesMixin:
     async def insert_review_revision(self, *, revision: dict, conn) -> None:
         await conn.execute(insert(doc_review_revisions).values(**revision))
 
+    async def set_review_revision_responder(
+        self, review_id: str, revision: int, *, responder: dict, conn
+    ) -> None:
+        await conn.execute(
+            update(doc_review_revisions)
+            .where(
+                doc_review_revisions.c.review_id == review_id,
+                doc_review_revisions.c.revision == revision,
+            )
+            .values(**responder)
+        )
+
     async def get_review_revision(self, review_id: str, revision: int, *, conn=None) -> dict | None:
         """One revision, with its content."""
         stmt = select(doc_review_revisions).where(

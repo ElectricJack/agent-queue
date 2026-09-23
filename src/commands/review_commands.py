@@ -276,6 +276,54 @@ class ReviewCommandsMixin:
         decision = args.get("decision")
         if decision not in {"approve", "request_changes"}:
             return _error("not_in_review", "decision must be approve or request_changes")
+        responder_class = args.get("responder_class")
+        responder_profile = args.get("responder_profile")
+        if decision == "approve" and (responder_class is not None or responder_profile is not None):
+            return _error("invalid_responder", "responder routing applies only to request_changes")
+        if responder_profile is not None and responder_class is None:
+            return _error("invalid_responder", "responder_profile requires responder_class")
+        profile_source = "project_default"
+        if responder_class is not None:
+            from src.intelligence_classes import load_intelligence_classes
+
+            classes = load_intelligence_classes(self.config.data_dir)
+            available = f"available classes: {', '.join(sorted(classes)) or '(none)'}"
+            if not isinstance(responder_class, str) or responder_class not in classes:
+                return _error(
+                    "invalid_responder_class",
+                    f"intelligence class {responder_class!r} not found in vault; {available}",
+                )
+            if class_error := self._validate_routing_class(responder_class):
+                return _error(
+                    "invalid_responder_class",
+                    f"{class_error}; {available}",
+                )
+            if responder_profile is not None:
+                profile = await self.db.get_profile(responder_profile)
+                eligible = {row.id for row in await self._eligible_worker_profiles()}
+                if profile is None or profile.id not in eligible:
+                    return _error(
+                        "invalid_responder_profile",
+                        f"responder profile '{responder_profile}' is not an enabled worker profile",
+                    )
+                if not self._profile_runs_class(profile, responder_class):
+                    return _error(
+                        "invalid_responder_profile",
+                        f"responder profile '{responder_profile}' runs '{profile.default_class}', "
+                        f"not '{responder_class}'",
+                    )
+                if class_error := self._validate_routing_class(responder_class, profile):
+                    return _error("invalid_responder_profile", class_error)
+                profile_source = "explicit"
+            else:
+                project = await self.db.get_project(review["project_id"])
+                implicit, route_error = await self._supervisor_default_worker_profile(project)
+                if route_error:
+                    return _error("invalid_responder_class", route_error)
+                routed, route_error = await self._resolve_class_route(responder_class, implicit)
+                if route_error:
+                    return _error("invalid_responder_class", route_error)
+                profile_source = "class_match" if routed is not None else "project_default"
         try:
             return {
                 "success": True,
@@ -285,6 +333,9 @@ class ReviewCommandsMixin:
                     approve=decision == "approve",
                     note=str(args.get("note") or ""),
                     decided_by=label,
+                    responder_class=responder_class,
+                    responder_profile=responder_profile,
+                    responder_profile_source=profile_source,
                 ),
             }
         except ReviewError as error:
@@ -536,7 +587,9 @@ class ReviewCommandsMixin:
         except ReviewError as error:
             return _error(error.code, error.message)
 
-    async def _on_review_changes_requested(self, review: dict, feedback: str) -> None:
+    async def _on_review_changes_requested(
+        self, review: dict, revision: dict, feedback: str
+    ) -> None:
         """Return requested changes to the author without keeping a worker held."""
         task_id = review.get("author_task_id")
         if not task_id:
@@ -588,14 +641,18 @@ class ReviewCommandsMixin:
         parent_id = archived.get("parent_task_id") if archived else None
         if parent_id is not None and await self.db.get_task(parent_id) is None:
             parent_id = None
-        await self._cmd_create_task(
+        created = await self._cmd_create_task(
             {
                 "project_id": project_id,
                 "title": f"Revise {title} (review {review['id']})",
                 "description": feedback,
-                "profile_id": archived.get("profile_id") if archived else None,
-                "intelligence_class": archived.get("intelligence_class") if archived else None,
+                "profile_id": revision["responder_profile"],
+                "intelligence_class": revision["responder_class"],
                 "parent_id": parent_id,
                 "root": parent_id is None,
             }
         )
+        if not created.get("success"):
+            raise RuntimeError(
+                f"review {review['id']} response task creation failed: {created.get('error')}"
+            )

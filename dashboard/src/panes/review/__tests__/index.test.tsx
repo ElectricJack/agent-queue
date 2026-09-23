@@ -18,6 +18,14 @@ vi.mock("../../../api/reviews", () => ({
   useDecideReview: () => hooks.decide,
   useImportReviewEdits: () => hooks.importEdits,
 }));
+vi.mock("../../../api/hooks", () => ({
+  useIntelligenceClasses: () => ({ data: { classes: [
+    { id: "fast-high" }, { id: "standard-high" },
+  ] } }),
+  useProfiles: () => ({ data: [
+    { id: "standard-high-codex", default_class: "standard-high", enabled: true },
+  ] }),
+}));
 vi.mock("../../../ws/useEventStream", () => ({
   useRawEventSubscription: (listener: typeof hooks.listener) => { hooks.listener = listener; },
 }));
@@ -102,6 +110,36 @@ describe("review pane", () => {
     await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
       review_id: "rev-x", revision: 2, decision: "approve", note: "Looks good",
     }));
+  });
+
+  it("submits the selected response route with requested changes", async () => {
+    renderPane();
+    fireEvent.change(screen.getByLabelText("Response intelligence class"), {
+      target: { value: "standard-high" },
+    });
+    fireEvent.change(screen.getByLabelText("Response profile"), {
+      target: { value: "standard-high-codex" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, decision: "request_changes",
+      responder_class: "standard-high", responder_profile: "standard-high-codex",
+    }));
+  });
+
+  it("shows the route saved on a decided revision", () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: {
+        ...response,
+        revisions: [{ revision: 1 }, {
+          revision: 2, responder_class: "standard-high", responder_profile_source: "class_match",
+        }],
+      },
+      isLoading: false,
+      error: null,
+    }));
+    renderPane();
+    expect(screen.getByText("Response route: standard-high (class match)")).toBeInTheDocument();
   });
 
   it("shows the live revision banner", async () => {

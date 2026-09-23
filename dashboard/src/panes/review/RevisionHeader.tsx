@@ -1,4 +1,11 @@
-export type RevisionSummary = { revision: number; changes_note?: string | null; submitted_at?: unknown };
+export type RevisionSummary = {
+  revision: number;
+  changes_note?: string | null;
+  submitted_at?: unknown;
+  responder_class?: string | null;
+  responder_profile?: string | null;
+  responder_profile_source?: string | null;
+};
 
 export function RevisionHeader({
   state,
@@ -37,6 +44,12 @@ export function RevisionHeader({
         </label>
       )}
       {current?.changes_note && <p className="text-xs text-gray-400">{current.changes_note}</p>}
+      {current?.responder_profile_source && (
+        <p className="text-xs text-gray-400">
+          Response route: {current.responder_profile ?? current.responder_class ?? "project default"}
+          {` (${current.responder_profile_source.replace(/_/g, " ")})`}
+        </p>
+      )}
     </header>
   );
 }
