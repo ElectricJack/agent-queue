@@ -648,6 +648,7 @@ async def test_comment_stores_its_anchor_and_emits(svc, db, hooks, clock):
     assert event["comment_id"] == made["comment_id"]
     assert event["revision"] == 1
 
+    clock.now = NOW + 4
     section = await svc.comment(
         review_id=review_id,
         revision=1,
@@ -656,8 +657,14 @@ async def test_comment_stores_its_anchor_and_emits(svc, db, hooks, clock):
         body="x" * 16000,
         author=OPERATOR,
     )
-    assert (await db.list_review_comments(review_id))[1]["quote"] is None
     assert section["comment_id"] != made["comment_id"]
+    # Both timestamps are now distinct, so the documented "order they were
+    # made" holds deterministically; ties fall back to the random comment id,
+    # so never depend on it.
+    rows = await db.list_review_comments(review_id)
+    assert [c["id"] for c in rows] == [made["comment_id"], section["comment_id"]]
+    assert rows[1]["quote"] is None
+    assert rows[1]["created_at"] == NOW + 4
 
 
 async def test_comment_validation_and_closed_reviews(svc):
