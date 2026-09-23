@@ -62,6 +62,8 @@ Expected outcome: either the explanation identifies a task-level blocker, or the
 
 `aq doctor` exits `0` for only `ok`/`info`, `1` when the worst result is `warn`, `2` when any result is `error`, and `3` when the doctor command itself cannot run. This makes a focused check usable in an operator script, but it does not turn every non-zero exit into an automatic restart request.
 
+For a cross-project stall sweep, run `aq doctor --check stall.sweep` (or `aq --json doctor --check stall.sweep` for structured findings). It reads every ACTIVE project and reports old unclaimed work, completed blockers that still hold dependents, idle sessions at a prompt or usage limit, repeated session starts, stale delivery, publisher skips and errors, disabled providers with queued tasks, non-design work routed to the expensive `deep-high-claude` profile, and the validation container state. It is read-only, has no `--fix`, and caps concurrent task explanations at eight. Paths for logs, the vault, and project checkouts come from the active configuration and repository records. A `restore_branch` finding is emitted only when `task explain` names that blocker; an unclaimed dependent with no such reason is ordinary queued work.
+
 ## State ownership
 
 | State | Owner and location | What an operator may infer |

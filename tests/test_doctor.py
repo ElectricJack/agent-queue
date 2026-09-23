@@ -90,6 +90,7 @@ class TestRegistry:
         from src.doctor.review_checks import review_checks
         from src.doctor.session_checks import session_checks
         from src.doctor.skill_checks import skill_checks
+        from src.doctor.stall_checks import stall_checks
         from src.doctor.task_checks import task_checks
         from src.doctor.workspace_checks import workspace_checks
 
@@ -102,6 +103,7 @@ class TestRegistry:
             | {c.id for c in formula_checks()}
             | {c.id for c in intelligence_class_checks()}
             | {c.id for c in skill_checks()}
+            | {c.id for c in stall_checks()}
             | {c.id for c in resource_checks()}
             | {c.id for c in session_checks()}
             | {c.id for c in integration_checks()}
