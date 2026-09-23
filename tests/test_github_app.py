@@ -68,7 +68,7 @@ def _installation_response(token: str, *, expires: str = "2030-01-01T00:00:00Z")
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     return HttpResponse(
         201,
@@ -93,7 +93,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     token_response = HttpResponse(
         201,
@@ -103,7 +103,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
             '"repositories":[{"id":303,"full_name":"acme/widgets"}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
             '"administration":"read","pull_requests":"write",'
-            '"issues":"write","variables":"read","metadata":"read"}}' % expires
+            '"issues":"write","actions_variables":"read","metadata":"read"}}' % expires
         ).encode(),
     )
     transport = ScriptedTransport([HttpResponse(200, {}, b'{"id":101}'), token_response])
@@ -164,7 +164,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
             b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
             b'"permissions":{"checks":"write",'
             b'"actions":"read","contents":"write","administration":"write",'
-            b'"pull_requests":"write","issues":"write","variables":"read"}}',
+            b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
         ),
     ]
     provider = AppTokenProvider(
@@ -188,7 +188,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
                 b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
                 b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write","variables":"read"}}',
+                b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
             ),
         ]
     )
@@ -205,7 +205,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
 
 
 @pytest.mark.asyncio
-async def test_rejects_installation_token_without_variables_read_permission():
+async def test_rejects_installation_token_without_actions_variables_read_permission():
     private, _ = _private_key()
     transport = ScriptedTransport(
         [
@@ -246,7 +246,7 @@ async def test_binds_repository_by_name_with_one_narrow_installation_token():
         "administration": "read",
         "pull_requests": "write",
         "issues": "write",
-        "variables": "read",
+        "actions_variables": "read",
     }
     transport = ScriptedTransport(
         [
@@ -290,7 +290,7 @@ async def test_repository_identity_mismatch_fails_closed_without_response_body()
                 b'"repositories":[{"id":303,"full_name":"attacker/redirected"}],'
                 b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write","variables":"read"}}',
+                b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
             ),
         ]
     )
