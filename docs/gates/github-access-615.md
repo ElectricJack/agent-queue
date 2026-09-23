@@ -87,9 +87,10 @@ Task `prime-grove` started a separate App daemon and a separate existing-login
 daemon against disposable private repositories on 2026-09-23 UTC. This is live
 GitHub evidence. **Current disposition: acceptance failed at App onboarding
 and AQ task close; issue #615 completion is not recommended.** The App
-installation needs an approved permission update; source repairs are tracked
-as `agile-delta` (App permission key) and `fair-stone` (task-close tracking
-ref). All isolated daemons were stopped after these checks. The disposable
+installation permission update has propagated and direct token mint works,
+but AQ's bootstrap response read is incomplete. Source repairs are tracked
+as `agile-delta` (App permission key), `prime-forge` (response read) and
+`fair-stone` (task-close tracking ref). All isolated daemons were stopped after these checks. The disposable
 repositories and isolated fixture data are retained for the approved rerun;
 final cleanup is not yet claimed.
 
@@ -126,7 +127,7 @@ failed live gate, not an App credential-parity result. The installation selects
 only this App fixture repository, so live concurrent repository token
 separation also needs a second disposable repository selected for the App.
 
-### App permission-update rerun: installation still behind
+### App permission-update rerun before installation approval
 
 After the fixture owner reported an App permission change, the isolated App
 daemon was restarted from `agile-delta` fix
@@ -143,10 +144,34 @@ With the corrected source, installation-token mint scoped to repository
 to this installation.” The AQ `github_clone` retry with request ID
 `gh615-app-onboard-2` again returned `github_repository_inaccessible` in
 `preflight`. It made no clone or remote write. This confirms the source-key
-repair alone is insufficient; the fixture installation needs the pending
-permission update applied before the App path can continue. The credential
+repair alone was insufficient at that point; the fixture installation still
+needed the permission update applied. The credential
 daemon was stopped after this check, and the App fixture remains for the
 approved rerun.
+
+### App rerun after installation approval: token minted, AQ bootstrap failed
+
+After the owner accepted the installation update, authenticated
+`GET /app/installations/164168761` returned HTTP 200 with `checks:write`,
+`administration:read`, `issues:write` and `actions_variables:read`. A direct
+`POST /app/installations/164168761/access_tokens` using the fixed source's
+permission set and repository ID `1384141153` returned HTTP 201. Its response
+selected exactly `ElectricJack/aq-gh615-app-fixture-20260923` and reported the
+requested grants, with expiry `2026-09-23T23:16:28Z`. The token was not
+printed or retained in evidence.
+
+The isolated daemon used fixed source
+`9c12d1df7c97650a746fa842e6d74cb9207b0ff7`. AQ `github_clone` request
+`gh615-app-onboard-3` still returned `github_repository_inaccessible` in
+`preflight`. A separate call through production `GitHubAccess.bind_repository`
+raised “GitHub response was not valid JSON” during token bootstrap. A
+sanitized instrumented transport call measured HTTP 201 with
+`Content-Length: 6774`, while `AiohttpTransport.request` returned only 239
+bytes, which were incomplete JSON. The transport calls
+`response.content.read(max_bytes + 1)` once; that read can return one partial
+chunk. Task `prime-forge` tracks a bounded full-response repair. AQ made no
+clone or remote write in this attempt. Held-branch push, App PR, CI and merge
+remain `not_run` live. The credential daemon was stopped after the check.
 
 ### Existing-login result: remote PR and merge verified, AQ close blocked
 
@@ -231,7 +256,8 @@ after verification. No token value was logged or placed in this record.
 
 | Step | Current result |
 | --- | --- |
-| App registration update and installation token mint | Registration has requested grants; installation remains at `checks:read` without `administration` or `issues`; fixed-source mint HTTP 422 |
+| App registration update and installation token mint | App and installation now have requested grants; direct fixed-source mint HTTP 201 for the selected fixture repo |
+| AQ App token bootstrap and URL onboarding | `fail`: HTTP 201 token response truncated to 239 of 6774 bytes by one read; `github_clone` preflight still failed |
 | App-only held-branch push, PR, CI, immutable merge, integration and WIP publication | `not_run` after App token HTTP 422 |
 | App token expiry refresh and concurrent repository separation | `not_run` live; mock-only evidence above |
 | Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified in two PRs; AQ task close `BLOCKED` on both |
