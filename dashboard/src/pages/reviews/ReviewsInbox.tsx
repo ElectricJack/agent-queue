@@ -1,6 +1,7 @@
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useReviews } from "../../api/reviews";
+import PullRequestsSection from "./PullRequestsSection";
 
 const STATES = ["in_review", "changes_requested", "approved", "withdrawn"];
 const KINDS = ["spec", "plan", "other"];
@@ -67,7 +68,7 @@ export default function ReviewsInbox() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-lg font-semibold text-gray-100">Reviews</h1>
-          <p className="text-xs text-gray-500">Documents awaiting review and their decision history.</p>
+          <p className="text-xs text-gray-500">Pending pull requests and document reviews.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <label className="text-xs text-gray-400">
@@ -106,6 +107,10 @@ export default function ReviewsInbox() {
           </label>
         </div>
       </header>
+
+      <PullRequestsSection />
+
+      <h2 className="text-base font-semibold text-gray-100">Document reviews</h2>
 
       {reviews.isLoading && <p className="text-sm text-gray-500">Loading reviews…</p>}
       {reviews.error && <p role="alert" className="text-sm text-red-300">Could not load reviews.</p>}

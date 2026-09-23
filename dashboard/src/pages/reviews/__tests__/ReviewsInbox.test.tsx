@@ -7,6 +7,7 @@ import ReviewsInbox from "../ReviewsInbox";
 const reviewsApi = vi.hoisted(() => ({
   reviews: [] as Array<Record<string, unknown>>,
   filters: [] as Array<Record<string, string | undefined>>,
+  pullRequests: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../../../api/reviews", () => ({
@@ -14,6 +15,12 @@ vi.mock("../../../api/reviews", () => ({
     reviewsApi.filters.push(filters);
     return { data: { reviews: reviewsApi.reviews }, isLoading: false, error: null };
   },
+}));
+
+vi.mock("../../../api/pullRequests", () => ({
+  usePendingPullRequests: () => ({
+    data: { pull_requests: reviewsApi.pullRequests }, isLoading: false, error: null,
+  }),
 }));
 
 function Location() {
@@ -32,6 +39,7 @@ function renderInbox(path = "/reviews") {
 
 beforeEach(() => {
   reviewsApi.filters = [];
+  reviewsApi.pullRequests = [];
   reviewsApi.reviews = [
     {
       id: "review-waiting",
@@ -81,6 +89,41 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ReviewsInbox", () => {
+  it("shows pending PRs with GitHub links in a new tab beside document reviews", () => {
+    reviewsApi.pullRequests = [{
+      title: "Improve queue", url: "https://github.com/acme/repo/pull/12",
+      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
+      task_id: "steady-lantern", state: "open", opened_at: Date.now() / 1000 - 7200,
+    }];
+    renderInbox();
+
+    expect(screen.getByRole("heading", { name: "Pull requests" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Document reviews" })).toBeInTheDocument();
+    expect(screen.getByText("Architecture proposal")).toBeInTheDocument();
+    expect(screen.getByText("acme/repo")).toBeInTheDocument();
+    expect(screen.getByText("steady-lantern")).toBeInTheDocument();
+    expect(screen.getByText("2h")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Improve queue" }))
+      .toHaveAttribute("href", "https://github.com/acme/repo/pull/12");
+    expect(screen.getByRole("link", { name: "Improve queue" }))
+      .toHaveAttribute("target", "_blank");
+    expect(screen.getByRole("link", { name: "Improve queue" }))
+      .toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  it("shows an empty state and a visible unknown-state link", () => {
+    const { rerender } = renderInbox();
+    expect(screen.getByText("No pending pull requests.")).toBeInTheDocument();
+    reviewsApi.pullRequests = [{
+      title: "Fallback title", url: "https://github.com/acme/repo/pull/4",
+      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
+      task_id: "failed-lookup", state: "unknown", opened_at: null,
+    }];
+    rerender(<MemoryRouter><ReviewsInbox /></MemoryRouter>);
+    expect(screen.getByText("state unknown")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Fallback title" })).toHaveAttribute("target", "_blank");
+  });
+
   it("defaults to waiting reviews for the user and links delegated rows", () => {
     renderInbox();
 

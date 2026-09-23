@@ -24,6 +24,7 @@ from src.api.health import router as health_router
 from src.api.graph import router as graph_router
 from src.api.graph_layout import router as graph_layout_router
 from src.api.routers.proposals import router as proposals_router
+from src.api.pull_requests import build_pull_requests_router
 from src.api.messages import router as messages_router
 from src.api.metrics import router as metrics_router
 from src.api.providers import router as providers_router
@@ -176,6 +177,11 @@ def create_app(
 
     # Task proposal read (Phase 6): GET /api/proposals/{id}
     app.include_router(proposals_router)
+
+    # Open PR links next to document reviews, with GitHub as the state source.
+    app.include_router(
+        build_pull_requests_router(db=orchestrator.db, github_access=orchestrator.github_access)
+    )
 
     # Auto-generated typed command routes (POST /api/{category}/{command})
     from src.api.routers import register_all_routers
