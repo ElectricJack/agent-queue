@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 
+from src.commands.principal import PrincipalKind, current_principal
 from src.plugins.base import InternalPlugin, PluginContext
 
 
@@ -571,7 +572,49 @@ class GitPlugin(InternalPlugin):
 
     async def _resolve(self, args: dict):
         """Resolve repo path with active project fallback."""
+        principal = current_principal()
+        if (
+            principal is not None
+            and principal.kind == PrincipalKind.SESSION
+            and not principal.elevated
+        ):
+            # The authenticated session owns the checkout.  Do not let a
+            # missing command argument select the project's base workspace.
+            if not principal.session_id or not principal.project_id:
+                return None, None, {"error": "No active session worktree for this project"}
+            if args.get("session_id") not in (None, principal.session_id):
+                return None, None, {"error": "session_id does not match the active session"}
+            if args.get("project_id") not in (None, principal.project_id):
+                return None, None, {"error": "project_id does not match the active session"}
+            args["session_id"] = principal.session_id
+            args["project_id"] = principal.project_id
         return await self._ws.resolve_repo_path(args, self._ctx.active_project_id)
+
+    async def _default_push_branch(self, checkout_path: str) -> str | None:
+        """Use the held task's branch for a worker, even if HEAD has moved."""
+        from src.api.auth import RequestScope
+        from src.api.scope import held_task_for_session
+        from src.git.manager import GitError
+
+        principal = current_principal()
+        if (
+            principal is not None
+            and principal.kind == PrincipalKind.SESSION
+            and not principal.elevated
+        ):
+            task = await held_task_for_session(
+                self._db._db,
+                RequestScope(
+                    kind="session",
+                    session_id=principal.session_id,
+                    task_id=principal.task_id,
+                    project_id=principal.project_id,
+                ),
+            )
+            if task is None:
+                raise GitError("No active task branch for this session")
+            return task.branch_name or f"aq/{task.id}"
+        return await self._git.aget_current_branch(checkout_path)
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
@@ -784,10 +827,10 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         git = self._git
-        branch = args.get("branch") or await git.aget_current_branch(checkout_path)
-        if not branch:
-            return {"error": "Could not determine current branch"}
         try:
+            branch = args.get("branch") or await self._default_push_branch(checkout_path)
+            if not branch:
+                return {"error": "Could not determine current branch"}
             await git.apush_branch(
                 checkout_path,
                 branch,
@@ -1054,12 +1097,10 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         git = self._git
-        branch_name = args.get("branch_name")
-        if not branch_name:
-            branch_name = await git.aget_current_branch(checkout_path)
+        try:
+            branch_name = args.get("branch_name") or await self._default_push_branch(checkout_path)
             if not branch_name:
                 return {"error": "Could not determine current branch"}
-        try:
             await git.apush_branch(
                 checkout_path,
                 branch_name,
