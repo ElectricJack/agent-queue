@@ -36,6 +36,7 @@ from src.database.tables import (
 from src.integration.cleanup import CleanupExecutionResult, IntegrationCleanupService
 from src.integration.release import IntegrationReleaseService
 from src.integration.scheduler import IntegrationScheduler
+from src.integration.settling import note_approval
 from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
@@ -410,6 +411,8 @@ async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):
 async def test_release_atomically_promotes_first_catchup_once(release_db):
     db, scheduler = release_db
     original = await scheduler.mark_due(project_id="p", now=21.0, trigger="manual")
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=300.0)
     periodic = await scheduler.mark_due(project_id="p", now=600.0, trigger="periodic")
     assert original["request_id"] == periodic["request_id"]
 
