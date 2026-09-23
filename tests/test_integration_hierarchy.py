@@ -821,7 +821,7 @@ async def test_new_root_bootstraps_default_branch_before_its_branch_exists(
     repo = await db.get_repo("repo")
     assert requested == [repo.default_branch]
     task = await db.get_task(task_id)
-    assert task.branch_name == f"aq/{task_id}"
+    assert task.branch_name == "aq/epic/new-root"
     checkpoint = await db.get_integration_checkpoint(task_id)
     assert checkpoint["checkpoint_sha"] == BASE
     origins = await _origins(db)
@@ -1413,7 +1413,10 @@ async def test_file_root_persists_canonical_branch_before_container_collection(d
         )
     root_id = filed["task_id"]
     root = await db.get_task(root_id)
-    assert root.branch_name == f"aq/{root_id}"
+    assert root.branch_name == "aq/epic/root"
+    checkpoint = await db.get_integration_checkpoint(root_id)
+    assert checkpoint["branch"] == root.branch_name
+    assert (await _origins(db))[0]["branch"] == root.branch_name
 
     # A root with a child is an untouched released container.  The bootstrap
     # must see the stored branch identity, rather than reject it as missing.
@@ -1426,6 +1429,32 @@ async def test_file_root_persists_canonical_branch_before_container_collection(d
         )
     result = await hierarchy.bootstrap_container_collection(root_id)
     assert result["outcome"] == "checkpointed"
+
+
+async def test_file_root_materializes_its_reserved_epic_branch(db):
+    materialized = []
+
+    async def materialize(_repo, branch, base_sha):
+        materialized.append((branch, base_sha))
+        return base_sha
+
+    service = HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: BASE,
+        branch_materializer=materialize,
+    )
+    async with db.immediate() as conn:
+        filed = await service.file_root_on(
+            conn,
+            Task(id="pending", project_id="p", title="Ship the train", description=""),
+        )
+    origin = (await _origins(db))[0]
+    assert origin["task_id"] == filed["task_id"]
+
+    await service.materialize_origin(origin["id"])
+
+    assert materialized == [("aq/epic/ship-the-train", BASE)]
+    assert (await db.get_task(filed["task_id"])).branch_name == materialized[0][0]
 
 
 
@@ -1465,9 +1494,9 @@ async def test_new_root_bootstraps_from_real_remote_default_branch(
     assert "created" in result, result
     task_id = result["created"]
     # Filing reserves the origin; cutting the branch is materialization's job.
-    assert _git(["ls-remote", "--heads", str(origin), f"aq/{task_id}"], tmp_path) == ""
+    assert _git(["ls-remote", "--heads", str(origin), "aq/epic/real-root"], tmp_path) == ""
     task = await db.get_task(task_id)
-    assert task.branch_name == f"aq/{task_id}"
+    assert task.branch_name == "aq/epic/real-root"
     assert (await db.get_integration_checkpoint(task_id))["checkpoint_sha"] == base
     origins = await _origins(db)
     assert [(row["base_sha"], row["parent_ref"], row["materialized"]) for row in origins] == [

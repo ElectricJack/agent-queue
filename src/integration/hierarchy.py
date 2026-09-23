@@ -29,6 +29,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.manager import is_valid_git_oid
+from src.integration.epic_branch import reserve_branch_name
 from src.integration.models import BranchKey
 from src.integration.outbox import enqueue_integration_event
 from src.integration.ownership import BranchOwnership
@@ -469,9 +470,12 @@ class HierarchyIntegration:
         task.project_id = project["id"]
         task.parent_task_id = None
         task.repo_id = repo.id
-        task.branch_name = f"aq/{task_id}"
+        task.branch_name = None
         task.status = TaskStatus.DEFINED
         await self.db.create_task(task, conn=conn)
+        task.branch_name = await reserve_branch_name(
+            conn, task_id=task_id, title=task.title, is_epic=False
+        )
         await self.db.set_parent(
             task_id, parent_id, conn=conn, integration_authorized=True
         )
@@ -540,9 +544,12 @@ class HierarchyIntegration:
             task.project_id = project["id"]
             task.parent_task_id = None
             task.repo_id = repo.id
-            task.branch_name = f"aq/{task_id}"
+            task.branch_name = None
             task.status = TaskStatus.DEFINED
             await self.db.create_task(task, conn=conn)
+            task.branch_name = await reserve_branch_name(
+                conn, task_id=task_id, title=task.title, is_epic=False
+            )
             await self.db.set_parent(
                 task_id, parent_id, conn=conn, integration_authorized=True
             )
@@ -599,9 +606,12 @@ class HierarchyIntegration:
             labels=labels,
         )
         gate_id = await self._maybe_create_routing_gate(conn, task, routing_policy)
-        await self._ensure_origin_chain(conn, task.id, repo)
-        task.branch_name = f"aq/{task.id}"
-        await conn.execute(update(tasks).where(tasks.c.id == task.id).values(branch_name=task.branch_name))
+        task.branch_name = await reserve_branch_name(
+            conn, task_id=task.id, title=task.title, is_epic=True
+        )
+        await self._ensure_origin_chain(
+            conn, task.id, repo, root_branch=repo.default_branch
+        )
         return {"task_id": task.id, "generation": 0, "gate_id": gate_id}
 
     async def bootstrap_container_collection(self, task_id: str) -> dict:
@@ -618,7 +628,7 @@ class HierarchyIntegration:
         async with self.db._engine.connect() as conn:
             task = await self._task_row(conn, task_id)
             project, repo = await self._enabled_route(conn, task)
-        target = BranchKey(repository_id=repo.id, branch=f"aq/{task_id}")
+        target = BranchKey(repository_id=repo.id, branch=task["branch_name"])
         owner = await self.ownership.get_owner(target)
         if owner is None or owner["owner_id"] != task_id or owner["owner_role"] != "worker":
             return {"outcome": "waiting", "task_id": task_id}
@@ -885,7 +895,7 @@ class HierarchyIntegration:
             repo = await self._repo_on(read_conn, row["repository_id"])
         if repo is None:
             raise HierarchyError("invalid", "origin repository does not exist")
-        branch = f"aq/{task['id']}"
+        branch = task["branch_name"]
         ownership = await self.ownership.get_owner(
             BranchKey(repository_id=repo.id, branch=branch)
         )
@@ -1267,7 +1277,7 @@ class HierarchyIntegration:
             if existing is not None:
                 parent_checkpoint = dict(existing)
                 continue
-            branch = f"aq/{row['id']}"
+            branch = row["branch_name"] or f"aq/{row['id']}"
             if parent_checkpoint is None:
                 base_sha = await self._resolve_head(
                     repo, root_branch or row["branch_name"] or repo.default_branch
@@ -1328,7 +1338,8 @@ class HierarchyIntegration:
     ) -> dict:
         if not _OID.fullmatch(base_sha):
             raise HierarchyError("invalid", "branch origin base is not an exact Git OID")
-        branch = f"aq/{task_id}"
+        task = await self._task_row(conn, task_id)
+        branch = task["branch_name"]
         if parent_task_id is not None and parent_ref == "main":
             raise HierarchyError("invalid", "child delivery cannot target the default branch")
         origin_id = str(uuid.uuid4())
@@ -1358,7 +1369,7 @@ class HierarchyIntegration:
             conn,
             event_id=event_id,
             dedup_key=f"integration.branch_materialization:{origin_id}",
-            project_id=(await self._task_row(conn, task_id))["project_id"],
+            project_id=task["project_id"],
             event_type="integration.branch_materialization_pending",
             payload={
                 "operation_id": origin_id,
