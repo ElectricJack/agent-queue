@@ -664,46 +664,17 @@ class DevelopmentIntegration:
                 for task in eligible:
                     ordered.append(task)
                     remaining.pop(task["id"])
-            parked_sources = {}
-            for row in history:
-                if row["state"] != "parked" or retry:
-                    continue
-                for member in _manifest_members(row["manifest"]):
-                    if member["task_id"] != recover_child_id:
-                        parked_sources.setdefault(member["task_id"], []).append(
-                            (member.get("source_sha"), row["created_at"])
-                        )
-            unavailable = set(parked_sources)
-            # A later delivery supersedes historical parked attempts. A newer
-            # parked revision remains unavailable even after its source ref is
-            # removed, unless that revision also reached the pinned target.
+            unavailable = {task_id for task_id, _source in parked}
+            # A delivered source on the pinned target satisfies a dependency.
+            # Recovery can leave newer parked/conflict rows for other attempts,
+            # including rows later adopted by a repair. Those attempts cannot
+            # revoke an earlier delivery of this task's source. A genuinely
+            # newer completion is checked below against the pinned target.
             for dependency_id in tuple(unavailable):
-                delivered_source = await self._delivered_source(
+                if await self._delivered_source(
                     store, history, dependency_id, base,
                     repository_id=repo.id,
-                )
-                if not delivered_source:
-                    continue
-                delivered_at = max(
-                    row["created_at"]
-                    for row in history
-                    if row["state"] in {"delivered", "adopted"}
-                    and row["repository_id"] == repo.id
-                    and any(
-                        member["task_id"] == dependency_id
-                        and member.get("source_sha") == delivered_source
-                        for member in _manifest_members(row["manifest"])
-                    )
-                )
-                unresolved = False
-                for source_sha, created_at in parked_sources[dependency_id]:
-                    if created_at > delivered_at and not (
-                        is_valid_git_oid(source_sha)
-                        and await self.git.ais_ancestor(str(store), source_sha, base)
-                    ):
-                        unresolved = True
-                        break
-                if not unresolved:
+                ):
                     unavailable.discard(dependency_id)
             # A dependency may no longer be a candidate at all: its worker
             # branch was cleaned up or its task was archived. Bind an already
