@@ -583,6 +583,119 @@ async def test_authenticated_acquisition_expired_budget_identifies_preflight(tmp
 
 
 @pytest.mark.asyncio
+async def test_authenticated_acquisition_retries_timeout_with_same_delivery_oid_and_lease(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    source = (tmp_path / "source.git").as_uri()
+    old_oid, tip_oid = "a" * 40, "b" * 40
+    started = []
+    process = SimpleNamespace(
+        returncode=0,
+        communicate=AsyncMock(return_value=(f"{old_oid}\trefs/heads/main\n".encode(), b"")),
+    )
+
+    async def start(*args, **kwargs):
+        started.append((args, kwargs))
+        if len(started) == 1:
+            raise asyncio.TimeoutError
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(manager_module.random, "uniform", lambda low, high: 0.2)
+    monkeypatch.setattr(manager, "_kill_app_git_group", AsyncMock())
+    monkeypatch.setattr(manager, "_apush_destination", AsyncMock(return_value=(source, None)))
+    monkeypatch.setattr(manager, "_aresolve_delivery_tip", AsyncMock(return_value=tip_oid))
+    monkeypatch.setattr(manager, "areserved_paths_in_diff", AsyncMock(return_value=[]))
+    transfer = AsyncMock()
+    monkeypatch.setattr(manager, "_atransfer_exact_ref", transfer)
+    monkeypatch.setattr(manager, "_aemit_push_event", AsyncMock())
+
+    result = await manager.apush_validated_delivery(
+        str(tmp_path), "main", "refs/heads/source", "main",
+        expected_remote_oid=old_oid, repository_url=source,
+    )
+
+    assert result == tip_oid
+    assert len(started) == 2
+    assert started[0][0] == started[1][0]
+    assert started[0][1]["env"] == started[1][1]["env"]
+    assert transfer.await_args.args[1] == tip_oid
+    assert transfer.await_args.args[3] == old_oid
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_timeout_stops_after_one_retry(tmp_path, monkeypatch):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+    source = (tmp_path / "source.git").as_uri()
+    starts = 0
+    attempt_deadlines = []
+    original_attempt = manager._arun_authenticated_git_once
+
+    async def record_attempt(*args, **kwargs):
+        attempt_deadlines.append(kwargs["deadline"])
+        return await original_attempt(*args, **kwargs)
+
+    async def time_out(*_args, **_kwargs):
+        nonlocal starts
+        starts += 1
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", time_out)
+    monkeypatch.setattr(manager_module.random, "uniform", lambda low, high: 0.2)
+    monkeypatch.setattr(manager, "_arun_authenticated_git_once", record_attempt)
+    overall_deadline = asyncio.get_running_loop().time() + 9
+    with pytest.raises(GitError, match="exception TimeoutError") as caught:
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token=None, deadline=overall_deadline,
+            budget_seconds=9,
+        )
+    assert starts == 2
+    assert attempt_deadlines[0] < attempt_deadlines[1] == overall_deadline
+    assert type(caught.value) is GitError
+    message = str(caught.value)
+    assert "attempt=2" in message
+    assert "phase=subprocess_spawn" in message
+    assert "configured_budget=9.0s" in message
+    assert "elapsed_in_run=" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_does_not_retry_auth_or_nonzero_exit(
+    tmp_path, monkeypatch
+):
+    manager = GitManager()
+    home = tmp_path / "home"
+    home.mkdir()
+    source = (tmp_path / "source.git").as_uri()
+    starts = 0
+    process = SimpleNamespace(returncode=7, communicate=AsyncMock(return_value=(b"", b"auth failed")))
+
+    async def start(*_args, **_kwargs):
+        nonlocal starts
+        starts += 1
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start)
+    monkeypatch.setattr(manager, "_kill_app_git_group", AsyncMock())
+    with pytest.raises(GitError, match="returncode 7"):
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token=None, deadline=asyncio.get_running_loop().time() + 5,
+        )
+    assert starts == 1
+    with pytest.raises(GitError, match="invalid GitHub App credential"):
+        await manager._arun_authenticated_git(
+            ["ls-remote", source, "HEAD"], home=home, repository_url=source,
+            token="", deadline=asyncio.get_running_loop().time() + 5,
+        )
+    assert starts == 1
+
+
+@pytest.mark.asyncio
 async def test_authenticated_git_failure_reports_exit_and_scrubs_stderr_and_publisher_log(
     tmp_path, caplog
 ):

@@ -67,6 +67,7 @@ import asyncio
 import logging
 import math
 import os
+import random
 import re
 import signal
 import subprocess
@@ -128,6 +129,10 @@ def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int 
 
 class GitError(Exception):
     pass
+
+
+class _AuthenticatedGitTimeout(GitError):
+    """A contained Git attempt timed out and may be retried within its deadline."""
 
 
 class RemoteRefState(StrEnum):
@@ -406,6 +411,7 @@ def _require_authorized_repository(configured_url: str, repository_url: str, *, 
 class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
+    _APP_GIT_RETRY_MIN_BUDGET = 1.0
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
@@ -3609,6 +3615,41 @@ class GitManager:
         deadline: float,
         budget_seconds: float | None = None,
     ) -> bytes:
+        """Retry one timed-out acquisition without extending its original deadline."""
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        # Reserve time for one fresh attempt. A short caller budget keeps its
+        # original single-attempt behavior rather than forcing two tiny runs.
+        retry_available = remaining >= 8 * self._APP_GIT_RETRY_MIN_BUDGET
+        first_deadline = loop.time() + remaining * 0.75 if retry_available else deadline
+        for attempt in range(2 if retry_available else 1):
+            attempt_deadline = first_deadline if attempt == 0 else deadline
+            try:
+                return await self._arun_authenticated_git_once(
+                    args, home=home, repository_url=repository_url, token=token,
+                    deadline=attempt_deadline, budget_seconds=budget_seconds,
+                    attempt=attempt + 1,
+                )
+            except _AuthenticatedGitTimeout as exc:
+                if not retry_available or attempt or deadline - loop.time() <= self._APP_GIT_RETRY_MIN_BUDGET:
+                    raise GitError(str(exc)) from None
+                delay = random.uniform(0.2, 0.7)
+                if deadline - loop.time() - delay <= self._APP_GIT_RETRY_MIN_BUDGET:
+                    raise GitError(str(exc)) from None
+                await asyncio.sleep(delay)
+        raise AssertionError("authenticated Git retry loop exhausted")
+
+    async def _arun_authenticated_git_once(
+        self,
+        args: list[str],
+        *,
+        home: Path,
+        repository_url: str,
+        token: str | None,
+        deadline: float,
+        budget_seconds: float | None,
+        attempt: int,
+    ) -> bytes:
         """Run one contained network Git command against a pinned repository URL."""
         if not (
             repository_url.startswith("https://github.com/")
@@ -3749,7 +3790,8 @@ class GitManager:
                 detail = _safe_authenticated_git_detail(str(exc), token)
                 if isinstance(exc, asyncio.TimeoutError):
                     timeout_detail = (
-                        f"phase={phase}, configured_budget={configured_budget:.1f}s, "
+                        f"phase={phase}, attempt={attempt}, "
+                        f"configured_budget={configured_budget:.1f}s, "
                         f"budget_at_run_start={initial_remaining:.1f}s, "
                         f"elapsed_in_run={failure_time - run_started:.1f}s, "
                         f"remaining_budget={max(0.0, deadline - failure_time):.1f}s, "
@@ -3766,7 +3808,8 @@ class GitManager:
                     )
                     if tail:
                         suffix += f"; stderr tail: {tail}"
-                raise GitError(
+                error_type = _AuthenticatedGitTimeout if isinstance(exc, asyncio.TimeoutError) else GitError
+                raise error_type(
                     f"authenticated Git acquisition failed: exception "
                     f"{type(exc).__name__}{suffix}"
                 ) from None
