@@ -108,10 +108,17 @@ class AiohttpTransport:
                     json=json_body,
                     allow_redirects=False,
                 ) as response:
-                    body = await response.content.read(max_bytes + 1)
-                    if len(body) > max_bytes:
-                        raise GitHubAppError("transient", "GitHub response exceeded size limit")
-                    return HttpResponse(response.status, dict(response.headers), body)
+                    chunks: list[bytes] = []
+                    size = 0
+                    while True:
+                        chunk = await response.content.read(max_bytes + 1 - size)
+                        if not chunk:
+                            break
+                        size += len(chunk)
+                        if size > max_bytes:
+                            raise GitHubAppError("transient", "GitHub response exceeded size limit")
+                        chunks.append(chunk)
+                    return HttpResponse(response.status, dict(response.headers), b"".join(chunks))
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             raise GitHubAppError("transient", "GitHub request failed") from exc
 
