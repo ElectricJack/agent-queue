@@ -1189,6 +1189,7 @@ async def test_oversized_broker_request_setup_closes_and_zeroizes():
                     topology=topology,
                     authority="x" * (MAX_REQUEST_BYTES + 1),
                     repository="https://github.com/acme/widgets.git",
+                    remote_name="https://github.com/acme/widgets.git",
                     remote_url="https://github.com/acme/widgets.git",
                     prompt="Password for 'https://x-access-token@github.com': ",
                     timeout=0.1,
@@ -1451,10 +1452,11 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "broker_url",
-    ["transport", "original", "other_repository"],
+    ["transport", "original", "other_repository", "wrong_alias"],
 )
+@pytest.mark.parametrize("operation", ["ls-remote", "clone"])
 async def test_supported_git_https_remote_helper_is_credential_origin(
-    tmp_path, broker_url
+    tmp_path, broker_url, operation
 ):
     requests = 0
 
@@ -1522,12 +1524,16 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
             "AQ_GIT_APP_REPOSITORY": repository,
         }
     )
+    git_args = (
+        ["ls-remote", remote_url]
+        if operation == "ls-remote"
+        else ["clone", "--bare", remote_url, str(tmp_path / "clone.git")]
+    )
     process = await asyncio.create_subprocess_exec(
         "/usr/bin/git",
         "-c",
         "http.sslVerify=false",
-        "ls-remote",
-        remote_url,
+        *git_args,
         cwd=tmp_path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.DEVNULL,
@@ -1546,10 +1552,16 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
                 topology=topology,
                 authority=authority,
                 repository=repository,
+                remote_name=(
+                    "wrong-alias"
+                    if broker_url == "wrong_alias"
+                    else "origin" if operation == "clone" else remote_url
+                ),
                 remote_url={
                     "transport": remote_url,
                     "original": repository,
                     "other_repository": remote_url.replace("widgets", "other"),
+                    "wrong_alias": remote_url,
                 }[broker_url],
                 prompt=prompt,
                 timeout=2 if broker_url == "transport" else 0.2,

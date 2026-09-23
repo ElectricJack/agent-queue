@@ -170,6 +170,7 @@ def _is_packaged_helper(
     git_pid: int,
     topology: GitCredentialTopology,
     repository: str,
+    remote_name: str,
     remote_url: str,
     expected_prompt: str,
 ) -> bool:
@@ -207,7 +208,7 @@ def _is_packaged_helper(
         return False
     if parent_arguments != [
         os.fsencode(topology.remote_helper_argv0),
-        remote_url.encode(),
+        remote_name.encode(),
         remote_url.encode(),
     ]:
         return False
@@ -258,6 +259,7 @@ async def serve_one_credential(
     topology: GitCredentialTopology,
     authority: str,
     repository: str,
+    remote_name: str,
     remote_url: str,
     prompt: str,
     timeout: float,
@@ -294,6 +296,7 @@ async def serve_one_credential(
                 git_pid=git_pid,
                 topology=topology,
                 repository=repository,
+                remote_name=remote_name,
                 remote_url=remote_url,
                 expected_prompt=prompt,
             ):

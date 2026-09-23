@@ -3700,6 +3700,7 @@ class GitManager:
                                 topology=topology,
                                 authority=authority,
                                 repository=repository_url,
+                                remote_name="origin" if args[0] == "clone" else git_url,
                                 remote_url=git_url,
                                 prompt=f"Password for '{authority}': ",
                                 timeout=broker_timeout,
@@ -4074,6 +4075,7 @@ class GitManager:
                                 topology=topology,
                                 authority=authority,
                                 repository=destination_url,
+                                remote_name=destination_url,
                                 remote_url=destination_url,
                                 prompt=prompt,
                                 timeout=min(
