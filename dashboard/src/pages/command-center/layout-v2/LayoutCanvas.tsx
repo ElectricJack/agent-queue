@@ -61,12 +61,12 @@ const PROJECT_GAP = 2;
 const PLAYBOOKS_PER_ROW = 4;
 const initialViewport = { x: 0, y: 0, zoom: 1 };
 /**
- * Below this zoom a card is a few pixels tall: the smoothstep router and the
- * ×N labels are detail nobody can read, so the edges drop to straight lines.
- * Which nodes are drawn is unaffected — zoom is paint here, never structure:
+ * Below this zoom a card is a few pixels tall, so the ×N labels are unreadable.
+ * Edge paths and dependency styling stay the same at every zoom. Which nodes
+ * are drawn is unaffected — zoom is paint here, never structure:
  * containers are compact tiles at every zoom and are opened by entering them.
  */
-const SIMPLE_EDGE_ZOOM = 0.5;
+const EDGE_LABEL_ZOOM = 0.5;
 const RELATION_LABELS: Record<string, string> = {
   blocks: "blocks",
   "parent-child": "parent-child",
@@ -133,7 +133,7 @@ interface LayerProps {
   handlers: FlowHandlers;
   onElements: (projectId: string, elements: LayerElements) => void;
   density: LayoutDensity;
-  simpleEdges: boolean;
+  hideEdgeLabels: boolean;
 }
 
 function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "right"): Node | null {
@@ -159,7 +159,7 @@ function nearestIn(nodes: Node[], from: Node, dir: "up" | "down" | "left" | "rig
  */
 function ProjectLayer({
   projectId, projectNames, offsetY, params, viewport, width, height, focusId, handlers,
-  onElements, density, simpleEdges,
+  onElements, density, hideEdgeLabels,
 }: LayerProps) {
   const rawRect = useMemo<Rect | null>(() => {
     if (!viewport || width === 0) return null;
@@ -192,7 +192,7 @@ function ProjectLayer({
   const flowCache = useRef<FlowCache | undefined>(undefined);
   useEffect(() => {
     const { nodes, edges, cache } = toFlowElements(
-      store, { projectId, offsetY, focusId, handlers, projectNames, density, simpleEdges }, flowCache.current,
+      store, { projectId, offsetY, focusId, handlers, projectNames, density, hideEdgeLabels }, flowCache.current,
     );
     flowCache.current = cache;
     // Docking is resolved server-side, so a worker's `docked_at` is already a
@@ -205,7 +205,7 @@ function ProjectLayer({
       nodes, edges, workers, pending, loaded, error, variantApplied: store.variantApplied,
       enteredBounds: enteredBounds(store, focusId, projectId),
     });
-  }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, simpleEdges]);
+  }, [store, pending, loaded, error, projectId, projectNames, offsetY, focusId, handlers, onElements, density, hideEdgeLabels]);
 
   return null;
 }
@@ -262,9 +262,9 @@ function Inner(props: LayoutCanvasProps) {
   }, []);
 
   // A boolean, not the zoom: it flips once on the way past the threshold, so
-  // the edge rebuild happens on that crossing and not on every frame of a
+  // the label rebuild happens on that crossing and not on every frame of a
   // pinch.
-  const simpleEdges = (viewport?.zoom ?? 1) < SIMPLE_EDGE_ZOOM;
+  const hideEdgeLabels = (viewport?.zoom ?? 1) < EDGE_LABEL_ZOOM;
 
   // Projects stack vertically: each starts below the previous project's extent.
   const extents = useLayoutExtents(projectIds, requestVariant);
@@ -683,7 +683,7 @@ function Inner(props: LayoutCanvasProps) {
         {projectIds.map((pid) => (
           <ProjectLayer key={pid} projectId={pid} projectNames={projectNames} offsetY={offsets.get(pid) ?? 0} params={params}
             viewport={viewport} width={size.w} height={size.h} focusId={focusId} handlers={handlers}
-            onElements={onElements} density={density} simpleEdges={simpleEdges} />
+            onElements={onElements} density={density} hideEdgeLabels={hideEdgeLabels} />
         ))}
         <ReactFlow
           nodes={nodes}

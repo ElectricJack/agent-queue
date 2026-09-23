@@ -89,11 +89,10 @@ export interface FlowContext {
   projectNames?: ReadonlyMap<string, string>;
   density?: LayoutDensity;
   /**
-   * Visual level of detail: at far zoom the smoothstep router and the ×N
-   * labels are invisible detail that still costs a path solve and a label
-   * component per edge, so the edges are drawn straight and unlabelled.
+   * Visual level of detail: ×N labels are unreadable at far zoom. The edge
+   * path and dependency styling must stay the same at every zoom.
    */
-  simpleEdges?: boolean;
+  hideEdgeLabels?: boolean;
 }
 
 /**
@@ -163,7 +162,7 @@ function nodeSignature(n: LayoutNode, gates: GraphGate[]): string {
 function sameContext(a: FlowContext | null, b: FlowContext): boolean {
   return !!a && a.projectId === b.projectId && a.offsetY === b.offsetY && a.density === b.density
     && a.handlers === b.handlers && a.projectNames === b.projectNames
-    && (a.focusId ?? null) === (b.focusId ?? null) && !!a.simpleEdges === !!b.simpleEdges;
+    && (a.focusId ?? null) === (b.focusId ?? null) && !!a.hideEdgeLabels === !!b.hideEdgeLabels;
 }
 
 export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: FlowCache): FlowElements {
@@ -269,10 +268,10 @@ export function toFlowElements(store: LayoutStore, ctx: FlowContext, previous?: 
     // travels blocker → dependent, so compare them in that direction.
     const rightward = from.x >= to.x;
     const edge: Edge = {
-      id, source: e.to, target: e.from, type: ctx.simpleEdges ? "straight" : "smoothstep",
+      id, source: e.to, target: e.from, type: "smoothstep",
       sourceHandle: vertical ? "out-bottom" : rightward ? "out-right" : "out-left",
       targetHandle: vertical ? "in-top" : rightward ? "in-left" : "in-right",
-      label: ctx.simpleEdges || (e.count ?? 1) <= 1 ? undefined : `×${e.count}`,
+      label: ctx.hideEdgeLabels || (e.count ?? 1) <= 1 ? undefined : `×${e.count}`,
       // A `discovered-from` edge is provenance, not a dependency: it draws
       // as a quiet dashed annotation (edgeStyleForType) with no arrowhead,
       // so it never reads as another blocker line.
