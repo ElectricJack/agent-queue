@@ -21,6 +21,7 @@ from src.database.tables import (
     projects,
 )
 from src.git.manager import RemoteRefState
+from src.integration.epic_dependencies import dependents_of
 from src.integration.settling import note_approval
 from src.models import TaskStatus
 
@@ -145,6 +146,9 @@ class ReviewEvidenceProducer:
             await self._append_on(conn, evidence)
             if verdict == "approved":
                 await note_approval(conn, project_id=source["project_id"], now=created_at)
+            else:
+                for dependent_id in sorted(await dependents_of(conn, epic_task_id)):
+                    await self.db.add_task_label(dependent_id, "needs-rebase", conn=conn)
             return evidence
 
     async def _pull_request_source_on(self, conn, epic_task_id: str) -> dict[str, Any] | None:

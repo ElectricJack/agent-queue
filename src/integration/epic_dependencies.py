@@ -7,7 +7,7 @@ from heapq import heappop, heappush
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import epic_dependencies
+from src.database.tables import epic_dependencies, tasks
 
 
 async def declare(conn, *, dependent_task_id: str, dependency_task_id: str, now: float) -> None:
@@ -36,6 +36,18 @@ async def dependencies_for(conn, task_ids: list[str]) -> dict[str, set[str]]:
     for dependent, dependency in rows:
         edges.setdefault(dependent, set()).add(dependency)
     return edges
+
+
+async def dependents_of(conn, dependency_task_id: str) -> set[str]:
+    """Return live epics that declared a dependency on this epic."""
+    rows = (
+        await conn.execute(
+            select(epic_dependencies.c.dependent_task_id)
+            .join(tasks, tasks.c.id == epic_dependencies.c.dependent_task_id)
+            .where(epic_dependencies.c.dependency_task_id == dependency_task_id)
+        )
+    ).scalars().all()
+    return set(rows)
 
 
 def order_members(

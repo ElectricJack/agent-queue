@@ -9,11 +9,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import delete, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
     agents,
     archived_tasks,
     integration_attestation_publications,
+    integration_batch_members,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
@@ -25,6 +27,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stage_evidence,
     integration_repair_stages,
+    messages,
     playbook_artifacts,
     projects,
     sessions,
@@ -61,6 +64,7 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
 # that closed successfully and self-transferred back to its own reserved fence.
 _ATTACHED_PRIMARY_STATES = frozenset({"attached"})
 _RELEASED_PRIMARY_STATES = frozenset({"reserved", "released"})
+STUCK_BATCH_ATTEMPTS = 3
 
 
 class _RepairInvariant(ValueError):
@@ -808,6 +812,12 @@ class RepairService:
             dossier = self._dossier_with_evidence(
                 stage["dossier"], evidence, attempts=attempts
             )
+            if operation["target_kind"] == "batch" and counted:
+                dossier["batch_failure_streak"] = (
+                    int((stage["dossier"] or {}).get("batch_failure_streak", 0)) + 1
+                    if evidence["conclusion"] == "failure"
+                    else 0
+                )
             outcome = "continue"
             result_extra: dict[str, Any] = {}
             limit = (
@@ -883,12 +893,69 @@ class RepairService:
                     recorded_at=recorded_at,
                 )
             )
+            if (
+                operation["target_kind"] == "batch"
+                and counted
+                and evidence["conclusion"] == "failure"
+                and dossier["batch_failure_streak"] >= STUCK_BATCH_ATTEMPTS
+            ):
+                await self._escalate_stuck_batch_on(
+                    conn, operation, failures=dossier["batch_failure_streak"], now=recorded_at
+                )
             result = self._result_value(outcome, action, attempts) | result_extra
         if post_transition is not None:
             await self.db.log_blocked_flips(post_transition.flipped)
             await self.db._notify_settled(post_transition.settled)
             await self.db._notify_ready(post_transition.ready)
         return result
+
+    @staticmethod
+    async def _escalate_stuck_batch_on(
+        conn, operation, *, failures: int, now: float
+    ) -> None:
+        """Notify the supervisor once after three consecutive counted failures.
+
+        The stage dossier carries the durable streak into a debug stage. The
+        message's stable primary key prevents repeat notifications after more
+        failures or process restarts.
+        """
+        batch = (
+            await conn.execute(
+                select(integration_batches).where(
+                    integration_batches.c.id == operation["batch_id"]
+                )
+            )
+        ).mappings().one()
+        members = (
+            await conn.execute(
+                select(integration_batch_members.c.task_id)
+                .where(integration_batch_members.c.batch_id == operation["batch_id"])
+                .order_by(integration_batch_members.c.ordinal)
+            )
+        ).scalars().all()
+        age_seconds = max(0, int(now - batch["created_at"]))
+        await conn.execute(
+            pg_insert(messages)
+            .values(
+                id=f"msg-stuck-batch-{operation['batch_id']}",
+                project_id=batch["project_id"],
+                from_kind="system",
+                from_id="integration-repair",
+                to_kind="session",
+                to_id=f"supervisor-{batch['project_id']}",
+                subject=f"Integration batch {operation['batch_id']} needs attention",
+                body=(
+                    f"Integration batch {operation['batch_id']} has {failures} consecutive "
+                    f"failed repair checks after {age_seconds} seconds. "
+                    f"Members: {', '.join(members) or '(none)'}"
+                ),
+                created_at=now,
+                priority=50,
+                archive_after_inject=1,
+                body_kind="integration_stuck_batch",
+            )
+            .on_conflict_do_nothing(index_elements=[messages.c.id])
+        )
 
     async def dispatch(self, operation_id: str, stage: int) -> dict[str, Any]:
         """Create and safely hand off to the exact current repair writer."""
