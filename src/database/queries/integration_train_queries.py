@@ -39,6 +39,17 @@ _ACTIVE_BATCH_LIFECYCLES = (
 )
 
 
+def _root_delivery_receipt_conditions(repository_id: str, default_branch):
+    """The receipt rules shared by eligibility and dependency satisfaction."""
+    return (
+        task_delivery_receipts.c.target_task_id.is_(None),
+        task_delivery_receipts.c.repository_id == repository_id,
+        func.regexp_replace(task_delivery_receipts.c.target_branch, "^refs/heads/", "")
+        == func.regexp_replace(default_branch, "^refs/heads/", ""),
+        task_delivery_receipts.c.disposition == "code",
+    )
+
+
 class IntegrationTrainQueriesMixin:
     """Exact frontier reads that retain the caller's lock and transaction."""
 
@@ -131,12 +142,9 @@ class IntegrationTrainQueriesMixin:
         delivered_to_root = exists(
             select(task_delivery_receipts.c.id).where(
                 task_delivery_receipts.c.source_task_id == tasks.c.id,
-                task_delivery_receipts.c.target_task_id.is_(None),
-                task_delivery_receipts.c.repository_id == repository_id,
-                func.regexp_replace(
-                    task_delivery_receipts.c.target_branch, "^refs/heads/", ""
-                ) == func.regexp_replace(repository.c.default_branch, "^refs/heads/", ""),
-                task_delivery_receipts.c.disposition == "code",
+                *_root_delivery_receipt_conditions(
+                    repository_id, repository.c.default_branch
+                ),
             )
         )
 
@@ -214,6 +222,30 @@ class IntegrationTrainQueriesMixin:
             await conn.execute(statement.order_by(tasks.c.id, source_head).limit(limit))
         ).mappings()
         return [dict(row) for row in rows]
+
+    async def delivered_root_task_ids_on(
+        self, conn: AsyncConnection, *, project_id: str, repository_id: str
+    ) -> set[str]:
+        """Return epic ids delivered to this repository's default branch.
+
+        Receipt rows survive task archival, so this read does not join the
+        active tasks table.
+        """
+        rows = await conn.execute(
+            select(task_delivery_receipts.c.source_task_id)
+            .select_from(
+                task_delivery_receipts.join(
+                    repos, repos.c.id == task_delivery_receipts.c.repository_id
+                )
+            )
+            .where(
+                repos.c.id == repository_id,
+                repos.c.project_id == project_id,
+                task_delivery_receipts.c.source_task_id.is_not(None),
+                *_root_delivery_receipt_conditions(repository_id, repos.c.default_branch),
+            )
+        )
+        return set(rows.scalars().all())
 
     async def latest_exact_reviews_on(
         self,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any, Literal
 
 from sqlalchemy import delete, insert, select, update
@@ -21,6 +22,7 @@ from src.database.tables import (
     repos,
 )
 from src.git.manager import GitError, _validate_ref
+from src.integration.epic_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
@@ -28,6 +30,7 @@ from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
 
 ScheduleTrigger = Literal["periodic", "manual"]
+logger = logging.getLogger(__name__)
 
 
 class IntegrationScheduler:
@@ -665,7 +668,18 @@ class TrainService:
                     continue
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
-        return sorted(members, key=lambda row: (row["task_id"], row["source_head"]))
+        members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        edges = await dependencies_for(conn, [member["task_id"] for member in members])
+        delivered = await self.db.delivered_root_task_ids_on(
+            conn, project_id=project_id, repository_id=repository_id
+        )
+        ordered, deferred = order_members(members, edges, delivered)
+        for member in deferred:
+            logger.info(
+                "integration: deferring %s: declared dependencies cannot be satisfied in this batch",
+                member["task_id"],
+            )
+        return ordered
 
     async def _batch_for_request(self, conn, project_id: str, request_id: str):
         row = (
