@@ -206,10 +206,13 @@ class ProjectOnboardingService:
                         await self.gh.validate_repository(github_clone[0].html_url)
                     except GitHubError as exc:
                         raise self._map_github_error(exc, phase="preflight") from exc
-                    if self.gh.access.credential_identity.mode is GitHubCredentialMode.APP:
+                    if (
+                        self.gh.access.credential_identity.mode is GitHubCredentialMode.APP
+                        and getattr(self.git, "github_access", None) is not self.gh.access
+                    ):
                         raise ProjectOnboardingError(
                             ProjectOnboardingErrorCode.GITHUB_OPERATION_UNSUPPORTED,
-                            "The GitHub App can access this repository, but cloning with App credentials is unavailable",
+                            "GitHub App cloning requires the daemon's shared authenticated Git transport",
                             phase="preflight",
                         )
 
