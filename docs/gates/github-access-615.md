@@ -89,8 +89,9 @@ GitHub evidence. **Current disposition: acceptance failed at App onboarding
 and AQ task close; issue #615 completion is not recommended.** The App
 installation needs an approved permission update; source repairs are tracked
 as `agile-delta` (App permission key) and `fair-stone` (task-close tracking
-ref). The App daemon and repositories are retained only while live validation
-remains pending; cleanup is not yet claimed.
+ref). All isolated daemons were stopped after these checks. The disposable
+repositories and isolated fixture data are retained for the approved rerun;
+final cleanup is not yet claimed.
 
 | Item | Observed value |
 | --- | --- |
@@ -215,7 +216,7 @@ after verification. No token value was logged or placed in this record.
 | App denial with valid ambient PAT and independent no-fallback audit | `not_run`; current App failure alone does not prove this case |
 | Foreign PR/cross-project rejection | Live AQ refusal on a PR URL from the other disposable project; both `main` OIDs unchanged |
 | Stale-revision refusal | Live production-method refusal on PR 2, with remote `main` unchanged before the later validated merge |
-| Final fixture cleanup | Pending App permission approval and remaining validation |
+| Final fixture cleanup | Four isolated daemon ports confirmed closed; disposable repositories, App installation and fixture data retained pending owner approval and remaining validation |
 
 At this source revision, the declared focused command
 `POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
