@@ -158,6 +158,16 @@ returned `pipeline_ok=false`, status `BLOCKED`; `aq task explain` reported
 `session_close_pipeline_stop`. The GitHub merge succeeded, while AQ task
 completion did not.
 
+Separate disposable daemons on ports `18157` and `18158` tested environment
+credential discovery. Each had an empty `GH_CONFIG_DIR`, no stored login,
+and exactly one credential variable in its daemon environment. The
+`GH_TOKEN` instance and the `GITHUB_TOKEN` instance both reported
+`credential_mode=existing_login`, `login=ElectricJack`, then successfully
+onboarded the same private login fixture by URL and detected `main`.
+These were read/clone checks; PR, CI and merge were exercised in the
+stored-login instance above. Both environment-token daemons were stopped
+after verification. No token value was logged or placed in this record.
+
 ### Remaining runbook steps and repeatable checks
 
 | Step | Current result |
@@ -165,7 +175,7 @@ completion did not.
 | App-only held-branch push, PR, CI, immutable merge, integration and WIP publication | `not_run` after App token HTTP 422 |
 | App token expiry refresh and concurrent repository separation | `not_run` live; mock-only evidence above |
 | Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified as above; AQ task close `BLOCKED` |
-| Existing-login `GH_TOKEN` and `GITHUB_TOKEN` discovery in separate instances | `not_run` |
+| Existing-login `GH_TOKEN` and `GITHUB_TOKEN` discovery in separate instances | Live auth-status and private URL onboarding passed; no remote writes in these two instances |
 | App denial with valid ambient PAT and independent no-fallback audit | `not_run`; current App failure alone does not prove this case |
 | Foreign PR/cross-project rejection and stale-revision refusal | `not_run` live; mock-only evidence above |
 | Final fixture cleanup | Pending App permission approval and remaining validation |
