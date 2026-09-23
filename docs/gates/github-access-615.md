@@ -85,11 +85,12 @@ existing-login sequences. Record sanitized commands/results, the supported
 
 Task `prime-grove` started a separate App daemon and a separate existing-login
 daemon against disposable private repositories on 2026-09-23 UTC. This is live
-GitHub evidence. **Current disposition: acceptance failed at App onboarding;
-issue #615 completion is not recommended.** The App installation needs an
-approved permission update, and a source permission-key fix is being handled
-separately as task `agile-delta`. The App daemon and repositories are retained
-only while that live validation remains pending; cleanup is not yet claimed.
+GitHub evidence. **Current disposition: acceptance failed at App onboarding
+and AQ task close; issue #615 completion is not recommended.** The App
+installation needs an approved permission update; source repairs are tracked
+as `agile-delta` (App permission key) and `fair-stone` (task-close tracking
+ref). The App daemon and repositories are retained only while live validation
+remains pending; cleanup is not yet claimed.
 
 | Item | Observed value |
 | --- | --- |
@@ -120,7 +121,9 @@ at [`src/git/github_app.py`](../../src/git/github_app.py) requests
 among its token permissions. `variables` also differs from the GitHub
 permission key `actions_variables`. A source repair was filed as
 `agile-delta`; the additional App permissions await owner approval. This is a
-failed live gate, not an App credential-parity result.
+failed live gate, not an App credential-parity result. The installation selects
+only this App fixture repository, so live concurrent repository token
+separation also needs a second disposable repository selected for the App.
 
 ### Existing-login result: remote PR and merge verified, AQ close blocked
 
@@ -155,8 +158,34 @@ equals merge OID `ce71d41853e2d51e769eb79e3317755a39d384c8`, with
 the original base as its parent. The task branch ref returned HTTP 404 after
 remote cleanup. Closing fixture task `bold-nexus` with a shipped outcome then
 returned `pipeline_ok=false`, status `BLOCKED`; `aq task explain` reported
-`session_close_pipeline_stop`. The GitHub merge succeeded, while AQ task
-completion did not.
+`session_close_pipeline_stop`.
+
+A second held fixture task `bold-flare` tested task close **while its PR was
+still open and green**. `aq git push` published branch `aq/bold-flare` at
+`c49e332e4e6f965c35bdaff2aa8deac6581ec5b6`; its client response was
+unknown after 30 seconds, so the remote ref was checked before proceeding.
+`aq git create-pr` opened [fixture PR 2](https://github.com/ElectricJack/aq-gh615-login-fixture-20260923/pull/2),
+and both fixture checks passed. Closing `bold-flare` also returned
+`pipeline_ok=false`, status `BLOCKED`. The isolated daemon log identifies the
+cause in both closes: the completion pipeline tried `git rev-list
+refs/remotes/origin/<task-branch>..HEAD --count`, but AQ's successful push
+had not created that local remote-tracking ref. It treated the missing ref as
+an unfixable verification failure, despite the exact branch OID existing on
+GitHub. Task `fair-stone` tracks this source repair. The first close failure
+was therefore **not** caused by merging before close.
+
+Before merging PR 2, the production Git manager validated head
+`c49e332e4e6f965c35bdaff2aa8deac6581ec5b6` and base
+`ce71d41853e2d51e769eb79e3317755a39d384c8`. A separate disposable
+checkout advanced its head once to `a670e8cd1eb50358b1d0c06b212ae72f1432f865`.
+Calling the production merge method with the pinned old head returned
+`success=false` and an explicit head-moved refusal; GitHub still showed PR 2
+open and `main` unchanged. After the new head passed CI, `aq git pr-merge`
+returned success with a green CI verdict and base state `current`.
+Independent GitHub reads confirmed merge by `ElectricJack` at
+`2026-09-23T21:58:22Z`, new `main` OID
+`725b217262412548cc1b7ce60ebcb6093accf30f`, and HTTP 404 for the
+deleted task-branch ref.
 
 Separate disposable daemons on ports `18157` and `18158` tested environment
 credential discovery. Each had an empty `GH_CONFIG_DIR`, no stored login,
@@ -174,10 +203,11 @@ after verification. No token value was logged or placed in this record.
 | --- | --- |
 | App-only held-branch push, PR, CI, immutable merge, integration and WIP publication | `not_run` after App token HTTP 422 |
 | App token expiry refresh and concurrent repository separation | `not_run` live; mock-only evidence above |
-| Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified as above; AQ task close `BLOCKED` |
+| Existing-login stored-auth onboarding, held-branch push, PR idempotency, CI, AQ merge | Live GitHub writes and exact OIDs verified in two PRs; AQ task close `BLOCKED` on both |
 | Existing-login `GH_TOKEN` and `GITHUB_TOKEN` discovery in separate instances | Live auth-status and private URL onboarding passed; no remote writes in these two instances |
 | App denial with valid ambient PAT and independent no-fallback audit | `not_run`; current App failure alone does not prove this case |
-| Foreign PR/cross-project rejection and stale-revision refusal | `not_run` live; mock-only evidence above |
+| Foreign PR/cross-project rejection | `not_run` live; mock-only evidence above |
+| Stale-revision refusal | Live production-method refusal on PR 2, with remote `main` unchanged before the later validated merge |
 | Final fixture cleanup | Pending App permission approval and remaining validation |
 
 At this source revision, the declared focused command
