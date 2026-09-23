@@ -1305,24 +1305,26 @@ class GitOpsMixin:
             if current_branch == expected_push_branch:
                 try:
                     repository_url = None
-                    if pr_mode and not is_intermediate:
-                        # AQ's exact-OID push does not update this checkout's
-                        # origin/<task branch> ref. Observe the authorized
-                        # remote head instead of treating that missing local
-                        # tracking ref as an unpushed commit or a Git error.
-                        repo = await self.db.get_repo(task.repo_id) if task.repo_id else None
-                        project = await self.db.get_project(task.project_id)
-                        repository_url = (
-                            repo.url if repo and repo.project_id == task.project_id
-                            else project.repo_url if project and not task.repo_id else None
-                        )
-                        if not repository_url:
-                            raise GitError("authorized PR repository URL is unavailable")
+                    if not is_intermediate:
+                        # An exact-OID push does not update this checkout's
+                        # remote-tracking ref. Observe the remote head for
+                        # both PR branches and direct delivery to default.
+                        if pr_mode:
+                            repo = await self.db.get_repo(task.repo_id) if task.repo_id else None
+                            project = await self.db.get_project(task.project_id)
+                            repository_url = (
+                                repo.url if repo and repo.project_id == task.project_id
+                                else project.repo_url if project and not task.repo_id else None
+                            )
+                            if not repository_url:
+                                raise GitError("authorized PR repository URL is unavailable")
                         local_oid = await self.git.arev_parse(workspace, "HEAD")
                         if not local_oid:
                             raise GitError("could not resolve local delivery HEAD")
                         remote_ref = await self.git.als_remote_ref(
-                            workspace, current_branch, repository_url=repository_url
+                            workspace,
+                            current_branch,
+                            **({"repository_url": repository_url} if repository_url else {}),
                         )
                         if remote_ref.state is RemoteRefState.PRESENT:
                             if not remote_ref.oid:
@@ -1518,85 +1520,34 @@ class GitOpsMixin:
                     )
                 if has_remote:
                     try:
-                        behind = await self.git._arun(
-                            [
-                                "rev-list",
-                                f"HEAD..refs/remotes/origin/{default_branch}",
-                                "--count",
-                            ],
-                            cwd=workspace,
-                        )
-                        if behind.strip() != "0":
-                            # Auto-pull when the agent made no changes (no-op task).
-                            # Being behind origin is not the agent's fault — other
-                            # agents may have pushed while this task ran.
-                            if not has_uncommitted:
-                                try:
-                                    await self.git._arun(
-                                        ["pull", "--ff-only", "origin", default_branch],
-                                        cwd=workspace,
-                                    )
-                                    logger.info(
-                                        "Task %s: auto-pulled %s commit(s) on '%s' "
-                                        "(no-change task was behind origin)",
-                                        task.id,
-                                        behind.strip(),
-                                        default_branch,
-                                    )
-                                except Exception as pull_err:
-                                    logger.warning(
-                                        "Task %s: auto-pull failed: %s",
-                                        task.id,
-                                        pull_err,
-                                    )
-                                    failures.append(
-                                        (
-                                            f"Local `{default_branch}` is behind "
-                                            f"`origin/{default_branch}` and auto-pull "
-                                            f"failed. Please `git pull origin "
-                                            f"{default_branch}`.",
-                                            False,  # unfixable
-                                        )
-                                    )
-                            else:
-                                failures.append(
-                                    (
-                                        f"Local `{default_branch}` is behind "
-                                        f"`origin/{default_branch}`. "
-                                        f"Please `git pull origin {default_branch}`.",
-                                        False,  # unfixable — external changes
-                                    )
-                                )
-                    except GitError as e:
-                        failures.append(
-                            (
-                                f"Could not verify whether `{default_branch}` is behind "
-                                f"`origin/{default_branch}`: {e}",
-                                False,
-                            )
-                        )
-                    try:
-                        ahead = await self.git._arun(
-                            [
-                                "rev-list",
-                                f"refs/remotes/origin/{default_branch}..HEAD",
-                                "--count",
-                            ],
-                            cwd=workspace,
-                        )
-                        if ahead.strip() != "0":
+                        local_oid = await self.git.arev_parse(workspace, "HEAD")
+                        if not local_oid:
+                            raise GitError("could not resolve local default HEAD")
+                        remote_ref = await self.git.als_remote_ref(workspace, default_branch)
+                        if remote_ref.state is RemoteRefState.ERROR:
+                            raise GitError(remote_ref.error or "remote head observation failed")
+                        if remote_ref.state is RemoteRefState.ABSENT:
                             failures.append(
                                 (
-                                    f"Local `{default_branch}` has unpushed commits. "
-                                    f"Please `git push origin {default_branch}`.",
-                                    True,  # fixable — agent can push
+                                    f"Remote `{default_branch}` is absent after delivery.",
+                                    False,
+                                )
+                            )
+                        elif not remote_ref.oid:
+                            raise GitError("remote head observation returned no OID")
+                        elif remote_ref.oid != local_oid:
+                            failures.append(
+                                (
+                                    f"Remote `{default_branch}` is at {remote_ref.oid}, "
+                                    f"but local HEAD is {local_oid}; inspect the remote "
+                                    "before retrying delivery.",
+                                    False,
                                 )
                             )
                     except GitError as e:
                         failures.append(
                             (
-                                f"Could not verify whether `{default_branch}` has unpushed "
-                                f"commits: {e}",
+                                f"Could not verify remote `{default_branch}` head: {e}",
                                 False,
                             )
                         )

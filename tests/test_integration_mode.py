@@ -535,17 +535,42 @@ class TestPhaseVerifyByMode:
             c for c in orch.git._arun.await_args_list if c.args and "merge" in c.args[0]
         ]
         assert merge_calls, "direct mode should auto-merge the task branch into default"
-        commands = [call.args[0] for call in orch.git._arun.await_args_list]
-        assert [
-            "rev-list",
-            "HEAD..refs/remotes/origin/main",
-            "--count",
-        ] in commands
-        assert [
-            "rev-list",
-            "refs/remotes/origin/main..HEAD",
-            "--count",
-        ] in commands
+        assert orch.git.als_remote_ref.await_count == 2
+        orch.git.als_remote_ref.assert_any_await(ws.workspace_path, "main")
+
+    async def test_direct_close_accepts_delivered_main_with_stale_tracking_ref(self, orch):
+        task = _direct_task("t-direct-pushed", branch_name="main")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        # The exact remote already carries HEAD, while origin/main in this
+        # checkout is stale. Neither a second push nor a fetch is needed.
+        orch.git._arun = AsyncMock(side_effect=GitError("stale tracking ref consulted"))
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+        ctx.close_session_live = True
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        assert ctx.verification_issues == []
+        orch.git.apush_validated_delivery.assert_not_awaited()
+        assert orch.git.als_remote_ref.await_count == 2
+        orch.git._arun.assert_not_awaited()
+
+    async def test_direct_close_verifies_exact_remote_after_push(self, orch):
+        task = _direct_task("t-direct-auto-pushed", branch_name="main")
+        await orch.db.create_task(task)
+        orch.git.aget_current_branch = AsyncMock(return_value="main")
+        orch.git.als_remote_ref = AsyncMock(side_effect=[
+            RemoteRefResult(RemoteRefState.PRESENT, oid="b" * 40),
+            RemoteRefResult(RemoteRefState.PRESENT, oid="a" * 40),
+        ])
+        orch.git._arun = AsyncMock(side_effect=GitError("stale tracking ref consulted"))
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        assert await orch._phase_verify(ctx) == PhaseResult.CONTINUE
+        orch.git.apush_validated_delivery.assert_awaited_once()
+        assert orch.git.als_remote_ref.await_count == 2
+        orch.git._arun.assert_not_awaited()
 
     @pytest.mark.parametrize(
         "remote_ref",
@@ -682,15 +707,18 @@ class TestPhaseVerifyByMode:
         assert ["merge", "refs/heads/feature/current", "--no-edit"] not in merge_calls
 
     async def test_direct_mode_probe_error_fails_closed(self, orch):
-        task = _direct_task("t-direct-probe")
+        task = _direct_task("t-direct-probe", branch_name="main")
         await orch.db.create_task(task)
         orch.git.aget_current_branch = AsyncMock(return_value="main")
-        orch.git._arun = AsyncMock(side_effect=GitError("cannot inspect refs"))
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.ERROR, error="remote unavailable")
+        )
         ws = await orch.db.get_workspace("ws-1")
         ctx = _ctx(orch, task, ws.workspace_path)
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert ctx.verification_retry_in_session is False
+        orch.git.apush_validated_delivery.assert_not_awaited()
 
     async def test_pr_ancestor_probe_error_is_not_a_fixable_missing_pr(self, orch):
         task = _pr_task("t-pr-probe")
