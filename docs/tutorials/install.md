@@ -52,6 +52,13 @@ installer will either use a server you already run or, when you ask it to,
 install a local one. SQLite is not a runtime option; an existing SQLite
 database can only be imported (`aq db import-sqlite`).
 
+For GitHub onboarding and AQ-owned GitHub delivery, install GitHub CLI (`gh`)
+on the **daemon host** in either credential mode; `aq install` does not provision
+or verify it. Check `gh --version` as the daemon OS user. An existing `gh`
+login/PAT and a configured GitHub App are alternative setups, not two required
+prerequisites. See [project onboarding](../guides/project-onboarding.md#github-on-the-daemon-host)
+and [GitHub configuration](../reference/configuration.md#github-credentials).
+
 The [installation release record](../validation/installation-release-0.1.0.md)
 keeps the versioned artifact checks, native platform evidence, and known
 acceptance limits together. Read it before treating a source-checkout run as

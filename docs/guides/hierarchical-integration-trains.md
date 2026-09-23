@@ -122,10 +122,13 @@ No `.github/agent-queue-integration.json`, AQ attestation App, or
 `AQ_INTEGRATION_*` Actions variables are needed in the default gh mode.
 
 Existing installations that explicitly configure `integration.github_app`
-retain the legacy App-authenticated path and its trust manifest/variables.
-Remove that configuration to use the default gh path, then restart the daemon.
-Historical internal names containing `app_client` are compatibility names,
-not a requirement to configure an App.
+use its installation credential through the shared `gh` path and retain the
+App trust manifest, producer-identity and hosted-variable checks. The default
+existing-login mode uses its policy-derived checks. Changing credential mode
+requires a daemon restart; an App failure never falls back to the stored
+login. Historical internal names containing `app_client` are staged
+compatibility names, not another transport to configure. See
+[GitHub credentials](../reference/configuration.md#github-credentials).
 
 The repository's CI workflow must run on the exact pushed parent and generated
 integration branch commits, not only on `main` or a pull request's synthetic

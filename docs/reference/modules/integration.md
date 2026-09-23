@@ -18,6 +18,10 @@ Prose for everything here lives on four pages:
 Modes are labelled throughout: **development** is the mode this repository
 configures; **strict** marks a module that only runs in the optional
 `hierarchy` / `train` compatibility modes; **any** marks shared machinery.
+GitHub credential selection, the shared `gh` runner and authenticated Git
+transfer live in the [projects and workspaces catalog](workspaces.md#git-boundaries);
+integration consumes their repository binding and non-secret credential
+identity without changing its CI or attestation trust rules.
 
 ## Package entry points
 

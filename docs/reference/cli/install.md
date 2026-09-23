@@ -6,6 +6,12 @@ interface: platform, packaging, database and provider adapters contribute
 script see the same sequence, the same failure reports and the same exit codes
 on every supported host.
 
+GitHub CLI (`gh`) is a separate prerequisite for GitHub onboarding and
+AQ-owned GitHub operations in both existing-login and GitHub App modes. The
+installer does not install or check it. Install it on the daemon host before
+using those features; [GitHub configuration](../configuration.md#github-credentials)
+explains the two alternative credential setups.
+
 It is the only `aq` command that expects **no running daemon** — it runs the
 engine in-process and talks to nothing over the network.
 

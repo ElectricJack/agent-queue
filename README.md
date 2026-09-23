@@ -63,7 +63,10 @@ dev and dashboard toolchains on top of the same `aq install`.
 You need Linux or macOS (WSL2 counts, if everything stays on the Linux side), Python
 3.12+, Git, tmux, a PostgreSQL database, and at least one authenticated agent CLI —
 `claude`, `codex` or `gemini`. PostgreSQL is the only supported backend. `npm` is needed
-for the dashboard, and the GitHub CLI (`gh`) for the GitHub-facing delivery paths.
+for the dashboard, and the GitHub CLI (`gh`) for GitHub onboarding and AQ-owned
+delivery with either an existing login or a configured GitHub App. The installer
+does not install `gh`; [GitHub setup](docs/guides/project-onboarding.md#github-on-the-daemon-host)
+describes the two alternative credential modes.
 
 Unsure what a word means? The [glossary](docs/reference/glossary.md) defines the
 vocabulary the rest of the documentation uses.
