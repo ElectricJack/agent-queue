@@ -209,7 +209,9 @@ class CandidateService:
         if self.app_client is not None:
             observed_mutation = await self._observe_unresolved_mutations(batch_id, state)
         batch = state["batch"]
-        if batch["lifecycle"] == "empty":
+        if batch["lifecycle"] == "empty" or (
+            batch["lifecycle"] == "aborted" and not state["members"]
+        ):
             return CandidateBuildResult(
                 outcome="empty", batch_id=batch_id, revision=int(batch["current_revision"])
             )

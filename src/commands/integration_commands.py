@@ -356,6 +356,19 @@ class IntegrationCommandsMixin:
         await self._reconcile_integration_completion(project_id)
         return await self._integration_control_service().flush(project_id)
 
+    async def _cmd_integration_eject(self, args: dict) -> dict:
+        batch_id = str(args.get("batch_id") or "")
+        task_id = str(args.get("task_id") or "")
+        reason = str(args.get("reason") or "")
+        if not batch_id or not task_id or not reason.strip():
+            return _failure("invalid_state", "batch_id, task_id and reason are required")
+        operator_id, refusal = await self._integration_operator_for_batch(batch_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        return await self._integration_control_service().eject(
+            batch_id, task_id=task_id, reason=reason, operator_id=operator_id
+        )
+
     async def _reconcile_integration_completion(self, project_id: str) -> None:
         from src.integration.completion_recovery import (
             reconcile_closed_integration_owners, recover_completed_pr_links,

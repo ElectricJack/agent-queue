@@ -264,6 +264,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_repair_timeout",
         "integration_status",
         "integration_flush",
+        "integration_eject",
             "integration_enable",
             "integration_reconcile_unmaterialized",
             "integration_waive_history",

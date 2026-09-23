@@ -86,6 +86,21 @@ def integration_flush(ctx: click.Context, project_id: str) -> None:
     _execute(ctx, "integration_flush", {"project_id": project_id})
 
 
+@integration.command("eject")
+@click.option("--batch-id", required=True)
+@click.option("--task-id", required=True)
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_eject(ctx: click.Context, batch_id: str, task_id: str, reason: str) -> None:
+    """Remove one epic from a sealed batch while retaining its approval."""
+    _execute(
+        ctx,
+        "integration_eject",
+        {"batch_id": batch_id, "task_id": task_id, "reason": reason},
+    )
+
+
 @integration.command("enable")
 @click.argument("project_id")
 @click.option(
