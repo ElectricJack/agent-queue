@@ -16,7 +16,12 @@ import time
 
 import pytest
 
-from src.resources.semaphore import SlotTimeout, SlotSemaphore, default_lock_dir
+from src.resources.semaphore import (
+    SlotSemaphore,
+    SlotTimeout,
+    default_lock_dir,
+    full_suite_lock_dir,
+)
 
 
 @pytest.fixture
@@ -179,3 +184,23 @@ class TestLockDirResolution:
         # aq test has to work in a worktree whose config the CLI could not
         # load; the only requirement is that every agent agrees on the path.
         assert str(default_lock_dir(None)).endswith(".agent-queue/locks/test-slots")
+
+
+class TestFullSuiteLock:
+    """One full-suite run at a time: a one-slot semaphore beside the slots."""
+
+    def test_it_lives_under_the_slot_directory(self, tmp_path):
+        # Whatever relocates the slots (data_dir, a test isolating them)
+        # relocates the full-suite lock with them.
+        assert (
+            full_suite_lock_dir(tmp_path / "test-slots") == tmp_path / "test-slots" / "full-suite"
+        )
+
+    def test_it_is_not_one_of_the_slots(self, sem):
+        full = SlotSemaphore(full_suite_lock_dir(sem.lock_dir), 1)
+        with full.acquire(timeout=0, meta={"task_id": "whole-suite"}):
+            assert sem.snapshot()["free"] == 2
+            assert full.try_acquire() is None
+            # The slot directory's own waiters are not the full lock's.
+            assert sem.snapshot()["waiting"] == []
+        assert full.snapshot()["free"] == 1

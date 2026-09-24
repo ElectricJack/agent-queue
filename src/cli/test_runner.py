@@ -17,7 +17,10 @@ What it does, in order:
    path does not exist, rather than producing hundreds of fixture errors or
    xdist's misleading "no tests ran".
 3. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
-   queued agent looks queued rather than hung.
+   queued agent looks queued rather than hung.  A run that selects the
+   whole suite first takes the box-wide full-suite lock (capacity one), so
+   at most one slot is ever spent on the whole suite: three agents each
+   running it for an hour once starved the publisher's focused validation.
 4. Exec pytest with a fresh database-ownership token, ``-n <cap> --dist
    loadfile``, and the default marker
    deselects folded in — only when the caller did not pass their own, so
@@ -33,6 +36,7 @@ would be worse than no wrapper.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shlex
@@ -40,7 +44,10 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Mapping
+from contextlib import ExitStack
+from pathlib import Path
 
 import click
 
@@ -265,6 +272,169 @@ def _missing_paths(args: tuple[str, ...]) -> list[str]:
     return missing
 
 
+#: A path selection naming at least this share of the tree's test modules is
+#: the full suite in all but name: ``tests/test_*.py`` expanded by the shell
+#: leaves out only the subpackages.
+_FULL_SUITE_SHARE = 0.5
+
+#: Collection only: nothing runs, whatever is selected.
+_COLLECT_ONLY_FLAGS = frozenset({"--co", "--collect-only", "--collectonly"})
+_LAST_FAILED_FLAGS = frozenset({"--lf", "--last-failed"})
+
+#: Directories never worth walking for test modules.
+_SKIP_DIRS = frozenset({"__pycache__", "node_modules"})
+
+
+def _flags(args: tuple[str, ...]) -> list[str]:
+    """Option-shaped arguments before a bare ``--``."""
+    flags = []
+    for arg in args:
+        if arg == "--":
+            break
+        if arg.startswith("-"):
+            flags.append(arg)
+    return flags
+
+
+def _option_value(args: tuple[str, ...], flag: str) -> str | None:
+    """The value of the last short *flag* (``-k expr``, ``-kexpr``, ``-k=expr``).
+
+    Last wins, as it does for pytest.  ``None`` when the flag is absent.
+    """
+    value: str | None = None
+    skip_next = False
+    for index, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            break
+        if arg == flag:
+            value = args[index + 1] if index + 1 < len(args) else None
+            skip_next = True
+        elif arg.startswith(flag):
+            value = arg[len(flag) :].removeprefix("=")
+        elif arg in _VALUE_OPTIONS:
+            skip_next = True
+    return value
+
+
+def _expression_is_broad(expression: str) -> bool:
+    """True when a ``-k``/``-m`` expression keeps what it does not name.
+
+    pytest's own grammar decides: evaluate the expression for an item that
+    matches none of its words.  ``not slow`` keeps such an item (the whole
+    suite minus a slice), ``claim or pools`` drops it (a slice).  An empty
+    expression is pytest's "no filter".  One pytest cannot parse fails before
+    anything runs, so it is never a full-suite run.
+    """
+    if not expression.strip():
+        return True
+    try:
+        from _pytest.mark import expression as grammar
+    except ImportError:  # pragma: no cover - pytest is what this wraps
+        return False
+    # pytest 9 raises SyntaxError; earlier releases had their own ParseError.
+    unparseable = (SyntaxError, getattr(grammar, "ParseError", SyntaxError), TypeError)
+    try:
+        return bool(grammar.Expression.compile(expression).evaluate(lambda _name, **_kw: False))
+    except unparseable:
+        return False
+
+
+def _pytest_rootdir(cwd: Path) -> tuple[Path, list[Path]]:
+    """``(rootdir, testpaths)`` from the nearest ``pyproject.toml`` configuring pytest.
+
+    ``(cwd, [])`` when no such file is found above *cwd*.
+    """
+    for directory in (cwd, *cwd.parents):
+        pyproject = directory / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        try:
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        section = data.get("tool", {}).get("pytest")
+        if not isinstance(section, dict):
+            continue
+        # ``[tool.pytest.ini_options]``, or pytest 9's native ``[tool.pytest]``.
+        options = section.get("ini_options", section)
+        testpaths = options.get("testpaths") if isinstance(options, dict) else None
+        if isinstance(testpaths, str):
+            testpaths = testpaths.split()
+        return directory, [(directory / entry).resolve() for entry in testpaths or []]
+    return cwd, []
+
+
+def _test_modules(roots: list[Path]) -> set[Path]:
+    """Every ``test_*.py`` / ``*_test.py`` under *roots* (pytest's default ``python_files``)."""
+    modules: set[Path] = set()
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS]
+            for name in filenames:
+                if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
+                    modules.add(Path(dirpath, name))
+    return modules
+
+
+def _last_failed_is_a_slice(rootdir: Path) -> bool:
+    """``--lf`` reruns only the recorded failures, when there are any.
+
+    With nothing recorded, pytest's default ``--last-failed-no-failures all``
+    runs everything.
+    """
+    record = rootdir / ".pytest_cache" / "v" / "cache" / "lastfailed"
+    try:
+        return bool(json.loads(record.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return False
+
+
+def _is_full_suite(args: tuple[str, ...], *, cwd: Path | None = None) -> bool:
+    """True when *args* select the whole suite rather than a slice of it.
+
+    Full: no path at all (pytest collects ``testpaths``), ``tests/``, ``.``,
+    or a list of files covering at least :data:`_FULL_SUITE_SHARE` of the
+    tree's test modules.  A narrowing ``-k``/``-m`` expression, collect-only,
+    or ``--lf`` with failures on record makes any of those a slice.  A
+    ``::node-id`` names part of one module and never counts toward coverage.
+
+    Deliberately static: the point is to classify before taking a lock, and
+    collecting 14,000 tests to find out would itself be the heavy run.
+    """
+    flags = _flags(args)
+    if any(flag in _COLLECT_ONLY_FLAGS for flag in flags):
+        return False
+    for option in ("-k", "-m"):
+        expression = _option_value(args, option)
+        if expression is not None and not _expression_is_broad(expression):
+            return False
+    cwd = (cwd or Path.cwd()).resolve()
+    rootdir, testpaths = _pytest_rootdir(cwd)
+    if any(flag in _LAST_FAILED_FLAGS for flag in flags) and _last_failed_is_a_slice(rootdir):
+        return False
+    positionals = _positional_args(args)
+    if positionals:
+        targets = [(cwd / arg).resolve() for arg in positionals if "::" not in arg]
+    else:
+        # pytest reads ``testpaths`` only when run from the rootdir; anywhere
+        # else a bare invocation collects the current directory.
+        targets = testpaths if cwd == rootdir and testpaths else [cwd]
+    if not targets:
+        return False
+    if not testpaths:
+        # No configured tree to measure against: only a selection of the
+        # whole rootdir (which a bare run from it is) counts.
+        return any(t == rootdir or t in rootdir.parents for t in targets)
+    tree = _test_modules(testpaths)
+    if not tree:
+        return False
+    selected = sum(1 for m in tree if any(m == t or t in m.parents for t in targets))
+    return selected >= _FULL_SUITE_SHARE * len(tree)
+
+
 def _compose_pytest_argv(
     args: tuple[str, ...], *, workers: int, markers: str, apply_markers: bool
 ) -> list[str]:
@@ -328,7 +498,32 @@ def _run_forwarding_signals(argv: list[str], *, env: dict[str, str] | None = Non
                 pass
 
 
-def _render_status(snapshot: dict) -> None:
+def _elapsed(seconds: float) -> str:
+    """``45s`` / ``12m05s`` / ``1h02m`` — a full-suite hold is measured in hours."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
+def _full_suite_holder(snapshot: dict, now: float | None = None) -> str | None:
+    """Who holds the full-suite lock and for how long, or ``None`` when it is free."""
+    row = snapshot["slots"][0]
+    if not row["held"]:
+        return None
+    holder = row.get("holder") or {}
+    since = holder.get("since")
+    held_for = _elapsed((now or time.time()) - since) if isinstance(since, (int, float)) else "?"
+    who = f"task {holder['task_id']}" if holder.get("task_id") else f"pid {holder.get('pid', '?')}"
+    return f"{who}, cwd {holder.get('cwd') or '?'}, running {held_for}"
+
+
+def _render_status(snapshot: dict, full_suite: dict) -> None:
+    from rich.markup import escape
     from rich.table import Table
 
     table = Table(title=f"Test slots — {snapshot['free']}/{snapshot['total']} free")
@@ -345,13 +540,26 @@ def _render_status(snapshot: dict) -> None:
         since = holder.get("since")
         held_for = f"{now - since:.0f}s" if isinstance(since, (int, float)) else "?"
         who = holder.get("task_id") or holder.get("cwd") or f"pid {holder.get('pid', '?')}"
-        table.add_row(str(row["slot"]), "[yellow]busy[/]", str(who), held_for)
+        state = (
+            "[yellow]busy[/] (full suite)" if holder.get("scope") == "full" else "[yellow]busy[/]"
+        )
+        table.add_row(str(row["slot"]), state, escape(str(who)), held_for)
     console.print(table)
     for waiter in snapshot["waiting"]:
         since = waiter.get("since")
         waited = f"{now - since:.0f}s" if isinstance(since, (int, float)) else "?"
         who = waiter.get("task_id") or f"pid {waiter.get('pid', '?')}"
-        console.print(f"[dim]waiting:[/] {who} ({waited})")
+        console.print(f"[dim]waiting:[/] {escape(str(who))} ({waited})")
+    holder = _full_suite_holder(full_suite, now)
+    if holder is None:
+        console.print("Full-suite lock: [green]free[/] (one full-suite run at a time)")
+    else:
+        console.print(f"Full-suite lock: [yellow]held[/] by {escape(holder)}")
+    for waiter in full_suite["waiting"]:
+        since = waiter.get("since")
+        waited = _elapsed(now - since) if isinstance(since, (int, float)) else "?"
+        who = waiter.get("task_id") or f"pid {waiter.get('pid', '?')}"
+        console.print(f"[dim]waiting for the full-suite lock:[/] {escape(str(who))} ({waited})")
 
 
 @cli.command(
@@ -362,10 +570,19 @@ def _render_status(snapshot: dict) -> None:
         "help_option_names": ["--aq-help"],
     },
 )
-@click.option("--aq-status", is_flag=True, help="Show slot occupancy and exit.")
-@click.option("--aq-no-wait", is_flag=True, help="Fail immediately when every slot is busy.")
+@click.option("--aq-status", is_flag=True, help="Show slot and full-suite lock occupancy and exit.")
+@click.option(
+    "--aq-no-wait",
+    is_flag=True,
+    help="Fail immediately when every slot, or the full-suite lock, is busy.",
+)
 @click.option("--aq-workers", type=int, default=None, help="Override the enforced -n cap.")
-@click.option("--aq-timeout", type=int, default=None, help="Seconds to wait for a slot.")
+@click.option(
+    "--aq-timeout",
+    type=int,
+    default=None,
+    help="Seconds to wait for a slot (and, for a full-suite run, the full-suite lock).",
+)
 @click.option(
     "--aq-all-markers",
     is_flag=True,
@@ -397,11 +614,21 @@ def test_command(
     them.  Use ``--aq-help`` for this help (``-h``/``--help`` belong to
     pytest).
 
+    A run that selects the whole suite (no path, ``tests/``, or most of its
+    files, without a narrowing ``-k``/``-m``) also takes the box-wide
+    full-suite lock: one full-suite run at a time, queued without holding a
+    slot.  Focused runs never wait for it.
+
     A path-shaped argument that does not exist is refused before pytest
     starts (exit 4), and a run that collected nothing exits nonzero and
     says so.
     """
-    from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir
+    from src.resources.semaphore import (
+        SlotSemaphore,
+        SlotTimeout,
+        default_lock_dir,
+        full_suite_lock_dir,
+    )
     from src.resources.slot_report import REPORT_ENV, append_event
 
     config = _load_config()
@@ -418,9 +645,10 @@ def test_command(
     timeout = _slot_wait_timeout(timeout, aq_timeout)
 
     sem = SlotSemaphore(default_lock_dir(config), slots)
+    full_lock = SlotSemaphore(full_suite_lock_dir(sem.lock_dir), 1)
 
     if aq_status:
-        _render_status(sem.snapshot())
+        _render_status(sem.snapshot(), full_lock.snapshot())
         return
 
     if not pytest_args:
@@ -456,26 +684,33 @@ def test_command(
         console.print(f"[red]aq test:[/] {dsn_error}")
         ctx.exit(4)
 
+    full_suite = _is_full_suite(pytest_args)
     meta = {
         "pid": os.getpid(),
         "task_id": os.environ.get("AQ_TASK_ID"),
         "session": os.environ.get("AQ_SESSION_NAME"),
         "cwd": os.getcwd(),
         "command": shlex.join(argv),
+        "scope": "full" if full_suite else "focused",
     }
 
     # A supervising caller (the development publisher) asks, through the
     # env, to be told how long this run queued, so it can charge its run
-    # budget for running only.  See src/resources/slot_report.py.
+    # budget for running only.  See src/resources/slot_report.py.  A
+    # full-suite run queues on the full-suite lock and then on a slot; the
+    # report records both as one wait, measured from queued_at.
     report = os.environ.get(REPORT_ENV) or None
     queued_at = time.monotonic()
     announced = False
 
-    def _on_wait(waited: float, snapshot: dict) -> None:
+    def _announce_wait() -> None:
         nonlocal announced
         if report and not announced:
-            append_event(report, "waiting", at=time.time() - waited)
+            append_event(report, "waiting", at=time.time() - (time.monotonic() - queued_at))
             announced = True
+
+    def _on_wait(waited: float, snapshot: dict) -> None:
+        _announce_wait()
         # Printed every poll on purpose: the daemon reads terminal silence
         # as a stall, and an agent queued behind a busy box must be visibly
         # queued rather than looking hung.
@@ -489,18 +724,56 @@ def test_command(
             f"held by {', '.join(holders) or 'unknown'}[/]"
         )
 
+    def _on_full_wait(waited: float, snapshot: dict) -> None:
+        from rich.markup import escape
+
+        _announce_wait()
+        # Same reasoning as _on_wait: a run queued behind another full
+        # suite, possibly for an hour, has to look queued.
+        holder = _full_suite_holder(snapshot) or "nobody (retrying)"
+        console.print(
+            f"[dim]aq test: waiting {waited:.0f}s for the full-suite lock "
+            f"(one full-suite run at a time); held by {escape(holder)}[/]"
+        )
+
+    budget = 0 if aq_no_wait else timeout
     try:
-        with sem.acquire(
-            timeout=0 if aq_no_wait else timeout,
-            poll=poll,
-            meta=meta,
-            on_wait=_on_wait,
-        ) as slot:
+        with ExitStack() as held:
+            if full_suite:
+                # The full-suite lock first, a slot second: a run queued
+                # behind another full suite must not sit on a slot a
+                # focused run could be using.
+                try:
+                    held.enter_context(
+                        full_lock.acquire(
+                            timeout=budget, poll=poll, meta=meta, on_wait=_on_full_wait
+                        )
+                    )
+                except SlotTimeout:
+                    if report:
+                        append_event(
+                            report,
+                            "slot_timeout",
+                            waited=round(time.monotonic() - queued_at, 3),
+                        )
+                    _report_full_suite_busy(
+                        full_lock.snapshot(), waited_for=None if aq_no_wait else budget
+                    )
+                    ctx.exit(75)  # EX_TEMPFAIL, like a full box
+            slot = held.enter_context(
+                sem.acquire(
+                    timeout=max(0.0, budget - (time.monotonic() - queued_at)),
+                    poll=poll,
+                    meta=meta,
+                    on_wait=_on_wait,
+                )
+            )
             if report:
                 append_event(
                     report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
                 )
-            console.print(f"[dim]aq test: slot {slot} of {slots}, -n {workers}[/]")
+            scope = "full-suite lock + " if full_suite else ""
+            console.print(f"[dim]aq test: {scope}slot {slot} of {slots}, -n {workers}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
             child_env = os.environ.copy()
             # Always replace an inherited token. Nested or concurrent `aq test`
@@ -526,3 +799,25 @@ def test_command(
         console.print(f"[red]aq test:[/] {exc}")
         console.print("[dim]Run `aq test --aq-status` to see who is holding them.[/]")
         ctx.exit(75)  # EX_TEMPFAIL — retryable, not a test failure
+
+
+def _report_full_suite_busy(snapshot: dict, *, waited_for: int | None) -> None:
+    """Refuse a second full-suite run, naming the one already in progress."""
+    from rich.markup import escape
+
+    holder = _full_suite_holder(snapshot) or "a run that has just finished"
+    if waited_for is None:
+        console.print(
+            f"[red]aq test:[/] a full-suite run is already in progress: {escape(holder)}."
+        )
+    else:
+        console.print(
+            f"[red]aq test:[/] waited {_elapsed(waited_for)} for the full-suite lock; "
+            f"it is still held: {escape(holder)}."
+        )
+    console.print(
+        "Only one full-suite run may run box-wide at a time. Run the focused tests for "
+        "your change instead (aq test tests/test_<area>.py), or retry later"
+        + (" without --aq-no-wait to queue behind it." if waited_for is None else ".")
+    )
+    console.print("[dim]Run `aq test --aq-status` to see every holder.[/]")

@@ -41,10 +41,14 @@ __all__ = [
     "SlotTimeout",
     "SlotState",
     "default_lock_dir",
+    "full_suite_lock_dir",
 ]
 
 #: Where slot files live under ``data_dir``.
 LOCK_SUBDIR = ("locks", "test-slots")
+
+#: The full-suite lock's directory, inside the slot directory.
+FULL_SUITE_SUBDIR = "full-suite"
 
 
 class SlotTimeout(RuntimeError):
@@ -63,6 +67,19 @@ def default_lock_dir(config=None, *, data_dir: str | None = None) -> Path:
         data_dir = getattr(config, "data_dir", None)
     base = Path(os.path.expanduser(data_dir or "~/.agent-queue"))
     return base.joinpath(*LOCK_SUBDIR)
+
+
+def full_suite_lock_dir(slot_lock_dir: str | os.PathLike[str]) -> Path:
+    """Where the box-wide full-suite lock lives, given the slot directory.
+
+    The lock is a :class:`SlotSemaphore` with one slot.  A full-suite run
+    holds it *in addition to* a normal slot, so at most one of the
+    ``test_slots`` is ever spent on the whole suite and the rest stay free
+    for focused runs.  Nesting it under the slot directory keeps the two in
+    step: whatever relocates the slots (a custom ``data_dir``, a test
+    isolating them) relocates this lock with them.
+    """
+    return Path(slot_lock_dir) / FULL_SUITE_SUBDIR
 
 
 @dataclass
@@ -104,7 +121,9 @@ class SlotSemaphore:
 
     Not reentrant and not thread-safe: one process holds at most one slot,
     which is the whole point — an agent that could take two would be back to
-    saturating the box.
+    saturating the box.  (A full-suite run also holds the one-slot lock under
+    :func:`full_suite_lock_dir`; that is a separate semaphore, not a second
+    slot of this one.)
     """
 
     def __init__(self, lock_dir: str | os.PathLike[str], slots: int) -> None:
