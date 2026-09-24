@@ -4,11 +4,12 @@ import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
+import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
-const CommandCenterGraph = lazy(() => import("./pages/command-center/Graph"));
-const CommandCenterTasks = lazy(() => import("./pages/command-center/Tasks"));
+const CommandCenterGraph = lazy(loadWorkspaceGraph);
+const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
 const CommandCenter = lazy(() => import("./pages/CommandCenter"));
 const Metrics = lazy(() => import("./pages/metrics/Metrics"));
