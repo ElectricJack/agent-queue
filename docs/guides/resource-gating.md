@@ -125,6 +125,43 @@ aq test --aq-dry-run tests/              # print the pytest command
 aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
+### One full-suite run at a time
+
+A run that selects the whole suite also takes a box-wide **full-suite lock**
+with capacity one, before it takes a normal slot. On 2026-09-24 three
+workers each ran the full suite for over an hour, holding three of the four
+slots, and the development publisher's focused validation timed out waiting
+for one and filed bogus repairs. Asking workers not to do it was not enough,
+so it is now enforced:
+
+- A second full-suite run **queues** for the lock (printing a `waiting …
+  for the full-suite lock` line each poll, naming the holder) and holds **no
+  slot** while it waits. With `--aq-no-wait` it is refused at once with exit
+  75, naming the holder's task, cwd and how long it has been running.
+- **Focused runs never touch the lock**: they only compete for the
+  `test_slots` slots, so at most one of those is ever spent on the whole
+  suite.
+- `aq test --aq-status` shows the lock's holder and waiters under the slot
+  table, and marks the slot a full-suite run holds as `busy (full suite)`.
+
+What counts as the full suite is decided from the command line, before any
+lock is taken (collecting 14,000 tests to find out would itself be the heavy
+run):
+
+| Full suite | Focused |
+|---|---|
+| no path (pytest collects `testpaths`), `tests/`, `tests`, `.` | `tests/test_pools.py`, `tests/perf`, any `::node-id` |
+| files covering at least half the tree's test modules (`tests/test_*.py` expanded by the shell) | an area such as `tests/test_playbook*.py` |
+| a broad `-k`/`-m`: `-k "not slow"`, `-m "not perf"`, `-m ""` (`--aq-all-markers`) | a narrowing `-k`/`-m`: `tests/ -k claim`, `-m perf` |
+| `--lf` with nothing recorded (pytest then runs everything) | `--lf` with failures on record, `--co` / `--collect-only` |
+
+A `-k`/`-m` expression is judged with pytest's own grammar: it is broad
+when it keeps a test that matches none of its words. The lock is
+`{data_dir}/locks/test-slots/full-suite/slot-0.lock`, an `flock` exactly
+like the slots, so a crashed holder releases it without a reaper. It stays
+held while an orphaned pytest is still running, because pytest inherits the
+descriptor.
+
 ### Test scope and the recorded baseline
 
 Run focused tests for changed behavior and then the related area suite. Record
@@ -223,7 +260,8 @@ is deliberate: the daemon reads terminal silence as a stall, so an agent
 queued behind a busy box has to *look* queued.
 
 Exit codes are pytest's, with two additions: **75** (`EX_TEMPFAIL`) means no
-slot came free within `test_wait_timeout` — that is "come back later", not
+slot (or, for a full-suite run, the full-suite lock) came free within
+`test_wait_timeout` — that is "come back later", not
 "your tests failed" — and **4** means one of the paths you named does not
 exist, so nothing was run.
 
@@ -233,7 +271,9 @@ event (`waiting`, `acquired` with `waited`, `slot_timeout`, `released`;
 format in `src/resources/slot_report.py`), and `AQ_TEST_WAIT_TIMEOUT=<s>`
 overrides `test_wait_timeout` (`--aq-timeout` still wins). The development
 publisher sets both so its `timeout_seconds` charges only the run, not the
-wait for a slot.
+wait for a slot. For a full-suite run the wait for the full-suite lock and
+the slot after it are one reported wait, and the timeout bounds both
+together.
 
 The path check happens before a slot is taken, because pytest under xdist
 turns a mistyped path into `no tests ran` rather than `file or directory not
