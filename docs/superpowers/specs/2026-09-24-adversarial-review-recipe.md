@@ -101,7 +101,7 @@ then both sides are on the same family without anyone noticing.
 
 **Events** (`src/event_schemas.py:806-844`): `review.submitted`,
 `review.revised`, `review.decided`, `review.commented`, `review.withdrawn`,
-plus `review.dispatched`, which is emitted at `review_commands.py:637` but has
+plus `review.dispatched`, which is emitted at `review_commands.py:652` but has
 no `_REVIEW_SCHEMAS` entry (unverified whether that matters for playbook
 triggers). A V2 rule can trigger on any registered type
 (`src/playbooks/validation.py:1358-1366`).
