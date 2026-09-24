@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-74 commands are registered.
+75 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -90,6 +90,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_delivery_readiness`](integration_delivery_readiness.md) | Integration Delivery Readiness | Read whether every child of one parent has delivered, changing nothing. |
 | [`integration_develop`](integration_develop.md) | Integration Develop | Authenticated hierarchical integration operational control. |
 | [`integration_development_sweep`](integration_development_sweep.md) | Integration Development Sweep | Authenticated hierarchical integration operational control. |
+| [`integration_eject`](integration_eject.md) | Integration Eject | Authenticated hierarchical integration operational control. |
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
