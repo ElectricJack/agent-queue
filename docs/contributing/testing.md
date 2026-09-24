@@ -212,8 +212,9 @@ arm red on runner load.
 
 PostgreSQL is the suite's **only** backend; SQLite was removed and
 [`tests/test_sqlite_removal.py`](../../tests/test_sqlite_removal.py) is the
-ratchet that keeps it out. No test uses the database in your
-`~/.agent-queue/config.yaml`.
+ratchet that keeps it out. Run the suite against the separate `postgres-test`
+service on `:5534`, following [setup](setup.md#postgresql-for-tests). The
+daemon's `postgres` service on `:5533` is for operator data.
 
 `POSTGRES_TEST_DSN` must be set. [`tests/conftest.py`](../../tests/conftest.py)
 validates it once at `pytest_configure`, before collection or worker startup,

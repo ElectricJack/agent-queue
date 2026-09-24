@@ -149,8 +149,8 @@ PostgreSQL is required for the suite. Configure a disposable server before
 running tests (the base database is used only as a maintenance connection):
 
 ```bash
-docker compose up -d postgres
-export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+docker compose up -d postgres-test
+export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
 aq test tests/test_config.py
 ```
 
@@ -170,7 +170,7 @@ explicit/reused `AQ_TEST_RUN_ID` collides, the harness inspects
 drop, migrate, or stamp the foreign database. Remove an orphan manually only
 after confirming that no other run owns it.
 
-Never point `POSTGRES_TEST_DSN` at the daemon database from
+Never point `POSTGRES_TEST_DSN` at the daemon's `:5533` server from
 `~/.agent-queue/config.yaml`. The production-URL refusal, worker
 `AQ_DB_SCOPE`, and `AQ_DATABASE_URL` / `AGENT_QUEUE_DB` sentinels remain in
 force; tests create their own databases on the disposable server.
@@ -192,7 +192,7 @@ agents, they fail on load rather than on a regression. Run them on purpose,
 serially, when the box is idle:
 
 ```bash
-POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/aq_perf \
+POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres \
 AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
 ```
 

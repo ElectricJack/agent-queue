@@ -62,7 +62,7 @@ def test_required_dsn_guard_remains_actionable_outside_pytest_preflight(monkeypa
     monkeypatch.delenv("POSTGRES_TEST_DSN", raising=False)
     monkeypatch.setenv("AQ_REQUIRE_POSTGRES_TESTS", "1")
 
-    with pytest.raises(RuntimeError, match="docker compose up -d postgres"):
+    with pytest.raises(RuntimeError, match="docker compose up -d postgres-test"):
         pg_dsn.ensure_worker_postgres_dsn()
 
 
