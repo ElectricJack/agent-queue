@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { client } from "./client";
 
 // Kept local until the history endpoint is included in the generated SDK.
@@ -26,16 +26,20 @@ interface TaskSessionsResponse {
   sessions: TaskSessionAttempt[];
 }
 
+export const taskSessionsQuery = (taskId: string) => queryOptions({
+  queryKey: ["task", taskId, "sessions"],
+  queryFn: async () => {
+    const { data } = await client.get<TaskSessionsResponse, unknown, true>({
+      url: `/api/tasks/${encodeURIComponent(taskId)}/sessions`,
+      throwOnError: true,
+    });
+    return data;
+  },
+});
+
 export function useTaskSessions(taskId: string) {
   return useQuery({
-    queryKey: ["task", taskId, "sessions"],
-    queryFn: async () => {
-      const { data } = await client.get<TaskSessionsResponse, unknown, true>({
-        url: `/api/tasks/${encodeURIComponent(taskId)}/sessions`,
-        throwOnError: true,
-      });
-      return data;
-    },
+    ...taskSessionsQuery(taskId),
     enabled: !!taskId,
     refetchInterval: 15_000,
   });

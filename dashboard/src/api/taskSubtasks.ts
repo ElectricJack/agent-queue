@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import { taskSubtasks } from "./client";
 
 /**
@@ -11,12 +11,13 @@ import { taskSubtasks } from "./client";
  * so this query key nests under that prefix rather than adding a new
  * subscription.
  */
+export const taskSubtasksQuery = (taskId: string) => queryOptions({
+  queryKey: ["task", taskId, "subtasks"],
+  queryFn: async () => (await taskSubtasks({
+    body: { task_id: taskId }, throwOnError: true,
+  })).data,
+});
+
 export function useTaskSubtasks(taskId: string) {
-  return useQuery({
-    queryKey: ["task", taskId, "subtasks"],
-    queryFn: async () => (await taskSubtasks({
-      body: { task_id: taskId }, throwOnError: true,
-    })).data,
-    enabled: !!taskId,
-  });
+  return useQuery({ ...taskSubtasksQuery(taskId), enabled: !!taskId });
 }

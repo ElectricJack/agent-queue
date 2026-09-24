@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { Suspense, useLayoutEffect, useRef, useState } from "react";
 import { useLocation, useNavigationType } from "react-router-dom";
 import { useShellPaneStore } from "../panes/store";
 import type { PaneToolbarAction, ShortcutBinding } from "../panes/types";
@@ -84,13 +84,17 @@ export default function ShellPaneHost() {
         }}
         className="flex-1 overflow-auto p-3"
       >
-        <Component
-          args={state.args}
-          close={close}
-          setArgs={setArgs}
-          setToolbar={setToolbar}
-          setShortcuts={setShortcuts}
-        />
+        {/* Views are code-split (panes/registry.ts); the first open of one
+            fetches its chunk. */}
+        <Suspense fallback={<p className="text-xs text-gray-500">Loading…</p>}>
+          <Component
+            args={state.args}
+            close={close}
+            setArgs={setArgs}
+            setToolbar={setToolbar}
+            setShortcuts={setShortcuts}
+          />
+        </Suspense>
       </div>
     </div>
   );
