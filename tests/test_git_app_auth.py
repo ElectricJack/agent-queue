@@ -1822,7 +1822,7 @@ async def test_git_app_broker_refuses_other_repository_and_mismatched_remote_hel
     try:
         # Wait until Git has contacted the repository before timing the broker.
         # Clone startup can otherwise outlast a short refusal timeout on a busy host.
-        await asyncio.wait_for(first_http_request.wait(), timeout=3)
+        await asyncio.wait_for(first_http_request.wait(), timeout=10)
         served = await asyncio.wait_for(
             serve_one_credential(
                 broker,
