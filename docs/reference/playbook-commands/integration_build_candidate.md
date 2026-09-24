@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:e515323495d8ea81293177dcce4ae5299cc0f74f262023d87754d14f55885bbe` |
+| Contract fingerprint | `sha256:62780f0cd1ec694421d627754851ef78550e269be99dd203b58576c218091f9a` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `batch_id` | `string` | yes | — | — |
+| `expected_revision` | `integer \| null` | no | `null` | — |
 
 ## Result
 
