@@ -16,6 +16,23 @@ concept page was written against current source and wins.
 
 | Date | Page | File |
 |---|---|---|
+| 2026-09-24 | Operator feedback roadmap — now / next / later / backlog (index of the preliminary specs below) | [`2026-09-24-operator-feedback-roadmap.md`](2026-09-24-operator-feedback-roadmap.md) |
+| 2026-09-24 | Adversarial review across model families — preliminary spec | [`2026-09-24-adversarial-review-recipe.md`](2026-09-24-adversarial-review-recipe.md) |
+| 2026-09-24 | Agent sleep/wake and durable waits — preliminary spec | [`2026-09-24-agent-sleep-wake.md`](2026-09-24-agent-sleep-wake.md) |
+| 2026-09-24 | Dashboard performance under load, and what "separated" really means — preliminary spec | [`2026-09-24-dashboard-performance-and-separation.md`](2026-09-24-dashboard-performance-and-separation.md) |
+| 2026-09-24 | Discord @mention routing to the supervisor — preliminary spec | [`2026-09-24-discord-mention-routing.md`](2026-09-24-discord-mention-routing.md) |
+| 2026-09-24 | Discord voice transcripts parsed by the supervisor — preliminary spec | [`2026-09-24-discord-voice-transcripts.md`](2026-09-24-discord-voice-transcripts.md) |
+| 2026-09-24 | Exclusive job queue — preliminary spec | [`2026-09-24-exclusive-job-queue.md`](2026-09-24-exclusive-job-queue.md) |
+| 2026-09-24 | Managed long-running commands — preliminary spec | [`2026-09-24-managed-long-running-commands.md`](2026-09-24-managed-long-running-commands.md) |
+| 2026-09-24 | Mini-projects (ideation sessions) — preliminary spec | [`2026-09-24-mini-projects.md`](2026-09-24-mini-projects.md) |
+| 2026-09-24 | Mobile dashboard — preliminary spec | [`2026-09-24-mobile-dashboard.md`](2026-09-24-mobile-dashboard.md) |
+| 2026-09-24 | Morning report playbook — preliminary spec | [`2026-09-24-morning-report-playbook.md`](2026-09-24-morning-report-playbook.md) |
+| 2026-09-24 | Real-time agent collaboration — preliminary spec | [`2026-09-24-realtime-agent-collaboration.md`](2026-09-24-realtime-agent-collaboration.md) |
+| 2026-09-24 | Resource-aware planner — preliminary spec | [`2026-09-24-resource-aware-planner.md`](2026-09-24-resource-aware-planner.md) |
+| 2026-09-24 | Smart test selection — preliminary spec | [`2026-09-24-smart-test-selection.md`](2026-09-24-smart-test-selection.md) |
+| 2026-09-24 | Supervisor narrative updates (hourly) — preliminary spec | [`2026-09-24-supervisor-narrative-updates.md`](2026-09-24-supervisor-narrative-updates.md) |
+| 2026-09-24 | Tailscale dashboard link not posting — preliminary spec (bug) | [`2026-09-24-tailscale-dashboard-link.md`](2026-09-24-tailscale-dashboard-link.md) |
+| 2026-09-24 | Wake context compaction — preliminary spec | [`2026-09-24-wake-context-compaction.md`](2026-09-24-wake-context-compaction.md) |
 | 2026-09-23 | Dashboard performance — measured causes and fixes | [`2026-09-23-dashboard-performance.md`](2026-09-23-dashboard-performance.md) |
 | 2026-09-10 | Dashboard state contract — typed server-backed namespaces | [`2026-09-10-dashboard-state-contract-design.md`](2026-09-10-dashboard-state-contract-design.md) |
 | 2026-09-10 | Dashboard state-boundary inventory | [`2026-09-10-dashboard-state-boundary-inventory.md`](2026-09-10-dashboard-state-boundary-inventory.md) |
