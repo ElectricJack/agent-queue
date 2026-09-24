@@ -45,7 +45,15 @@ def _proc(pid, cwd=None, task_id=None, session=None) -> ProcInfo:
 class TestRegistration:
     def test_the_checks_are_in_the_default_registry(self):
         ids = default_registry().ids()
-        assert {"resources.load", "resources.test_pressure", "resources.cgroups"} <= set(ids)
+        assert {
+            "resources.load",
+            "resources.test_pressure",
+            "resources.cgroups",
+            "resources.orphaned_test_runs",
+        } <= set(ids)
+
+    def test_the_orphan_check_is_fixable(self):
+        assert resource_checks.CHECKS["resources.orphaned_test_runs"].fix is not None
 
 
 class TestLoadCheck:
@@ -154,6 +162,83 @@ class TestCgroupCheck:
         )
         assert result.severity is Severity.OK
         assert result.data["cpu_quota_percent"] == 600
+
+
+def _orphan_report(*, orphaned: bool, apply: bool = False) -> dict:
+    row = {
+        "slot": 1,
+        "state": "orphaned" if orphaned else "live",
+        "reason": "session sess-1 harness (pid 77) has exited",
+        "owner": "vivid-summit",
+        "task_id": "vivid-summit",
+        "session_id": "sess-1",
+        "cwd": "/repo/.aq/worktrees/slot-4",
+        "pid": 1276885,
+        "held_for_s": 4564,
+    }
+    results = [{**row, "action": "reaped", "freed": True, "pids": [1276885]}] if apply else []
+    return {
+        "lock_dir": "/locks",
+        "applied": apply,
+        "held": [row],
+        "orphaned": [row] if orphaned else [],
+        "results": results,
+    }
+
+
+class TestOrphanedTestRunsCheck:
+    @pytest.mark.asyncio
+    async def test_ok_when_every_holder_is_live(self, monkeypatch):
+        monkeypatch.setattr(
+            resource_checks, "reap_orphans", lambda _d, apply: _orphan_report(orphaned=False)
+        )
+        result = await run_check("resources.orphaned_test_runs", _ctx())
+        assert result.severity is Severity.OK
+        assert result.data["held"][0]["state"] == "live"
+
+    @pytest.mark.asyncio
+    async def test_names_the_orphan_and_offers_the_fix(self, monkeypatch):
+        seen: list[bool] = []
+
+        def _report(_lock_dir, apply):
+            seen.append(apply)
+            return _orphan_report(orphaned=True, apply=apply)
+
+        monkeypatch.setattr(resource_checks, "reap_orphans", _report)
+        result = await run_check("resources.orphaned_test_runs", _ctx())
+        assert result.severity is Severity.WARN
+        assert result.fixable is True
+        assert "slot 1 (vivid-summit" in result.detail
+        assert seen == [False]  # the check itself never signals anything
+
+    @pytest.mark.asyncio
+    async def test_the_fix_reaps_then_rechecks(self, monkeypatch):
+        state = {"reaped": False}
+
+        def _report(_lock_dir, apply):
+            if apply:
+                state["reaped"] = True
+            return _orphan_report(orphaned=not state["reaped"], apply=apply)
+
+        monkeypatch.setattr(resource_checks, "reap_orphans", _report)
+        result = await run_check("resources.orphaned_test_runs", _ctx(), repair=True)
+        assert state["reaped"] is True
+        assert result.fix_applied is True
+        assert result.severity is Severity.OK
+
+    @pytest.mark.asyncio
+    async def test_reads_the_configured_lock_dir(self, monkeypatch, tmp_path):
+        seen: list[str] = []
+
+        def _report(lock_dir, apply):
+            seen.append(str(lock_dir))
+            return _orphan_report(orphaned=False)
+
+        monkeypatch.setattr(resource_checks, "reap_orphans", _report)
+        ctx = _ctx()
+        ctx.config.data_dir = str(tmp_path)
+        await run_check("resources.orphaned_test_runs", ctx)
+        assert seen == [str(tmp_path / "locks" / "test-slots")]
 
 
 class TestProcessAttribution:
