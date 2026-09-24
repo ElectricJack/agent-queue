@@ -3,6 +3,7 @@
 import subprocess
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -130,6 +131,44 @@ async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     assert root[0]["evidence"]["conclusion"] == "passed"
     assert root[0]["evidence"]["head_sha"] == head
     assert (await service.sweep("p"))["outcome"] == "idle"
+
+
+async def test_idle_sweep_does_not_open_git_transport(setup):
+    _db, service, _source, _remote, _repo = setup
+    with patch.object(service, "store", new_callable=AsyncMock) as store:
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    store.assert_not_awaited()
+
+
+async def test_undelivered_completion_fetches_and_publishes(setup):
+    _db, service, _source, remote, _repo = setup
+    head = await feature(setup, "pending")
+    with patch.object(service.git, "afetch_origin", wraps=service.git.afetch_origin) as fetch:
+        assert (await service.sweep("p"))["outcome"] == "delivered"
+    fetch.assert_awaited()
+    assert git(remote, "rev-parse", "main") == head
+
+
+async def test_parked_row_fetches_without_completed_candidate(setup):
+    db, service, _source, _remote, _repo = setup
+    head = await feature(setup, "parked-source")
+    now = time.time()
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "parked-source").values(status="FAILED")
+        )
+        await conn.execute(insert(development_deliveries).values(
+            id="parked-retry", project_id="p", repository_id="r",
+            target_ref="refs/heads/main", expected_sha=None, prepared_sha=None,
+            state="parked", manifest=[{"task_id": "parked-source", "source_sha": head}],
+            evidence={}, reason="retry parked source", created_at=now, updated_at=now,
+        ))
+    with (
+        patch.object(service.git, "afetch_origin", wraps=service.git.afetch_origin) as fetch,
+        patch.object(service, "reconcile_parked", new_callable=AsyncMock),
+    ):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    fetch.assert_awaited()
 
 
 async def test_completion_wakes_delivery_before_periodic_deadline(setup):
@@ -2037,6 +2076,21 @@ async def test_tick_collects_right_after_the_sweep_delivers(setup):
     _db, service, _source, remote, _repo = setup
     await aq_feature(setup, "one")
     service.next_due.clear()  # configure() armed the periodic deadline
+    await service.tick(time.time())
+    assert remote_branches(remote) == {"main"}
+    # A later tick has historical receipts but no remaining publication or cleanup.
+    service.next_due.clear()
+    with patch.object(service, "store", new_callable=AsyncMock) as store:
+        await service.tick(time.time())
+    store.assert_not_awaited()
+
+
+async def test_due_branch_cleanup_runs_after_an_earlier_delivery(setup):
+    _db, service, _source, remote, _repo = setup
+    await aq_feature(setup, "one")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert "aq/one" in remote_branches(remote)
+    service.next_due.clear()
     await service.tick(time.time())
     assert remote_branches(remote) == {"main"}
 
