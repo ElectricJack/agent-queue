@@ -8,6 +8,7 @@ import type { IntelligenceClassRow } from "../../../api/hooks";
 const api = vi.hoisted(() => ({
   listIntelligenceClasses: vi.fn(),
   editIntelligenceClass: vi.fn(),
+  deleteIntelligenceClass: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
 
@@ -53,11 +54,68 @@ beforeEach(() => {
     rows = rows.map((row) => row.id === updated.id ? updated : row);
     return { data: { success: true, intelligence_class: updated } };
   });
+  api.deleteIntelligenceClass.mockImplementation(async ({ body }: { body: { class_id: string } }) => {
+    rows = rows.filter((row) => row.id !== body.class_id);
+    return { data: { success: true, class_id: body.class_id, retired_file: body.class_id + ".md.retired" } };
+  });
 });
 
 afterEach(() => {
   cleanup();
   clients.splice(0).forEach((client) => client.clear());
+});
+
+describe("Intelligence class deletion", () => {
+  it("names the class and waits for confirmation before deleting", async () => {
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Deep high" }));
+    const dialog = screen.getByRole("dialog", { name: "Delete Deep high?" });
+    expect(within(dialog).getByText(/deep-high/)).toBeInTheDocument();
+    expect(api.deleteIntelligenceClass).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(api.deleteIntelligenceClass).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Deep high" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete class" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(api.deleteIntelligenceClass).toHaveBeenCalledWith({
+      body: { class_id: "deep-high", expected_revision: "original-revision" }, throwOnError: true,
+    });
+    expect(screen.queryByRole("button", { name: "Delete Deep high" })).not.toBeInTheDocument();
+  });
+
+  it("lists every blocking reference and keeps the dialog open", async () => {
+    const references = [
+      { kind: "agent", id: "worker-1", name: "Worker one" },
+      { kind: "profile", id: "pool-worker", name: "Pool worker", lifecycle: "pool" },
+      { kind: "task", id: "task-1", name: "Task one", status: "READY" },
+    ];
+    api.deleteIntelligenceClass.mockRejectedValueOnce(Object.assign(
+      new Error("API 409: Repoint the references before deleting."), { payload: { references } },
+    ));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Deep high" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete class" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("worker-1");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("pool-worker");
+    expect(within(dialog).getByRole("alert")).toHaveTextContent("task-1");
+    expect(dialog).toBeInTheDocument();
+  });
+
+  it("blocks dismissal and duplicate requests while deletion is pending", async () => {
+    let finish!: (value: unknown) => void;
+    api.deleteIntelligenceClass.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Delete Deep high" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete class" }));
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Deleting…" })).toBeDisabled());
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(dialog).toBeInTheDocument();
+    expect(api.deleteIntelligenceClass).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ data: { success: true, class_id: "deep-high", retired_file: "deep-high.md.retired" } }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
 });
 
 describe("Intelligence class editing", () => {

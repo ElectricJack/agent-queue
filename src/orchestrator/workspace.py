@@ -625,7 +625,14 @@ class WorkspaceMixin:
             # a copied sibling tree or an arbitrary local merge.
             origin = dict(origin) | {"base_sha": prerequisite_head}
         branch = subject.branch_name or ""
-        if (operation is None and branch != f"aq/{subject_id}") or task.branch_name != branch:
+        checkpoint = await self.db.get_integration_checkpoint(subject_id)
+        if (
+            not branch
+            or checkpoint is None
+            or checkpoint["repository_id"] != repository_id
+            or checkpoint["branch"] != branch
+            or task.branch_name != branch
+        ):
             raise ValueError("task branch does not match its canonical origin")
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
@@ -660,8 +667,7 @@ class WorkspaceMixin:
         ):
             raise BranchBusy("canonical branch is not reserved by this task")
         if role == "verifier":
-            checkpoint = await self.db.get_integration_checkpoint(subject_id)
-            if checkpoint is None or not checkpoint.get("episode_id"):
+            if not checkpoint.get("episode_id"):
                 raise ValueError("verifier target has no active parent episode")
             origin = dict(origin) | {"base_sha": checkpoint["checkpoint_sha"]}
         return (

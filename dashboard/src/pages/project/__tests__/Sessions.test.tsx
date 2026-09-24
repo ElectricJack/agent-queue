@@ -22,7 +22,8 @@ vi.mock("../../../api/client", () => api);
 
 function Location() {
   const location = useLocation();
-  return <output aria-label="Location">{location.pathname + location.search}</output>;
+  return <><output aria-label="Location">{location.pathname + location.search}</output>
+    <output aria-label="Terminal focus request">{String(location.state?.terminalFocus === true)}</output></>;
 }
 
 function renderPage(path: string) {
@@ -67,6 +68,14 @@ describe("ProjectSessions", () => {
     expect(links.length).toBeLessThan(60);
     expect(screen.getByText("running")).toHaveClass("text-amber-400");
     expect(screen.getAllByText("12s").length).toBe(links.length);
+    client.clear();
+  });
+
+  it.each(["/projects/p1/sessions", "/sessions"])("marks a session link from %s as an explicit terminal selection", async (path) => {
+    api.sessionList.mockResolvedValue({ data: { sessions: [session(1)], count: 1, has_more: false } });
+    const client = renderPage(path);
+    fireEvent.click(await screen.findByRole("link", { name: "session-1" }));
+    expect(screen.getByLabelText("Terminal focus request")).toHaveTextContent("true");
     client.clear();
   });
 

@@ -86,8 +86,8 @@ def pytest_configure(config) -> None:
     _PG_BASE_DSN = _resolve_base_dsn()
 
 
-def pytest_sessionfinish(session, exitstatus) -> None:
-    """Clean resources created during collection even when no test ran."""
+def pytest_unconfigure(config) -> None:
+    """Drop worker databases after pytest has torn down session fixtures."""
     import asyncio
 
     from tests.pg_dsn import dispose_owned_databases

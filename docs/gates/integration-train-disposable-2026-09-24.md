@@ -70,8 +70,11 @@ the same candidate before promotion.
   workspace preparation rejected the epic's legitimate `aq/epic/...` branch
   because it expected `aq/<parent_id>`. The verifier now accepts its parent's
   exact recorded branch and owner fence. Its parent verification command also
-  initially looked for a workspace held by the paused parent. The command now
-  proves the verifier's attached workspace, exact pushed HEAD and owner binding.
+  initially looked for a workspace held by the paused parent. The live scratch
+  run proved the attached verifier workspace and exact pushed head. Current
+  `main` independently changed this command to validate the locked parent
+  generation, receipt-derived head, and durable CI evidence after the writer
+  workspace may have been released; that fix was retained in the PR merge.
 
 ## Corrected isolated run
 

@@ -40,7 +40,8 @@ afterEach(() => { cleanup(); queryClient.clear(); vi.restoreAllMocks(); });
 const noop = () => {};
 function LocationProbe() {
   const location = useLocation();
-  return <><p>{location.pathname + location.search} from {(location.state as { from?: string })?.from}</p><output aria-label="Task pane return">{JSON.stringify((location.state as { taskPane?: unknown })?.taskPane ?? null)}</output></>;
+  return <><p>{location.pathname + location.search} from {(location.state as { from?: string })?.from}</p><output aria-label="Task pane return">{JSON.stringify((location.state as { taskPane?: unknown })?.taskPane ?? null)}</output>
+    <output aria-label="Terminal focus request">{String((location.state as { terminalFocus?: boolean })?.terminalFocus === true)}</output></>;
 }
 const origins = { full: "/tasks/task-a?tab=details#history", drawer: "/work/tasks?task=task-a&status=BLOCKED#board" };
 function mount(surface: "full" | "drawer" = "full") {
@@ -76,6 +77,7 @@ describe("task session history", () => {
     const link = within(rows[1]!).getByRole("link", { name: /Original Worker/ });
     expect(link).toHaveAttribute("href", "/sessions/worker-a?attempt=attempt-1&taskId=task-a");
     fireEvent.click(link);
+    expect(screen.getByLabelText("Terminal focus request")).toHaveTextContent("true");
     expect(screen.getByLabelText("Task pane return")).toHaveTextContent(surface === "drawer" ? '{"taskId":"task-a"}' : "null");
     expect(screen.getByText("/sessions/worker-a?attempt=attempt-1&taskId=task-a from " + origins[surface])).toBeInTheDocument();
   });

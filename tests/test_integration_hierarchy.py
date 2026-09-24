@@ -1350,26 +1350,11 @@ async def test_reserved_parent_verifier_without_origin_enters_hierarchy_frontier
     assert "verifier" in await _hoisted_ids(db)
     assert "originless" not in await _frontier_ids(db)
 
-    seen = []
-    verifier = HierarchyIntegration(
-        db, checkpoint_verifier=lambda task, _repo, head: seen.append(task["id"]) or head
-    )
+    verifier = HierarchyIntegration(db)
     from unittest.mock import AsyncMock
     monkeypatch.setattr(verifier.parent_completion, "verify_parent",
                         AsyncMock(return_value={"outcome": "verified"}))
-    with pytest.raises(HierarchyError, match="attached, owned workspace"):
-        await verifier.verify_parent("parent", 1, BASE, ["check"])
-    await db.create_workspace(Workspace(
-        id="verifier-slot", project_id="p", workspace_path="/tmp/verifier-slot",
-        source_type=RepoSourceType.LINK, locked_by_task_id="verifier",
-    ))
-    async with db.immediate() as conn:
-        await conn.execute(update(integration_branch_owners).where(
-            integration_branch_owners.c.owner_id == "verifier"
-        ).values(handoff_state="attached", session_id="verifier-session",
-                 workspace_id="verifier-slot"))
     assert (await verifier.verify_parent("parent", 1, BASE, ["check"]))["outcome"] == "verified"
-    assert seen == ["verifier"]
 
     async with db.immediate() as conn:
         await conn.execute(update(integration_repair_operations).where(
@@ -1497,6 +1482,7 @@ async def test_file_root_persists_canonical_branch_before_container_collection(d
     checkpoint = await db.get_integration_checkpoint(root_id)
     assert checkpoint["branch"] == root.branch_name
     assert (await _origins(db))[0]["branch"] == root.branch_name
+    assert (await _origin_row(db, root_id))["branch_name"] == root.branch_name
 
     # A root with a child is an untouched released container.  The bootstrap
     # must see the stored branch identity, rather than reject it as missing.

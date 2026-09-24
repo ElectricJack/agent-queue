@@ -267,6 +267,10 @@ class SlotSemaphore:
         finally:
             os.close(fd)
 
+    def state(self, slot: int) -> SlotState:
+        """One slot as an observer sees it, re-tested against the lock."""
+        return self._slot_state(slot)
+
     def snapshot(self) -> dict:
         """``{"slots": [...], "waiting": [...], "free": n}`` for humans."""
         states = [self._slot_state(i) for i in range(self.slots)]

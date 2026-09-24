@@ -26,6 +26,11 @@ def _client(result):
     ("argv", "command", "args"),
     [
         (["status", "p"], "integration_status", {"project_id": "p"}),
+        (
+            ["record-noop", "parent.1", "--expected-head-sha", "a" * 40],
+            "integration_record_noop",
+            {"child_task_id": "parent.1", "expected_head_sha": "a" * 40},
+        ),
         (["flush", "p"], "integration_flush", {"project_id": "p"}),
         (
             ["sweep", "p", "--recover-child", "child"],

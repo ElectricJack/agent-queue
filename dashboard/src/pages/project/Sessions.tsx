@@ -58,7 +58,7 @@ export default function ProjectSessions() {
                   <td className="px-3 py-2">
                     <Link
                       to={`/sessions/${encodeURIComponent(s.id)}`}
-                      state={{ from: location.pathname + location.search }}
+                      state={{ from: location.pathname + location.search, terminalFocus: true }}
                       className="text-indigo-400 hover:text-indigo-300"
                     >
                       {s.name}

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
+from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
     integration_check_evidence,
     integration_episode_receipt_acceptances,
@@ -40,7 +45,8 @@ from src.integration.status import IntegrationStatusService
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
-from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
+from src.profiles.capabilities import DENY_ALL
 from src.database.queries.task_queries import StaleClaim
 from tests.db_fixtures import lease_dsn
 
@@ -844,6 +850,135 @@ async def test_disposition_revision_supersedes_only_changed_child(db):
     assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
 
 
+async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db)
+    reviewer_id = children[0]
+    await _code_receipt(db, children[1], "a" * 40, "d" * 40)
+    await db.create_profile(
+        AgentProfile(
+            id="reviewer", name="Reviewer", harness="codex", lifecycle="task",
+            aq_commands=[], harness_tools=[], plugin_tools=[], needs_workspace=False,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == reviewer_id).values(profile_id="reviewer")
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == reviewer_id)
+            .values(checkpoint_sha="a" * 40)
+        )
+        await conn.execute(
+            insert(integration_review_evidence).values(
+                id="approved-review",
+                source_task_id=children[1],
+                repository_id="repo",
+                source_base="a" * 40,
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="c" * 40,
+                reviewer_task_id=reviewer_id,
+                review_kind="leaf",
+                generation=0,
+                verdict="approved",
+                evidence={"decision_path": "review_task_close"},
+                created_at=1.0,
+            )
+        )
+    reviewer = await db.get_task(reviewer_id)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="noop-close-1", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
+            branch=reviewer.branch_name, completed_at=2.0,
+        )
+    )
+
+    @asynccontextmanager
+    async def repository_transaction(_path):
+        yield
+
+    class Promotion:
+        git = SimpleNamespace(arepository_transaction=repository_transaction)
+
+        async def _resolve_repository(self, _repository_id):
+            return SimpleNamespace(
+                repo=SimpleNamespace(project_id="p"),
+                retained_git_dir="/tmp/retained-repo",
+                origin_url="https://example.invalid/repo.git",
+            )
+
+        async def _ensure_retained_repository(self, _resolved):
+            return None
+
+        async def _fetch_all_heads(self, _path, _origin_url):
+            return None
+
+        async def _tree_oid(self, _path, _head):
+            return "c" * 40
+
+    class Handler(IntegrationCommandsMixin):
+        orchestrator = SimpleNamespace(
+            hierarchy_integration=hierarchy, promotion_service=Promotion()
+        )
+
+    handler = Handler()
+    handler.db = db
+    args = {"child_task_id": reviewer_id, "expected_head_sha": "a" * 40}
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, project_id="p", policy=DENY_ALL,
+    )
+    with principal_context(worker):
+        denied = await handler._cmd_integration_record_noop(args)
+    assert denied["outcome"] == "unauthorized"
+    assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
+
+    stale = await handler._cmd_integration_record_noop(args | {"expected_head_sha": "b" * 40})
+    assert stale["outcome"] == "stale_head"
+    recorded = await handler._cmd_integration_record_noop(args)
+    assert recorded["outcome"] == "recorded"
+    assert recorded["reviewed_tree_sha"] == "c" * 40
+    assert (await handler._cmd_integration_record_noop(args))["receipt_id"] == recorded["receipt_id"]
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "ready"
+    receipt = next(row for row in projection["receipts"] if row["source_task_id"] == reviewer_id)
+    assert receipt["verification_evidence"]["review_evidence_id"] == "approved-review"
+    assert receipt["resolution_evidence"]["completion_id"] == "noop-close-1"
+
+    await db.save_task_completion(
+        TaskCompletion(
+            id="noop-close-2", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
+            branch=reviewer.branch_name, completed_at=3.0,
+        )
+    )
+    revised = await handler._cmd_integration_record_noop(args)
+    assert revised["revision"] == 1
+    assert revised["receipt_id"] != recorded["receipt_id"]
+    assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+
+
+async def test_verified_noop_refuses_a_child_branch_advanced_from_its_reserved_base(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    child_id = children[0]
+    child = await db.get_task(child_id)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="claimed-noop", task_id=child_id, outcome="pass", work_outcome="no-op",
+            branch=child.branch_name, completed_at=2.0,
+        )
+    )
+    with pytest.raises(HierarchyError, match="reserved base"):
+        await hierarchy.record_disposition(
+            child_id,
+            disposition="noop",
+            reviewed_head_sha="b" * 40,
+            reviewed_tree_sha="c" * 40,
+            verification_evidence={"completion_id": "claimed-noop"},
+            resolution_evidence={"completion_id": "claimed-noop"},
+            verified_completion_id="claimed-noop",
+        )
+    assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
+
+
 async def test_parent_completion_pins_exact_verification_for_rollover(db):
     hierarchy, checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)
@@ -1167,6 +1302,84 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
     assert (await hierarchy.wake_verifier("parent", verifier))["outcome"] == "woken"
     assert (await db.get_task("parent")).status is TaskStatus.PAUSED
     assert (await db.get_task(delegate.id)).status is TaskStatus.READY
+
+
+@pytest.mark.parametrize(
+    "invalid", [None, "operation", "role", "attached", "branch", "binding", "target"]
+)
+async def test_woken_verifier_delegate_passes_the_pool_claim_origin_gate(db, invalid):
+    """A verifier delegate is claimable only on its exact reserved parent fence.
+
+    It checks the parent's branch and never gets a ``task_branch_origins`` row
+    of its own, so the hierarchy origin gate must admit it by reservation, as
+    it does a repair delegate.  Before that, a pool never saw it: ``aq task
+    claim --next`` answered ``no_ready_work`` while the parent waited forever.
+    """
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    await db.create_profile(AgentProfile(id="verifier", name="Verifier", harness="claude"))
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await db._apply_transition(
+            conn, "parent", TaskStatus.PAUSED, _manual_pause_control=True
+        )
+        await hierarchy.parent_completion.mark_ready_on(conn, "parent")
+    operation = await db.get_integration_operation(checkpointed["operation_id"])
+    delegate_id = operation["verifier_task_id"]
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    ownership = BranchOwnership(db)
+    owner = await ownership.get_owner(target)
+    collector = await ownership.transfer(
+        Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"]),
+        checkpointed["operation_id"],
+        "collector",
+    )
+    verifier = await ownership.transfer(collector, delegate_id, "verifier")
+    assert (await hierarchy.wake_verifier("parent", verifier))["outcome"] == "woken"
+    assert (await db.get_task(delegate_id)).status is TaskStatus.READY
+
+    verifier_owner = update(integration_branch_owners).where(
+        integration_branch_owners.c.owner_id == delegate_id
+    )
+    this_operation = update(integration_repair_operations).where(
+        integration_repair_operations.c.id == operation["id"]
+    )
+    async with db.immediate() as conn:
+        if invalid == "operation":
+            await conn.execute(this_operation.values(state="completed"))
+        elif invalid == "role":
+            await conn.execute(verifier_owner.values(owner_role="worker"))
+        elif invalid == "attached":
+            await conn.execute(
+                verifier_owner.values(
+                    handoff_state="attached", session_id="session", workspace_id="slot"
+                )
+            )
+        elif invalid == "branch":
+            await conn.execute(verifier_owner.values(ref="aq/unrelated"))
+        elif invalid == "binding":
+            await conn.execute(this_operation.values(verifier_task_id="impostor"))
+        elif invalid == "target":
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "parent").values(branch_name="aq/other")
+            )
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            claimable = await conn.scalar(
+                select(tasks.c.id).where(tasks.c.id == delegate_id, _frontier_where("p", mode))
+            )
+            assert (claimable == delegate_id) is (invalid is None), mode
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id="p",
+                profile_id="verifier",
+                default_profile_id=None,
+                agent_id="pool-agent",
+                hierarchy_mode=mode,
+            )
+            assert (selected == delegate_id) is (invalid is None), mode
+    assert await db.is_hierarchy_task_runnable(delegate_id) is (invalid is None)
 
 
 async def test_transfer_owner_replay_after_crash_still_wakes_verifier(

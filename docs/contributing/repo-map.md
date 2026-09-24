@@ -90,7 +90,7 @@ which is machine-checked and never guessed.
 |---|---|
 | [`pyproject.toml`](../../pyproject.toml) | Python package metadata, dependency pins, extras, entry points, pytest configuration and ruff configuration. One file, four jobs. |
 | [`package.json`](../../package.json) / [`package-lock.json`](../../package-lock.json) | The npm workspace root: `dashboard` and `packages/aq-ts-client`. |
-| [`docker-compose.yml`](../../docker-compose.yml) | The disposable PostgreSQL used by tests. |
+| [`docker-compose.yml`](../../docker-compose.yml) | The operator's PostgreSQL service and a separate disposable PostgreSQL service for tests. |
 | [`alembic.ini`](../../alembic.ini) | Alembic configuration; see [migrations](../guides/migrations.md). |
 | [`openapi.json`](../../openapi.json) | The committed API schema both clients are generated from. Generated — see [codegen](codegen.md). |
 | [`setup.sh`](../../setup.sh), [`uninstall.sh`](../../uninstall.sh) | Operator install and teardown. Not the contributor path — see [setup](setup.md#install). |

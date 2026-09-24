@@ -1319,6 +1319,96 @@ class IntegrationCommandsMixin:
             return _failure("invariant_error", str(exc))
         return {"success": result["outcome"] == "ready", **result}
 
+    async def _cmd_integration_record_noop(self, args: dict) -> dict:
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationRecordNoopArgs
+        from src.database.tables import integration_review_evidence
+        from src.integration.promotion import PromotionError, PromotionSourceMoved
+
+        try:
+            request = IntegrationRecordNoopArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid no-op disposition: {exc}")
+        child = await self.db.get_task(request.child_task_id)
+        if child is None or not child.parent_task_id or not child.repo_id:
+            return _failure("invalid", "disposition child not found")
+        if not await self._integration_delivery_authorized(
+            child.project_id, "integration_record_noop"
+        ):
+            return _failure("unauthorized", "caller cannot dispose this child")
+        checkpoint = await self.db.get_integration_checkpoint(child.id)
+        if checkpoint is None or checkpoint["checkpoint_sha"] != request.expected_head_sha:
+            return _failure("stale_head", "child checkpoint is not the expected head")
+        completion = await self.db.get_task_completion(child.id)
+        if completion is None or completion.outcome != "pass" or completion.work_outcome != "no-op":
+            return _failure("invalid", "child has no current no-op completion")
+        review_id = None
+        if child.profile_id in {"reviewer", "final-reviewer"}:
+            async with self.db._engine.connect() as conn:
+                review_id = (
+                    await conn.execute(
+                        select(integration_review_evidence.c.id)
+                        .where(
+                            integration_review_evidence.c.reviewer_task_id == child.id,
+                            integration_review_evidence.c.verdict == "approved",
+                        )
+                        .order_by(
+                            integration_review_evidence.c.created_at.desc(),
+                            integration_review_evidence.c.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            if review_id is None:
+                return _failure("invalid", "approved reviewer evidence is missing")
+        try:
+            promotion = self._integration_promotion_service()
+            resolved = await promotion._resolve_repository(child.repo_id)
+            if resolved.repo.project_id != child.project_id:
+                return _failure("invalid", "child repository project changed")
+            await promotion._ensure_retained_repository(resolved)
+            async with promotion.git.arepository_transaction(str(resolved.retained_git_dir)):
+                await promotion._fetch_all_heads(resolved.retained_git_dir, resolved.origin_url)
+                tree = await promotion._tree_oid(resolved.retained_git_dir, request.expected_head_sha)
+            principal = current_principal() or TRUSTED_LOCAL
+            receipt = await self._hierarchy_integration_service().record_disposition(
+                child.id,
+                disposition="noop",
+                reviewed_head_sha=request.expected_head_sha,
+                reviewed_tree_sha=tree,
+                verification_evidence={
+                    "kind": "task_noop_completion",
+                    "completion_id": completion.id,
+                    "review_evidence_id": review_id,
+                },
+                resolution_evidence={
+                    "authority": principal.kind.value,
+                    "completion_id": completion.id,
+                    "review_evidence_id": review_id,
+                },
+                verified_completion_id=completion.id,
+                verified_review_id=review_id,
+            )
+        except HierarchyError as exc:
+            outcome = "delivery_target_fixed" if exc.code == "delivery_target_fixed" else "invalid"
+            return _failure(outcome, str(exc))
+        except PromotionSourceMoved as exc:
+            return _failure("stale_head", str(exc))
+        except PromotionError as exc:
+            return _failure("runtime_error", str(exc))
+        except GitError as exc:
+            return _failure("runtime_error", str(exc))
+        return {
+            "success": True,
+            "outcome": "recorded",
+            "receipt_id": receipt["id"],
+            "revision": receipt["revision"],
+            "reviewed_head_sha": receipt["reviewed_head_sha"],
+            "reviewed_tree_sha": receipt["reviewed_tree_sha"],
+        }
+
     async def _cmd_integration_parent_verify(self, args: dict) -> dict:
         from pydantic import ValidationError
 
@@ -1914,7 +2004,7 @@ class IntegrationCommandsMixin:
                 )
             return await service.sweep(args["project_id"], retry=args.get("retry", False))
         except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc))
+            return _failure("blocked", str(exc).strip() or repr(exc))
 
     async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
         operation_id = str(args.get("operation_id") or "")

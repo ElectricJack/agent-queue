@@ -69,14 +69,19 @@ describe("TaskActions deletion", () => {
     // audit rows still name the subtree. Retrying cannot help and there is no
     // branch question to ask, so the dialog says why in plain words and stops
     // offering the button.
+    // The body `assert_integration_permits_removal` raises
+    // (src/integration/removal_guard.py), as `_hierarchy_failure` renders it.
     deleteFailure.current = Object.assign(new Error("API 422"), {
       payload: {
         success: false,
-        code: "hierarchy.integration_owned",
+        code: "hierarchy.integration_history_retained",
         error:
-          "hierarchy.integration_owned: delete would orphan 1 integration record(s): " +
-          "integration_batch_members(azure-beacon)",
-        references: [{ task_id: "azure-beacon", table: "integration_batch_members" }],
+          "hierarchy.integration_history_retained: delete is refused: 1 integration audit " +
+          "record(s) name azure-beacon (integration_parent_episodes(azure-beacon)) and audit " +
+          "history is append-only. Archive the task instead; its history stays readable by id.",
+        references: [
+          { task_id: "azure-beacon", table: "integration_parent_episodes", column: "parent_task_id" },
+        ],
       },
     });
     mockDelete.mockReset();
@@ -87,13 +92,50 @@ describe("TaskActions deletion", () => {
     const dialog = screen.getByRole("dialog");
     const alert = within(dialog).getByRole("alert");
     expect(alert).toHaveTextContent(/permanent record, so it cannot be deleted/);
-    expect(alert).toHaveTextContent(/once archiving tasks with integration history is supported/);
-    expect(alert).not.toHaveTextContent(/hierarchy\.|integration_batch_members/);
+    expect(alert).toHaveTextContent(/Archive it instead to remove it from the active graph/);
+    expect(alert).not.toHaveTextContent(/hierarchy\.|integration_parent_episodes|audit record/);
     expect(
       within(dialog).getByRole("button", { name: "Delete task and descendants" }),
     ).toBeDisabled();
     // No branch question either.
     expect(within(dialog).queryByLabelText(/Delete the branch/)).not.toBeInTheDocument();
+  });
+
+  it("shows the command that releases a task a running integration operation owns", async () => {
+    // Unlike history, a live operation's hold passes, so the daemon's own
+    // remedy is what the operator needs — minus the refusal code.
+    deleteFailure.current = Object.assign(new Error("API 422"), {
+      payload: {
+        success: false,
+        code: "hierarchy.integration_owned",
+        error:
+          "hierarchy.integration_owned: integration operation op-7 is active and owns " +
+          "azure-beacon as its verifier; delete is refused while it runs. Wait for it, or " +
+          "cancel obsolete work with `aq integration cancel-preserving op-7 --reason \"...\"`, " +
+          "then `aq integration release-delegates op-7`.",
+        integration_operation: {
+          operation_id: "op-7",
+          state: "active",
+          role: "verifier",
+          task_id: "azure-beacon",
+        },
+      },
+    });
+    mockDelete.mockReset();
+
+    render(<TaskActions task={task} />);
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    const dialog = screen.getByRole("dialog");
+    const alert = within(dialog).getByRole("alert");
+    expect(alert).toHaveTextContent(
+      /^integration operation op-7 is active and owns azure-beacon as its verifier/,
+    );
+    expect(alert).toHaveTextContent(/aq integration release-delegates op-7/);
+    expect(alert).not.toHaveTextContent(/hierarchy\.|permanent record/);
+    expect(
+      within(dialog).getByRole("button", { name: "Delete task and descendants" }),
+    ).toBeDisabled();
   });
 
   it("closes a pane and does not create a duplicate navigation entry when returnTo is current", async () => {
@@ -220,7 +262,7 @@ describe("TaskActions ask-supervisor", () => {
       { sessionAddress: "supervisor-global", threadId: "dashboard:global" },
     );
     expect(mockNavigate).toHaveBeenCalledWith("/agents?agent=supervisor-global", {
-      state: { agentSelection: "replace" },
+      state: { agentSelection: "replace", terminalFocus: "supervisor-global" },
     });
   });
 

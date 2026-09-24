@@ -2520,6 +2520,9 @@ task_branch_origins = Table(
     Column("id", Text, primary_key=True),
     Column("task_id", Text, nullable=False),
     Column("repository_id", Text, nullable=False),
+    # The task can be deleted while this origin and its discard intent remain.
+    # NULL is reserved for legacy origins whose exact ref cannot be recovered.
+    Column("branch_name", Text, nullable=True),
     Column("parent_task_id", Text, nullable=True),
     Column("parent_repository_id", Text, nullable=True),
     Column("parent_ref", Text, nullable=True),

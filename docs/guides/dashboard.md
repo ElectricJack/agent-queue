@@ -98,6 +98,8 @@ flowchart LR
 | **Settings** — `/settings/*` | Configure profiles, intelligence classes, project roots, messaging, and system config. | [SettingsLayout.tsx](../../dashboard/src/pages/settings/SettingsLayout.tsx), [SettingsSidebar.tsx](../../dashboard/src/components/nav/SettingsSidebar.tsx) |
 | **Activity drawer** and contextual panes | See recent dashboard events/gates or task-, session-, file-, and playbook-specific tools without leaving the current route. | [ActivityDrawer.tsx](../../dashboard/src/shell/ActivityDrawer.tsx), [panes/registry.ts](../../dashboard/src/panes/registry.ts) |
 
+In Settings → Intelligence Classes, **Delete** confirms the class by name. The daemon refuses deletion while an active agent, an agent-type profile, or a non-terminal task references it and reports each blocker with repointing guidance. Successful deletion renames the vault file to `.md.retired` and updates the live registry. Global administrators can use `aq system delete-intelligence-class --class-id <id>` for the same operation; `--expected-revision` rejects a stale selection.
+
 ## State ownership and live updates
 
 The daemon is authoritative for all dashboard feature state that should survive a reload or appear on another browser. The dashboard uses `DashboardStateProvider` / `useDashboardDocumentState` to load a typed document, write it through the API, and replace cached values only with newer server revisions. There is no browser-storage fallback or import: stale keys from older dashboard versions are ignored.

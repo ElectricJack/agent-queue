@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from tests import db_fixtures
+from tests import db_fixtures, pg_dsn
 from tests.db_fixtures import LeasePool, lease_dsn
 
 
@@ -14,6 +14,14 @@ def test_separate_test_runs_have_distinct_lease_names():
     first = LeasePool(dsn, "gw0")
     second = LeasePool(dsn, "gw0")
     assert first._name(0) != second._name(0)
+
+
+def test_lease_name_includes_shared_test_run_token(monkeypatch):
+    monkeypatch.setattr(db_fixtures, "_run_id", lambda: "reapertoken123456")
+    monkeypatch.setattr(pg_dsn, "_OWNER_TOKEN", "0123456789ab")
+    pool = LeasePool("postgresql://test:test@localhost/postgres", "gw0")
+    # The owner token leads (the orphan sweep keys on it); the run token follows.
+    assert pool._name(0).startswith("aq_test_ownv2_0123456789ab_reapertoken123456_")
 
 
 async def test_clone_refuses_to_drop_an_existing_unowned_database(monkeypatch):
@@ -241,10 +249,10 @@ async def test_pool_dispose_drops_its_clones_together(monkeypatch):
                 all_started.set()
             await all_started.wait()
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))

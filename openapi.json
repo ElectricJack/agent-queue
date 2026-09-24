@@ -10778,6 +10778,71 @@
         }
       }
     },
+    "/api/system/delete-intelligence-class": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Retire an unreferenced global intelligence class. Refuses when agents, agent profiles or non-terminal tasks still use it. Requires global admin. Pass the revision from list_intelligence_classes to reject stale deletes.",
+        "description": "Retire an unreferenced global intelligence class. Refuses when agents, agent profiles or non-terminal tasks still use it. Requires global admin. Pass the revision from list_intelligence_classes to reject stale deletes.",
+        "operationId": "delete_intelligence_class",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteIntelligenceClassRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteIntelligenceClassResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Intelligence class is referenced or changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/DeleteIntelligenceClassConflictResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/EditIntelligenceClassConflictResponse"
+                    }
+                  ],
+                  "title": "Response 409 Delete Intelligence Class"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/doctor": {
       "post": {
         "tags": [
@@ -20344,6 +20409,82 @@
         ],
         "title": "DeleteAgentResponse"
       },
+      "DeleteIntelligenceClassConflictResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "error_code": {
+            "type": "string",
+            "const": "class_referenced",
+            "title": "Error Code"
+          },
+          "references": {
+            "items": {
+              "$ref": "#/components/schemas/IntelligenceClassReference"
+            },
+            "type": "array",
+            "title": "References"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error",
+          "error_code",
+          "references"
+        ],
+        "title": "DeleteIntelligenceClassConflictResponse"
+      },
+      "DeleteIntelligenceClassRequest": {
+        "properties": {
+          "class_id": {
+            "type": "string",
+            "title": "Class Id",
+            "description": "Existing class ID."
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision",
+            "description": "Raw-file revision from the last read."
+          }
+        },
+        "type": "object",
+        "required": [
+          "class_id"
+        ],
+        "title": "DeleteIntelligenceClassRequest"
+      },
+      "DeleteIntelligenceClassResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "class_id": {
+            "type": "string",
+            "title": "Class Id"
+          },
+          "retired_file": {
+            "type": "string",
+            "title": "Retired File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "class_id",
+          "retired_file"
+        ],
+        "title": "DeleteIntelligenceClassResponse"
+      },
       "DeleteMcpServerRequest": {
         "properties": {
           "name": {
@@ -29747,6 +29888,67 @@
           "revision"
         ],
         "title": "IntelligenceClassModel"
+      },
+      "IntelligenceClassReference": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "agent",
+              "profile",
+              "task"
+            ],
+            "title": "Kind"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ],
+        "title": "IntelligenceClassReference"
       },
       "LayoutEdge": {
         "properties": {

@@ -128,6 +128,89 @@ class SystemCommandsMixin:
             logger.warning("Could not persist intelligence-class edit")
             return {"error": "Intelligence class could not be saved"}
 
+    async def _cmd_delete_intelligence_class(self, args: dict) -> dict:
+        """Retire an unused class and update every live class consumer."""
+        scope = self._current_scope
+        if scope and scope.get("kind") != "local" and not (
+            scope.get("kind") == "session" and scope.get("elevated")
+            and scope.get("project_id") is None and scope.get("task_id") is None
+        ):
+            return {"error": "out of scope: intelligence-class settings require global admin"}
+        from src.intelligence_classes import load_intelligence_classes
+        from src.intelligence_classes.editing import (
+            IntelligenceClassConflict, IntelligenceClassEditError, retire_intelligence_class,
+            vault_profile_references,
+        )
+
+        lock = getattr(self.orchestrator, "_intelligence_class_edit_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self.orchestrator._intelligence_class_edit_lock = lock
+
+        async def retire_and_publish():
+            async with lock:
+                live = self._live_intelligence_classes()
+                if live is None:
+                    return {"error": "Intelligence-class registry is not active"}
+                class_id = args.get("class_id")
+                classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+                if not isinstance(class_id, str) or class_id not in classes:
+                    return {"error": "Intelligence class must identify one existing vault file"}
+                references = await self.db.intelligence_class_references(class_id)
+                source_refs = await asyncio.to_thread(
+                    vault_profile_references, self.config.data_dir, class_id,
+                )
+                known_profiles = {ref["id"] for ref in references if ref["kind"] == "profile"}
+                references.extend(
+                    ref for ref in source_refs if ref["id"] not in known_profiles
+                )
+                if references:
+                    lines = [f"{ref['kind']} {ref['id']} ({ref['name']})" for ref in references]
+                    return {
+                        "error": "Intelligence class is still referenced: " + "; ".join(lines)
+                        + ". Repoint agents with aq agent edit --intelligence-class, "
+                        "profiles with aq agent edit-profile --default-class, and unassigned "
+                        "tasks with aq task edit --intelligence-class, then retry.",
+                        "error_code": "class_referenced",
+                        "references": references,
+                    }
+                retired_file = await asyncio.to_thread(
+                    retire_intelligence_class, self.config.data_dir,
+                    class_id=class_id, expected_revision=args.get("expected_revision"),
+                )
+                if hasattr(live, "reload"):
+                    await asyncio.to_thread(live.reload, self.config.data_dir)
+                else:
+                    classes = await asyncio.to_thread(load_intelligence_classes, self.config.data_dir)
+                    if hasattr(live, "replace"):
+                        live.replace(classes)
+                    else:
+                        self.orchestrator.session_spec_builder._intelligence_classes = classes
+                return {"success": True, "class_id": class_id, "retired_file": retired_file}
+
+        operation = asyncio.create_task(retire_and_publish())
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            while not operation.done():
+                try:
+                    await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not operation.cancelled():
+                operation.exception()
+            raise
+        except IntelligenceClassConflict as exc:
+            return {"error": str(exc), "error_code": "revision_conflict",
+                    "current_revision": exc.current_revision}
+        except IntelligenceClassEditError as exc:
+            return {"error": str(exc)}
+        except (OSError, UnicodeError):
+            logger.warning("Could not retire intelligence class")
+            return {"error": "Intelligence class could not be retired"}
+
     async def _cmd_get_stuck_tasks(self, args: dict) -> dict:
         """Return tasks stuck in ASSIGNED or IN_PROGRESS beyond their
         per-status threshold.

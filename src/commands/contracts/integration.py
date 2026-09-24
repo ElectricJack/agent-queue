@@ -34,6 +34,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_file_children",
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
+        "integration_record_noop",
         "integration_parent_verify",
         "integration_complete_parent",
         "delivery_promote",
@@ -440,6 +441,25 @@ class IntegrationDeliveryReadinessValue(CommandValue):
     blockers: tuple[dict[str, Any], ...] = ()
     required_checks: dict[str, Any] | None = None
     on_failed_child: Literal["block", "ask"] | None = None
+
+
+class IntegrationRecordNoopArgs(CommandArgs):
+    child_task_id: str = Field(min_length=1)
+    expected_head_sha: str
+
+    @field_validator("expected_head_sha")
+    @classmethod
+    def exact_git_oid(cls, value: str) -> str:
+        if not is_valid_git_oid(value):
+            raise ValueError("expected_head_sha must be an exact Git OID")
+        return value
+
+
+class IntegrationRecordNoopValue(CommandValue):
+    receipt_id: str | None = None
+    revision: int | None = None
+    reviewed_head_sha: str | None = None
+    reviewed_tree_sha: str | None = None
 
 
 class IntegrationParentVerifyArgs(CommandArgs):
@@ -1401,6 +1421,37 @@ INTEGRATION_DELIVERY_READINESS = _parent_contract(
     side_effect=SideEffectClass.READ,
     summary="Read whether every child of one parent has delivered, changing nothing.",
 )
+INTEGRATION_RECORD_NOOP = CommandContract(
+    execution=ExecutionContract(
+        name="integration_record_noop",
+        args_model=IntegrationRecordNoopArgs,
+        result_model=IntegrationRecordNoopValue,
+        outcomes=tuple(
+            OutcomeSpec(
+                name=name,
+                classification=(
+                    OutcomeClass.SUCCESS if name == "recorded" else OutcomeClass.FAILURE
+                ),
+            )
+            for name in ("recorded", "stale_head", "invalid", "delivery_target_fixed")
+        ),
+        capability="integration_record_noop",
+        side_effect=SideEffectClass.UPDATE,
+        idempotency=IdempotencySpec(mode="natural"),
+        retry_safe=True,
+        effects=(
+            UpdateClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+            UpdateClause(subject=EffectSubject.TASK),
+        ),
+        sensitive_args=frozenset({"expected_head_sha"}),
+        sensitive_result_fields=frozenset({"reviewed_head_sha", "reviewed_tree_sha"}),
+        receipt_projection=("receipt_id", "revision"),
+    ),
+    presentation=CommandPresentation(
+        title="Record verified no-code child disposition",
+        summary="Bind a child's current no-op completion and exact Git head to its parent receipt.",
+    ),
+)
 INTEGRATION_PARENT_VERIFY = _parent_contract(
     "integration_parent_verify",
     IntegrationParentVerifyArgs,
@@ -1788,6 +1839,16 @@ async def _parent_verify_adapter(args: IntegrationParentVerifyArgs, ctx: Command
     )
 
 
+async def _record_noop_adapter(args: IntegrationRecordNoopArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_record_noop",
+        args,
+        ctx,
+        IntegrationRecordNoopValue,
+        {"recorded", "stale_head", "invalid", "delivery_target_fixed"},
+    )
+
+
 async def _complete_parent_adapter(
     args: IntegrationCompleteParentArgs, ctx: CommandContext | None
 ):
@@ -2078,6 +2139,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_CHECKPOINT_PARENT, _checkpoint_parent_adapter),
         (INTEGRATION_MUTATE_HIERARCHY, _mutate_hierarchy_adapter),
         (INTEGRATION_DELIVERY_READINESS, _delivery_readiness_adapter),
+        (INTEGRATION_RECORD_NOOP, _record_noop_adapter),
         (INTEGRATION_PARENT_VERIFY, _parent_verify_adapter),
         (INTEGRATION_COMPLETE_PARENT, _complete_parent_adapter),
         (DELIVERY_PROMOTE, _promote_adapter),

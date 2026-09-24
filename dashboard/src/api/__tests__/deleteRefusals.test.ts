@@ -5,18 +5,28 @@ import {
   integrationRemovalRefusal,
 } from "../deleteRefusals";
 
-/** The real shape `_hierarchy_failure` renders (src/commands/task_commands.py). */
+/**
+ * The real shape `_hierarchy_failure` renders (src/commands/task_commands.py)
+ * for the history refusal `assert_integration_permits_removal` raises
+ * (src/integration/removal_guard.py).
+ */
 const refusal = () =>
   Object.assign(new Error("API 422"), {
     payload: {
       success: false,
       code: "hierarchy.integration_history_retained",
       error:
-        "hierarchy.integration_history_retained: delete would orphan 2 integration record(s): " +
-        "integration_batch_members(azure-beacon), integration_repair_stages(azure-beacon)",
+        "hierarchy.integration_history_retained: delete is refused: 2 integration audit " +
+        "record(s) name azure-beacon (integration_parent_episodes(azure-beacon), " +
+        "integration_repair_operations(azure-beacon)) and audit history is append-only. " +
+        "Archive the task instead; its history stays readable by id.",
       references: [
-        { task_id: "azure-beacon", table: "integration_batch_members" },
-        { task_id: "azure-beacon", table: "integration_repair_stages" },
+        { task_id: "azure-beacon", table: "integration_parent_episodes", column: "parent_task_id" },
+        {
+          task_id: "azure-beacon",
+          table: "integration_repair_operations",
+          column: "verifier_task_id",
+        },
       ],
     },
   });
@@ -25,7 +35,7 @@ describe("integrationHistoryRefusal", () => {
   it("explains the refusal in words the operator can act on", () => {
     expect(integrationHistoryRefusal(refusal())).toBe(INTEGRATION_HISTORY_MESSAGE);
     // No table names, no error codes, no "try again".
-    expect(INTEGRATION_HISTORY_MESSAGE).not.toMatch(/hierarchy\.|integration_batch|try again/i);
+    expect(INTEGRATION_HISTORY_MESSAGE).not.toMatch(/hierarchy\.|integration_|try again/i);
   });
 
   it("still recognises the refusal from the prose alone", () => {
@@ -33,7 +43,7 @@ describe("integrationHistoryRefusal", () => {
     // daemon's `"<code>: <detail>"` rendering is enough to classify it.
     const prose = Object.assign(new Error("API 422"), {
       payload: {
-        error: "hierarchy.integration_history_retained: delete would orphan 1 integration record(s)",
+        error: "hierarchy.integration_history_retained: delete is refused: 1 integration audit record(s)",
       },
     });
     expect(integrationHistoryRefusal(prose)).toBe(INTEGRATION_HISTORY_MESSAGE);
@@ -70,11 +80,25 @@ describe("integrationRemovalRefusal", () => {
     );
   });
 
+  it("explains retained history in plain words, not the daemon's audit detail", () => {
+    // History never lets go, so there is no command to show; the audit table
+    // names in the daemon's detail mean nothing to the operator.
+    expect(integrationRemovalRefusal(refusal())).toBe(INTEGRATION_HISTORY_MESSAGE);
+  });
+
   it("does not replace unrelated errors", () => {
-    expect(integrationRemovalRefusal(refusal())).toBe(
-      "delete would orphan 2 integration record(s): integration_batch_members(azure-beacon), " +
-        "integration_repair_stages(azure-beacon)",
-    );
     expect(integrationRemovalRefusal(new Error("boom"))).toBeNull();
+    expect(integrationRemovalRefusal(null)).toBeNull();
+    expect(
+      integrationRemovalRefusal(
+        Object.assign(new Error("API 422"), {
+          payload: {
+            code: "hierarchy.branch_discard_required",
+            error: "hierarchy.branch_discard_required: name a branch policy",
+            branches: [],
+          },
+        }),
+      ),
+    ).toBeNull();
   });
 });

@@ -25,6 +25,7 @@ aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER
 aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
+aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
 ```
@@ -333,6 +334,27 @@ fallback.
 
 Successful integration/source branches are deleted by the default cleanup
 policy. Failed forensic work is retained for `604800` seconds by default.
+
+### No-code child receipts
+
+A reviewer filed under an active parent is itself a child in the collection
+episode. Its `pass --work-outcome no-op` close records the review verdict, but
+the parent still needs a disposition receipt for the reviewer's own branch.
+When parent readiness reports `receipt_missing` for that child, a local
+operator can record the exact no-code disposition:
+
+```bash
+aq --json task show CHILD_TASK_ID | jq -r '.data.integration_delivery.checkpoint_sha'
+aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
+```
+
+The command requires the current passing `no-op` completion, and for a reviewer
+it requires an approved review evidence row. It checks that the child head is
+still its reserved base, resolves that commit's tree from Git, and writes a
+receipt for the current parent episode. Repeating the command returns the same
+receipt; a new no-op completion gets a new receipt revision. A playbook may
+invoke the contracted `integration_record_noop` command when its policy grants
+that exact capability. Worker sessions cannot invoke it.
 
 ### Candidate-member conflict repair
 

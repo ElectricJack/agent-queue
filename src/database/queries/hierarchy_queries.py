@@ -215,6 +215,10 @@ class ProjectIntegrationMode:
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
     """Require an exact origin or an active delegate reservation in enabled projects.
 
+    A repair delegate writes its operation's existing branch and a parent
+    verifier checks the parent's; neither ever gets an origin of its own, so
+    each is admitted only on its exact reserved fence.
+
     With *mode* supplied the ``projects`` lookup is folded away at compile
     time: a non-hierarchical project admits every task, and a hierarchical
     one with no ``integration_repository_id`` admits none (no origin row can
@@ -225,16 +229,20 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
             return true()
         if mode.integration_repository_id is None:
             return false()
-        return or_(_reserved_repair_branch(mode.integration_repository_id),
-            _reserved_verifier_branch(mode.integration_repository_id), exists(
-            select(literal(1)).where(
+        # The origin arm admits nearly every frontier row, and PostgreSQL
+        # evaluates ``OR`` arms in order, so it goes first: the delegate
+        # sub-plans run only for the rare row that has no origin.
+        return or_(
+            exists(select(literal(1)).where(
                 task_branch_origins.c.task_id == tasks.c.id,
                 task_branch_origins.c.repository_id == mode.integration_repository_id,
                 task_branch_origins.c.retired_at.is_(None),
                 task_branch_origins.c.materialized.is_(True),
-            )
-        ))
-    return or_(_reserved_repair_branch(), _reserved_verifier_branch(), ~exists(
+            )),
+            _reserved_repair_branch(mode.integration_repository_id),
+            _reserved_verifier_branch(mode.integration_repository_id),
+        )
+    return or_(~exists(
         select(literal(1))
         .select_from(projects)
         .where(
@@ -257,7 +265,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 )
             ),
         )
-    ))
+    ), _reserved_repair_branch(), _reserved_verifier_branch())
 
 
 def _reserved_repair_branch(repository_id: str | None = None):
@@ -299,16 +307,19 @@ def _reserved_repair_branch(repository_id: str | None = None):
 
 
 def _reserved_verifier_branch(repository_id: str | None = None):
-    """A verifier owns its parent's published branch, not a child origin."""
+    """A parent verifier checks the parent's branch, not a new task origin.
+
+    ``ParentCompletion`` files the delegate on the parent's checkpoint branch
+    and binds it as ``verifier_task_id``; the handoff then reserves that
+    branch's fence to it.  Admit exactly that: the bound delegate of a live
+    parent operation, holding the unattached ``verifier`` fence on the
+    operation's own parent branch.
+    """
     operation = integration_repair_operations
-    checkpoint = task_integration_checkpoints
     owner = integration_branch_owners
-    source = operation.join(
-        checkpoint,
-        (checkpoint.c.task_id == operation.c.parent_task_id)
-        & (checkpoint.c.episode_id == operation.c.episode_id),
-    ).join(
-        owner, owner.c.owner_id == operation.c.verifier_task_id,
+    parent = tasks.alias("verifier_parent")
+    source = operation.join(owner, owner.c.owner_id == operation.c.verifier_task_id).join(
+        parent, parent.c.id == operation.c.parent_task_id,
     )
     if repository_id is None:
         source = source.join(projects, projects.c.id == tasks.c.project_id)
@@ -317,18 +328,18 @@ def _reserved_verifier_branch(repository_id: str | None = None):
         .select_from(source)
         .correlate(tasks)
         .where(
-            operation.c.target_kind == "parent",
             operation.c.verifier_task_id == tasks.c.id,
+            operation.c.target_kind == "parent",
             operation.c.state.in_(("active", "escalated")),
-            checkpoint.c.state == "verifying",
-            checkpoint.c.repository_id == tasks.c.repo_id,
-            checkpoint.c.branch == tasks.c.branch_name,
+            parent.c.project_id == tasks.c.project_id,
             owner.c.owner_role == "verifier",
             owner.c.handoff_state == "reserved",
             owner.c.session_id.is_(None),
             owner.c.workspace_id.is_(None),
-            owner.c.ref == checkpoint.c.branch,
-            owner.c.repository_id == checkpoint.c.repository_id,
+            owner.c.repository_id == tasks.c.repo_id,
+            owner.c.ref == tasks.c.branch_name,
+            owner.c.repository_id == parent.c.repo_id,
+            owner.c.ref == parent.c.branch_name,
             owner.c.repository_id == (
                 repository_id if repository_id is not None else projects.c.integration_repository_id
             ),
@@ -1073,7 +1084,7 @@ class HierarchyQueryMixin:
             branches = [
                 {
                     "task_id": row["task_id"],
-                    "branch": f"aq/{row['task_id']}",
+                    "branch": row["branch_name"],
                     "base_sha": row["base_sha"],
                 }
                 for row in sorted(materialized, key=lambda r: r["task_id"])

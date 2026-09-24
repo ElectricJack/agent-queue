@@ -117,9 +117,10 @@ export default function TaskDetailPane({
     });
   }, [args.taskId, close, from, navigate]);
 
-  // A subtree append-only integration audit rows still name can never be
-  // deleted; the dialog explains that instead of inviting another attempt.
-  const historyRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
+  // An integration refusal is not worth another attempt: history is a permanent
+  // record (explained in plain words), and any other hold names the command that
+  // clears it. Either way the dialog says so instead of offering the button.
+  const integrationRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
   // Until the full read lands, the header shows what the row or card showed.
@@ -521,10 +522,10 @@ export default function TaskDetailPane({
               onChoose={setBranchChoice}
             />
           )}
-          {historyRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{historyRefusal}</p>
+          {integrationRefusal && (
+            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
           )}
-          {deleteTask.isError && !branchPrompt && !historyRefusal && (
+          {deleteTask.isError && !branchPrompt && !integrationRefusal && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
@@ -553,7 +554,7 @@ export default function TaskDetailPane({
                   },
                 )
               }
-              disabled={deleteTask.isPending || !!historyRefusal}
+              disabled={deleteTask.isPending || !!integrationRefusal}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
               {deleteTask.isPending

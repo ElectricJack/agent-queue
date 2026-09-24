@@ -61,11 +61,18 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             text=True,
             # The full kit now covers S1-S19 and takes about eight minutes on
             # an otherwise idle box, but 15-16 minutes when CI's xdist worker
-            # runs it beside the Postgres performance fixtures. Keep the
-            # subprocess bounded below the job's 30-minute timeout without
-            # turning ordinary shared-runner contention into a smoke failure.
-            timeout=1200,
+            # runs it beside the Postgres performance fixtures. Pool waits
+            # can grant one extra convergence window when the daemon reports
+            # an active launch or quarantine, so leave room for the smoke
+            # runner to report its own detailed failure before this cap.
+            timeout=1500,
         )
+        # Keep the scenario durations visible on successful CI runs too;
+        # a slow tail can otherwise only be diagnosed after a failure.
+        print("\n".join(
+            line for line in result.stdout.splitlines()
+            if line.startswith(("PASS S", "FAIL S"))
+        ))
         assert result.returncode == 0, f"{result.stdout}\n--- stderr ---\n{result.stderr}"
         assert "19/19 scenarios passed" in result.stdout
         for status in (

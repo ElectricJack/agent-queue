@@ -119,7 +119,10 @@ daemon's real database whatever the environment says. Each run gets an ownership
 token; workers and migration tests create uniquely named `aq_test_*` databases,
 and a graceful teardown drops only names that process created. An unexpected
 name collision is inspected read-only and then refused — the harness never
-stamps, migrates, drops or repairs a database it did not create.
+stamps, migrates, drops or repairs a database it did not create, except that a
+sweep drops `aq_test_ownv2_*` test databases whose owner's advisory lock proves
+their creating process is gone (see
+[resource gating](../../guides/resource-gating.md)).
 
 **The schema template.** [`schema_key.py`](../../../src/database/schema_key.py)
 hashes every file that decides what a migrated schema looks like — `tables.py`,

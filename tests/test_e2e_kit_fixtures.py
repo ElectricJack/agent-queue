@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -178,6 +179,7 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
     live = [
         {"id": "s-e2e", "project_id": smoke.PROJECT, "state": "running"},
         {"id": "s-other", "project_id": smoke.OTHER_PROJECT, "state": "running"},
+        {"id": "s-draining", "project_id": smoke.PROJECT, "state": "draining"},
     ]
     created = []
 
@@ -228,6 +230,71 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
 
     assert [worker.session_id for worker in workers] == ["fresh-1", "fresh-2"]
     assert "other-leftover" not in open_tasks[smoke.OTHER_PROJECT]
+    assert not any(row["id"] == "s-draining" for row in live)
+
+
+def test_pool_wait_extends_once_while_daemon_has_unplaced_demand(monkeypatch):
+    smoke = _load_smoke()
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        smoke, "time", SimpleNamespace(
+            monotonic=lambda: clock.now,
+            sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+            time=lambda: clock.now,
+        ),
+    )
+    monkeypatch.setattr(smoke, "pool_wait_state", lambda *_: {
+        "project": smoke.PROJECT,
+        "profile": smoke.POOL_PROFILE,
+        "enabled": True,
+        "ready": 1,
+        "desired": 1,
+        "running_idle": 0,
+        "running_busy": 0,
+        "starting": 0,
+        "placement": {"ready": 1, "workspace_capacity": 1},
+    })
+
+    session = smoke.wait_for_pool_session(
+        lambda: {"id": "new"} if clock.now >= 1.5 else None,
+        what="a session", timeout=1,
+    )
+
+    assert session == {"id": "new"}
+    assert clock.now == 2
+
+
+def test_pool_wait_reports_placement_blocker_without_extending(monkeypatch):
+    smoke = _load_smoke()
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(
+        smoke, "time", SimpleNamespace(
+            monotonic=lambda: clock.now,
+            sleep=lambda seconds: setattr(clock, "now", clock.now + seconds),
+            time=lambda: clock.now,
+        ),
+    )
+    monkeypatch.setattr(smoke, "pool_wait_state", lambda *_: {
+        "project": smoke.PROJECT,
+        "profile": smoke.POOL_PROFILE,
+        "enabled": True,
+        "ready": 1,
+        "desired": 1,
+        "running_idle": 0,
+        "running_busy": 0,
+        "starting": 0,
+        "placement": {"ready": 1, "workspace_capacity": 5,
+                      "quarantined_until": 600,
+                      "quarantined_reason": "rapid crash"},
+        "instances": [],
+    })
+
+    with pytest.raises(smoke.Failure, match="timed out after 1s") as error:
+        smoke.wait_for_pool_session(lambda: None, what="a session", timeout=1)
+
+    assert clock.now == 1
+    assert '"workspace_capacity": 5' in str(error.value)
+    assert "rapid crash" in str(error.value)
 
 
 def test_capability_report_uses_exhaustive_status_vocabulary():

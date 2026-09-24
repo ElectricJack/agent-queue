@@ -120,6 +120,13 @@ def classify_exit(
         races (the Windows clock ticks in ~15 ms steps, which has already
         cost this repo a flaky test).
     """
+    # Pool workers may be deliberately killed while holding a task (for
+    # example, to clear a fixture fleet).  Their task goes back to READY in
+    # _terminate_pool_session; treating the signal as a rapid crash instead
+    # quarantines the whole project/profile key for the restart window.
+    if session.lifecycle == "pool" and session.desired_state == "stopped":
+        return ExitVerdict(Verdict.DRAINED, "pool session intentionally stopped")
+
     status = _status_str(task) if task is not None else ""
     if task is None or status in _CLOSED_STATUSES:
         return ExitVerdict(Verdict.DRAINED, "task already closed" if task is not None else "named session")

@@ -13,10 +13,17 @@ session name — rather than reporting an anonymous number.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.doctor.runner import apply_fix
 from src.resources.limits import cgroup_delegation
 from src.resources.procs import load_average, pytest_processes, summarize_by_session
+from src.resources.semaphore import default_lock_dir
+from src.resources.test_runs import reap_orphans
+
+logger = logging.getLogger(__name__)
 
 OWNER = "resource-gating"
 
@@ -183,6 +190,64 @@ async def _check_resources_cgroups(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# resources.orphaned_test_runs
+# ---------------------------------------------------------------------------
+
+ORPHANED_TEST_RUNS = "resources.orphaned_test_runs"
+
+
+async def _check_resources_orphaned_test_runs(ctx: DoctorContext) -> CheckResult:
+    """Warn when a test slot is held by a run whose session is gone.
+
+    Not gated on ``resources.enabled``: ``aq test`` takes a slot either
+    way, and an orphan holding one starves every agent queued behind it.
+    A run whose session is live is never reported here — stop the session
+    instead, which sweeps everything it spawned.
+    """
+    report = await asyncio.to_thread(reap_orphans, default_lock_dir(ctx.config), apply=False)
+    orphaned = report["orphaned"]
+    data = {"lock_dir": report["lock_dir"], "held": report["held"], "orphaned": orphaned}
+    if not orphaned:
+        return CheckResult(
+            id=ORPHANED_TEST_RUNS,
+            severity=Severity.OK,
+            detail=f"{len(report['held'])} test slot(s) held, none by an orphaned run",
+            data=data,
+        )
+    who = ", ".join(f"slot {row['slot']} ({row['owner']}, {row['reason']})" for row in orphaned)
+    return CheckResult(
+        id=ORPHANED_TEST_RUNS,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(orphaned)} test slot(s) held by a run whose session is gone: {who}. "
+            "`--fix` (or `aq test --aq-reap-orphans --aq-apply`) terminates them."
+        ),
+        fixable=True,
+        data=data,
+    )
+
+
+async def _fix_resources_orphaned_test_runs(ctx: DoctorContext) -> CheckResult:
+    """Terminate every orphaned run and free its slot; the re-check reports."""
+    report = await asyncio.to_thread(reap_orphans, default_lock_dir(ctx.config), apply=True)
+    for row in report["results"]:
+        logger.warning(
+            "reaped orphaned test run: slot %s (%s) %s — pids %s",
+            row["slot"],
+            row["owner"],
+            row["action"],
+            row["pids"],
+        )
+    return CheckResult(
+        id=ORPHANED_TEST_RUNS,
+        severity=Severity.OK,
+        detail=f"reaped {len(report['results'])} orphaned test run(s)",
+        fix_applied=True,
+        data={"results": report["results"]},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -199,6 +264,14 @@ def resource_checks() -> list[DoctorCheck]:
         ),
         DoctorCheck(
             id="resources.cgroups", run=_check_resources_cgroups, owner=OWNER, timeout_s=15.0
+        ),
+        DoctorCheck(
+            id=ORPHANED_TEST_RUNS,
+            run=_check_resources_orphaned_test_runs,
+            fix=_fix_resources_orphaned_test_runs,
+            owner=OWNER,
+            # Each reap waits out a SIGTERM grace before SIGKILL.
+            timeout_s=60.0,
         ),
     ]
 

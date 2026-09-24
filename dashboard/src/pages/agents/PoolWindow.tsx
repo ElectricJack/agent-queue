@@ -22,18 +22,19 @@ function instanceLabel(instance: PoolEntry["instances"][number]) {
  * user has selected. Unlike a fixed worker a pool has no single session — the
  * terminal and the instance metadata below the header follow the selection.
  */
-export default function PoolWindow({ entry, instanceId, onInstanceChange, onClose, resetToken }: {
+export default function PoolWindow({ entry, instanceId, onInstanceChange, onClose, resetToken, focusRequest }: {
   entry: PoolEntry;
   instanceId: string | null;
   onInstanceChange: (instanceId: string | null) => void;
   onClose: () => void;
   resetToken: string | null;
+  focusRequest: string | null;
 }) {
   const [tab, setTab] = useState<"terminal" | "settings">("terminal");
   const id = useId();
   useEffect(() => {
-    if (resetToken) setTab("terminal");
-  }, [resetToken]);
+    if (resetToken || focusRequest) setTab("terminal");
+  }, [resetToken, focusRequest]);
 
   const { pool, projects, instances } = entry;
   // A pinned instance can drain away between polls; fall back to the pool's
@@ -112,7 +113,7 @@ export default function PoolWindow({ entry, instanceId, onInstanceChange, onClos
         </div>
       </header>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-" + tab} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <PoolInstanceTerminal instance={instance} /> : (
+        {tab === "terminal" ? <PoolInstanceTerminal instance={instance} focusRequest={focusRequest} /> : (
           <div aria-label={title + " settings"} className="h-full space-y-4 overflow-auto p-4">
             <p className="text-xs leading-relaxed text-gray-400">
               Lifecycle: <span className="text-gray-200">pool</span>. The daemon sizes this pool

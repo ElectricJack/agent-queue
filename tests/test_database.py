@@ -1616,12 +1616,79 @@ class TestTaskBranchOriginDiscard:
             cols = await conn.run_sync(_cols)
         await db.close()
         assert {
+            "branch_name",
             "discard_state",
             "discard_requested_at",
             "discard_attempts",
             "discard_next_attempt_at",
             "discard_last_error",
         } <= cols
+
+    @pytest.mark.migration
+    @pytest.mark.integration
+    async def test_upgrade_backfills_origin_branch_without_guessing_deleted_epics(self):
+        from sqlalchemy import text
+
+        from src.database.engine import create_postgres_engine, run_schema_setup
+        from src.database.tables import metadata
+        from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
+
+        if not ensure_worker_postgres_dsn():
+            pytest.skip("POSTGRES_TEST_DSN not set")
+
+        dsn = await create_scratch_database("origin_branch_upgrade")
+        engine = create_postgres_engine(dsn)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+                await conn.execute(text("""
+                    INSERT INTO projects (id, name, created_at) VALUES ('p', 'p', 1)
+                """))
+                await conn.execute(text("""
+                    INSERT INTO tasks
+                        (id, project_id, title, description, branch_name,
+                         created_at, updated_at)
+                    VALUES ('live', 'p', 'live', '', 'aq/epic/live', 1, 1)
+                """))
+                await conn.execute(text("""
+                    INSERT INTO archived_tasks
+                        (id, project_id, title, description, status,
+                         created_at, updated_at, archived_at, branch_name)
+                    VALUES ('archived', 'p', 'archived', '', 'COMPLETED',
+                            1, 1, 2, 'aq/epic/archived')
+                """))
+                for task_id in ("live", "archived", "deleted", "unknown"):
+                    await conn.execute(text("""
+                        INSERT INTO task_branch_origins
+                            (id, task_id, repository_id, base_sha,
+                             creation_generation, created_at)
+                        VALUES (:id, :id, 'repo', :base, 0, 1)
+                    """), {"id": task_id, "base": "a" * 40})
+                await conn.execute(text("""
+                    INSERT INTO integration_branch_owners
+                        (id, repository_id, ref, owner_id, owner_role, fence_token,
+                         handoff_state, created_at, updated_at)
+                    VALUES ('owner', 'repo', 'aq/epic/deleted', 'deleted', 'worker', 1,
+                            'released', 1, 2)
+                """))
+                await conn.execute(text("ALTER TABLE task_branch_origins DROP COLUMN branch_name"))
+                await conn.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+                await conn.execute(text("INSERT INTO alembic_version VALUES ('a0000000001f')"))
+
+            await run_schema_setup(engine)
+
+            async with engine.connect() as conn:
+                rows = (await conn.execute(text("""
+                    SELECT task_id, branch_name FROM task_branch_origins ORDER BY task_id
+                """))).all()
+            assert rows == [
+                ("archived", "aq/epic/archived"),
+                ("deleted", "aq/epic/deleted"),
+                ("live", "aq/epic/live"),
+                ("unknown", None),
+            ]
+        finally:
+            await engine.dispose()
 
     async def test_retiring_a_materialized_origin_is_allowed(self):
         """The whole point: the trigger no longer freezes the entire row."""
@@ -1676,6 +1743,7 @@ class TestTaskBranchOriginDiscard:
                     id="o2",
                     task_id="t2",
                     repository_id="repo",
+                    branch_name="aq/epic/old",
                     parent_ref="main",
                     base_sha="a" * 40,
                     creation_generation=0,
@@ -1687,6 +1755,7 @@ class TestTaskBranchOriginDiscard:
             )
         for values in (
             {"base_sha": "b" * 40},
+            {"branch_name": "aq/epic/new"},
             {"materialized": False},
             {"task_id": "somewhere-else"},
         ):

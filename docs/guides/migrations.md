@@ -49,7 +49,9 @@ workers and migration tests create unique `aq_test_*` databases and a graceful
 session teardown drops only names created by that process. An unexpected name
 collision is inspected read-only for stale/unknown Alembic revisions and then
 refused. The harness never stamps, migrates, drops, or otherwise repairs a
-database it did not create.
+database it did not create, with one exception: a background sweep drops
+`aq_test_ownv2_*` databases whose owner's advisory lock proves the process
+that created them is gone (see [resource gating](resource-gating.md)).
 
 ### Why the env var beats the process scope
 

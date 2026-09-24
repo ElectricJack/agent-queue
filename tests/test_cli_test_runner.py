@@ -281,7 +281,8 @@ class TestCommand:
 
         assert result.exit_code == 4
         assert result.output.count("POSTGRES_TEST_DSN is not set") == 1
-        assert "docker compose up -d postgres" in result.output
+        assert "docker compose up -d postgres-test" in result.output
+        assert "5534/postgres" in result.output
         assert "Nothing was run" in result.output
         assert "aq test: slot" not in result.output
 
@@ -318,7 +319,7 @@ class TestCommand:
         output = proc.stdout + proc.stderr
         assert proc.returncode == 4
         assert output.count("POSTGRES_TEST_DSN is not set") == 1
-        assert "docker compose up -d postgres" in output
+        assert "docker compose up -d postgres-test" in output
 
     def test_dry_run_prints_the_command(self, runner, monkeypatch, tmp_path):
         monkeypatch.setenv("AQ_TEST_WORKERS", "4")
@@ -368,9 +369,14 @@ class TestCommand:
         monkeypatch.setenv("AQ_DATABASE_URL", "refuse-worker-database")
         monkeypatch.setenv("AGENT_QUEUE_DB", "refuse-worker-database")
         seen: list[dict[str, str]] = []
+        slot_tokens: list[str] = []
 
         def _capture(_argv, *, env):
             seen.append(env)
+            from src.resources.semaphore import SlotSemaphore
+
+            snapshot = SlotSemaphore(isolated_test_slots, 1).snapshot()
+            slot_tokens.append(snapshot["slots"][0]["holder"]["test_run_id"])
             return 0
 
         monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
@@ -379,6 +385,7 @@ class TestCommand:
         assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
         assert len(seen) == 2
         assert seen[0]["AQ_TEST_RUN_ID"] != seen[1]["AQ_TEST_RUN_ID"]
+        assert slot_tokens == [child_env["AQ_TEST_RUN_ID"] for child_env in seen]
         for child_env in seen:
             assert child_env["AQ_DB_SCOPE"] == "worker"
             assert child_env["AQ_DATABASE_URL"] == "refuse-worker-database"
@@ -481,6 +488,132 @@ class TestSlotReport:
         assert _slot_wait_timeout(1800, None) == 1800
         monkeypatch.delenv("AQ_TEST_WAIT_TIMEOUT")
         assert _slot_wait_timeout(1800, None) == 1800
+
+
+class TestOrphanedRuns:
+    """``aq test`` attributes its slot and gives the supervisor a reap control."""
+
+    @staticmethod
+    def _report(*, apply: bool, freed: bool = True) -> dict:
+        row = {
+            "slot": 2,
+            "state": "orphaned",
+            "reason": "session sess-1 harness (pid 77) has exited",
+            "owner": "brisk-falcon",
+            "pid": 1278781,
+            "held_for_s": 4999,
+        }
+        results = (
+            [
+                {
+                    **row,
+                    "action": "reaped" if freed else "reap_failed",
+                    "freed": freed,
+                    "pids": [1278781],
+                }
+            ]
+            if apply
+            else []
+        )
+        return {
+            "lock_dir": "/l",
+            "applied": apply,
+            "held": [row],
+            "orphaned": [row],
+            "results": results,
+        }
+
+    def test_the_slot_record_names_the_run_its_pytest_child_carries(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
+        import json
+
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        monkeypatch.setenv("AQ_SESSION_ID", "sess-pool-1")
+        monkeypatch.delenv("AQ_TASK_ID", raising=False)
+        monkeypatch.setenv("AQ_WORK_DIR", str(tmp_path))
+        report = tmp_path / "slot-report.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        (tmp_path / ".aq").mkdir()
+        (tmp_path / ".aq" / "claim.json").write_text(json.dumps({"task_id": "pool-task"}))
+        seen: list[tuple[dict, dict]] = []
+
+        def _capture(_argv, *, env):
+            record = json.loads((isolated_test_slots / "slot-0.lock").read_text())
+            seen.append((record, env))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
+
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        [(record, env)] = seen
+        assert record["test_run_id"] == env["AQ_TEST_RUN_ID"]
+        assert record["session_id"] == "sess-pool-1"
+        assert record["task_id"] == "pool-task"  # a pool worker has no AQ_TASK_ID
+        assert [row["event"] for row in map(json.loads, report.read_text().splitlines())] == [
+            "acquired",
+            "released",
+        ]
+
+    def test_reap_orphans_is_a_dry_run_by_default(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        calls: list[bool] = []
+
+        def _reap(_lock_dir, *, apply):
+            calls.append(apply)
+            return self._report(apply=apply)
+
+        monkeypatch.setattr("src.resources.test_runs.reap_orphans", _reap)
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans"])
+        assert result.exit_code == 0
+        assert calls == [False]
+        assert "brisk-falcon" in result.output and "Dry run" in result.output
+
+    def test_apply_terminates_and_reports(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        calls: list[bool] = []
+
+        def _reap(_lock_dir, *, apply):
+            calls.append(apply)
+            return self._report(apply=apply)
+
+        monkeypatch.setattr("src.resources.test_runs.reap_orphans", _reap)
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans", "--aq-apply"])
+        assert result.exit_code == 0
+        assert calls == [True]
+        assert "reaped" in result.output and "1278781" in result.output
+
+    def test_a_reap_that_did_not_free_its_slot_exits_nonzero(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr(
+            "src.resources.test_runs.reap_orphans",
+            lambda _lock_dir, *, apply: self._report(apply=apply, freed=False),
+        )
+        result = runner.invoke(cli, ["test", "--aq-reap-orphans", "--aq-apply"])
+        assert result.exit_code == 1
+        assert "reap_failed" in result.output
+
+    def test_apply_without_reap_is_refused(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        result = runner.invoke(cli, ["test", "--aq-apply", "tests/test_config.py"])
+        assert result.exit_code == 2
+
+    def test_status_marks_an_orphaned_holder(self, runner, monkeypatch, tmp_path):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setattr("src.cli.test_runner._holder_verdicts", lambda _d: {0: "orphaned"})
+        monkeypatch.setattr(
+            "src.resources.semaphore.SlotSemaphore.snapshot",
+            lambda self: {
+                "free": 0,
+                "total": 1,
+                "waiting": [],
+                "slots": [{"slot": 0, "held": True, "holder": {"task_id": "vivid-summit"}}],
+            },
+        )
+        result = runner.invoke(cli, ["test", "--aq-status"])
+        assert result.exit_code == 0
+        assert "orphaned" in result.output and "--aq-reap-orphans" in result.output
 
 
 class TestSignalForwarding:

@@ -449,12 +449,15 @@ class TestDeleteBranchPolicy:
     drain reads.
     """
 
-    async def _hierarchical_task_with_a_branch(self, db, task_id: str) -> None:
+    async def _hierarchical_task_with_a_branch(
+        self, db, task_id: str, *, branch: str | None = None
+    ) -> None:
         from sqlalchemy import insert, update
 
         from src.database.tables import projects, task_branch_origins
 
-        await mktask(db, task_id, status=TaskStatus.FAILED)
+        branch = branch or f"aq/{task_id}"
+        await mktask(db, task_id, status=TaskStatus.FAILED, branch_name=branch)
         async with db.immediate() as conn:
             await conn.execute(
                 update(projects)
@@ -466,6 +469,7 @@ class TestDeleteBranchPolicy:
                     id=f"origin-{task_id}",
                     task_id=task_id,
                     repository_id="repo",
+                    branch_name=branch,
                     parent_ref="main",
                     base_sha="a" * 40,
                     creation_generation=0,
@@ -477,14 +481,17 @@ class TestDeleteBranchPolicy:
             )
 
     async def test_delete_without_a_choice_names_the_branches(self, db, handler):
-        await self._hierarchical_task_with_a_branch(db, "has-branch")
+        epic_branch = "aq/epic/retire-the-publisher"
+        await self._hierarchical_task_with_a_branch(
+            db, "has-branch", branch=epic_branch
+        )
 
         res = await handler.execute("delete_task", {"task_id": "has-branch"})
 
         assert res["success"] is False
         assert res["code"] == "hierarchy.branch_discard_required"
         assert res["branches"] == [
-            {"task_id": "has-branch", "branch": "aq/has-branch", "base_sha": "a" * 40}
+            {"task_id": "has-branch", "branch": epic_branch, "base_sha": "a" * 40}
         ]
         assert await db.get_task("has-branch") is not None
 
@@ -516,7 +523,10 @@ class TestDeleteBranchPolicy:
 
         from src.database.tables import task_branch_origins
 
-        await self._hierarchical_task_with_a_branch(db, "drop-branch")
+        epic_branch = "aq/epic/retire-the-publisher"
+        await self._hierarchical_task_with_a_branch(
+            db, "drop-branch", branch=epic_branch
+        )
 
         res = await handler.execute(
             "delete_task", {"task_id": "drop-branch", "branches": "delete"}
@@ -524,17 +534,19 @@ class TestDeleteBranchPolicy:
 
         assert res["deleted"] == "drop-branch"
         assert res["discarded_branches"] == [
-            {"task_id": "drop-branch", "branch": "aq/drop-branch", "base_sha": "a" * 40}
+            {"task_id": "drop-branch", "branch": epic_branch, "base_sha": "a" * 40}
         ]
+        assert await db.get_task("drop-branch") is None
         async with db._engine.connect() as conn:
-            state = (
+            origin = (
                 await conn.execute(
-                    select(task_branch_origins.c.discard_state).where(
+                    select(task_branch_origins).where(
                         task_branch_origins.c.task_id == "drop-branch"
                     )
                 )
-            ).scalar_one()
-        assert state == "pending"
+            ).mappings().one()
+        assert origin["discard_state"] == "pending"
+        assert origin["branch_name"] == epic_branch
 
     async def test_an_unknown_choice_is_rejected_before_anything_moves(self, db, handler):
         await self._hierarchical_task_with_a_branch(db, "bad-choice")

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import {
   PlayIcon,
@@ -79,7 +79,12 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
   const kill = useSessionKill();
   const [text, setText] = useState("");
   const [streamOn, setStreamOn] = useState(true);
-  const [viewMode, setViewMode] = useState<"transcript" | "pane">("transcript");
+  const focusSelection = location.state?.terminalFocus === true;
+  const [viewMode, setViewMode] = useState<"transcript" | "pane">(focusSelection ? "pane" : "transcript");
+  const [paneRequest, setPaneRequest] = useState(0);
+  useEffect(() => {
+    if (focusSelection) setViewMode("pane");
+  }, [focusSelection, location.key]);
   const { entries, status, error, unavailable, clear } = useTranscriptStream(sessionId, {
     enabled: streamOn,
     attemptId: attempt?.id,
@@ -120,7 +125,12 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
             <div><dt className="text-gray-500">Exit reason</dt><dd className="whitespace-pre-wrap break-words">{attempt.end_reason || "Not recorded"}</dd></div>
           </dl>
         )}
-        {attempt && !interactive && <p className="pt-2 text-sm text-gray-400">Historical attempt · read-only transcript</p>}
+        {attempt && !interactive && <p className="pt-2 text-sm text-gray-400">Historical attempt · read-only transcript; keyboard input is unavailable.</p>}
+        {focusSelection && !attempt && !paneAvailable && (
+          <p className="pt-2 text-sm text-gray-400">
+            Terminal input unavailable: {interactive ? "this session has no tmux pane." : `session state is ${session.state || "unknown"}.`}
+          </p>
+        )}
       </header>
 
       {interactive && <section className="grid gap-4 md:grid-cols-2">
@@ -202,7 +212,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
               </button>
               {paneAvailable && (
                 <button role="tab" aria-selected={showingPane}
-                  onClick={() => setViewMode("pane")}
+                  onClick={() => { setViewMode("pane"); setPaneRequest((value) => value + 1); }}
                   className={
                     "px-2 py-0.5 " +
                     (showingPane
@@ -245,7 +255,8 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
         {showingPane ? (
           <div className="h-[60vh] min-h-80">
-            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name} />
+            <InteractiveTerminal key={sessionId} sessionId={sessionId} name={session.name}
+              focusRequest={focusSelection || paneRequest ? `${location.key}:${paneRequest}` : null} />
           </div>
         ) : (
           <div className="max-h-[60vh] overflow-y-auto p-3 font-mono text-xs">

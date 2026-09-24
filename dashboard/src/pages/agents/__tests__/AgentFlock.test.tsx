@@ -135,6 +135,40 @@ afterEach(() => {
 
 describe("Agent flock sidebar", () => {
 
+  it("focuses the selected terminal after ready, then moves focus when switching and re-selecting", async () => {
+    renderFlock("/agents", true);
+    fireEvent.click(await screen.findByRole("button", { name: "Open Builder" }));
+    const builder = await screen.findByRole("textbox", { name: "Builder terminal input" });
+    expect(builder).not.toHaveFocus();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(builder).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Reviewer" }), { shiftKey: true });
+    const reviewer = await screen.findByRole("textbox", { name: "Reviewer terminal input" });
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2));
+    act(() => TerminalSocketMock.instances[1]!.ready());
+    expect(reviewer).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Builder" }), { shiftKey: true });
+    expect(builder).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Open Builder" }));
+    expect(builder).toHaveFocus();
+  });
+
+  it("does not take focus from a text field when an agent is selected", async () => {
+    renderFlock("/agents", true);
+    const editor = document.createElement("input");
+    editor.setAttribute("aria-label", "Other editor");
+    document.body.append(editor);
+    editor.focus();
+    fireEvent.click(await screen.findByRole("button", { name: "Open Builder" }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(editor).toHaveFocus();
+    editor.remove();
+  });
+
   it("refreshes the visible waiting badge when question events arrive", async () => {
     const { useEventStream, __dispatchEventForTests } = await import("../../../ws/useEventStream");
     function LiveUpdates() { useEventStream(); return null; }

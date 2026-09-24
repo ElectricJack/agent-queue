@@ -217,6 +217,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_stuck_tasks": "system",
     "list_intelligence_classes": "system",
     "edit_intelligence_class": "system",
+    "delete_intelligence_class": "system",
     "doctor": "system",
     "get_costs": "system",
     "db_preflight_hierarchy": "system",
@@ -6205,6 +6206,24 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["class_id", "name", "description", "mapping"],
+        },
+    },
+    {
+        "name": "delete_intelligence_class",
+        "description": (
+            "Retire an unreferenced global intelligence class. Refuses when agents, "
+            "agent profiles or non-terminal tasks still use it. Requires global admin. "
+            "Pass the revision from list_intelligence_classes to reject stale deletes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "class_id": {"type": "string", "description": "Existing class ID."},
+                "expected_revision": {
+                    "type": "string", "description": "Raw-file revision from the last read."
+                },
+            },
+            "required": ["class_id"],
         },
     },
     # -----------------------------------------------------------------

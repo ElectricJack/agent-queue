@@ -122,6 +122,7 @@ aq test tests/ -k claim                  # a slice of the suite
 aq test --aq-status                      # who is holding the slots
 aq test --aq-no-wait tests/              # fail instead of queueing
 aq test --aq-dry-run tests/              # print the pytest command
+aq test --aq-reap-orphans [--aq-apply]   # free slots held by dead sessions
 aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
@@ -186,8 +187,8 @@ PostgreSQL is required for the suite. Configure a disposable server before
 running tests (the base database is used only as a maintenance connection):
 
 ```bash
-docker compose up -d postgres
-export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+docker compose up -d postgres-test
+export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
 aq test tests/test_config.py
 ```
 
@@ -197,17 +198,55 @@ same session-level preflight, so a missing DSN is one configuration error, not
 one fixture error per collected test. This is an environment failure: no test
 assertions ran.
 
-Each `aq test` invocation passes a fresh ownership token to pytest. Every
-xdist worker and every schema-mutating scratch test therefore creates a unique
-`aq_test_*` database. A normal session teardown drops only databases that the
-current process successfully created. An interrupted run can leave an orphan,
-but the next run chooses new names and never reuses or stamps it. If an
-explicit/reused `AQ_TEST_RUN_ID` collides, the harness inspects
-`alembic_version` read-only, reports stale or unknown revisions, and refuses to
-drop, migrate, or stamp the foreign database. Remove an orphan manually only
-after confirming that no other run owns it.
+Each `aq test` invocation passes a fresh run token to pytest, and every pytest
+process draws its own random owner token. Every xdist worker and every
+schema-mutating scratch test therefore creates a unique database, named
+`aq_test_ownv2_<owner>_<run>_<worker>` or
+`aq_test_ownv2_<owner>_scratch_<suffix>_<unique>`. A normal session teardown
+drops only databases that the current process successfully created.
 
-Never point `POSTGRES_TEST_DSN` at the daemon database from
+A process killed before that teardown (SIGTERM, SIGKILL, a `timeout`) cannot
+clean up, so its databases carry a liveness proof. Before its first
+`CREATE DATABASE` the process takes a PostgreSQL advisory lock keyed by its
+owner token, on a dedicated connection to the maintenance `postgres` database
+(application name `aq-test-db-owner`). It keeps the lock until teardown's drops
+have finished or hit their deadline. The server releases the lock when that
+connection closes, however the process ended. If the connection drops while
+the process lives on (a test-server restart), the process takes the lock back
+at once and refuses to create another database until it has. The lease pool's
+template clones (`tests/db_fixtures.py`) are named under the same token
+(`aq_test_ownv2_<owner>_<run>_<pool>_<worker>_<index>`), so the one lock covers
+them too.
+
+Each new worker database starts one background sweep, with one sweeper per
+server at a time, that drops `aq_test_ownv2_*` databases whose owner lock is
+free: at most eight per pass, with a 30 second timeout per drop and no
+`WITH (FORCE)`, so an orphan that somebody is still connected to stays put.
+The sweep never delays test startup. Teardown cancels an unfinished sweep, and
+orphans it could not drop are reported as a warning and left for a later run.
+`DROP DATABASE` waits for a checkpoint, so a busy PostgreSQL checkpointer can
+keep the sweep from dropping anything.
+
+The sweep never touches a name outside that versioned shape: operator
+databases, `aq_tmpl_*` schema templates and every `aq_test_*` name from before
+this scheme (including the short-lived `aq_test_poolv2_*` pool clones) carry no
+lock that could prove their owner is gone. Those are left to the operator
+reaper ([below](#reaping-abandoned-postgresql-test-databases)), which decides by
+age, connections and free test slots instead. If a name ever collides, the
+harness inspects `alembic_version` read-only, reports stale or unknown
+revisions, and refuses to drop, migrate, or stamp the foreign database.
+
+PostgreSQL [forces a checkpoint for each `DROP DATABASE`](https://doxygen.postgresql.org/dbcommands_8c_source.html).
+The test substrate issues a worker's drops concurrently so they can share a
+checkpoint; row-level resets limit the files that checkpoint must flush. A
+worker's drop batch is also bounded to 90 seconds. If the checkpointer still
+stalls, pytest reports the timed-out database names and development validation
+defers the batch as an infrastructure failure. The next test run uses fresh
+names. Once the process exits, whatever its teardown could not drop is an
+`aq_test_ownv2_*` orphan with a free owner lock, which a later run's sweep
+takes; a timeout never authorizes removing any other database.
+
+Never point `POSTGRES_TEST_DSN` at the daemon's `:5533` server or the database in
 `~/.agent-queue/config.yaml`. The production-URL refusal, worker
 `AQ_DB_SCOPE`, and `AQ_DATABASE_URL` / `AGENT_QUEUE_DB` sentinels remain in
 force; tests create their own databases on the disposable server.
@@ -229,7 +268,7 @@ agents, they fail on load rather than on a regression. Run them on purpose,
 serially, when the box is idle:
 
 ```bash
-POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/aq_perf \
+POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres \
 AQ_PERF_STRICT=1 aq test -m perf -p no:xdist -s tests/perf
 ```
 
@@ -298,6 +337,56 @@ record can never make a free slot look busy.
 It also works with the daemon down, which matters because `aq test` runs
 inside worktrees during restarts, and a test wrapper that fails closed when
 the daemon is unavailable would simply be routed around.
+
+### Orphaned runs
+
+`flock` releases a *dead* holder for free. It cannot release a *live* run
+nobody owns any more. On 2026-09-24 three stopped tasks' full-suite runs
+outlived their sessions and held three of the box's four slots for well over
+an hour. Each had been started from a detached Bash-tool shell. Harness Bash
+calls run under `setsid`, so when the drained harness exited, the shell was
+reparented to init. After that, nothing that stopped the session could reach
+it.
+
+Two things now close that gap.
+
+- **Stopping a session sweeps its leftovers.** Every process a session spawns
+  inherits its `AQ_INSTANCE_TOKEN`. The tmux and subprocess providers' `stop`
+  still kill the pane's process tree. They then also terminate every process
+  still carrying the token, plus its descendants: `SIGTERM`, then `SIGKILL`
+  after the grace period (`proctable.kill_marked`). The sweep runs even when
+  the tmux session is already gone. It never signals the caller, the caller's
+  ancestors, or a tmux server. Tokens are minted per launch, so a same-named
+  successor is never matched. The drain, stall-restart, task-close,
+  pool-termination and `aq session kill` paths all end in `stop`. A process
+  meant to outlive a session must be launched with the session markers
+  stripped, as `aq start` does for the daemon and the dashboard server.
+- **Slot holders are attributable, and orphans are reapable.** The slot record
+  names the session (`session_id`), the task (read from `.aq/claim.json` for a
+  pool worker, whose environment has no `AQ_TASK_ID`), the pid and start time
+  of the session's harness (`session_root`), and the `AQ_TEST_RUN_ID` its
+  pytest children inherit. A held slot is one of three kinds:
+  - `live`: the harness is still running. **Never reaped**, whatever its
+    task's status. Stop the session instead.
+  - `orphaned`: the harness has exited. A record written before attribution
+    existed counts as orphaned only when every session-marked process keeping
+    the lock has been reparented to init.
+  - `unattributed`: no session at all, such as a human's shell or CI. Reported,
+    never reaped.
+
+```bash
+aq test --aq-status                          # Session column: live / orphaned / unattributed
+aq test --aq-reap-orphans                    # dry run: what would be terminated
+aq test --aq-reap-orphans --aq-apply         # terminate them; exit 1 if a slot stays held
+aq doctor --check resources.orphaned_test_runs [--fix]
+```
+
+A reap terminates only processes that belong to the dead run: those that
+keep the slot file open and carry the run's id, the dead session's token or
+the recorded wrapper pid, plus every process carrying the run's
+`AQ_TEST_RUN_ID` and their descendants. A live session's waiter probing the
+same slot file is left alone. The verdict is re-derived immediately before
+any signal, and the lock is re-tested afterwards.
 
 ---
 
@@ -375,6 +464,7 @@ session, nice +10, 2 global test slot(s)
 ```bash
 aq doctor --check resources.load
 aq doctor --check resources.test_pressure
+aq doctor --check resources.orphaned_test_runs
 aq test --aq-status
 ```
 
@@ -383,6 +473,7 @@ aq test --aq-status
 | `resources.load` | 5-min load > `cores × load_warn_ratio` | the load figures plus the pytest processes per session |
 | `resources.test_pressure` | more than `max_pytest_processes` pytest processes box-wide | the count and which sessions own them |
 | `resources.cgroups` | always | whether hard limits are actually in force |
+| `resources.orphaned_test_runs` | a test slot is held by a run whose session is gone (fixable) | each held slot's verdict; `--fix` terminates the orphans ([Orphaned runs](#orphaned-runs)) |
 
 The load check reads the **5-minute** average on purpose. A 1-minute spike
 is a build starting; five minutes above one runnable task per core is a box
@@ -398,6 +489,49 @@ is always the operator's next question.
 
 ---
 
+## Reaping abandoned PostgreSQL test databases
+
+The test harness sweeps `aq_test_ownv2_*` orphans itself (see
+[the owner lock](#test-scope-and-the-recorded-baseline) above). Everything that sweep
+cannot prove dead stays behind: `aq_test_*` names from before the owner lock,
+an orphan the sweep kept failing to drop, and schema templates named
+`aq_tmpl_<slug>` whose source schema is no longer present in any linked
+checkout. Run the standalone operator tool from the repository root with the
+test server's maintenance DSN:
+
+```bash
+export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
+python -m scripts.reap_test_databases
+# Review the plan; when no test runs are active:
+python -m scripts.reap_test_databases --apply
+```
+
+The default is a read-only dry run that lists each test/template database and
+why it would be dropped or kept. It keeps any database named for the run token
+of a held `aq test` slot, reading the token after the owner token in
+`aq_test_ownv2_<owner>_<run>_*` names. `--apply` requires all `aq test` slots to be
+free, reserves them for the cleanup, and refuses while a bare pytest process
+is running. It also rechecks each database's identity and connections just
+before a plain `DROP DATABASE`; it never uses `WITH (FORCE)`. The database
+configured in `~/.agent-queue/config.yaml`, `postgres`, `template0`, and
+`template1` are protected. The minimum age is six hours by default;
+`--min-age-hours` can raise it. Age comes from the status-change time of the
+database's `PG_VERSION` file, so missing or recent metadata keeps a database.
+
+Template retention checks every linked Git worktree. Pass `--checkout PATH`
+once for each independent clone that may produce a different schema slug.
+If a checkout cannot be inspected, the tool keeps all templates and reports
+why. This tool is operator-invoked. A test run removes only its own databases
+at teardown and, in its background sweep, `aq_test_ownv2_*` databases whose
+owner lock is free.
+
+Runs from before the separate test server created their databases on the
+daemon's `:5533` server. To inventory those, point `POSTGRES_TEST_DSN` at that
+server's `/postgres` database for the reaper invocation only; the daemon's own
+database is protected by name, as above. Never run tests with that DSN.
+
+---
+
 ## Verification
 
 [The verification note](../analysis/2026-09-01-resource-gating-verification.md) records the
@@ -407,5 +541,6 @@ Unit coverage:
 
 ```bash
 aq test tests/test_resource_limits.py tests/test_resource_semaphore.py \
-        tests/test_resource_doctor.py tests/test_cli_test_runner.py
+        tests/test_resource_doctor.py tests/test_cli_test_runner.py \
+        tests/test_resource_test_runs.py
 ```

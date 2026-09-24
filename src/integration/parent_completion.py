@@ -25,9 +25,11 @@ from src.database.tables import (
     integration_parent_verifications,
     integration_repair_operations,
     integration_repair_stages,
+    integration_review_evidence,
     playbook_artifacts,
     projects,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
     task_session_attempts,
@@ -653,6 +655,8 @@ class ParentCompletion:
         reviewed_tree_sha: str,
         verification_evidence: dict[str, Any],
         resolution_evidence: dict[str, Any],
+        verified_completion_id: str | None = None,
+        verified_review_id: str | None = None,
     ) -> dict[str, Any]:
         if disposition not in {"noop", "ineligible", "skipped"}:
             raise HierarchyError("invalid", "unsupported delivery disposition")
@@ -683,6 +687,39 @@ class ParentCompletion:
                 or child_checkpoint["checkpoint_sha"] != reviewed_head_sha
             ):
                 raise HierarchyError("invalid", "disposition source is not terminal at that head")
+            if verified_completion_id is not None:
+                completion = (
+                    await conn.execute(
+                        select(task_completion_records)
+                        .where(task_completion_records.c.task_id == child_task_id)
+                        .order_by(
+                            task_completion_records.c.completed_at.desc(),
+                            task_completion_records.c.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                ).mappings().one_or_none()
+                if (
+                    completion is None
+                    or completion["id"] != verified_completion_id
+                    or completion["outcome"] != "pass"
+                    or completion["work_outcome"] != "no-op"
+                    or completion["branch"] != child["branch_name"]
+                    or child["status"] != "COMPLETED"
+                ):
+                    raise HierarchyError("invalid", "current child close is not a verified no-op")
+                if child["profile_id"] in {"reviewer", "final-reviewer"}:
+                    review = (
+                        await conn.execute(
+                            select(integration_review_evidence).where(
+                                integration_review_evidence.c.id == verified_review_id,
+                                integration_review_evidence.c.reviewer_task_id == child_task_id,
+                                integration_review_evidence.c.verdict == "approved",
+                            )
+                        )
+                    ).mappings().one_or_none()
+                    if review is None:
+                        raise HierarchyError("invalid", "approved reviewer evidence is required")
             code_receipt = (
                 await conn.execute(
                     select(task_delivery_receipts.c.id).where(
@@ -693,6 +730,19 @@ class ParentCompletion:
             ).first()
             if code_receipt:
                 raise HierarchyError("delivery_target_fixed", "delivered code cannot be disposed")
+            origin = (
+                await conn.execute(
+                    select(task_branch_origins).where(
+                        task_branch_origins.c.task_id == child_task_id,
+                        task_branch_origins.c.repository_id == checkpoint["repository_id"],
+                        task_branch_origins.c.retired_at.is_(None),
+                    )
+                )
+            ).mappings().one_or_none()
+            if origin is None:
+                raise HierarchyError("invalid", "disposition child has no active branch origin")
+            if verified_completion_id is not None and origin["base_sha"] != reviewed_head_sha:
+                raise HierarchyError("invalid", "no-op child head differs from its reserved base")
             current = (
                 await conn.execute(
                     select(integration_child_dispositions)
@@ -704,7 +754,25 @@ class ParentCompletion:
                 )
             ).mappings().one_or_none()
             revision = 0 if current is None else int(current["revision"])
-            if current is not None and current["disposition"] != disposition:
+            completion_changed = False
+            if current is not None and verified_completion_id is not None:
+                prior_key = (
+                    f"disposition:{parent['id']}:{child_task_id}:"
+                    f"{current['parent_operation_id']}:{revision}"
+                )
+                prior = (
+                    await conn.execute(
+                        select(task_delivery_receipts).where(
+                            task_delivery_receipts.c.domain_key == prior_key
+                        )
+                    )
+                ).mappings().one_or_none()
+                completion_changed = bool(
+                    prior is not None
+                    and (prior["resolution_evidence"] or {}).get("completion_id")
+                    != verified_completion_id
+                )
+            if current is not None and (current["disposition"] != disposition or completion_changed):
                 revision += 1
                 await conn.execute(
                     update(task_integration_checkpoints)
@@ -732,6 +800,7 @@ class ParentCompletion:
                 )
             elif (
                 current["disposition"] != disposition
+                or completion_changed
                 or current["parent_operation_id"] != operation["id"]
                 or current["parent_episode_id"] != checkpoint["episode_id"]
             ):
@@ -764,15 +833,6 @@ class ParentCompletion:
                 if existing["disposition"] != disposition:
                     raise HierarchyError("invariant_error", "disposition identity changed")
                 return dict(existing) | {"revision": revision}
-            origin = (
-                await conn.execute(
-                    select(task_branch_origins).where(
-                        task_branch_origins.c.task_id == child_task_id,
-                        task_branch_origins.c.repository_id == checkpoint["repository_id"],
-                        task_branch_origins.c.retired_at.is_(None),
-                    )
-                )
-            ).mappings().one()
             receipt = {
                 "id": str(uuid.uuid4()),
                 "domain_key": domain_key,

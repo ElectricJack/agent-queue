@@ -88,6 +88,9 @@ _INFRASTRUCTURE_PATTERNS = (
     r"too many open files",
     r"POSTGRES_TEST_DSN is not set",
     r"no test slot free",
+    r"could not clean owned PostgreSQL test databases",
+    r"could not drop leased PostgreSQL test databases",
+    r"PostgreSQL test database cleanup deadline exceeded",
     r"Cannot connect to the Docker daemon",
     r"Error response from daemon",
 )

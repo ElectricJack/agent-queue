@@ -291,6 +291,27 @@ class EditIntelligenceClassResponse(BaseModel):
     intelligence_class: IntelligenceClassModel
 
 
+class IntelligenceClassReference(BaseModel):
+    kind: Literal["agent", "profile", "task"]
+    id: str
+    name: str
+    lifecycle: str | None = None
+    status: str | None = None
+    source: str | None = None
+
+
+class DeleteIntelligenceClassConflictResponse(BaseModel):
+    error: str
+    error_code: Literal["class_referenced"]
+    references: list[IntelligenceClassReference]
+
+
+class DeleteIntelligenceClassResponse(BaseModel):
+    success: bool = True
+    class_id: str
+    retired_file: str
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
@@ -319,4 +340,5 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "scan_stub_staleness": ScanStubStalenessResponse,
     "list_intelligence_classes": ListIntelligenceClassesResponse,
     "edit_intelligence_class": EditIntelligenceClassResponse,
+    "delete_intelligence_class": DeleteIntelligenceClassResponse,
 }
