@@ -1381,7 +1381,10 @@ export function useGates(
       const { data } = await gateList({ body, throwOnError: true });
       return ((data as GateListResponse).gates ?? []) as GateSummary[];
     },
-    refetchInterval: 20_000,
+    // gate.* frames refresh this (ws/useEventStream.ts); the poll reconciles.
+    // A project's list includes every resolved gate (190 KB for agent-queue),
+    // so the task pane polling it every 20s was a steady 0.5 MB a minute.
+    refetchInterval: 60_000,
     enabled: opts.enabled ?? true,
   });
 }
