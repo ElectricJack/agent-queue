@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 377,
+    "leaf_commands": 378,
     "registration": {
-      "generated": 263,
+      "generated": 264,
       "handwritten": 114
     },
     "ownership": {
-      "core": 338,
+      "core": 339,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 376
+      "supported": 377
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 263,
+      "dispatch": 264,
       "registration": 100
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 317
+      "untested": 318
     }
   },
   "commands": [
@@ -8599,6 +8599,40 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system delete-intelligence-class",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "delete_intelligence_class",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--class-id"
+        ],
+        "optional": [
+          "--expected-revision",
           "--json",
           "--brief",
           "--api-url"
