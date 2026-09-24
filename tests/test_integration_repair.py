@@ -4435,6 +4435,27 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     close_events = [e for e in close_events if e["payload"].get("fence_token") != 0]
     assert close_events[0]["payload"]["task_id"] == repair_task_id
     assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
+    assert close_events[0]["payload"]["batch_id"] == "batch"
+    assert close_events[0]["payload"]["revision"] == 1
+    assert close_events[0]["payload"]["head_sha"] == repair_head
+    close_fence = {key: close_events[0]["payload"][key] for key in (
+        "operation_id", "stage", "task_id", "session_id", "instance_token",
+        "workspace_id", "fence_token",
+    )}
+    current = await handler._cmd_integration_repair_close_current(close_fence)
+    assert current == {
+        "success": True, "outcome": "current", "batch_id": "batch", "revision": 1,
+    }
+    stale = await handler._cmd_integration_repair_close_current(
+        {**close_fence, "fence_token": close_fence["fence_token"] + 1}
+    )
+    assert stale["outcome"] == "stale"
+    async with handler.db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(current_revision=2))
+    superseded = await handler._cmd_integration_repair_close_current(close_fence)
+    assert superseded["outcome"] == "stale"
 
     session = await handler.db.get_session("root-repair-session")
     if is_pool:

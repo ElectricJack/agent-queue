@@ -9,6 +9,7 @@ triggers:
   - integration.sealed
   - integration.candidate_green
   - integration.candidate_red
+  - integration.repair_delegate_closed
   - integration.repair_exhausted
   - integration.batch_promoted
   - integration.cleanup_requested
@@ -56,6 +57,21 @@ deadline, dispatch the exact operation's existing server-derived primary stage.
 On `integration.candidate_red`, dispatch the exact operation's current repair
 stage. The event's `batch_id`, `revision`, and `head_sha` carry routing identity,
 while the command resolves durable stage authority server-side.
+
+## Rule: continue-closed-root-repair
+
+On `integration.repair_delegate_closed`, resolve the exact close event and its
+`operation_id`, `stage`, `task_id`, `session_id`, `instance_token`, `workspace_id`,
+and `fence_token` with `integration_repair_close_current`. Bind the result as
+`closed_repair`. Parent delegates end this rule. A stale or
+superseded root close fails visibly; it cannot select a newer candidate.
+For a current root close, call `integration_build_candidate` with the resolved
+batch and `expected_revision` from `closed_repair`, then bind its result as
+`repaired_candidate`. Built or already-built candidates call
+`integration_ci_evidence` with that result's exact revision. Pending CI ends
+the run; authenticated green or red CI emits its own durable continuation.
+A build conflict dispatches the exact operation's existing bounded repair stage.
+The close event itself never supplies success evidence or promotes a candidate.
 
 ## Rule: dispatch-debug
 

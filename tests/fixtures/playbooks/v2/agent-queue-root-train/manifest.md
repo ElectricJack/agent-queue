@@ -1,13 +1,14 @@
 ---
 playbook_id: agent-queue-root-train
-artifact_sha256: sha256:b4d97387fe6477bf6aef72342fb600619f71d46ca7c82bef0f5f84f1a64cce3b
-source_sha256: sha256:71a471df2047632c4e18a85f32e244af7df24e5a23e15cef6677d9923f57ef62
-contract_fingerprint: sha256:7b6380af1d3d88ba850d53910ba311774cfe2b802e8eb3fafe2a624bd4b74b9e
+artifact_sha256: sha256:ba3c982468daebe36942083b23c5662d8f744815723286d2e5adc32b998b88dd
+source_sha256: sha256:90479b1a40be0a5a340fe185065c9a4ac5f02c797f4bf7f4edf2cb9b116801f6
+contract_fingerprint: sha256:d3091151928c5dfc17d8c4e6a84503ac551f88ff33e5d9b33284c5efcce6c645
 questions_resolved: 0
 capabilities_granted:
   aq_commands:
   - integration_build_candidate
   - integration_ci_evidence
+  - integration_repair_close_current
   - integration_cleanup
   - integration_promote_main
   - integration_release

@@ -1634,6 +1634,9 @@ _INTEGRATION_PAYLOAD_FIELDS: dict[
         "instance_token": (str, {"type": "string", "description": "repair session instance"}),
         "workspace_id": (str, {"type": "string", "description": "retained workspace"}),
         "fence_token": (int, {"type": "integer", "description": "ownership fence token"}),
+        "batch_id": (str, {"type": "string", "description": "root batch, when applicable"}),
+        "revision": (int, {"type": "integer", "description": "adopted candidate revision"}),
+        "head_sha": (str, {"type": "string", "description": "adopted candidate head"}),
     },
     "integration.branch_materialization_pending": {
         "origin_id": (str, {"type": "string", "description": "branch origin"}),

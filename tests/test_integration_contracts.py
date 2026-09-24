@@ -183,6 +183,9 @@ def test_hierarchy_event_payloads_expose_exact_typed_command_inputs():
             "instance_token": str,
             "workspace_id": str,
             "fence_token": int,
+            "batch_id": str,
+            "revision": int,
+            "head_sha": str,
         },
     }
     for event_type, payload_fields in expected.items():
@@ -256,6 +259,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_resolve_candidate_member",
         "integration_promote_main",
         "integration_build_candidate",
+        "integration_repair_close_current",
         "integration_ci_evidence",
         "integration_release",
         "integration_cleanup",
