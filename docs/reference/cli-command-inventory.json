@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 379,
+    "leaf_commands": 380,
     "registration": {
       "generated": 265,
-      "handwritten": 114
+      "handwritten": 115
     },
     "ownership": {
-      "core": 340,
+      "core": 341,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 378
+      "supported": 379
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 265,
-      "registration": 100
+      "registration": 101
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 319
+      "untested": 320
     }
   },
   "commands": [
@@ -3491,6 +3491,38 @@
           "--task-id",
           "--owner-row-id",
           "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration release-stale-owners",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_release_stale_owners",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--older-than",
           "--json",
           "--brief",
           "--api-url"

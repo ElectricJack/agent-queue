@@ -998,6 +998,38 @@ async def test_development_status_does_not_report_strict_policy_missing(setup):
     assert status["policy"]["validation"] == "focused"
 
 
+async def test_development_status_reports_a_requested_drain(setup):
+    """A drain requested from development keeps development effective until it ends.
+
+    Status used to print ``desired_mode: development`` whatever the project row
+    said, so a drain in progress read as no drain at all.
+    """
+    from src.integration.controls import IntegrationControlService
+
+    db, _service, _source, _remote, _repo = setup
+    status = await IntegrationControlService(db).status("p")
+    assert (status["effective_mode"], status["desired_mode"], status["draining"]) == (
+        "development",
+        "development",
+        False,
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_desired_mode="disabled",
+                hierarchical_integration_draining=True,
+            )
+        )
+    status = await IntegrationControlService(db).status("p")
+    assert (status["effective_mode"], status["desired_mode"], status["draining"]) == (
+        "development",
+        "disabled",
+        True,
+    )
+
+
 async def test_development_status_lists_live_hierarchy_operations(setup):
     from src.integration.status import IntegrationStatusService
 

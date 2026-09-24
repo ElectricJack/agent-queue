@@ -590,6 +590,34 @@ class IntegrationCommandsMixin:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
 
+    async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
+        """Release a project's provably safe reserved owners; report every other."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReleaseStaleOwnersArgs
+        from src.commands.provider_commands import parse_duration
+        from src.integration.stale_owners import stale_owner_release_for
+
+        try:
+            request = IntegrationReleaseStaleOwnersArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid stale owner release request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        service = stale_owner_release_for(self.orchestrator)
+        if service is None:
+            return _failure("runtime_error", "stale owner release is unavailable")
+        result = await service.run(
+            request.project_id,
+            principal=principal,
+            dry_run=request.dry_run,
+            older_than_seconds=(
+                parse_duration(request.older_than) if request.older_than is not None else None
+            ),
+        )
+        return {"success": result["outcome"] != "not_found", **result}
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

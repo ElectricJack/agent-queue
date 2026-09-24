@@ -117,7 +117,51 @@ class IntegrationControlService:
         return await self._recovery().abort(operation_id, reason=reason)
 
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:
-        return await self._recovery().retry_cleanup(batch_id)
+        """Requeue retryable cleanup, or materialize a promoted batch's missing cleanup.
+
+        A promoted batch whose cleanup never materialized has no item to
+        requeue, yet its pending cleanup keeps the project's integration work
+        active (and so a drain open) forever.  For that batch the retry is the
+        materialization itself; the cleanup worker then runs the items.
+        """
+        result = await self._recovery().retry_cleanup(batch_id)
+        if result["outcome"] != "nothing_to_retry" or self.cleanup_service is None:
+            return result
+        async with self.db._engine.connect() as conn:
+            unmaterialized = (
+                await conn.execute(
+                    select(integration_batches.c.id).where(
+                        integration_batches.c.id == batch_id,
+                        integration_batches.c.lifecycle == "promoted",
+                        integration_batches.c.cleanup_state == "pending",
+                        ~select(integration_cleanup_items.c.domain_key)
+                        .where(integration_cleanup_items.c.batch_id == batch_id)
+                        .exists(),
+                    )
+                )
+            ).scalar_one_or_none()
+        if unmaterialized is None:
+            return result
+        materialized = await self.cleanup_service.materialize(batch_id)
+        if materialized.outcome in {"materialized", "already_materialized"}:
+            return {
+                "outcome": "materialized",
+                "batch_id": batch_id,
+                "project_id": result["project_id"],
+                "count": materialized.item_count,
+            }
+        return {
+            "outcome": "not_materializable",
+            "batch_id": batch_id,
+            "project_id": result["project_id"],
+            "blockers": [
+                _blocker(
+                    f"cleanup_{materialized.outcome}",
+                    "promoted batch cleanup could not be materialized",
+                    batch_id,
+                )
+            ],
+        }
 
     async def release_delegates(self, operation_id: str) -> dict[str, Any]:
         return await self._recovery().release_delegates(operation_id)

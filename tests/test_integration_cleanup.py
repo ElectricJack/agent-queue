@@ -567,6 +567,93 @@ async def test_cleanup_materializes_normalized_terminal_set_idempotently(release
     assert all(row["repository_full_name"] == "acme/widgets" for row in rows)
 
 
+async def test_cleanup_materializes_only_the_current_revisions_reservations(release_db):
+    """A batch repaired after a root intent was reserved keeps that intent's rows.
+
+    Both intents' member reservations stay in ``integration_root_intent_members``;
+    only the current revision's describe what landed.  Counting the other one
+    made every such batch an ``invariant_error`` whose cleanup never began.
+    """
+    db, _scheduler = release_db
+    async with db.immediate() as conn:
+        # Another revision's root intent, superseded, with its own reservation.
+        revision = dict(
+            (
+                await conn.execute(
+                    select(integration_candidate_revisions).where(
+                        integration_candidate_revisions.c.batch_id == "batch",
+                        integration_candidate_revisions.c.revision == 0,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await conn.execute(insert(integration_candidate_revisions).values({**revision, "revision": 1}))
+        result = dict(
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).where(
+                        integration_candidate_member_results.c.batch_id == "batch",
+                        integration_candidate_member_results.c.revision == 0,
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await conn.execute(
+            insert(integration_candidate_member_results).values({**result, "revision": 1})
+        )
+        intent = dict(
+            (
+                await conn.execute(
+                    select(integration_promotion_intents).where(
+                        integration_promotion_intents.c.id == "intent"
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        # A NULL JSON column would be written as JSON ``null``: leave NULLs out.
+        intent = {key: value for key, value in intent.items() if value is not None}
+        await conn.execute(
+            insert(integration_promotion_intents).values(
+                {
+                    **intent,
+                    "id": "superseded-intent",
+                    "domain_key": "root:batch:1",
+                    "receipt_id": "superseded-receipt",
+                    "root_candidate_revision": 1,
+                    "state": "superseded",
+                }
+            )
+        )
+        await conn.execute(
+            insert(integration_root_intent_members).values(
+                intent_id="superseded-intent",
+                member_ordinal=0,
+                receipt_id="superseded-receipt",
+                batch_id="batch",
+                candidate_revision=1,
+                source_task_id="root",
+                repository_id="repo",
+                reviewed_head_sha=SOURCE,
+                reviewed_tree_sha=TREE,
+                generated_squash_sha=SQUASH,
+                result_evidence={},
+                review_evidence_id="review",
+                created_at=2.0,
+            )
+        )
+    result = await IntegrationCleanupService(db, data_dir="/daemon").materialize(
+        "batch", now=30.0
+    )
+    assert result.outcome == "materialized"
+    assert result.item_count == 5
+
+
 async def test_batch_cleanup_waits_for_promotion_and_only_collects_member_descendants(release_db):
     db, _scheduler = release_db
     child_head = "f" * 40

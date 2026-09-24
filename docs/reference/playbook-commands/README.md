@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-77 commands are registered.
+78 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -107,6 +107,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_release`](integration_release.md) | Release terminal root train | Release terminal root train |
 | [`integration_release_delegates`](integration_release_delegates.md) | Integration Release Delegates | Authenticated hierarchical integration operational control. |
 | [`integration_release_owner`](integration_release_owner.md) | Integration Release Owner | Authenticated hierarchical integration operational control. |
+| [`integration_release_stale_owners`](integration_release_stale_owners.md) | Integration Release Stale Owners | Authenticated hierarchical integration operational control. |
 | [`integration_repair_close_current`](integration_repair_close_current.md) | Resolve exact current repair close | Resolve exact current repair close |
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |

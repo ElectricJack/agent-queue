@@ -89,6 +89,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_cancel_preserving",
     "integration_develop",
     "integration_development_sweep",
+    "integration_eject",
     "integration_enable",
     "integration_flush",
     "integration_reconcile_unmaterialized",
@@ -96,7 +97,9 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_recover_unwritten_resolution",
     "integration_release_delegates",
     "integration_release_owner",
+    "integration_release_stale_owners",
     "integration_resume",
+    "integration_retry_cleanup",
     "integration_status",
     "integration_transfer_owner",
     "integration_waive_history",
@@ -236,6 +239,16 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   references — and it bundles every unmerged tip and logs every sha under
   `<data_dir>/backups/branch-deletions/` first. Never delete branches any
   other way. Report what it held back if the same branches keep appearing.
+- **Finishing an integration drain.** A drain (`aq integration enable <p>
+  --mode disabled`) completes only when no integration work is left; `aq
+  integration status <p>` shows `desired_mode` and `draining`. Stale state
+  from an old train run holds it open. Clear it in this order: `aq integration
+  release-stale-owners --project-id <p> --dry-run`, then the same without
+  `--dry-run`; `aq integration retry-cleanup <batch>` for each promoted batch
+  whose cleanup is pending; once that cleanup completes, `release-stale-owners`
+  again (a batch's integration-branch owner is kept until its cleanup is
+  done). The command releases only rows it can prove safe and lists every
+  other row with its reason — report those, never force them.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,
