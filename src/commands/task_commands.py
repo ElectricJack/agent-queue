@@ -4787,7 +4787,7 @@ class TaskCommandsMixin:
         return [
             {
                 "task_id": row["task_id"],
-                "branch": f"aq/{row['task_id']}",
+                "branch": row["branch_name"],
                 "base_sha": row["base_sha"],
             }
             for row in rows

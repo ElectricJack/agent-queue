@@ -2498,6 +2498,7 @@ async def test_live_branch_references_names_every_hold(setup):
         ]))
         await conn.execute(insert(task_branch_origins).values(
             id="origin", task_id="discarding", repository_id="r", base_sha="b" * 40,
+            branch_name="aq/epic/discarding",
             creation_generation=0, reserved=True, materialized=True, retired_at=now,
             created_at=now, discard_state="pending",
         ))
@@ -2513,7 +2514,7 @@ async def test_live_branch_references_names_every_hold(setup):
     )
     assert holds["aq/repair-src"] == "open development repair development-repair-x"
     assert holds["aq/owned"] == "integration owner owned is attached"
-    assert holds["aq/discarding"] == "branch discard is pending"
+    assert holds["aq/epic/discarding"] == "branch discard is pending"
     assert "aq/released" not in holds
     assert "main" not in holds  # never a candidate: deleters skip the default branch
 

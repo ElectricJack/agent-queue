@@ -368,7 +368,9 @@ async def test_operational_check_surfaces_schema_or_status_failure(db):
 # place the leftover ref gets named.
 
 
-async def _parked_origin(db, *, task_id: str, state: str, error: str) -> str:
+async def _parked_origin(
+    db, *, task_id: str, state: str, error: str, branch: str | None = "aq/gone"
+) -> str:
     import uuid
 
     from sqlalchemy import insert
@@ -382,6 +384,7 @@ async def _parked_origin(db, *, task_id: str, state: str, error: str) -> str:
                 id=origin_id,
                 task_id=task_id,
                 repository_id="repo",
+                branch_name=branch,
                 parent_ref="main",
                 base_sha="a" * 40,
                 creation_generation=0,
@@ -408,14 +411,47 @@ async def test_branch_discards_is_ok_when_nothing_is_parked(db):
 
 @pytest.mark.asyncio
 async def test_branch_discards_names_the_leftover_ref(db):
-    await _parked_origin(db, task_id="gone", state="conflict", error="branch has an active owner")
+    await _parked_origin(
+        db, task_id="gone", state="conflict", error="branch has an active owner",
+        branch="aq/epic/retire-the-publisher",
+    )
 
     result = await run_check(db, "integration.branch_discards")
 
     assert result.severity is Severity.WARN
     assert result.data["count"] == 1
-    assert result.data["discards"][0]["branch"] == "aq/gone"
-    assert "aq/gone" in result.detail
+    assert result.data["discards"][0]["branch"] == "aq/epic/retire-the-publisher"
+    assert "aq/epic/retire-the-publisher" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_branch_discards_does_not_rearm_an_unknown_legacy_ref(db):
+    origin_id = await _parked_origin(
+        db, task_id="deleted-epic", state="failed",
+        error="origin branch is unknown", branch=None,
+    )
+
+    result = await run_check(db, "integration.branch_discards")
+    assert result.severity is Severity.WARN
+    assert result.fixable is False
+    assert result.data["discards"][0]["branch"] is None
+
+    from src.doctor.integration_checks import _fix_branch_discards
+
+    fixed = await _fix_branch_discards(DoctorContext(config=SimpleNamespace(), db=db))
+    assert fixed.fix_applied is False
+    from sqlalchemy import select
+    from src.database.tables import task_branch_origins
+
+    async with db._engine.connect() as conn:
+        state = (
+            await conn.execute(
+                select(task_branch_origins.c.discard_state).where(
+                    task_branch_origins.c.id == origin_id
+                )
+            )
+        ).scalar_one()
+    assert state == "failed"
 
 
 @pytest.mark.asyncio

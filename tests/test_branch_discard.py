@@ -173,7 +173,9 @@ async def db(tmp_path):
     await database.close()
 
 
-async def _pending_origin(db, *, task_id: str = "gone", attempts: int = 0) -> str:
+async def _pending_origin(
+    db, *, task_id: str = "gone", branch: str | None = "aq/gone", attempts: int = 0
+) -> str:
     """A retired, materialized origin marked for discard — what a delete leaves."""
     origin_id = str(uuid.uuid4())
     async with db.immediate() as conn:
@@ -182,6 +184,7 @@ async def _pending_origin(db, *, task_id: str = "gone", attempts: int = 0) -> st
                 id=origin_id,
                 task_id=task_id,
                 repository_id="repo",
+                branch_name=branch,
                 parent_task_id=None,
                 parent_ref="main",
                 base_sha=BASE,
@@ -250,6 +253,33 @@ async def test_a_pending_discard_deletes_the_ref_under_the_observed_head(db, tmp
     assert bundle == str(bundles[0])
     assert datetime.fromisoformat(recorded_at).tzinfo == UTC
     assert repository == "repo"
+
+
+async def test_deleted_epic_root_discards_its_reserved_ref(db, tmp_path):
+    """The task is gone; only its origin knows the slugged epic branch."""
+    branch = "aq/epic/retire-the-publisher"
+    origin_id = await _pending_origin(db, task_id="root", branch=branch)
+    git = _Git()
+    client = _Client(task_branch=branch)
+
+    [result] = await _service(db, tmp_path, git=git, client=client).drain_due()
+
+    assert result.outcome == "complete"
+    assert result.branch == branch
+    assert git.deleted == [(branch, BASE)]
+    assert (await _row(db, origin_id))["discard_state"] == "complete"
+
+
+async def test_unknown_legacy_branch_is_parked_without_deleting(db, tmp_path):
+    origin_id = await _pending_origin(db, task_id="root", branch=None)
+    git = _Git()
+
+    [result] = await _service(db, tmp_path, git=git).drain_due()
+
+    assert result.outcome == "failed"
+    assert result.branch is None
+    assert git.deleted == []
+    assert "branch is unknown" in (await _row(db, origin_id))["discard_last_error"]
 
 
 async def test_a_reachable_head_is_logged_without_a_bundle(db, tmp_path):
