@@ -103,7 +103,7 @@ tracked paths, in these groups. The prose is [testing](../../contributing/testin
 | Group | Files | What it holds |
 |---|---|---|
 | [`tests/conftest.py`](../../../tests/conftest.py) | 1 | The DSN preflight, the production-database fence, the autouse PostgreSQL lease pool, and the `disable_schema_cache`, `unpooled_postgres`, `perf_strict` and `claude_cli_*` fixtures. |
-| [`tests/db_fixtures.py`](../../../tests/db_fixtures.py) | 1 | The template database, the per-worker lease pool, and truncate-plus-seed reset. Three tiers: lease, clone, scratch. |
+| [`tests/db_fixtures.py`](../../../tests/db_fixtures.py) | 1 | The template database, the per-worker lease pool, and the row-level reset plus seed replay. Three tiers: lease, clone, scratch. |
 | [`tests/pg_dsn.py`](../../../tests/pg_dsn.py) | 1 | Per-xdist-worker DSN derivation, owned-database creation, and disposal at session finish. |
 | `tests/*_helpers.py` | 6 | Imported, not collected: Git mocks, Playbook V2 builders, session dispatch, assignment routing, PostgreSQL trigger helpers. |
 | [`tests/playbook_fixture_activation.py`](../../../tests/playbook_fixture_activation.py) | 1 | Discovers the mechanically complete Playbooks V2 artefact fixtures under `tests/fixtures/playbooks/` by reading each bundle's `manifest.md` frontmatter. |

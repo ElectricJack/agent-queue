@@ -1,4 +1,4 @@
-"""PostgreSQL test substrate — template database, lease pool, truncate reset.
+"""PostgreSQL test substrate — template database, lease pool, row-level reset.
 
 Replaces the SQLite template cache in :mod:`src.database.engine` (which
 byte-copies a fully migrated ``.db`` file per test) with the PostgreSQL
@@ -10,8 +10,8 @@ Three tiers, by what a test actually needs:
 
 * **Tier 1 — lease pool (the default).**  Each xdist worker owns a small pool
   of databases cloned from the template.  A test leases one per distinct
-  database it asks for and the lease is truncated on release.  Truncate costs
-  milliseconds; this is the path ~95% of tests take.
+  database it asks for and the lease is wiped on release (:func:`reset_all`).
+  The reset costs milliseconds; this is the path ~95% of tests take.
 * **Tier 2 — :func:`clone_database`.**  A fresh clone of the template, for a
   test that mutates schema and cannot hand the database back to the pool.
 * **Tier 3 — ``tests.pg_dsn.create_scratch_database``.**  An empty database for
@@ -25,9 +25,10 @@ from __future__ import annotations
 import os
 import re
 import uuid
+import warnings
 
 from src.database.schema_key import schema_key_slug
-from tests.pg_dsn import ensure_worker_postgres_dsn
+from tests.pg_dsn import drop_databases, ensure_worker_postgres_dsn
 
 #: Advisory-lock key guarding template construction across xdist workers.
 #: Arbitrary but fixed; scoped to the maintenance database it is taken on.
@@ -178,18 +179,30 @@ async def drop_database(base_dsn: str, name: str) -> None:
         await conn.close()
 
 
-#: Wipe every row but leave the schema (and ``alembic_version``) alone.
-#:
-#: Two optimisations over the obvious "TRUNCATE each table in a loop", which
-#: cost 2.6s per call against this schema's 92 tables and made the per-test
-#: teardown dominate the whole suite:
-#:
-#: * one ``TRUNCATE a, b, c ...`` statement instead of 92 separate ones, and
-#: * skip tables that are already empty — a test typically touches under ten
-#:   of the 92, and ``EXISTS`` against an empty table is essentially free.
-#:
-#: Measured on this schema: 2619ms (loop) -> 210ms (single statement) ->
-#: 60-140ms (this).
+_PUBLIC_TABLES = (
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+)
+
+
+async def _non_empty_tables(conn) -> list[str]:
+    """The public tables holding at least one row.
+
+    One probe for all of them rather than one round trip per table -- a test
+    typically touches under ten of the ~90, and ``EXISTS`` against an empty
+    table is essentially free.
+    """
+    tables = [r["tablename"] for r in await conn.fetch(_PUBLIC_TABLES)]
+    if not tables:
+        return []
+    probe = " UNION ALL ".join(
+        f"SELECT '{t}' AS t WHERE EXISTS (SELECT 1 FROM \"{t}\")" for t in tables
+    )
+    return [row["t"] for row in await conn.fetch(probe)]
+
+
+#: The reset for a role that may not enter replica mode (see :func:`reset_all`).
+#: One ``TRUNCATE`` of just the non-empty tables: 2619ms as a per-table loop,
+#: 60-140ms as this.
 _TRUNCATE_ALL = """
 DO $$
 DECLARE r RECORD; tbls text := ''; has boolean;
@@ -205,22 +218,114 @@ BEGIN
 END $$;
 """
 
+#: What ``RESTART IDENTITY`` did: every sequence a test drew from goes back to
+#: its start.  ``last_value`` is NULL until a sequence is first used.
+_RESTART_USED_SEQUENCES = """
+SELECT setval(format('%I.%I', schemaname, sequencename)::regclass, start_value, false)
+FROM pg_sequences WHERE schemaname = 'public' AND last_value IS NOT NULL;
+"""
 
-async def truncate_all(dsn: str) -> None:
-    """Wipe every row but leave the schema (and ``alembic_version``) alone."""
+#: What a truncate left the planner: each emptied table and its indexes read as
+#: never vacuumed (``reltuples = -1``, no pages).  VACUUM records them as
+#: vacuumed-empty instead, which turns off the planner's minimum-size guess for
+#: fresh tables, so a table the next test fills looks tiny: a cached foreign-key
+#: check on ``tasks`` became a sequential scan per row, and a 20k-edge bulk
+#: load took 18s instead of 2s.
+_CLEAR_STATS = """
+WITH emptied AS (
+  SELECT oid FROM pg_class
+  WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1::text[])
+)
+SELECT pg_clear_relation_stats('public', c.relname::text)
+FROM pg_class c
+WHERE c.oid IN (SELECT oid FROM emptied)
+   OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT oid FROM emptied))
+"""
+
+_HAS_CLEAR_STATS = "SELECT to_regprocedure('pg_clear_relation_stats(text,text)') IS NOT NULL"
+
+#: Whether this run can take the row reset: ``None`` until the first reset
+#: finds out, then fixed for the run.
+_ROW_RESET: bool | None = None
+
+
+def _refuse_row_reset(reason: str) -> None:
+    global _ROW_RESET
+    _ROW_RESET = False
+    warnings.warn(
+        f"{reason}, so each test's database reset falls back to TRUNCATE, which gives "
+        "every table it cascades to new files the next checkpoint must fsync. Use "
+        "PostgreSQL 18 or later with a superuser test role (the compose service is both).",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
+async def reset_all(dsn: str) -> None:
+    """Wipe every row but leave the schema, ``alembic_version`` -- and the files -- alone.
+
+    This used to ``TRUNCATE ... RESTART IDENTITY CASCADE`` the non-empty
+    tables.  TRUNCATE gives every table in the foreign-key closure of what it
+    empties, with all its indexes and TOAST, a new relfilenode: 279 new files
+    after a test that wrote one ``projects`` row.  Every new file is an fsync
+    the next checkpoint owes, and every ``DROP DATABASE`` on the server waits
+    for a checkpoint.  Several test runs sharing a server outran the disk:
+    checkpoints of 641,642 files took 17 minutes, and teardown drops held
+    ``aq test`` slots for as long (bold-harbor).
+
+    ``DELETE`` only dirties pages of files that already exist, so the fsyncs a
+    worker owes stay bounded by the tables its tests touch.  Replica mode
+    skips the foreign-key triggers and the schema's delete guards (all
+    origin-enabled), so tables empty in any order.  VACUUM then returns the
+    emptied heaps to zero pages and ``pg_clear_relation_stats`` their planner
+    statistics to never-vacuumed -- the state a truncate left, which the perf
+    suites' buffer counts and plan shapes assume.  Measured on an isolated
+    server over 100 resets: 322 ms and 27,915 checkpoint files for TRUNCATE,
+    139 ms and 14 files for this.
+
+    A server without ``pg_clear_relation_stats`` (before PostgreSQL 18), or a
+    role that may not set ``session_replication_role``, gets the TRUNCATE
+    reset, with a warning.
+    """
+    global _ROW_RESET
+    import asyncpg
+
     conn = await _connect_admin(dsn)
     try:
+        if _ROW_RESET is None:
+            if await conn.fetchval(_HAS_CLEAR_STATS):
+                _ROW_RESET = True
+            else:
+                _refuse_row_reset("the PostgreSQL test server has no pg_clear_relation_stats")
+        if _ROW_RESET:
+            tables = await _non_empty_tables(conn)
+            try:
+                async with conn.transaction():
+                    await conn.execute(
+                        "SET LOCAL session_replication_role = replica;\n"
+                        + "".join(f'DELETE FROM "{t}";\n' for t in tables)
+                        + _RESTART_USED_SEQUENCES
+                    )
+            except asyncpg.exceptions.InsufficientPrivilegeError:
+                _refuse_row_reset("the PostgreSQL test role may not set session_replication_role")
+            else:
+                if tables:
+                    await conn.execute(
+                        "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in tables)
+                    )
+                    await conn.execute(_CLEAR_STATS, tables)
+                return
         await conn.execute(_TRUNCATE_ALL)
     finally:
         await conn.close()
 
 
 #: Rows the migration chain itself inserts, captured from the template once.
-#: ``truncate_all`` would otherwise delete them and every test after the first
+#: :func:`reset_all` would otherwise delete them and every test after the first
 #: in a leased database would run without them -- which is exactly what broke
 #: six workspace-heavy tests on the first substrate run: the built-in
 #: ``workspace_kinds`` (``project-repo``, ``vault``, ``readonly-dir``) vanished
-#: after the first truncate, and the failures reproduced only under xdist
+#: after the first reset, and the failures reproduced only under xdist
 #: because each passed in isolation.
 _SEED: dict[str, list[dict]] | None = None
 
@@ -229,24 +334,10 @@ async def capture_seed(dsn: str) -> dict[str, list[dict]]:
     """Snapshot every non-empty table of a pristine template clone."""
     conn = await _connect_admin(dsn)
     try:
-        tables = [
-            r["tablename"]
-            for r in await conn.fetch(
-                "SELECT tablename FROM pg_tables "
-                "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
-            )
-        ]
-        if not tables:
-            return {}
-        # One round trip to find the non-empty tables rather than 92 -- the
-        # migration chain seeds a handful of rows in one table, so fetching
-        # each table's contents individually is almost all wasted latency.
-        probe = " UNION ALL ".join(
-            f"SELECT '{t}' AS t WHERE EXISTS (SELECT 1 FROM \"{t}\")" for t in tables
-        )
+        # The migration chain seeds a handful of rows in one table, so
+        # fetching every table's contents would be almost all wasted latency.
         seed: dict[str, list[dict]] = {}
-        for row in await conn.fetch(probe):
-            name = row["t"]
+        for name in await _non_empty_tables(conn):
             seed[name] = [dict(r) for r in await conn.fetch(f'SELECT * FROM "{name}"')]
         return seed
     finally:
@@ -254,7 +345,7 @@ async def capture_seed(dsn: str) -> dict[str, list[dict]]:
 
 
 async def restore_seed(dsn: str, seed: dict[str, list[dict]]) -> None:
-    """Re-insert the captured migration seed rows after a truncate."""
+    """Re-insert the captured migration seed rows after a reset."""
     if not seed:
         return
     conn = await _connect_admin(dsn)
@@ -361,12 +452,11 @@ async def seed_task_session_attempt(
 
 
 class LeasePool:
-    """Per-worker pool of template-cloned databases, truncated on release.
+    """Per-worker pool of template-cloned databases, wiped on release.
 
-    Cloning is ~100-300ms; truncating is single-digit milliseconds.  With one
-    clone per pool slot amortised over the whole session, the per-test cost is
-    the truncate, which is what makes this competitive with byte-copying a
-    SQLite file.
+    Cloning is ~100-300ms; the reset is milliseconds.  With one clone per pool
+    slot amortised over the whole session, the per-test cost is the reset,
+    which is what makes this competitive with byte-copying a SQLite file.
     """
 
     def __init__(self, base_dsn: str, worker: str, size: int = POOL_SIZE):
@@ -395,16 +485,21 @@ class LeasePool:
         return dsn
 
     async def release(self, dsn: str) -> None:
-        await truncate_all(dsn)
+        await reset_all(dsn)
         if _SEED:
             await restore_seed(dsn, _SEED)
         self._free.append(dsn)
 
     async def dispose(self) -> None:
-        for name in sorted(self._created):
-            await drop_database(self._base, name)
+        """Drop every clone at once, so they share one server checkpoint."""
+        admin = _admin_dsn(self._base)
+        failures = await drop_databases([(admin, name) for name in sorted(self._created)])
         self._created.clear()
         self._free.clear()
+        if failures:
+            raise RuntimeError(
+                "could not drop leased PostgreSQL test databases: " + "; ".join(failures)
+            )
 
 
 def base_dsn() -> str | None:

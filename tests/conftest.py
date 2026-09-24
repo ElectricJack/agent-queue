@@ -149,11 +149,11 @@ async def _pg_backend():
     try:
         yield
     finally:
-        # Truncate *and* replay the migration seed rows: the built-in
-        # workspace_kinds live in the template, and a bare truncate would
+        # Reset *and* replay the migration seed rows: the built-in
+        # workspace_kinds live in the template, and a bare reset would
         # leave every test after the first without them.
         for leased in db_fixtures.leased():
-            await db_fixtures.truncate_all(leased)
+            await db_fixtures.reset_all(leased)
             if db_fixtures._SEED:
                 await db_fixtures.restore_seed(leased, db_fixtures._SEED)
 

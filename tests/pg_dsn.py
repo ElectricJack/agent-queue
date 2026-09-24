@@ -33,9 +33,18 @@ _UNSET = object()
 _CACHED_DSN: object | str | None = _UNSET
 _CACHED_RUN_ID: object | str = _UNSET
 
-# Creation order is ownership proof. Teardown walks it backwards so scratch
-# children disappear before the process's worker database.
+# Creation order is ownership proof. Teardown issues the drops newest first,
+# scratch children before the process's worker database.
 _OWNED_DATABASES: list[tuple[str, str]] = []
+
+#: ``DROP DATABASE`` requests an immediate checkpoint and waits for it. The
+#: checkpoint is server-wide: it fsyncs every file anyone on the server dirtied
+#: since the last one, which under concurrent test runs has meant 600,000 files
+#: and 17 minutes (bold-harbor). Drops issued together share one checkpoint and
+#: cancel each other's pending fsyncs first; drops issued in turn pay one
+#: checkpoint each. The cap only bounds the maintenance connections one
+#: teardown opens.
+_DROP_CONCURRENCY = 8
 
 
 def _worker_id() -> str:
@@ -162,28 +171,49 @@ async def _create_owned_database(base_dsn: str, target: str) -> None:
     _OWNED_DATABASES.append((admin_dsn, target))
 
 
+async def drop_databases(targets: list[tuple[str, str]]) -> list[str]:
+    """Drop every ``(admin_dsn, name)`` target concurrently; describe each failure.
+
+    Each drop gets its own connection so they wait for one shared checkpoint
+    (see ``_DROP_CONCURRENCY``). Every target is attempted whatever happens to
+    the others.
+    """
+    import asyncpg
+
+    gate = asyncio.Semaphore(_DROP_CONCURRENCY)
+
+    async def _drop(admin_dsn: str, name: str) -> None:
+        async with gate:
+            conn = await asyncpg.connect(admin_dsn)
+            try:
+                await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+            finally:
+                await conn.close()
+
+    results = await asyncio.gather(
+        *(_drop(admin_dsn, name) for admin_dsn, name in targets), return_exceptions=True
+    )
+    failures: list[str] = []
+    for (_, name), result in zip(targets, results):
+        if isinstance(result, Exception):
+            failures.append(f"{name}: {type(result).__name__}: {result}")
+        elif isinstance(result, BaseException):
+            raise result
+    return failures
+
+
 async def dispose_owned_databases() -> None:
-    """Drop only databases created by this process, in reverse creation order."""
+    """Drop only databases created by this process, all at once.
+
+    Drops are issued in reverse creation order, so scratch children go before
+    the process's worker database, but none waits for another to finish.
+    """
     if not _OWNED_DATABASES:
         return
 
-    import asyncpg
-
-    failures: list[str] = []
-    while _OWNED_DATABASES:
-        admin_dsn, target = _OWNED_DATABASES[-1]
-        conn = None
-        try:
-            conn = await asyncpg.connect(admin_dsn)
-            await conn.execute(f'DROP DATABASE IF EXISTS "{target}" WITH (FORCE)')
-        except Exception as exc:  # pragma: no cover - teardown server failure
-            failures.append(f"{target}: {type(exc).__name__}: {exc}")
-            _OWNED_DATABASES.pop()
-        else:
-            _OWNED_DATABASES.pop()
-        finally:
-            if conn is not None:
-                await conn.close()
+    targets = list(reversed(_OWNED_DATABASES))
+    _OWNED_DATABASES.clear()
+    failures = await drop_databases(targets)
     if failures:
         raise RuntimeError(
             "could not clean owned PostgreSQL test databases: " + "; ".join(failures)

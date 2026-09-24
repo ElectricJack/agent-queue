@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -187,6 +189,98 @@ async def test_cleanup_drops_only_registered_databases_in_reverse_order(monkeypa
     ]
     assert owned == []
     assert all("unowned" not in statement for statement in executed)
+
+
+async def test_cleanup_issues_every_drop_at_once_so_they_share_a_checkpoint(monkeypatch):
+    """``DROP DATABASE`` waits for a server-wide checkpoint (bold-harbor).
+
+    Issued in turn, a process owning N databases waits for N checkpoints --
+    each owing every file the whole server dirtied since the last.  Issued
+    together they share one.  Each fake drop blocks until every drop has
+    started, so a serial teardown never finishes.
+    """
+    names = [f"db{i}" for i in range(5)]
+    started: list[str] = []
+    all_started = asyncio.Event()
+
+    class Connection:
+        async def execute(self, statement):
+            started.append(statement)
+            if len(started) == len(names):
+                all_started.set()
+            await all_started.wait()
+
+        async def close(self):
+            return None
+
+    async def _connect(_dsn):
+        return Connection()
+
+    owned = [("postgresql://u:p@h/postgres", name) for name in names]
+    monkeypatch.setattr(pg_dsn, "_OWNED_DATABASES", owned)
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))
+
+    await asyncio.wait_for(pg_dsn.dispose_owned_databases(), timeout=5)
+
+    assert sorted(started) == sorted(
+        f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)' for name in names
+    )
+    assert owned == []
+
+
+async def test_concurrent_drops_are_bounded(monkeypatch):
+    in_flight = 0
+    peak = 0
+
+    class Connection:
+        async def execute(self, _statement):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+
+        async def close(self):
+            return None
+
+    async def _connect(_dsn):
+        return Connection()
+
+    monkeypatch.setattr(pg_dsn, "_DROP_CONCURRENCY", 3)
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))
+
+    failures = await pg_dsn.drop_databases(
+        [("postgresql://u:p@h/postgres", f"db{i}") for i in range(7)]
+    )
+
+    assert failures == []
+    assert peak == 3
+
+
+async def test_cleanup_attempts_every_drop_and_reports_each_failure(monkeypatch):
+    executed: list[str] = []
+
+    class Connection:
+        async def execute(self, statement):
+            executed.append(statement)
+            if '"broken"' in statement:
+                raise OSError("server went away")
+
+        async def close(self):
+            return None
+
+    async def _connect(_dsn):
+        return Connection()
+
+    owned = [("postgresql://u:p@h/postgres", name) for name in ("first", "broken", "last")]
+    monkeypatch.setattr(pg_dsn, "_OWNED_DATABASES", owned)
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))
+
+    with pytest.raises(RuntimeError, match="broken: OSError: server went away"):
+        await pg_dsn.dispose_owned_databases()
+
+    assert len(executed) == 3
+    assert owned == []
 
 
 async def _async_value(value):
