@@ -221,13 +221,16 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
     assert "Could not start Docker" in result.output
 
     # -- Docker up but compose fails to start the container ----------------
-    compose_fail = MagicMock(returncode=1, stderr="no such service: postgres")
+    inspect_missing = SimpleNamespace(
+        returncode=1, stderr="Error: No such container: aq-postgres",
+    )
+    compose_fail = SimpleNamespace(returncode=1, stderr="no such service: postgres")
     with patch.object(daemon_mod, "_find_daemon_pid", return_value=None), \
          patch.object(daemon_mod, "_database_reachable", return_value=False), \
          patch.object(daemon_mod, "_is_docker_running", return_value=True), \
          patch.object(daemon_mod, "_is_container_running", return_value=False), \
          patch.object(daemon_mod, "_find_compose_file", return_value="/x/docker-compose.yml"), \
-         patch.object(daemon_mod.subprocess, "run", return_value=compose_fail):
+         patch.object(daemon_mod.subprocess, "run", side_effect=[inspect_missing, compose_fail]):
         result = runner.invoke(cli, ["start", "--no-dashboard"])
     assert result.exit_code == 1, result.output
     assert "Failed to start PostgreSQL container" in result.output
@@ -243,6 +246,56 @@ def test_daemon_start_reports_docker_or_subprocess_failure_without_claiming_succ
 
     # No branch above may have attempted to spawn the daemon.
     no_popen.assert_not_called()
+
+
+def test_stopped_postgres_container_starts_without_compose_up(monkeypatch):
+    compose_file = "/x/docker-compose.yml"
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: compose_file)
+    monkeypatch.setattr(daemon_mod, "_is_docker_running", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_is_container_running", lambda _: False)
+    run = MagicMock(side_effect=[
+        SimpleNamespace(returncode=0, stderr=""),  # existing container
+        SimpleNamespace(returncode=0, stderr=""),  # docker start
+        SimpleNamespace(returncode=0),  # pg_isready
+    ])
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+
+    assert daemon_mod._ensure_docker_postgres() is True
+    commands = [call.args[0] for call in run.call_args_list]
+    assert commands[0] == ["docker", "container", "inspect", "aq-postgres"]
+    assert commands[1] == ["docker", "start", "aq-postgres"]
+    assert not any("up" in command for command in commands)
+
+
+def test_missing_postgres_container_uses_compose_without_recreation(monkeypatch):
+    compose_file = "/x/docker-compose.yml"
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: compose_file)
+    monkeypatch.setattr(daemon_mod, "_is_docker_running", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_is_container_running", lambda _: False)
+    run = MagicMock(side_effect=[
+        SimpleNamespace(returncode=1, stderr="Error: No such container: aq-postgres"),
+        SimpleNamespace(returncode=0, stderr=""),  # compose up
+        SimpleNamespace(returncode=0),  # pg_isready
+    ])
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+
+    assert daemon_mod._ensure_docker_postgres() is True
+    commands = [call.args[0] for call in run.call_args_list]
+    assert commands[1] == [
+        "docker", "compose", "-f", compose_file,
+        "up", "-d", "--no-recreate", "postgres",
+    ]
+
+
+def test_postgres_inspection_error_never_runs_compose_up(monkeypatch):
+    monkeypatch.setattr(daemon_mod, "_find_compose_file", lambda: "/x/docker-compose.yml")
+    monkeypatch.setattr(daemon_mod, "_is_docker_running", lambda: True)
+    monkeypatch.setattr(daemon_mod, "_is_container_running", lambda _: False)
+    run = MagicMock(return_value=SimpleNamespace(returncode=1, stderr="permission denied"))
+    monkeypatch.setattr(daemon_mod.subprocess, "run", run)
+
+    assert daemon_mod._ensure_docker_postgres() is False
+    run.assert_called_once()
 
 
 def test_start_and_stop_ignore_dashboard_server_when_daemon_pid_file_is_missing(
