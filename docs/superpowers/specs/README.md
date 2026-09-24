@@ -16,6 +16,7 @@ concept page was written against current source and wins.
 
 | Date | Page | File |
 |---|---|---|
+| 2026-09-23 | Dashboard performance — measured causes and fixes | [`2026-09-23-dashboard-performance.md`](2026-09-23-dashboard-performance.md) |
 | 2026-09-10 | Dashboard state contract — typed server-backed namespaces | [`2026-09-10-dashboard-state-contract-design.md`](2026-09-10-dashboard-state-contract-design.md) |
 | 2026-09-10 | Dashboard state-boundary inventory | [`2026-09-10-dashboard-state-boundary-inventory.md`](2026-09-10-dashboard-state-boundary-inventory.md) |
 | 2026-09-08 | Global worker pools | [`2026-09-08-global-worker-pools-design.md`](2026-09-08-global-worker-pools-design.md) |
