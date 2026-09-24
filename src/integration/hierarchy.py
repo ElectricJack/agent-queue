@@ -369,16 +369,12 @@ class HierarchyIntegration:
     ) -> dict:
         if not _OID.fullmatch(head_sha):
             return {"outcome": "stale_head", "task_id": task_id}
-        if self.checkpoint_verifier is None:
-            return {"outcome": "stale_head", "task_id": task_id}
         async with self.db._engine.connect() as conn:
             task = await self._task_row(conn, task_id)
-            _project, repo = await self._enabled_route(conn, task)
-        actual = self.checkpoint_verifier(task, repo, head_sha)
-        if inspect.isawaitable(actual):
-            actual = await actual
-        if actual != head_sha:
-            return {"outcome": "stale_head", "task_id": task_id}
+            await self._enabled_route(conn, task)
+        # Hosted CI can finish after the parent releases its writer workspace.
+        # ParentCompletion checks the locked generation, receipt-derived head,
+        # and durable evidence against the frozen operation policy.
         return await self.parent_completion.verify_parent(
             task_id, generation, head_sha, evidence_ids
         )
