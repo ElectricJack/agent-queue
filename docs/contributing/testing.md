@@ -246,10 +246,15 @@ server-wide checkpoint, so on a shared server that debt landed on whichever
 run was tearing down: checkpoints of 641,642 files took 17 minutes and held
 `aq test` slots for as long. The reset runs its `DELETE`s under
 `session_replication_role = replica` (so foreign keys and the schema's delete
-guards do not constrain the order), restarts the sequences the test used, and
-`VACUUM`s the emptied tables back to zero pages. A role that may not set
-`session_replication_role` falls back to the truncate, with a warning; use a
-superuser test role (the compose service's is one).
+guards do not constrain the order), restarts the sequences the test used,
+`VACUUM`s the emptied tables back to zero pages, and clears their planner
+statistics with `pg_clear_relation_stats` so they read as never vacuumed, as a
+truncate left them. Without that last step the planner took a table the next
+test filled for a tiny one, and a cached foreign-key check turned a bulk load
+quadratic. A server older than PostgreSQL 18 (no `pg_clear_relation_stats`),
+or a role that may not set `session_replication_role`, falls back to the
+truncate with a warning; the compose service is PostgreSQL 18 with a superuser
+role.
 
 [`tests/pg_dsn.py`](../../tests/pg_dsn.py) derives a per-xdist-worker database
 name from the base DSN (`…/agent_queue_gw0`, `…_gw1`, …) and creates it on

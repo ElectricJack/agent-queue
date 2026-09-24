@@ -225,8 +225,40 @@ SELECT setval(format('%I.%I', schemaname, sequencename)::regclass, start_value, 
 FROM pg_sequences WHERE schemaname = 'public' AND last_value IS NOT NULL;
 """
 
-#: Set once the role is refused replica mode; the rest of the run truncates.
-_ROW_RESET_REFUSED = False
+#: What a truncate left the planner: each emptied table and its indexes read as
+#: never vacuumed (``reltuples = -1``, no pages).  VACUUM records them as
+#: vacuumed-empty instead, which turns off the planner's minimum-size guess for
+#: fresh tables, so a table the next test fills looks tiny: a cached foreign-key
+#: check on ``tasks`` became a sequential scan per row, and a 20k-edge bulk
+#: load took 18s instead of 2s.
+_CLEAR_STATS = """
+WITH emptied AS (
+  SELECT oid FROM pg_class
+  WHERE relnamespace = 'public'::regnamespace AND relname = ANY($1::text[])
+)
+SELECT pg_clear_relation_stats('public', c.relname::text)
+FROM pg_class c
+WHERE c.oid IN (SELECT oid FROM emptied)
+   OR c.oid IN (SELECT indexrelid FROM pg_index WHERE indrelid IN (SELECT oid FROM emptied))
+"""
+
+_HAS_CLEAR_STATS = "SELECT to_regprocedure('pg_clear_relation_stats(text,text)') IS NOT NULL"
+
+#: Whether this run can take the row reset: ``None`` until the first reset
+#: finds out, then fixed for the run.
+_ROW_RESET: bool | None = None
+
+
+def _refuse_row_reset(reason: str) -> None:
+    global _ROW_RESET
+    _ROW_RESET = False
+    warnings.warn(
+        f"{reason}, so each test's database reset falls back to TRUNCATE, which gives "
+        "every table it cascades to new files the next checkpoint must fsync. Use "
+        "PostgreSQL 18 or later with a superuser test role (the compose service is both).",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 async def reset_all(dsn: str) -> None:
@@ -245,20 +277,27 @@ async def reset_all(dsn: str) -> None:
     worker owes stay bounded by the tables its tests touch.  Replica mode
     skips the foreign-key triggers and the schema's delete guards (all
     origin-enabled), so tables empty in any order.  VACUUM then returns the
-    emptied heaps to zero pages -- the physical state a truncate left, which
-    the perf suites' buffer counts assume.  Measured on an isolated server
-    over 100 resets: 322 ms and 27,915 checkpoint files for TRUNCATE, 139 ms
-    and 14 files for this.
+    emptied heaps to zero pages and ``pg_clear_relation_stats`` their planner
+    statistics to never-vacuumed -- the state a truncate left, which the perf
+    suites' buffer counts and plan shapes assume.  Measured on an isolated
+    server over 100 resets: 322 ms and 27,915 checkpoint files for TRUNCATE,
+    139 ms and 14 files for this.
 
-    A role that may not set ``session_replication_role`` gets the TRUNCATE
+    A server without ``pg_clear_relation_stats`` (before PostgreSQL 18), or a
+    role that may not set ``session_replication_role``, gets the TRUNCATE
     reset, with a warning.
     """
-    global _ROW_RESET_REFUSED
+    global _ROW_RESET
     import asyncpg
 
     conn = await _connect_admin(dsn)
     try:
-        if not _ROW_RESET_REFUSED:
+        if _ROW_RESET is None:
+            if await conn.fetchval(_HAS_CLEAR_STATS):
+                _ROW_RESET = True
+            else:
+                _refuse_row_reset("the PostgreSQL test server has no pg_clear_relation_stats")
+        if _ROW_RESET:
             tables = await _non_empty_tables(conn)
             try:
                 async with conn.transaction():
@@ -268,20 +307,13 @@ async def reset_all(dsn: str) -> None:
                         + _RESTART_USED_SEQUENCES
                     )
             except asyncpg.exceptions.InsufficientPrivilegeError:
-                _ROW_RESET_REFUSED = True
-                warnings.warn(
-                    "the PostgreSQL test role may not set session_replication_role, so "
-                    "each test's reset falls back to TRUNCATE, which gives every table it "
-                    "cascades to new files the next checkpoint must fsync. Use a superuser "
-                    "test role or GRANT SET ON PARAMETER session_replication_role.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+                _refuse_row_reset("the PostgreSQL test role may not set session_replication_role")
             else:
                 if tables:
                     await conn.execute(
                         "VACUUM (INDEX_CLEANUP ON) " + ", ".join(f'"{t}"' for t in tables)
                     )
+                    await conn.execute(_CLEAR_STATS, tables)
                 return
         await conn.execute(_TRUNCATE_ALL)
     finally:

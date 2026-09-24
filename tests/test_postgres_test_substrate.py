@@ -130,7 +130,53 @@ async def test_reset_restarts_used_identity_sequences():
         await conn.close()
 
 
-async def test_reset_falls_back_to_truncate_when_replica_mode_is_refused(monkeypatch):
+async def test_reset_leaves_planner_stats_as_a_truncate_did():
+    """Emptied tables must read as never vacuumed, as a truncate left them.
+
+    VACUUM records them as vacuumed-empty (``reltuples = 0``), which turns off
+    the planner's minimum-size guess for fresh tables: a table the next test
+    fills looks tiny, a cached foreign-key check on ``tasks`` became a
+    sequential scan per row, and a 20k-edge bulk load took 18s instead of 2s.
+    """
+    dsn = lease_dsn("stats")
+    stats = (
+        "SELECT relname, relpages, reltuples FROM pg_class "
+        "WHERE relname IN ('tasks', 'tasks_pkey', 'idx_tasks_claim_frontier') ORDER BY relname"
+    )
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        await conn.execute("INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p1', 0)")
+        await conn.execute(
+            "INSERT INTO tasks (id, project_id, title, description, created_at, updated_at) "
+            "SELECT 't' || g, 'p1', 't', '', 0, 0 FROM generate_series(1, 500) g"
+        )
+    finally:
+        await conn.close()
+
+    await db_fixtures.reset_all(dsn)
+
+    conn = await db_fixtures._connect_admin(dsn)
+    try:
+        rows = [tuple(row) for row in await conn.fetch(stats)]
+    finally:
+        await conn.close()
+    assert rows == [
+        ("idx_tasks_claim_frontier", 0, -1.0),
+        ("tasks", 0, -1.0),
+        ("tasks_pkey", 0, -1.0),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("has_clear_stats", "reason"),
+    [
+        (False, "pg_clear_relation_stats"),
+        (True, "session_replication_role"),
+    ],
+)
+async def test_reset_falls_back_to_truncate_when_the_row_reset_is_unavailable(
+    monkeypatch, has_clear_stats, reason
+):
     import asyncpg
 
     executed: list[str] = []
@@ -143,6 +189,10 @@ async def test_reset_falls_back_to_truncate_when_replica_mode_is_refused(monkeyp
             return False
 
     class Connection:
+        async def fetchval(self, query):
+            assert "pg_clear_relation_stats" in query
+            return has_clear_stats
+
         async def fetch(self, query):
             if "pg_tables" in query:
                 return [{"tablename": "projects"}]
@@ -151,7 +201,7 @@ async def test_reset_falls_back_to_truncate_when_replica_mode_is_refused(monkeyp
         def transaction(self):
             return Transaction()
 
-        async def execute(self, statement):
+        async def execute(self, statement, *_args):
             if "session_replication_role" in statement:
                 raise asyncpg.exceptions.InsufficientPrivilegeError(
                     'permission denied to set parameter "session_replication_role"'
@@ -165,9 +215,9 @@ async def test_reset_falls_back_to_truncate_when_replica_mode_is_refused(monkeyp
         return Connection()
 
     monkeypatch.setattr(db_fixtures, "_connect_admin", _connect)
-    monkeypatch.setattr(db_fixtures, "_ROW_RESET_REFUSED", False)
+    monkeypatch.setattr(db_fixtures, "_ROW_RESET", None)
 
-    with pytest.warns(RuntimeWarning, match="session_replication_role"):
+    with pytest.warns(RuntimeWarning, match=reason):
         await db_fixtures.reset_all("postgresql://u:p@h/leased")
     await db_fixtures.reset_all("postgresql://u:p@h/leased")
 
