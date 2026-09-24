@@ -279,11 +279,14 @@ class OpsCommandsMixin:
         measurement = await self.orchestrator._measure_pools()
         now = time.time()
         sessions_by_profile: dict[str, list] = {}
-        pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        pool_sessions = measurement.pool_sessions
+        measured_profiles = {key.profile_id for key in measurement.supply}
         for session in pool_sessions:
             if session.project_id is None or session.state == "stopped":
                 continue
             if view is not None and session.project_id != view:
+                continue
+            if session.profile_id not in measured_profiles:
                 continue
             sessions_by_profile.setdefault(session.profile_id, []).append(session)
 
@@ -302,7 +305,7 @@ class OpsCommandsMixin:
         # harness made a zero-busy pool look healthy while all worktree slots
         # were held elsewhere.  Associate those sessions with every pool that
         # can serve their execution route without folding them into supply.
-        all_profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+        all_profiles = {profile.id: profile for profile in measurement.all_profiles}
         pool_routes: dict[tuple[str, str], list[str]] = {}
         for key, profile in measurement.profiles.items():
             harness = str(getattr(profile, "harness", "") or "").strip()
@@ -310,7 +313,9 @@ class OpsCommandsMixin:
             if harness and default_class:
                 pool_routes.setdefault((harness, default_class), []).append(key.profile_id)
         outside_by_profile: dict[str, list[dict]] = {}
-        for session in await self.db.list_sessions(lifecycle="task", live_only=True):
+        task_sessions = await self.db.list_sessions(lifecycle="task", live_only=True)
+        routed_sessions = []
+        for session in task_sessions:
             if view is not None and session.project_id != view:
                 continue
             profile = all_profiles.get(session.profile_id)
@@ -319,9 +324,22 @@ class OpsCommandsMixin:
                 session.intelligence_class or getattr(profile, "default_class", "") or ""
             ).strip()
             matched = pool_routes.get((harness, intelligence_class), [])
-            if not matched:
-                continue
-            task = await self.db.get_task(session.task_id) if session.task_id else None
+            if matched:
+                routed_sessions.append((session, harness, intelligence_class, matched))
+        task_titles = await self.db.get_task_titles(
+            [
+                session.task_id
+                for sessions in sessions_by_profile.values()
+                for session in sessions
+                if session.task_id is not None
+            ]
+            + [
+                session.task_id
+                for session, _harness, _intelligence_class, _matched in routed_sessions
+                if session.task_id is not None
+            ]
+        )
+        for session, harness, intelligence_class, matched in routed_sessions:
             detail = {
                 "session_id": session.id,
                 "project_id": session.project_id,
@@ -331,7 +349,7 @@ class OpsCommandsMixin:
                 "name": session.name,
                 "state": session.state,
                 "task_id": session.task_id,
-                "task_title": task.title if task is not None else None,
+                "task_title": task_titles.get(session.task_id),
                 "started_at": session.started_at,
             }
             for profile_id in matched:
@@ -383,7 +401,6 @@ class OpsCommandsMixin:
 
             instances = []
             for session in sessions_by_profile.get(key.profile_id, []):
-                task = await self.db.get_task(session.task_id) if session.task_id else None
                 idle_since = session.last_activity or session.started_at
                 blocked = awaiting_by_session.get(session.id)
                 instance = {
@@ -394,7 +411,7 @@ class OpsCommandsMixin:
                     "name": session.name,
                     "state": "blocked_on_input" if blocked is not None else session.state,
                     "task_id": session.task_id,
-                    "task_title": task.title if task is not None else None,
+                    "task_title": task_titles.get(session.task_id),
                     "idle_seconds": (
                         max(0.0, now - idle_since)
                         if session.task_id is None and session.claim_phase is None

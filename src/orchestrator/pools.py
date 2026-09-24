@@ -5,8 +5,8 @@ demand per profile (aggregated over every active project), ask the pure
 :func:`~src.scheduler.size_pools` how many workers that profile should have
 fleet-wide, ask the equally pure :func:`~src.scheduler.place_pool_actions`
 *which project* each authorised start or drain applies to, then start or
-drain sessions to converge.  The step reads one ``count_ready_by_profile``,
-one ``list_sessions`` and one ``count_available_workspaces`` per active
+drain sessions to converge.  The step reads pool sessions once, then one
+``count_ready_by_profile`` and one ``count_available_workspaces`` per active
 project with a pool profile — no per-task queries.
 
 Sizing is global because the configuration always was: a profile is global,
@@ -136,6 +136,8 @@ class PoolMeasurement:
     profiles: dict[PoolKey, AgentProfile] = field(default_factory=dict)
     candidates: dict[PoolKey, list[PlacementCandidate]] = field(default_factory=dict)
     projects: dict[str, Project] = field(default_factory=dict)
+    all_profiles: list[AgentProfile] = field(default_factory=list)
+    pool_sessions: list[SessionRecord] = field(default_factory=list)
 
 
 class PoolsMixin:
@@ -209,10 +211,9 @@ class PoolsMixin:
     async def _measure_pools(self, project_ids: set[str] | None = None) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
-        The loop is still per project — one ``count_ready_by_profile``, one
-        ``list_sessions`` and one ``count_available_workspaces`` per active
-        project with a pool profile is the cheapest shape the observation
-        has — but each project now folds into the *aggregate* key rather
+        The loop is still per project — one ``count_ready_by_profile`` and
+        one ``count_available_workspaces`` per active project with a pool
+        profile — but each project now folds into the *aggregate* key rather
         than minting one of its own, and also records its own breakdown
         (``PoolSupply.by_project``) and its standing as a placement
         candidate.
@@ -223,8 +224,9 @@ class PoolsMixin:
         free workspace be skipped *before* it consumes start budget instead
         of after it has wasted a launch.
 
-        One ``list_profiles()`` serves the whole tick, shared across every
-        project's ``_pool_profiles`` lookup.
+        One ``list_profiles()`` and one ``list_sessions()`` serve the whole
+        tick.  The same rows are available to the status endpoint, which
+        needs the full pool session list even when no project is active.
         """
         measurement = PoolMeasurement()
         # Keep this snapshot even if a launch finishes during the DB reads.
@@ -241,20 +243,32 @@ class PoolsMixin:
         stall_seconds = pool_claim_loop_stall_seconds(self.config.swarm)
 
         system_profiles = await self.db.list_profiles()
+        measurement.all_profiles = system_profiles
+        pool_profiles = {
+            p.id: p
+            for p in system_profiles
+            if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
+        }
+        measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        sessions_by_project: dict[str, list[SessionRecord]] = {}
+        for session in measurement.pool_sessions:
+            if session.project_id is not None:
+                sessions_by_project.setdefault(session.project_id, []).append(session)
 
         for project in await self.db.list_projects():
             if project.status != ProjectStatus.ACTIVE:
                 continue
             if project_ids is not None and project.id not in project_ids:
                 continue
-            pool_profiles = await self._pool_profiles(project.id, system_profiles=system_profiles)
             if not pool_profiles:
                 continue
 
             measurement.projects[project.id] = project
             ready_by_profile = await self.db.count_ready_by_profile(project.id)
             unrouted_ready = ready_by_profile.get(None, 0)
-            default_profile_id = await self._effective_default_profile_id(project)
+            default_profile_id = await self._effective_default_profile_id(
+                project, system_profiles=system_profiles
+            )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
                 kind_id="project-repo",
@@ -262,7 +276,7 @@ class PoolsMixin:
                     self._project_slot_cap(project) if worktrees_enabled else None
                 ),
             )
-            sessions = await self.db.list_sessions(lifecycle="pool", project_id=project.id)
+            sessions = sessions_by_project.get(project.id, [])
             session_ids = {s.id for s in sessions}
             pending = [launch for launch in pending_launches
                        if launch.project_id == project.id and launch.session_id not in session_ids]

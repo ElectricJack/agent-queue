@@ -889,6 +889,67 @@ async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool
     }]
 
 
+async def test_pool_status_batches_session_task_titles_and_reuses_measurement(
+    pool_handler, monkeypatch
+):
+    """Adding projects and sessions must not add profile or task-detail reads."""
+    import time
+
+    from src.models import SessionRecord, Task, TaskStatus
+
+    await pool_handler.db.create_project(Project(id="second", name="Second"))
+    now = time.time()
+    for suffix, project_id in (("a", PROJECT_ID), ("b", "second")):
+        task_id = f"pool-task-{suffix}"
+        await pool_handler.db.create_task(
+            Task(
+                id=task_id, project_id=project_id, title=f"Pool task {suffix}",
+                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker",
+            )
+        )
+        await pool_handler.db.create_session(
+            SessionRecord(
+                id=f"pool-{suffix}", project_id=project_id, profile_id="worker",
+                harness="fake", provider="fake", name=f"pool--{suffix}", lifecycle="pool",
+                work_dir=f"/tmp/{suffix}", epoch="test", instance_token=f"token-{suffix}",
+                started_at=now - 20, state="running", task_id=task_id,
+            )
+        )
+
+    calls = {"profiles": 0, "pool_sessions": 0, "titles": 0}
+    real_profiles = pool_handler.db.list_profiles
+    real_sessions = pool_handler.db.list_sessions
+    real_titles = pool_handler.db.get_task_titles
+
+    async def counted_profiles():
+        calls["profiles"] += 1
+        return await real_profiles()
+
+    async def counted_sessions(**kwargs):
+        if kwargs.get("lifecycle") == "pool":
+            calls["pool_sessions"] += 1
+        return await real_sessions(**kwargs)
+
+    async def counted_titles(task_ids):
+        calls["titles"] += 1
+        return await real_titles(task_ids)
+
+    async def no_single_task_read(_task_id):
+        pytest.fail("pool status performed a per-session get_task read")
+
+    monkeypatch.setattr(pool_handler.db, "list_profiles", counted_profiles)
+    monkeypatch.setattr(pool_handler.db, "list_sessions", counted_sessions)
+    monkeypatch.setattr(pool_handler.db, "get_task_titles", counted_titles)
+    monkeypatch.setattr(pool_handler.db, "get_task", no_single_task_read)
+
+    rows = (await pool_handler._cmd_pool_status({}))["pools"]
+
+    assert calls == {"profiles": 1, "pool_sessions": 1, "titles": 1}
+    assert {item["task_title"] for item in rows[0]["instances"]} == {
+        "Pool task a", "Pool task b"
+    }
+
+
 # ──────────────── pool_status is one row per profile (§6.1) ──────────────
 
 
