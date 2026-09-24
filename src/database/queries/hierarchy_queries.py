@@ -213,7 +213,11 @@ class ProjectIntegrationMode:
 
 
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
-    """Require an exact origin or an active repair reservation in enabled projects.
+    """Require an exact origin or an active delegate reservation in enabled projects.
+
+    A repair delegate writes its operation's existing branch and a parent
+    verifier checks the parent's; neither ever gets an origin of its own, so
+    each is admitted only on its exact reserved fence.
 
     With *mode* supplied the ``projects`` lookup is folded away at compile
     time: a non-hierarchical project admits every task, and a hierarchical
@@ -225,15 +229,20 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
             return true()
         if mode.integration_repository_id is None:
             return false()
-        return or_(_reserved_repair_branch(mode.integration_repository_id), exists(
-            select(literal(1)).where(
+        # The origin arm admits nearly every frontier row, and PostgreSQL
+        # evaluates ``OR`` arms in order, so it goes first: the delegate
+        # sub-plans run only for the rare row that has no origin.
+        return or_(
+            exists(select(literal(1)).where(
                 task_branch_origins.c.task_id == tasks.c.id,
                 task_branch_origins.c.repository_id == mode.integration_repository_id,
                 task_branch_origins.c.retired_at.is_(None),
                 task_branch_origins.c.materialized.is_(True),
-            )
-        ))
-    return or_(_reserved_repair_branch(), ~exists(
+            )),
+            _reserved_repair_branch(mode.integration_repository_id),
+            _reserved_verifier_branch(mode.integration_repository_id),
+        )
+    return or_(~exists(
         select(literal(1))
         .select_from(projects)
         .where(
@@ -256,7 +265,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 )
             ),
         )
-    ))
+    ), _reserved_repair_branch(), _reserved_verifier_branch())
 
 
 def _reserved_repair_branch(repository_id: str | None = None):
@@ -287,6 +296,47 @@ def _reserved_repair_branch(repository_id: str | None = None):
             owner.c.workspace_id.is_(None),
             owner.c.repository_id == tasks.c.repo_id,
             owner.c.ref == tasks.c.branch_name,
+            owner.c.repository_id == (
+                repository_id if repository_id is not None else projects.c.integration_repository_id
+            ),
+        )
+    )
+
+
+def _reserved_verifier_branch(repository_id: str | None = None):
+    """A parent verifier checks the parent's branch, not a new task origin.
+
+    ``ParentCompletion`` files the delegate on the parent's checkpoint branch
+    and binds it as ``verifier_task_id``; the handoff then reserves that
+    branch's fence to it.  Admit exactly that: the bound delegate of a live
+    parent operation, holding the unattached ``verifier`` fence on the
+    operation's own parent branch.
+    """
+    operation = integration_repair_operations
+    owner = integration_branch_owners
+    parent = tasks.alias("verifier_parent")
+    source = operation.join(owner, owner.c.owner_id == operation.c.verifier_task_id).join(
+        parent, parent.c.id == operation.c.parent_task_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(
+        select(literal(1))
+        .select_from(source)
+        .correlate(tasks)
+        .where(
+            operation.c.verifier_task_id == tasks.c.id,
+            operation.c.target_kind == "parent",
+            operation.c.state.in_(("active", "escalated")),
+            parent.c.project_id == tasks.c.project_id,
+            owner.c.owner_role == "verifier",
+            owner.c.handoff_state == "reserved",
+            owner.c.session_id.is_(None),
+            owner.c.workspace_id.is_(None),
+            owner.c.repository_id == tasks.c.repo_id,
+            owner.c.ref == tasks.c.branch_name,
+            owner.c.repository_id == parent.c.repo_id,
+            owner.c.ref == parent.c.branch_name,
             owner.c.repository_id == (
                 repository_id if repository_id is not None else projects.c.integration_repository_id
             ),
