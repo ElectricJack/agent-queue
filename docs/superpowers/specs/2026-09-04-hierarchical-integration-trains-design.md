@@ -906,6 +906,22 @@ delivery. The receipt-before-push state is unreachable by contract.
 
 Projects may continue using the current one-PR-at-a-time pipeline until explicitly migrated.
 
+Parents that finished before a project's cutover were never collected. That covers work delivered
+by the development publisher and work from before trains existed. Such parents never will be
+collected, and item 4 rules out backfilling train receipts for their children. Observe readiness
+therefore settles a terminal child of a terminal, uncollected parent without a train receipt when
+either of two things holds:
+
+- a `delivered` or `adopted` development delivery to the default branch lists the child's latest
+  completion;
+- an audited `integration_legacy_deliveries` row exists for the child.
+
+`aq integration adopt-legacy-deliveries` writes that row only after it proves by ancestry that the
+child's delivered commit is on the default branch, or after an explicit, named operator acceptance.
+It lists every child it cannot prove. These records never feed parent completion. A parent still
+open at cutover needs real, bound receipts for every child. Added 2026-09-24 (task
+`fair-horizon`).
+
 ## 16. Verification plan
 
 The implementation plan must include focused suites for:

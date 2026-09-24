@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 380,
+    "leaf_commands": 381,
     "registration": {
       "generated": 265,
-      "handwritten": 115
+      "handwritten": 116
     },
     "ownership": {
-      "core": 341,
+      "core": 342,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 379
+      "supported": 380
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 265,
-      "registration": 101
+      "registration": 102
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 320
+      "untested": 321
     }
   },
   "commands": [
@@ -3173,6 +3173,39 @@
         "optional": [
           "--target-ref",
           "--accept-equivalent",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration adopt-legacy-deliveries",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_adopt_legacy_deliveries",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id"
+        ],
+        "optional": [
+          "--dry-run",
+          "--accept",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"

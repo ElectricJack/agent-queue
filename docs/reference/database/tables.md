@@ -210,6 +210,7 @@ what happened. The recurring devices are worth learning once:
 | `integration_outbox_artifact_pins` | Pins the playbook artifacts an outbox event was produced under, so replay is interpreted the same way. |
 | `integration_operation_artifact_pins` | Pins the playbook artifacts a repair operation was routed under, so a resumed operation keeps the policy it started with. |
 | `development_deliveries` | Development-mode delivery: executed Git facts kept separate from task episodes. States `prepared` → `publishing` → `delivered`, or `parked`/`adopted`/`cancelled`. |
+| `integration_legacy_deliveries` | One row per terminal child of a terminal parent the train never collected, recorded by `aq integration adopt-legacy-deliveries`. Proof is `development_delivery`, `branch_tip` or an explicit `operator_accepted`, and names the default-branch tip it was checked against. Keyed by task id; a **soft ref**, so archive keeps it. Integration status accepts these children instead of reporting `missing_receipt`. |
 
 ### Review, CI and repair
 

@@ -32,6 +32,13 @@ policy snapshot to conceal it.
 
 After the development publisher is safely drained and the project can enter
 disabled mode, bind the repository, review mode, and policy in order. The
+project-scoped supervisor runs these itself. Its shipped profile grants the
+`integration_configure` capability, which `aq project set` checks for the three
+integration keys, and `integration_adopt_legacy_deliveries`, alongside every
+operator integration control. Shipped profiles are write-if-absent, so a vault
+supervisor profile seeded earlier lacks both grants. On such an install the
+operator adds them once with
+`aq agent profile-reseed --profile-id supervisor --grants-only`. The
 repository ID `agent-queue2` comes from the existing development deliveries;
 verify that its stored GitHub origin and default branch are exact before
 binding it. The helper reads a fresh generation for each command, avoiding a
@@ -53,7 +60,39 @@ aq project set agent-queue integration-policy "$policy_json" --expected-integrat
 aq integration enable agent-queue --mode observe --expected-generation "$(generation)" --reason 'preflight train configuration without scheduling'
 aq integration flush agent-queue
 aq integration status agent-queue
+aq integration adopt-legacy-deliveries --project-id agent-queue --dry-run
+aq integration adopt-legacy-deliveries --project-id agent-queue
+aq integration status agent-queue
 ```
+
+Parents that finished before the train have no parent collection and never
+will, so their children can never get train receipts. Status already accepts a
+child the development publisher delivered to `main` (its delivery row is the
+receipt). Every other terminal child of a finished parent is reported as
+`missing_receipt` with cause `no_parent_collection` until
+`adopt-legacy-deliveries` proves it: a development delivery's commit, or the
+child's branch tip, must be an ancestor of `origin/main`. Review the dry run
+first; the real run records one audited row per proven child and is safe to
+repeat. It lists every child it cannot prove with the reason:
+
+- `not_on_default_branch`: no delivered commit is on `main`. Find out whether
+  the work landed another way before accepting it.
+- `child_not_completed`: a failed child has nothing to deliver.
+- `parent_not_terminal`: the parent is still open, so its completion needs
+  real train receipts. Nothing can adopt these children.
+
+Only after the human confirms, record a named child with
+`--accept TASK_ID --reason '...'` (repeatable). A read-only diagnosis on
+2026-09-24 found 146 of the 150 legacy children already covered by development
+deliveries to `main`. It expects four to be listed as `not_on_default_branch`
+for a human decision:
+
+- the repairs `development-repair-1f49a87816f28bf5ae4c` (under `sharp-crest`)
+  and `development-repair-ac45f2a85d942d50cf37` (under `sharp-journey`): only
+  their parent-collection deliveries were published, and their `main`
+  deliveries stayed parked;
+- `clear-meadow.5`, which has no branch on origin and no delivery;
+- `smart-stone.3`, whose branch tip is not on `main`.
 
 The status response in observe mode must report zero functional blockers and
 `ready: true`; activation health above confirms the exact active route hashes.

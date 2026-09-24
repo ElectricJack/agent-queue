@@ -54,6 +54,7 @@ aq doctor --check git.stale_branches
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
+| Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
 | Stale `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
 | `hierarchy.delivery_pending` when archiving | The work has not reached `main` | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
@@ -516,6 +517,42 @@ A promoted batch whose cleanup never produced any items has nothing to requeue:
 for it, `retry-cleanup` materializes the cleanup (outcome `materialized`) and
 the daemon runs it. Cleanup refuses to delete a source branch whose owner row is
 not released, which is why `release-stale-owners` runs first.
+
+## Legacy children block observe readiness
+
+```text
+{"code": "missing_receipt", "detail": "no current parent collection exists for the terminal child", "cause": "no_parent_collection"}
+```
+
+A parent completes under the train only after each child has a delivery
+receipt bound to the parent's collection. A parent that finished before the
+project entered observe, hierarchy or train mode was never collected and never
+will be. Its terminal children therefore stay flagged unless their delivery is
+proven another way.
+
+Status already accepts a child that the development publisher delivered to the
+default branch. That `delivered` or `adopted` development delivery, bound to
+the child's latest completion, is its receipt. Run the control for the rest,
+as a local operator or the project's supervisor:
+
+```bash
+aq integration adopt-legacy-deliveries --project-id <project> --dry-run
+aq integration adopt-legacy-deliveries --project-id <project>
+```
+
+It fetches the designated repository once. It adopts a child when a
+development delivery lists it and the child's source commit or the delivery's
+published commit is on the default branch (`development_delivery`), or when
+the child's branch tip is (`branch_tip`). It writes one
+`integration_legacy_deliveries` row per adopted child, and it is safe to
+repeat.
+
+| Reason listed | Meaning | Next step |
+|---|---|---|
+| `not_on_default_branch` | No delivered commit of the child is an ancestor of the default branch. | Find where the work went. If a human confirms nothing is owed, run `--accept <task> --reason '...'`. |
+| `child_not_completed` | The child failed, so it has nothing to deliver. | Have a human decide, then `--accept` it, or leave it. |
+| `parent_not_terminal` | The parent is still open. | Nothing to adopt: its completion needs real train receipts. |
+| `state_changed` | The child or parent was reopened while the command ran. | Re-run. |
 
 ## A task will not delete, archive, resume or restart
 

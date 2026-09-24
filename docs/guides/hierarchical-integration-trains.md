@@ -226,8 +226,11 @@ atomically. Its URL and branch must exactly match the project's existing
 repository metadata; it never guesses a repository. It preserves existing
 source paths and refuses IDs owned by another project. Use
 `integration-repository-id` instead when the existing record is already correct.
-Repository, review-mode, and policy changes all require LOCAL operator authority
-and the fresh integration generation while disabled and drained.
+Repository, review-mode, and policy changes all require the fresh integration
+generation while disabled and drained. They are open to the LOCAL operator
+and to a live, named supervisor session of the project whose profile grants
+`integration_configure` (the shipped supervisor profile does). A worker
+session is refused at scope.
 
 Do not put rollout mode fields through `aq project set`; mode changes exist
 only under `aq integration enable`.
@@ -260,6 +263,32 @@ aq integration enable example --mode observe --expected-generation 3 --reason 'b
 aq integration flush example
 aq integration status example
 ```
+
+A parent that finished before the train has no parent collection and never
+will, so its children cannot get train receipts. Status accepts a terminal
+child of such a parent when the development publisher delivered it to the
+default branch: that `delivered`/`adopted` development delivery, bound to the
+child's latest completion, is its receipt. Any other such child is reported as
+`missing_receipt` with cause `no_parent_collection`. Clear these with the
+proof-based control. Dry-run it first; it is safe to repeat:
+
+```bash
+aq integration adopt-legacy-deliveries --project-id example --dry-run
+aq integration adopt-legacy-deliveries --project-id example
+```
+
+It fetches the designated repository once and records an
+`integration_legacy_deliveries` row for each child in either case:
+
+- a development delivery lists the child, and the child's source commit or the
+  delivery's published commit is an ancestor of the default-branch tip;
+- the child's branch tip is such an ancestor.
+
+It lists every other child with its reason (`not_on_default_branch`,
+`child_not_completed`, `parent_not_terminal`). A child of a parent that is
+still open is never adopted, because that parent's completion needs real train
+receipts. For a child the human confirms needs nothing delivered,
+`--accept TASK_ID --reason '...'` records an explicit `operator_accepted` row.
 
 If status reports only `legacy_pr_merge_gate` blockers, an operator may make
 that exact history inapplicable. Copy the current digest once, create the
