@@ -269,6 +269,7 @@ async def run_check(
         _kill(process)
         await process.wait()
         reader.cancel()
+        report_path.unlink(missing_ok=True)
         raise
     # Killing the group closes every writer; a grandchild that escaped the
     # group must not hold the evidence hostage.
