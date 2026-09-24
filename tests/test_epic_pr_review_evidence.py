@@ -22,8 +22,8 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitManager
-from src.integration.promotion import PromotionService
 from src.integration.github_review_poll import GitHubReviewPoller
+from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import TrainService
 from src.integration.settling import settled
@@ -289,7 +289,7 @@ async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):
         )
     rows = await _rows(case["db"])
     assert len(rows) == 2
-    assert sorted(rows, key=lambda row: row["created_at"])[-1]["verdict"] == "approved"
+    assert max(rows, key=lambda row: row["created_at"])["verdict"] == "approved"
 
 
 async def test_approval_writes_exact_trusted_evidence_and_is_eligible(case):
