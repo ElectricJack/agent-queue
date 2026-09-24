@@ -189,7 +189,7 @@ context. They are covered where their behaviour is explained.
 
 | File | Purpose | Component |
 |---|---|---|
-| [src/cli/CLAUDE.md](../../../src/cli/CLAUDE.md) | The contributor-facing map of `src/cli/`, kept honest by `tests/test_cli_module_map.py`. | [cli/README.md](../cli/README.md) |
+| [src/cli/AGENTS.md](../../../src/cli/AGENTS.md) | The contributor-facing map of `src/cli/`, kept honest by `tests/test_cli_module_map.py`. | [cli/README.md](../cli/README.md) |
 
 ## Coverage
 

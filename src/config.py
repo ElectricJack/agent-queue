@@ -504,8 +504,8 @@ class MemoryConfig:
     index_notes: bool = True  # index project notes/ directory
     index_specs: bool = True  # index workspace specs/ directory
     index_docs: bool = True  # index workspace docs/ directory (published documentation)
-    index_project_docs: bool = True  # index individual doc files (CLAUDE.md, README.md)
-    project_docs_files: tuple[str, ...] = ("CLAUDE.md", "README.md")  # files to index individually
+    index_project_docs: bool = True  # index individual doc files (AGENTS.md, CLAUDE.md, README.md)
+    project_docs_files: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", "README.md")  # files to index individually
     index_sessions: bool = False  # index session transcripts
     # Phase 1: Project Profile
     profile_enabled: bool = True  # toggle project profiles

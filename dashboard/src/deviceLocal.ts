@@ -7,7 +7,7 @@
  * Addressable navigation belongs in the URL; everything else lives in memory.
  *
  * The keys below are the narrow exceptions: device-local transport state with
- * no meaning on another device, each documented in `dashboard/CLAUDE.md`.
+ * no meaning on another device, each documented in `dashboard/AGENTS.md`.
  * `tests/test_dashboard_browser_storage.py` fails CI if any other production
  * module touches browser storage, or if this registry gains a key that is not
  * documented there.

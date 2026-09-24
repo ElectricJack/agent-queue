@@ -20,7 +20,7 @@ regression.
 **Their budgets are derived, not declared.**  The flat ``p95 < 100 ms``
 they used to assert went red at 107.8 ms on a box at load average 10-16
 with the median at 90.2 ms and nothing in the endpoint changed -- the
-exact objection CLAUDE.md raises about every wall-clock budget in this
+exact objection AGENTS.md raises about every wall-clock budget in this
 suite, that "they measure the machine as much as the query".  Each test
 now measures a *reference* request -- the same endpoint, the same round
 trips, over a container whose subtree is 25x smaller -- on both sides of
