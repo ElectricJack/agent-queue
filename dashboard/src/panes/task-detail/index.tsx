@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ClipboardEvent, DragEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -39,6 +40,7 @@ import type { PaneViewProps } from "../types";
 import type { TaskDetailArgs } from "./manifest";
 import { useReviews } from "../../api/reviews";
 import { taskPreview } from "./preview";
+import { prefetchTaskPane } from "./prefetch";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -81,7 +83,9 @@ export default function TaskDetailPane({
   setShortcuts,
 }: PaneViewProps<TaskDetailArgs>) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: task, isError } = useTask(args.taskId);
+  useEffect(() => prefetchTaskPane(queryClient, args.taskId), [queryClient, args.taskId]);
   const { data: taskReviews } = useReviews({ taskId: args.taskId });
   const { data: gates } = useGates({ projectId: task?.project_id, enabled: !!task?.project_id });
   const resolveGate = useResolveGate();

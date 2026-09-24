@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
 import { apiGet } from "./legacy-fetch";
+import { taskAttachmentsQuery } from "./taskAttachments";
 import {
   addWorkspace,
   archiveTask,
@@ -74,7 +75,6 @@ import {
   gateShow,
   gateResolve,
   deleteAttachmentApiTasksTaskIdAttachmentsAttachmentIdDelete,
-  listAttachmentsApiTasksTaskIdAttachmentsGet,
   uploadAttachmentApiTasksTaskIdAttachmentsPost,
   poolStatus,
   poolScale,
@@ -155,7 +155,6 @@ import type {
   GateSummary,
   InspectPlaybookRunResponse,
   CancelPlaybookRunResponse,
-  TaskAttachmentsResponse,
   PoolStatusResponse,
   PoolStatusRow,
   PoolProjectStatus,
@@ -410,16 +409,7 @@ export function useTask(taskId: string) {
 }
 
 export function useTaskAttachments(taskId: string, enabled = true) {
-  return useQuery({
-    queryKey: ["task-attachments", taskId],
-    queryFn: async () => (
-      await listAttachmentsApiTasksTaskIdAttachmentsGet({
-        path: { task_id: taskId },
-        throwOnError: true,
-      })
-    ).data as TaskAttachmentsResponse,
-    enabled: enabled && !!taskId,
-  });
+  return useQuery({ ...taskAttachmentsQuery(taskId), enabled: enabled && !!taskId });
 }
 
 function invalidateTaskAttachments(queryClient: ReturnType<typeof useQueryClient>, taskId: string) {
