@@ -15,13 +15,20 @@ from __future__ import annotations
 
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import insert, update
 
 from src.config import AppConfig, DatabaseConfig
 from src.database import Database
-from src.database.tables import integration_branch_owners, task_branch_origins
+from src.database.tables import (
+    integration_branch_owners,
+    integration_parent_episodes,
+    integration_repair_operations,
+    task_branch_origins,
+    task_integration_checkpoints,
+)
 from src.git.manager import GitError
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership, BranchOwnershipError
@@ -226,6 +233,10 @@ async def test_reopened_producer_reacquires_only_its_released_worker_branch(env,
             base_sha="a" * 40, creation_generation=0, reserved=True, materialized=True,
             created_at=time.time(), materialized_at=time.time(),
         ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=task.id, repository_id="repo", branch="aq/retry",
+            checkpoint_sha="a" * 40, updated_at=time.time(),
+        ))
     ownership = BranchOwnership(env.db)
     target = BranchKey(repository_id="repo", branch="aq/retry")
     old = await ownership.acquire(target, task.id, "worker")
@@ -246,6 +257,58 @@ async def test_reopened_producer_reacquires_only_its_released_worker_branch(env,
         await ownership.transfer(old, "collector", "collector")
         with pytest.raises(BranchOwnershipError):
             await env.orch._hierarchy_origin_and_fence(task, await env.db.get_project("p"))
+
+
+@pytest.mark.parametrize("role", ["worker", "verifier"])
+async def test_epic_root_branch_prepares_with_recorded_checkpoint(env, monkeypatch, role):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    branch = "aq/epic/prove-disposable-train-delivery"
+    root = await _task(env, "root", repo_id="repo", branch_name=branch)
+    task = root
+    now = time.time()
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_branch_origins).values(
+            id="root-origin", task_id=root.id, repository_id="repo", parent_ref="main",
+            base_sha="a" * 40, creation_generation=0, reserved=True, materialized=True,
+            created_at=now, materialized_at=now,
+        ))
+        if role == "verifier":
+            await conn.execute(insert(integration_parent_episodes).values(
+                id="episode", parent_task_id=root.id, repository_id="repo", generation=0,
+                pre_collection_checkpoint_sha="a" * 40, created_at=now,
+            ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=root.id, repository_id="repo", branch=branch,
+            checkpoint_sha="b" * 40, episode_id="episode" if role == "verifier" else None,
+            updated_at=now,
+        ))
+    if role == "verifier":
+        task = await _task(env, "verify-root", repo_id="repo", branch_name=branch)
+        async with env.db.immediate() as conn:
+            await conn.execute(insert(integration_repair_operations).values(
+                id="operation", target_kind="parent", parent_task_id=root.id,
+                episode_id="episode", state="active", policy_snapshot={},
+                artifact_snapshot={}, required_check_version="v1",
+                verifier_task_id=task.id, created_at=now, updated_at=now,
+            ))
+        # The verifier's separate claim frontier is covered by its own tests.
+        monkeypatch.setattr(env.db, "is_hierarchy_task_runnable", AsyncMock(return_value=True))
+    fence = await BranchOwnership(env.db).acquire(
+        BranchKey(repository_id="repo", branch=branch), task.id, role
+    )
+
+    origin, current, actual_role = await env.orch._hierarchy_origin_and_fence(
+        task, await env.db.get_project("p")
+    )
+
+    assert actual_role == role
+    assert current == fence
+    assert origin["base_sha"] == ("b" if role == "verifier" else "a") * 40
 
 
 async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env):

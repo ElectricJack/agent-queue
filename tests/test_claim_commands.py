@@ -13,7 +13,12 @@ import pytest
 from src.commands.handler import CommandHandler
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import integration_repair_stages, task_branch_origins, task_metadata
+from src.database.tables import (
+    integration_repair_stages,
+    task_branch_origins,
+    task_integration_checkpoints,
+    task_metadata,
+)
 from src.integration.models import BranchKey
 from src.integration.ownership import BranchOwnership
 from src.intelligence_classes import IntelligenceClass
@@ -217,6 +222,15 @@ class TestClaim:
                     materialized=True,
                     created_at=time.time(),
                     materialized_at=time.time(),
+                )
+            )
+            await conn.execute(
+                task_integration_checkpoints.insert().values(
+                    task_id=task_id,
+                    repository_id="repo",
+                    branch=f"aq/{task_id}",
+                    checkpoint_sha="a" * 40,
+                    updated_at=time.time(),
                 )
             )
         ownership = BranchOwnership(db)
