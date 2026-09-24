@@ -1045,10 +1045,19 @@ class IntegrationControlService:
             if batch["lifecycle"] != "sealed" or revision is not None:
                 return {"outcome": "invalid_state", "batch_id": batch_id, "task_id": task_id}
 
-            # The database permits sealed-member edits only for this one
-            # batch and only during this transaction. Ordinary writers still
-            # meet the immutable-membership trigger.
+            # The trigger requires this audit row from the same transaction,
+            # together with the project lock and the transaction-local markers.
+            event_id = await self.db.log_event(
+                "integration.batch_ejected",
+                project_id=project_id,
+                task_id=task_id,
+                payload=json.dumps(
+                    {"batch_id": batch_id, "reason": reason, "operator_id": operator_id, "at": now}
+                ),
+                conn=conn,
+            )
             await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
+            await conn.execute(select(func.set_config("aq.integration_eject_event", str(event_id), True)))
 
             await conn.execute(
                 delete(integration_batch_members).where(
@@ -1107,15 +1116,6 @@ class IntegrationControlService:
                 update(integration_batches)
                 .where(integration_batches.c.id == batch_id)
                 .values(**values)
-            )
-            await self.db.log_event(
-                "integration.batch_ejected",
-                project_id=project_id,
-                task_id=task_id,
-                payload=json.dumps(
-                    {"batch_id": batch_id, "reason": reason, "operator_id": operator_id, "at": now}
-                ),
-                conn=conn,
             )
         return {"outcome": "ejected", "batch_id": batch_id, "task_id": task_id, "reason": reason}
 
