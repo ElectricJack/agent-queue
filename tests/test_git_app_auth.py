@@ -384,6 +384,200 @@ async def test_isolated_origin_fetch_imports_source_refs_without_using_checkout_
     assert _git(["for-each-ref", "--format=%(refname)"], trap) == ""
 
 
+def _origin_fetch_case(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A 40-commit source carrying an incompressible 1 MiB blob, and an empty checkout."""
+    work = tmp_path / "work"
+    source = tmp_path / "source.git"
+    destination = tmp_path / "destination"
+    for path in (work, destination):
+        path.mkdir()
+        _git(["init", "--initial-branch=main"], path)
+    _git(["config", "user.name", "Test"], work)
+    _git(["config", "user.email", "test@example.com"], work)
+    (work / "large.bin").write_bytes(os.urandom(1 << 20))
+    for number in range(40):
+        (work / "counter.txt").write_text(f"{number}\n")
+        _git(["add", "large.bin", "counter.txt"], work)
+        _git(["commit", "-m", f"commit {number}"], work)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(source)],
+        check=True, capture_output=True,
+    )
+    _git(["push", str(source), "main:refs/heads/main"], work)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], destination)
+    return work, source, destination
+
+
+def _commit_and_publish(work: Path, source: Path, content: str) -> str:
+    (work / "counter.txt").write_text(content)
+    _git(["commit", "-am", content], work)
+    _git(["push", str(source), "main:refs/heads/main"], work)
+    return _git(["rev-parse", "HEAD"], work)
+
+
+def _object_store_snapshot(objects: Path) -> dict[str, tuple[int, int]]:
+    return {
+        str(path.relative_to(objects)): (path.stat().st_size, path.stat().st_mtime_ns)
+        for path in objects.rglob("*")
+        if path.is_file()
+    }
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_downloads_only_what_the_checkout_lacks(tmp_path):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+    counted = dict(
+        line.split(": ", 1) for line in _git(["count-objects", "-v"], source).splitlines()
+    )
+    source_objects = int(counted["count"]) + int(counted["in-pack"])
+
+    first = await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+    tip = _commit_and_publish(work, source, "one more\n")
+    second = await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+
+    # An empty checkout has nothing to lend, so the first fetch is the whole history.
+    assert (first.mode, first.seeded_tips) == ("incremental", 0)
+    assert first.objects >= source_objects > 120
+    assert first.size_kib >= 1024
+    # One new commit is one commit, one tree and one blob — not the 1 MiB history.
+    assert (second.mode, second.seeded_tips) == ("incremental", 1)
+    assert second.objects <= 5
+    assert second.size_kib < 64
+    assert _git(["rev-parse", "refs/remotes/origin/main"], destination) == tip
+    # The checkout owns every object it now references; nothing borrows back.
+    assert not (destination / ".git" / "objects" / "info" / "alternates").exists()
+    _git(["fsck", "--connectivity-only", "--no-dangling"], destination)
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_borrows_checkout_objects_read_only(tmp_path, monkeypatch):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+    _commit_and_publish(work, source, "one more\n")
+    objects = destination / ".git" / "objects"
+    real_fetch = manager._arun_authenticated_git
+    observed: dict[str, object] = {}
+
+    async def watched_fetch(args, **kwargs):
+        git_dir = Path(next(arg for arg in args if arg.startswith("--git-dir=")).split("=", 1)[1])
+        observed["alternates"] = (git_dir / "objects" / "info" / "alternates").read_text()
+        observed["seeded"] = sorted(
+            str(path.relative_to(git_dir)) for path in (git_dir / "refs").rglob("*")
+            if path.is_file()
+        )
+        observed["args"] = list(args)
+        observed["temporary"] = git_dir.parent
+        before = _object_store_snapshot(objects)
+        output = await real_fetch(args, **kwargs)
+        observed["unchanged"] = _object_store_snapshot(objects) == before
+        return output
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", watched_fetch)
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+
+    assert observed["alternates"] == f"{objects.resolve()}\n"
+    assert observed["seeded"] == ["refs/aq/have/0"]
+    # The credentialed process writes only into its own repository, and never
+    # runs for-each-ref against the checkout to discover its tips.
+    assert observed["unchanged"] is True
+    assert "core.alternateRefsCommand=true" in observed["args"]
+    assert not Path(observed["temporary"]).exists()
+    assert not (objects / "info" / "alternates").exists()
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_keeps_token_out_of_checkout_and_logs(tmp_path, caplog):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    token = "ghs_origin-fetch-sentinel-token"
+    manager = GitManager()
+
+    with caplog.at_level(logging.DEBUG, logger="src.git.manager"):
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token=token
+        )
+        _commit_and_publish(work, source, "one more\n")
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token=token
+        )
+
+    assert "origin_fetch=incremental, seeded_tips=1" in caplog.text
+    assert token not in caplog.text
+    for path in (destination / ".git").rglob("*"):
+        if path.is_file():
+            assert token.encode() not in path.read_bytes(), path
+    # The seeded refs/aq/have/* names stay in the throwaway repository.
+    assert _git(["for-each-ref", "--format=%(refname)"], destination).split() == [
+        "refs/remotes/origin/main"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_failure_names_its_mode(tmp_path, monkeypatch):
+    _work, source, destination = _origin_fetch_case(tmp_path)
+    manager = GitManager()
+
+    async def timed_out(*_args, **_kwargs):
+        raise GitError("authenticated Git acquisition failed: exception TimeoutError: phase=x")
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", timed_out)
+    with pytest.raises(GitError) as caught:
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination), source_url=source.as_uri(), token="local-test-token"
+        )
+    assert str(caught.value) == (
+        "authenticated Git acquisition failed: exception TimeoutError: phase=x; "
+        "origin_fetch=incremental, seeded_tips=0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_still_prunes_deleted_branches(tmp_path):
+    work, source, destination = _origin_fetch_case(tmp_path)
+    _git(["push", str(source), "main:refs/heads/topic"], work)
+    _git(["push", str(source), "main:refs/tags/v1"], work)
+    manager = GitManager()
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+    assert _git(["rev-parse", "refs/remotes/origin/topic"], destination)
+    _git(["push", str(source), ":refs/heads/topic"], work)
+
+    await manager._afetch_origin_with_auth_to_url(
+        str(destination), source_url=source.as_uri(), token="local-test-token"
+    )
+
+    assert _git(["for-each-ref", "--format=%(refname)"], destination).split() == [
+        "refs/remotes/origin/main", "refs/tags/v1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_isolated_origin_fetch_downloads_everything_for_a_shallow_checkout(tmp_path):
+    work, source, _empty = _origin_fetch_case(tmp_path)
+    shallow = tmp_path / "shallow"
+    _git(["clone", "--depth=1", source.as_uri(), str(shallow)], tmp_path)
+    tip = _commit_and_publish(work, source, "one more\n")
+
+    transfer = await GitManager()._afetch_origin_with_auth_to_url(
+        str(shallow), source_url=source.as_uri(), token="local-test-token"
+    )
+
+    # A shallow checkout lacks the history behind its tips; naming them as held
+    # would make the remote leave out objects the checkout does not have.
+    assert (transfer.mode, transfer.seeded_tips) == ("full", 0)
+    assert _git(["rev-parse", "refs/remotes/origin/main"], shallow) == tip
+
+
 @pytest.mark.asyncio
 async def test_pr_delivery_diff_imports_pinned_oids_with_fresh_app_credentials(
     tmp_path, monkeypatch
