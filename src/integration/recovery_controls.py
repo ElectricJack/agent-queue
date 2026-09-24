@@ -722,6 +722,26 @@ class IntegrationRecoveryControls:
                     updated_at=now,
                 )
             )
+            conflict_exists = (
+                await conn.execute(
+                    select(integration_cleanup_items.c.domain_key)
+                    .where(
+                        integration_cleanup_items.c.batch_id == batch_id,
+                        integration_cleanup_items.c.state == "conflict",
+                    )
+                    .limit(1)
+                )
+            ).first() is not None
+            if not conflict_exists:
+                await conn.execute(
+                    update(integration_batches)
+                    .where(
+                        integration_batches.c.id == batch_id,
+                        integration_batches.c.lifecycle == "promoted",
+                        integration_batches.c.cleanup_state == "conflict",
+                    )
+                    .values(cleanup_state="pending", updated_at=now)
+                )
         return {
             "outcome": "requeued",
             "batch_id": batch_id,
