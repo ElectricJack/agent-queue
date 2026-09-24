@@ -20,9 +20,9 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import func, insert, select, text, update
 
-from src.database.queries.blocked_state import blocked_predicate
+from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
 from src.database.tables import archived_tasks, development_deliveries as deliveries
 from src.database.tables import projects, sessions, tasks
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -228,6 +228,42 @@ class DevelopmentIntegration:
                     )
                 ).mappings()
             ]
+
+    async def _has_pending_work(self, project_id, repo, *, now):
+        """Check durable work before opening the authenticated Git transport.
+
+        Use the same delivery predicate as readiness, including its latest
+        reported completion source. Branch cleanup is included only when its
+        retry deadline has passed.
+        """
+        target = "refs/heads/" + repo.default_branch
+        cleanup = deliveries.c.evidence[BRANCH_CLEANUP_KEY]
+        async with self.db._engine.connect() as conn:
+            journal_work = await conn.scalar(
+                select(deliveries.c.id).where(
+                    deliveries.c.project_id == project_id,
+                    deliveries.c.repository_id == repo.id,
+                    (
+                        deliveries.c.state.in_(("prepared", "publishing", "parked"))
+                        | (
+                            deliveries.c.state.in_(("delivered", "adopted"))
+                            & (deliveries.c.target_ref == target)
+                            & (cleanup["state"].as_string() == "pending")
+                            & (func.coalesce(cleanup["next_attempt_at"].as_float(), 0.0) <= now)
+                        )
+                    ),
+                ).limit(1)
+            )
+            if journal_work is not None:
+                return True
+            candidate = await conn.scalar(
+                select(tasks.c.id).where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    _development_delivery_pending(tasks),
+                ).limit(1)
+            )
+            return candidate is not None
 
     async def rebind_foreign_repositories(self, project_id, repo):
         """Deliver this project's tasks that still name another project's repository.
@@ -583,6 +619,10 @@ class DevelopmentIntegration:
         await self.rebind_foreign_repositories(project_id, repo)
         await self.refresh_dependencies(project_id)
         async with self.exclusion(repo.id):
+            if not (retry or recover_child_id) and not await self._has_pending_work(
+                project_id, repo, now=time.time()
+            ):
+                return {"outcome": "idle", "parked": []}
             store = await self.store(repo)
             await self.reconcile(repo, store)
             target = "refs/heads/" + repo.default_branch
