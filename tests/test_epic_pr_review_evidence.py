@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import insert, select, update
@@ -22,6 +23,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitManager
 from src.integration.promotion import PromotionService
+from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.review_evidence import ReviewEvidenceProducer
 from src.integration.scheduler import TrainService
 from src.integration.settling import settled
@@ -193,6 +195,101 @@ async def _rows(db):
     async with db._engine.connect() as conn:
         rows = (await conn.execute(select(integration_review_evidence))).mappings().all()
     return [dict(row) for row in rows]
+
+
+class _ReviewClient:
+    def __init__(self, head: str, reviews: list[dict], *, moved: bool = False):
+        self.head = head
+        self.reviews = reviews
+        self.moved = moved
+
+    async def pull_request(self, _url):
+        return {
+            "state": "open",
+            "head": {
+                "sha": "0" * 40 if self.moved else self.head,
+                "ref": "aq/epic/retire-the-publisher",
+                "repo": {"id": 7},
+            },
+            "base": {"ref": "main", "repo": {"id": 7}},
+        }
+
+    async def paged_list(self, _path):
+        return self.reviews
+
+
+class _ReviewGit:
+    def __init__(self, client):
+        self.client = client
+
+    async def bind_github_repository(self, _url):
+        return SimpleNamespace(repository_id=7, full_name="o/r")
+
+    def _github_client(self, _binding):
+        return self.client
+
+
+async def test_live_review_poller_arms_window_only_for_exact_human_approval(case):
+    reviews = [
+        {
+            "id": 1,
+            "state": "APPROVED",
+            "user": {"type": "Bot", "login": "fixture[bot]"},
+            "commit_id": case["first"],
+        },
+        {
+            "id": 2,
+            "state": "APPROVED",
+            "user": {"type": "User", "login": "reviewer"},
+            "commit_id": case["first"],
+            "body": "Approved on GitHub",
+        },
+    ]
+    poller = GitHubReviewPoller(
+        case["db"], case["producer"], _ReviewGit(_ReviewClient(case["first"], reviews))
+    )
+    await poller.tick(1000.0)
+    rows = await _rows(case["db"])
+    assert len(rows) == 1
+    assert rows[0]["reviewer_identity"] == "github:reviewer"
+    assert rows[0]["evidence"]["github_review_id"] == 2
+    async with case["db"]._engine.connect() as conn:
+        schedule = (
+            await conn.execute(select(project_integration_schedules))
+        ).mappings().one()
+    assert schedule["settling_first_approval_at"] == 1000.0
+    await poller.tick(1031.0)
+    assert len(await _rows(case["db"])) == 1
+
+
+@pytest.mark.parametrize("moved", [True, False])
+async def test_live_review_poller_refuses_moved_pr_or_stale_review(case, moved):
+    client = _ReviewClient(
+        case["first"],
+        [{
+            "id": 3,
+            "state": "APPROVED",
+            "user": {"type": "User", "login": "reviewer"},
+            "commit_id": case["first"] if moved else case["second"],
+        }],
+        moved=moved,
+    )
+    await GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client)).tick(1000.0)
+    assert await _rows(case["db"]) == []
+
+
+async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):
+    for review_id, verdict in ((4, "rejected"), (5, "approved")):
+        await case["producer"].snapshot_from_pull_request(
+            "e1",
+            verdict=verdict,
+            reviewer_login="reviewer",
+            reviewed_sha=case["first"],
+            github_review_id=review_id,
+        )
+    rows = await _rows(case["db"])
+    assert len(rows) == 2
+    assert sorted(rows, key=lambda row: row["created_at"])[-1]["verdict"] == "approved"
 
 
 async def test_approval_writes_exact_trusted_evidence_and_is_eligible(case):

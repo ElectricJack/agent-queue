@@ -1289,6 +1289,8 @@ class WorkspaceMixin:
                             orphan_workspace,
                             mutex_path=orphan_base.workspace_path,
                             expected_branch=str(owner["ref"]),
+                            repository_url=repository.url,
+                            default_branch=repository.default_branch,
                         )
                     else:
                         detached = await detach_workspace_for_integration_handoff(
@@ -1296,6 +1298,8 @@ class WorkspaceMixin:
                             self._git_mutex,
                             orphan_workspace,
                             expected_branch=str(owner["ref"]),
+                            repository_url=repository.url,
+                            default_branch=repository.default_branch,
                         )
                 except Exception:
                     logger.warning(
@@ -1339,6 +1343,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1346,6 +1352,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                 )
             if not detached:
                 return False
@@ -1493,6 +1501,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                     allow_published_detached_head=owner.get("owner_role") == "verifier",
                     require_detached=unlocked_verifier,
                 )
@@ -1502,6 +1512,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                     allow_published_detached_head=owner.get("owner_role") == "verifier",
                     require_detached=unlocked_verifier,
                 )
@@ -1596,6 +1608,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                 )
             else:
                 detached = await detach_workspace_for_integration_handoff(
@@ -1603,6 +1617,8 @@ class WorkspaceMixin:
                     self._git_mutex,
                     workspace,
                     expected_branch=str(owner["ref"]),
+                    repository_url=repository.url,
+                    default_branch=repository.default_branch,
                 )
             if not detached:
                 return False

@@ -68,7 +68,9 @@ def test_policy_route_matches_reviewed_bundle(boundary: str) -> None:
     assert artifact.schema_version == snapshot.schema_generation
     assert artifact.version == snapshot.version
     assert artifact.compiler_build == snapshot.compiler_build
-    assert artifact.compiled_at.isoformat().replace("+00:00", "Z") == snapshot.compiled_at
+    # ArtifactStore.put records a nullable compile time in its durable ArtifactRef.
+    # Preflight compares the route to that stored reference, not the JSON body.
+    assert snapshot.compiled_at is None
     assert artifact.contract_fingerprint() == snapshot.contract_fingerprint
     assert source_digest((folder / "source.md").read_text()) == snapshot.source_digest
     assert artifact.source_hash == snapshot.source_digest

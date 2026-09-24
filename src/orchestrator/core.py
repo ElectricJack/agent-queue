@@ -1842,7 +1842,9 @@ class Orchestrator(
             attestation=self.integration_attestation_service,
         )
         from src.integration.development import DevelopmentIntegration
+        from src.integration.github_review_poll import GitHubReviewPoller
         from src.integration.owner_recovery import owner_recovery_for
+        from src.integration.review_evidence import ReviewEvidenceProducer
         async def development_confirm_stopped(session):
             from src.sessions.provider import SessionHandle
             provider = self.session_providers.create(session["provider"], self.config)
@@ -1880,6 +1882,9 @@ class Orchestrator(
             branch_discard_handler=self._drain_branch_discards,
             branch_materialization_handler=self._drain_branch_materializations,
             owner_recovery_handler=self._sweep_stranded_owners,
+            review_handler=GitHubReviewPoller(
+                self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git
+            ).tick,
         )
         self.integration_service.start()
 
