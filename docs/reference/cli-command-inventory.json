@@ -12805,6 +12805,8 @@
           "--aq-timeout",
           "--aq-all-markers",
           "--aq-dry-run",
+          "--aq-reap-orphans",
+          "--aq-apply",
           "pytest_args"
         ],
         "structured": [],
