@@ -247,10 +247,10 @@ async def test_pool_dispose_drops_its_clones_together(monkeypatch):
                 all_started.set()
             await all_started.wait()
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))

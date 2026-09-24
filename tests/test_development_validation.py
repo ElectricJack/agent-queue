@@ -183,6 +183,16 @@ def test_a_wrapper_crash_before_any_test_is_infrastructure():
     assert classify(1, output)[:2] == (INFRASTRUCTURE, "infrastructure_error")
 
 
+def test_checkpoint_cleanup_timeout_is_infrastructure_after_tests_passed():
+    output = (
+        "119 passed in 209.00s\n"
+        "ERROR tests/test_a.py::test_one - RuntimeError: "
+        "could not drop leased PostgreSQL test databases: "
+        "aq_test_worker: PostgreSQL test database cleanup deadline exceeded\n"
+    )
+    assert classify(1, output)[:2] == (INFRASTRUCTURE, "infrastructure_error")
+
+
 def test_a_generic_nonzero_exit_stays_a_failure():
     # A lint or script check says nothing pytest-shaped; its failure is real.
     assert classify(7, "")[:2] == (FAILED, None)
@@ -219,10 +229,11 @@ def test_only_pytest_node_ids_count_as_failing_tests():
 
 
 def test_pytest_summary_parses_decorated_and_quiet_forms():
-    decorated = parse_pytest_output("===== 2 failed, 117 passed, 3 skipped in 209.12s (0:03:29) =====")
+    decorated = parse_pytest_output(
+        "===== 2 failed, 117 passed, 3 skipped in 209.12s (0:03:29) ====="
+    )
     assert decorated.summary == {"failed": 2, "passed": 117, "skipped": 3}
     quiet = parse_pytest_output("119 passed in 209.00s")
     assert quiet.summary == {"passed": 119}
     assert parse_pytest_output("1 error in 0.52s").summary == {"errors": 1}
     assert parse_pytest_output("no summary here").summary is None
-

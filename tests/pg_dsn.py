@@ -45,6 +45,9 @@ _OWNED_DATABASES: list[tuple[str, str]] = []
 #: checkpoint each. The cap only bounds the maintenance connections one
 #: teardown opens.
 _DROP_CONCURRENCY = 8
+# This bounds a worker's whole teardown, including time queued behind the
+# connection cap. A stuck checkpointer otherwise holds an aq test slot forever.
+CLEANUP_TOTAL_SECONDS = 90.0
 
 
 def _worker_id() -> str:
@@ -178,23 +181,45 @@ async def drop_databases(targets: list[tuple[str, str]]) -> list[str]:
     (see ``_DROP_CONCURRENCY``). Every target is attempted whatever happens to
     the others.
     """
+    if not targets:
+        return []
+
     import asyncpg
 
     gate = asyncio.Semaphore(_DROP_CONCURRENCY)
 
     async def _drop(admin_dsn: str, name: str) -> None:
         async with gate:
-            conn = await asyncpg.connect(admin_dsn)
+            conn = await asyncpg.connect(
+                admin_dsn,
+                timeout=5,
+                server_settings={"statement_timeout": str(int(CLEANUP_TOTAL_SECONDS * 1000))},
+            )
             try:
                 await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
             finally:
-                await conn.close()
+                # terminate is immediate even when a checkpoint wait was
+                # cancelled by the teardown deadline.
+                conn.terminate()
 
-    results = await asyncio.gather(
-        *(_drop(admin_dsn, name) for admin_dsn, name in targets), return_exceptions=True
-    )
+    tasks = [asyncio.create_task(_drop(admin_dsn, name)) for admin_dsn, name in targets]
+    try:
+        _done, pending = await asyncio.wait(tasks, timeout=CLEANUP_TOTAL_SECONDS)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     failures: list[str] = []
-    for (_, name), result in zip(targets, results):
+    for (_, name), task in zip(targets, tasks):
+        if task in pending:
+            failures.append(f"{name}: PostgreSQL test database cleanup deadline exceeded")
+            continue
+        result = task.exception()
         if isinstance(result, Exception):
             failures.append(f"{name}: {type(result).__name__}: {result}")
         elif isinstance(result, BaseException):

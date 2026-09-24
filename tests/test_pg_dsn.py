@@ -167,10 +167,10 @@ async def test_cleanup_drops_only_registered_databases_in_reverse_order(monkeypa
         async def execute(self, statement):
             executed.append(statement)
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     owned = [("postgresql://u:p@h/postgres", "worker"), ("postgresql://u:p@h/postgres", "scratch")]
@@ -210,10 +210,10 @@ async def test_cleanup_issues_every_drop_at_once_so_they_share_a_checkpoint(monk
                 all_started.set()
             await all_started.wait()
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     owned = [("postgresql://u:p@h/postgres", name) for name in names]
@@ -240,10 +240,10 @@ async def test_concurrent_drops_are_bounded(monkeypatch):
             await asyncio.sleep(0.01)
             in_flight -= 1
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     monkeypatch.setattr(pg_dsn, "_DROP_CONCURRENCY", 3)
@@ -266,10 +266,10 @@ async def test_cleanup_attempts_every_drop_and_reports_each_failure(monkeypatch)
             if '"broken"' in statement:
                 raise OSError("server went away")
 
-        async def close(self):
+        def terminate(self):
             return None
 
-    async def _connect(_dsn):
+    async def _connect(_dsn, **_kwargs):
         return Connection()
 
     owned = [("postgresql://u:p@h/postgres", name) for name in ("first", "broken", "last")]
@@ -281,6 +281,34 @@ async def test_cleanup_attempts_every_drop_and_reports_each_failure(monkeypatch)
 
     assert len(executed) == 3
     assert owned == []
+
+
+async def test_cleanup_deadline_cancels_a_checkpoint_wait(monkeypatch):
+    connection = None
+
+    class Connection:
+        terminated = False
+
+        async def execute(self, _statement):
+            await asyncio.sleep(30)
+
+        def terminate(self):
+            self.terminated = True
+
+    async def _connect(_dsn, **_kwargs):
+        nonlocal connection
+        connection = Connection()
+        return connection
+
+    monkeypatch.setattr(pg_dsn, "CLEANUP_TOTAL_SECONDS", 0.05)
+    monkeypatch.setitem(sys.modules, "asyncpg", SimpleNamespace(connect=_connect))
+    started = asyncio.get_running_loop().time()
+
+    failures = await pg_dsn.drop_databases([("postgresql://u:p@h/postgres", "aq_test_owned")])
+
+    assert asyncio.get_running_loop().time() - started < 1
+    assert failures == ["aq_test_owned: PostgreSQL test database cleanup deadline exceeded"]
+    assert connection is not None and connection.terminated
 
 
 async def _async_value(value):

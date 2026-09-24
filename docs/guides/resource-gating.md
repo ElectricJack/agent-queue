@@ -207,6 +207,15 @@ explicit/reused `AQ_TEST_RUN_ID` collides, the harness inspects
 drop, migrate, or stamp the foreign database. Remove an orphan manually only
 after confirming that no other run owns it.
 
+PostgreSQL [forces a checkpoint for each `DROP DATABASE`](https://doxygen.postgresql.org/dbcommands_8c_source.html).
+The test substrate issues a worker's drops concurrently so they can share a
+checkpoint; row-level resets limit the files that checkpoint must flush. A
+worker's drop batch is also bounded to 90 seconds. If the checkpointer still
+stalls, pytest reports the timed-out database names and development validation
+defers the batch as an infrastructure failure. The next test run uses fresh
+names. A timeout does not authorize removing databases from earlier runs;
+confirm ownership before cleaning those orphans.
+
 Never point `POSTGRES_TEST_DSN` at the daemon database from
 `~/.agent-queue/config.yaml`. The production-URL refusal, worker
 `AQ_DB_SCOPE`, and `AQ_DATABASE_URL` / `AGENT_QUEUE_DB` sentinels remain in
