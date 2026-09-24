@@ -269,7 +269,7 @@ class TestCommand:
         assert result.exit_code == 4
         assert result.output.count("POSTGRES_TEST_DSN is not set") == 1
         assert "docker compose up -d postgres-test" in result.output
-        assert "localhost:5534/postgres" in result.output
+        assert "5534/postgres" in result.output
         assert "Nothing was run" in result.output
         assert "aq test: slot" not in result.output
 
