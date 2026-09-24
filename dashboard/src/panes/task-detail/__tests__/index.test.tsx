@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TaskDetailPane from "../index";
+import { rememberTaskPreview } from "../preview";
 import type { Task } from "../../../api/hooks";
 
 const mockUseAgentFlock = vi.fn();
@@ -232,6 +233,25 @@ describe("TaskDetailPane — header, description, actions", () => {
     mockUseTask.mockReturnValue({ data: undefined, isLoading: true, isError: false });
     renderWithRouter(<TaskDetailPane {...noopProps()} />);
     expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("heads the pane with what the clicked row showed while the full read is in flight", () => {
+    rememberTaskPreview({ id: "t-row", title: "Row title", status: "IN_PROGRESS", priority: 3, project_id: "demo" });
+    mockUseTask.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} args={{ taskId: "t-row" }} />);
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Row title" })).toBeInTheDocument();
+    expect(screen.getByText("P3")).toBeInTheDocument();
+    expect(screen.getByText("demo")).toBeInTheDocument();
+  });
+
+  it("replaces the row's preview with the full read once it lands", () => {
+    rememberTaskPreview({ id: "t-stale", title: "Stale row title", status: "READY", priority: 9 });
+    mockUseTask.mockReturnValue({ data: { ...fixtureTask, id: "t-stale" }, isLoading: false, isError: false });
+    renderWithRouter(<TaskDetailPane {...noopProps()} args={{ taskId: "t-stale" }} />);
+    expect(screen.getByText("Fix the thing")).toBeInTheDocument();
+    expect(screen.queryByText("Stale row title")).not.toBeInTheDocument();
+    expect(screen.queryByText("P9")).not.toBeInTheDocument();
   });
 
   it("renders the description block only when non-empty", () => {
