@@ -1,16 +1,20 @@
 import { Link, useLocation } from "react-router-dom";
 import { useSessions } from "../../api/hooks";
+import { SessionPager } from "../../components/SessionPager";
+import { useSessionPage } from "../../hooks/useSessionPage";
 
 export default function SystemSessions() {
   const location = useLocation();
-  const { data: sessions = [], isLoading, error } = useSessions();
+  const { page, setPage } = useSessionPage();
+  const { data, isLoading, error } = useSessions(undefined, page);
+  const sessions = data?.sessions ?? [];
 
   return (
     <div className="space-y-4">
       <header>
         <h1 className="text-2xl font-bold">Sessions</h1>
         <p className="text-sm text-gray-500">
-          Every running or recent agent session across all projects.
+          Browse agent sessions across all projects.
         </p>
       </header>
 
@@ -64,16 +68,17 @@ export default function SystemSessions() {
                 <td className="px-3 py-2 text-gray-400">{s.restarts ?? 0}</td>
               </tr>
             ))}
-            {sessions.length === 0 && !isLoading && (
+            {sessions.length === 0 && !isLoading && !error && (
               <tr>
                 <td colSpan={7} className="px-3 py-6 text-center text-gray-500">
-                  No sessions.
+                  {page === 0 ? "No sessions." : "No sessions on this page."}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      <SessionPager page={page} setPage={setPage} hasMore={data?.hasMore ?? false} loading={isLoading} />
     </div>
   );
 }

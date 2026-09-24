@@ -151,6 +151,18 @@ class TestListing:
         await db.create_session(_session(id="b", started_at=300.0, name="s-b"))
         assert [r.id for r in await db.list_sessions()] == ["b", "a"]
 
+    async def test_pages_filtered_sessions_with_stable_ties(self, db):
+        await db.create_session(_session(id="a", started_at=100.0, state="running", name="s-a"))
+        await db.create_session(_session(id="b", started_at=200.0, state="stopped", name="s-b"))
+        await db.create_session(_session(id="c", started_at=200.0, state="running", name="s-c"))
+        await db.create_session(_session(id="d", started_at=200.0, state="running", name="s-d"))
+
+        assert [r.id for r in await db.list_sessions(limit=2)] == ["d", "c"]
+        assert [r.id for r in await db.list_sessions(limit=2, offset=2)] == ["b", "a"]
+        assert [r.id for r in await db.list_sessions(state="running", limit=2, offset=1)] == [
+            "c", "a"
+        ]
+
 
 class TestStateMachine:
     """Illegal transitions raise instead of quietly corrupting the row.

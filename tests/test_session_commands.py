@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -355,6 +356,34 @@ class TestSessionList:
         await db.update_session(row.id, state="stopped")
         assert (await handler.execute("session_list", {"live_only": True}))["count"] == 0
         assert (await handler.execute("session_list", {}))["count"] == 1
+
+    async def test_paged_list_reports_more_without_returning_extra_row(self, handler, db, provider):
+        await _make_task(db)
+        row = await _make_session(db, provider)
+        await db.update_session(row.id, started_at=100.0)
+        await db.create_session(replace(row, id="sess-2", name="s-t1-2", started_at=200.0))
+        await db.create_session(replace(row, id="sess-3", name="s-t1-3", started_at=300.0))
+
+        first = await handler.execute("session_list", {"project_id": "p1", "limit": 2})
+        assert [s["id"] for s in first["sessions"]] == ["sess-3", "sess-2"]
+        assert first["count"] == 2
+        assert first["has_more"] is True
+
+        second = await handler.execute("session_list", {"limit": 2, "offset": 2})
+        assert [s["id"] for s in second["sessions"]] == ["sess-1"]
+        assert second["count"] == 1
+        assert second["has_more"] is False
+
+        unpaged = await handler.execute("session_list", {})
+        assert unpaged["count"] == 3
+        assert unpaged["has_more"] is False
+
+    @pytest.mark.parametrize("args", [
+        {"limit": 0}, {"limit": 501}, {"limit": True}, {"offset": -1}, {"offset": "1"}
+    ])
+    async def test_invalid_page_bounds(self, handler, args):
+        result = await handler.execute("session_list", args)
+        assert "error" in result
 
 
 class TestSessionResolution:

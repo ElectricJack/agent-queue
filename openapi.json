@@ -31134,6 +31134,11 @@
             "type": "integer",
             "title": "Count",
             "default": 0
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
           }
         },
         "type": "object",
@@ -44335,6 +44340,30 @@
             "title": "Live Only",
             "description": "Only include sessions that are not stopped/quarantined",
             "default": false
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": "Maximum sessions to return (1-500; omitted means all)"
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": "Number of newest sessions to skip (default 0)"
           }
         },
         "type": "object",

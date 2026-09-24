@@ -19,12 +19,16 @@ class SessionListRequest:
         lifecycle (None | str | Unset): Filter by lifecycle (task|named)
         project_id (None | str | Unset): Filter by project (falls back to the active project)
         live_only (bool | Unset): Only include sessions that are not stopped/quarantined Default: False.
+        limit (int | None | Unset): Maximum sessions to return (1-500; omitted means all)
+        offset (int | None | Unset): Number of newest sessions to skip (default 0)
     """
 
     state: None | str | Unset = UNSET
     lifecycle: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
     live_only: bool | Unset = False
+    limit: int | None | Unset = UNSET
+    offset: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +52,18 @@ class SessionListRequest:
 
         live_only = self.live_only
 
+        limit: int | None | Unset
+        if isinstance(self.limit, Unset):
+            limit = UNSET
+        else:
+            limit = self.limit
+
+        offset: int | None | Unset
+        if isinstance(self.offset, Unset):
+            offset = UNSET
+        else:
+            offset = self.offset
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -59,6 +75,10 @@ class SessionListRequest:
             field_dict["project_id"] = project_id
         if live_only is not UNSET:
             field_dict["live_only"] = live_only
+        if limit is not UNSET:
+            field_dict["limit"] = limit
+        if offset is not UNSET:
+            field_dict["offset"] = offset
 
         return field_dict
 
@@ -95,11 +115,31 @@ class SessionListRequest:
 
         live_only = d.pop("live_only", UNSET)
 
+        def _parse_limit(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        limit = _parse_limit(d.pop("limit", UNSET))
+
+        def _parse_offset(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        offset = _parse_offset(d.pop("offset", UNSET))
+
         session_list_request = cls(
             state=state,
             lifecycle=lifecycle,
             project_id=project_id,
             live_only=live_only,
+            limit=limit,
+            offset=offset,
         )
 
         session_list_request.additional_properties = d

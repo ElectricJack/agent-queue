@@ -48,6 +48,7 @@ class ListSessionsResponse(BaseModel):
     success: bool = True
     sessions: list[SessionSummary] = []
     count: int = 0
+    has_more: bool = False
 
 
 class ShowSessionResponse(BaseModel):

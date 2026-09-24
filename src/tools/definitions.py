@@ -415,6 +415,14 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
                 "description": "Only include sessions that are not stopped/quarantined",
                 "default": False,
             },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum sessions to return (1-500; omitted means all)",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Number of newest sessions to skip (default 0)",
+            },
         },
     },
     "session_show": {
