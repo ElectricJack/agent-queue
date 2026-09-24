@@ -160,21 +160,45 @@ same session-level preflight, so a missing DSN is one configuration error, not
 one fixture error per collected test. This is an environment failure: no test
 assertions ran.
 
-Each `aq test` invocation passes a fresh ownership token to pytest. Every
-xdist worker and every schema-mutating scratch test therefore creates a unique
-`aq_test_*` database. A normal session teardown drops only databases that the
-current process successfully created. The lease pool's template clones use
-`aq_test_poolv2_<token>_<worker>_<index>` names and hold a PostgreSQL advisory
-lock for their lifetime. At pool startup, one worker attempts to remove
-matching clones whose owner lock has gone away. The sweep tries at most eight
-databases per startup, with a five second timeout per drop. A busy PostgreSQL
-checkpointer can prevent a drop; failures warn and remain for a later run.
-Older pool names, worker databases, and scratch databases have no such lock.
-They still require manual inspection before removal. If an explicit/reused
-`AQ_TEST_RUN_ID` collides, the harness inspects
-`alembic_version` read-only, reports stale or unknown revisions, and refuses to
-drop, migrate, or stamp the foreign database. Remove an orphan manually only
-after confirming that no other run owns it.
+Each `aq test` invocation passes a fresh run token to pytest, and every pytest
+process draws its own random owner token. Every xdist worker and every
+schema-mutating scratch test therefore creates a unique database, named
+`aq_test_ownv2_<owner>_<run>_<worker>` or
+`aq_test_ownv2_<owner>_scratch_<suffix>_<unique>`. A normal session teardown
+drops only databases that the current process successfully created.
+
+A process killed before that teardown (SIGTERM, SIGKILL, a `timeout`) cannot
+clean up, so its databases carry a liveness proof: a PostgreSQL advisory lock
+on the maintenance `postgres` database, which the server releases when the
+holding connection closes, however the process ended.
+
+- **Worker and scratch databases** (`tests/pg_dsn.py`). The process takes a
+  lock keyed by its owner token on a dedicated connection (application name
+  `aq-test-db-owner`) before its first `CREATE DATABASE`, and keeps it until
+  teardown has dropped everything it created. Each new worker database starts
+  one background sweep, with one sweeper per server at a time, that drops
+  `aq_test_ownv2_*` databases whose owner lock is free: at most eight per pass,
+  with a 30 second timeout per drop and no `WITH (FORCE)`, so an orphan that
+  somebody is still connected to stays put. The sweep never delays test
+  startup. Teardown cancels an unfinished sweep, and orphans it could not drop
+  are reported as a warning and left for a later run.
+- **Lease-pool clones** (`tests/db_fixtures.py`). They use
+  `aq_test_poolv2_<token>_<worker>_<index>` names and hold a lock for the
+  pool's lifetime. At pool startup, one worker attempts to remove matching
+  clones whose owner lock has gone away: at most eight databases per startup,
+  with a five second timeout per drop.
+
+`DROP DATABASE` waits for a checkpoint, so a busy PostgreSQL checkpointer can
+prevent either sweep from dropping anything; failures warn and remain for a
+later run. Neither sweep touches a name outside those two versioned shapes:
+operator databases, `aq_tmpl_*` schema templates and names from before these
+schemes (`aq_test_<run>_<worker>`, `aq_test_aq_test_*_scratch_*`,
+`aq_test_<run>_<worker>_<index>`) carry no lock that could prove their owner
+is gone. Those older names still require manual inspection before removal. If
+a name ever collides, the harness inspects `alembic_version` read-only,
+reports stale or unknown revisions, and refuses to drop, migrate, or stamp the
+foreign database. Remove an orphan manually only after confirming that no
+other run owns it.
 
 Never point `POSTGRES_TEST_DSN` at the daemon database from
 `~/.agent-queue/config.yaml`. The production-URL refusal, worker
