@@ -7,6 +7,8 @@ import subprocess
 import sys
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError
 
@@ -117,7 +119,13 @@ async def test_upgrade_applies_to_fresh_and_existing_schemas(legacy_schema):
 
     conn = await asyncpg.connect(dsn.replace("postgresql+asyncpg://", "postgresql://"))
     try:
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a0000000001b"
+        applied_revision = await conn.fetchval("SELECT version_num FROM alembic_version")
+        script = ScriptDirectory.from_config(Config(os.path.join(ROOT, "alembic.ini")))
+        assert applied_revision == script.get_current_head()
+        applied_history = {
+            revision.revision for revision in script.iterate_revisions(applied_revision, "base")
+        }
+        assert "a0000000001b" in applied_history
         columns = await conn.fetch(
             "SELECT column_name, is_nullable FROM information_schema.columns "
             "WHERE table_schema = 'public' AND table_name = $1",
