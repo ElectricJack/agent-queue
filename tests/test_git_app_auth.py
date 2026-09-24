@@ -65,6 +65,23 @@ def _git_push_case(tmp_path: Path) -> tuple[Path, Path, Path, str, str]:
     return checkout, target, trap, base, tip
 
 
+def _local_tls_context(tmp_path: Path) -> ssl.SSLContext:
+    certificate = tmp_path / "localhost.crt"
+    private_key = tmp_path / "localhost.key"
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-subj", "/CN=127.0.0.1", "-keyout", str(private_key), "-out", str(certificate),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls.load_cert_chain(certificate, private_key)
+    return tls
+
+
 class _BoundAppAccess:
     def __init__(
         self,
@@ -661,6 +678,142 @@ async def test_authenticated_acquisition_timeout_stops_after_one_retry(tmp_path,
     assert "phase=subprocess_spawn" in message
     assert "configured_budget=9.0s" in message
     assert "elapsed_in_run=" in message
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_retries_stalled_https_with_budget_left(
+    tmp_path, monkeypatch
+):
+    _checkout, source, _trap, oid, _tip = _git_push_case(tmp_path)
+    advertisement = subprocess.run(
+        ["git", "upload-pack", "--stateless-rpc", "--advertise-refs", str(source)],
+        check=True, capture_output=True,
+    ).stdout
+    advertisement = b"001e# service=git-upload-pack\n0000" + advertisement
+    requests = 0
+
+    async def respond(reader, writer):
+        nonlocal requests
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            requests += 1
+            if requests == 1:
+                # Accept TLS and the request, but never send an HTTP response.
+                await reader.read()
+            else:
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: application/x-git-upload-pack-advertisement\r\n"
+                    + f"Content-Length: {len(advertisement)}\r\nConnection: close\r\n\r\n".encode()
+                    + advertisement
+                )
+                await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(
+        respond, "127.0.0.1", 0, ssl=_local_tls_context(tmp_path)
+    )
+    port = server.sockets[0].getsockname()[1]
+    source_url = f"https://127.0.0.1:{port}/source.git"
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_APP_GIT_LOW_SPEED_TIME", 2)
+    monkeypatch.setitem(manager._SUBPROCESS_ENV, "GIT_HTTP_LOW_SPEED_LIMIT", "0")
+    monkeypatch.setitem(manager._SUBPROCESS_ENV, "GIT_HTTP_LOW_SPEED_TIME", "0")
+    monkeypatch.setattr(manager_module.random, "uniform", lambda _low, _high: 0.2)
+    original_attempt = manager._arun_authenticated_git_once
+    attempts = []
+    low_speed_failure = []
+    loop = asyncio.get_running_loop()
+    overall_deadline = loop.time() + 12
+
+    async def record_attempt(*args, **kwargs):
+        attempts.append((kwargs["attempt"], overall_deadline - loop.time()))
+        try:
+            return await original_attempt(*args, **kwargs)
+        except manager_module._AuthenticatedGitTimeout as exc:
+            low_speed_failure.append(str(exc))
+            raise
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git_once", record_attempt)
+    try:
+        output = await manager._arun_authenticated_git(
+            ["-c", "http.sslVerify=false", "-c", "protocol.version=0", "ls-remote",
+             source_url, "HEAD"],
+            home=tmp_path,
+            repository_url=source.as_uri(),  # local test seam; transport is real HTTPS
+            token=None,
+            deadline=overall_deadline,
+            budget_seconds=12,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert output == f"{oid}\tHEAD\n".encode()
+    assert requests == 2
+    assert [attempt for attempt, _remaining in attempts] == [1, 2]
+    assert attempts[1][1] > 8  # the retry keeps most of the original 12 seconds
+    assert len(low_speed_failure) == 1
+    assert "low-speed abort" in low_speed_failure[0]
+    assert "phase=git_communicate, attempt=1" in low_speed_failure[0]
+    assert "outer_deadline_expired=False" in low_speed_failure[0]
+
+
+@pytest.mark.asyncio
+async def test_authenticated_acquisition_allows_slow_progressing_https(tmp_path, monkeypatch):
+    _checkout, source, _trap, oid, _tip = _git_push_case(tmp_path)
+    advertisement = subprocess.run(
+        ["git", "upload-pack", "--stateless-rpc", "--advertise-refs", str(source)],
+        check=True, capture_output=True,
+    ).stdout
+    advertisement = b"001e# service=git-upload-pack\n0000" + advertisement
+    chunks = [advertisement[i:i + 8] for i in range(0, len(advertisement), 8)]
+    requests = 0
+
+    async def respond(reader, writer):
+        nonlocal requests
+        try:
+            await reader.readuntil(b"\r\n\r\n")
+            requests += 1
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/x-git-upload-pack-advertisement\r\n"
+                + f"Content-Length: {len(advertisement)}\r\nConnection: close\r\n\r\n".encode()
+            )
+            await writer.drain()
+            for chunk in chunks:
+                writer.write(chunk)
+                await writer.drain()
+                await asyncio.sleep(2.5 / len(chunks))
+        finally:
+            writer.close()
+
+    server = await asyncio.start_server(
+        respond, "127.0.0.1", 0, ssl=_local_tls_context(tmp_path)
+    )
+    port = server.sockets[0].getsockname()[1]
+    source_url = f"https://127.0.0.1:{port}/source.git"
+    manager = GitManager()
+    monkeypatch.setattr(manager, "_APP_GIT_LOW_SPEED_TIME", 2)
+    start = asyncio.get_running_loop().time()
+    try:
+        output = await manager._arun_authenticated_git(
+            ["-c", "http.sslVerify=false", "-c", "protocol.version=0", "ls-remote",
+             source_url, "HEAD"],
+            home=tmp_path,
+            repository_url=source.as_uri(),
+            token=None,
+            deadline=start + 10,
+            budget_seconds=10,
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+    assert output == f"{oid}\tHEAD\n".encode()
+    assert asyncio.get_running_loop().time() - start > 2
+    assert requests == 1
 
 
 @pytest.mark.asyncio
@@ -1621,32 +1774,9 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
         writer.close()
         await writer.wait_closed()
 
-    certificate = tmp_path / "localhost.crt"
-    private_key = tmp_path / "localhost.key"
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-days",
-            "1",
-            "-subj",
-            "/CN=127.0.0.1",
-            "-keyout",
-            str(private_key),
-            "-out",
-            str(certificate),
-        ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+    server = await asyncio.start_server(
+        respond, "127.0.0.1", 0, ssl=_local_tls_context(tmp_path)
     )
-    tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    tls.load_cert_chain(certificate, private_key)
-    server = await asyncio.start_server(respond, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
     repository = f"https://127.0.0.1:{port}/acme/widgets.git"
     remote_url = repository.replace("https://", "https://x-access-token@", 1)

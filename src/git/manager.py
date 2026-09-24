@@ -412,6 +412,10 @@ class GitManager:
     _APP_GIT_EXECUTABLE = "/usr/bin/git"
     _APP_CREDENTIAL_BROKER_TIMEOUT = 30.0
     _APP_GIT_RETRY_MIN_BUDGET = 1.0
+    # One byte per second only rejects a stalled HTTP transfer; a slow pack
+    # that continues to deliver bytes can use the full acquisition budget.
+    _APP_GIT_LOW_SPEED_LIMIT = 1
+    _APP_GIT_LOW_SPEED_TIME = 15
     # Environment overrides for all git/gh subprocess calls.  Prevents
     # interactive credential prompts that would otherwise write directly to
     # /dev/tty, bypassing capture_output and flooding the terminal (or
@@ -3679,6 +3683,21 @@ class GitManager:
             broker_budget: float | None = None
             phase = "budget_preflight"
             operation_timeout = asyncio.timeout_at(deadline)
+
+            def timeout_detail(failure_time: float, *, phase: str, broker_state: str) -> str:
+                detail = (
+                    f"phase={phase}, attempt={attempt}, "
+                    f"configured_budget={configured_budget:.1f}s, "
+                    f"budget_at_run_start={initial_remaining:.1f}s, "
+                    f"elapsed_in_run={failure_time - run_started:.1f}s, "
+                    f"remaining_budget={max(0.0, deadline - failure_time):.1f}s, "
+                    f"outer_deadline_expired={operation_timeout.expired()}, "
+                    f"broker_state={broker_state}"
+                )
+                if broker_timeout is not None:
+                    detail += f", broker_timeout={broker_timeout:.1f}s"
+                return detail
+
             try:
                 request_fd: int | None = None
                 if not uses_existing_auth:
@@ -3690,6 +3709,10 @@ class GitManager:
                     if uses_existing_auth
                     else self._app_git_environment(home)
                 )
+                # Git gives these environment variables precedence over -c.
+                # Keep inherited login settings from disabling the abort.
+                environment["GIT_HTTP_LOW_SPEED_LIMIT"] = str(self._APP_GIT_LOW_SPEED_LIMIT)
+                environment["GIT_HTTP_LOW_SPEED_TIME"] = str(self._APP_GIT_LOW_SPEED_TIME)
                 if request_fd is not None:
                     environment.update(
                         {
@@ -3707,6 +3730,8 @@ class GitManager:
                     "-c", "http.proxy=",
                     "-c", "https.proxy=",
                     "-c", "http.followRedirects=false",
+                    "-c", f"http.lowSpeedLimit={self._APP_GIT_LOW_SPEED_LIMIT}",
+                    "-c", f"http.lowSpeedTime={self._APP_GIT_LOW_SPEED_TIME}",
                     "-c", "protocol.allow=never",
                     "-c", "protocol.https.allow=always",
                     "-c", "protocol.ext.allow=never",
@@ -3791,18 +3816,10 @@ class GitManager:
                     raise
                 detail = _safe_authenticated_git_detail(str(exc), token)
                 if isinstance(exc, asyncio.TimeoutError):
-                    timeout_detail = (
-                        f"phase={phase}, attempt={attempt}, "
-                        f"configured_budget={configured_budget:.1f}s, "
-                        f"budget_at_run_start={initial_remaining:.1f}s, "
-                        f"elapsed_in_run={failure_time - run_started:.1f}s, "
-                        f"remaining_budget={max(0.0, deadline - failure_time):.1f}s, "
-                        f"outer_deadline_expired={operation_timeout.expired()}, "
-                        f"broker_state={broker_state}"
+                    timeout_detail_text = timeout_detail(
+                        failure_time, phase=phase, broker_state=broker_state
                     )
-                    if broker_timeout is not None:
-                        timeout_detail += f", broker_timeout={broker_timeout:.1f}s"
-                    detail = f"{timeout_detail}; {detail}" if detail else timeout_detail
+                    detail = f"{timeout_detail_text}; {detail}" if detail else timeout_detail_text
                 suffix = f": {detail}" if detail else ""
                 if stderr:
                     tail = _safe_authenticated_git_detail(
@@ -3821,6 +3838,21 @@ class GitManager:
                 if broker_channel is not None:
                     broker_channel.close()
             if process.returncode != 0 or (repository_url.startswith("https://") and not served):
+                if process.returncode != 0 and b"Operation too slow. Less than " in stderr:
+                    failure_time = loop.time()
+                    broker_state = "not_started" if uses_existing_auth else (
+                        "served" if served else "not_served"
+                    )
+                    tail = _safe_authenticated_git_detail(
+                        stderr.decode("utf-8", errors="replace"), token
+                    )
+                    raise _AuthenticatedGitTimeout(
+                        "authenticated Git acquisition failed: low-speed abort: "
+                        + timeout_detail(
+                            failure_time, phase="git_communicate", broker_state=broker_state
+                        )
+                        + (f"; stderr tail: {tail}" if tail else "")
+                    )
                 reasons = []
                 if process.returncode != 0:
                     reasons.append(f"git exited with returncode {process.returncode}")
