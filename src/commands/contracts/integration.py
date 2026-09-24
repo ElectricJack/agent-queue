@@ -41,6 +41,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "delivery_receipts",
         "integration_seal",
         "integration_build_candidate",
+        "integration_repair_close_current",
         "integration_ci_evidence",
         "integration_repair_start",
         "integration_repair_dispatch",
@@ -353,6 +354,7 @@ class IntegrationPromoteMainValue(CommandValue):
 
 class IntegrationBuildCandidateArgs(CommandArgs):
     batch_id: str = Field(min_length=1)
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 class IntegrationBuildCandidateValue(CommandValue):
@@ -363,6 +365,21 @@ class IntegrationBuildCandidateValue(CommandValue):
     branch: str | None = None
     pr_url: str | None = None
     member_ordinal: int | None = None
+
+
+class IntegrationRepairCloseCurrentArgs(CommandArgs):
+    operation_id: str = Field(min_length=1)
+    stage: Literal[0, 1]
+    task_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    instance_token: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    fence_token: int = Field(ge=0)
+
+
+class IntegrationRepairCloseCurrentValue(CommandValue):
+    batch_id: str | None = None
+    revision: int | None = None
 
 
 class IntegrationCIEvidenceArgs(CommandArgs):
@@ -1289,6 +1306,15 @@ INTEGRATION_BUILD_CANDIDATE = _root_subject_contract(
     "Build exact root candidate",
 )
 
+INTEGRATION_REPAIR_CLOSE_CURRENT = _root_subject_contract(
+    "integration_repair_close_current",
+    IntegrationRepairCloseCurrentArgs,
+    IntegrationRepairCloseCurrentValue,
+    ("current", "not_batch", "stale"),
+    frozenset({"current", "not_batch"}),
+    "Resolve exact current repair close",
+)
+
 INTEGRATION_CI_EVIDENCE = _root_subject_contract(
     "integration_ci_evidence",
     IntegrationCIEvidenceArgs,
@@ -1722,6 +1748,18 @@ async def _build_candidate_adapter(
     )
 
 
+async def _repair_close_current_adapter(
+    args: IntegrationRepairCloseCurrentArgs, ctx: CommandContext | None
+) -> CommandResult:
+    return await _hierarchy_adapter(
+        "integration_repair_close_current",
+        args,
+        ctx,
+        IntegrationRepairCloseCurrentValue,
+        {"current", "not_batch", "stale"},
+    )
+
+
 async def _ci_evidence_adapter(
     args: IntegrationCIEvidenceArgs, ctx: CommandContext | None
 ) -> CommandResult:
@@ -2152,6 +2190,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_PROMOTE_MAIN, _promote_main_adapter),
         (INTEGRATION_CLEANUP, _cleanup_adapter),
         (INTEGRATION_BUILD_CANDIDATE, _build_candidate_adapter),
+        (INTEGRATION_REPAIR_CLOSE_CURRENT, _repair_close_current_adapter),
         (INTEGRATION_CI_EVIDENCE, _ci_evidence_adapter),
         (INTEGRATION_RELEASE, _release_adapter),
         (INTEGRATION_REPAIR_START, _repair_start_adapter),

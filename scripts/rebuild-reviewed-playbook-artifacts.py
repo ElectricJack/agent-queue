@@ -64,6 +64,9 @@ SHIPPED = {
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
+    "agent-queue-root-train": (
+        "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md"
+    ),
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
@@ -268,6 +271,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_assignment_routing_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
+    if playbook_id == "agent-queue-root-train":
+        return _root_integration_train_body(source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
@@ -419,6 +424,50 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                                               else failed) for name in (
                            "dispatched", "already_dispatched", "writer_reused", "busy",
                            "configuration_blocked", "stale", "human_required", "runtime_error")}}
+
+    rule = "continue-closed-root-repair"
+    done, failed = terminals(rule)
+    current, build, ci, dispatch = (
+        f"{rule}--current", f"{rule}--build", f"{rule}--ci", f"{rule}--dispatch"
+    )
+    rules.append({"id": rule, "name": rule,
+                  "trigger": {"event_type": "integration.repair_delegate_closed"},
+                  "entry_step": current, "source": ref(rule)})
+    steps[current] = {"type": "command", "rule": rule, "title": "current",
+                      "source": ref(rule), "command": "integration_repair_close_current",
+                      "save_result_as": "closed_repair",
+                      "inputs": {name: event(name) for name in (
+                          "operation_id", "stage", "task_id", "session_id",
+                          "instance_token", "workspace_id", "fence_token")},
+                      "transitions": {"current": build, "not_batch": done,
+                                      "stale": failed, "runtime_error": failed}}
+    steps[build] = {"type": "command", "rule": rule, "title": "build",
+                    "source": ref(rule), "command": "integration_build_candidate",
+                    "save_result_as": "repaired_candidate",
+                    "inputs": {"batch_id": bound("closed_repair", "batch_id"),
+                               "expected_revision": bound("closed_repair", "revision")},
+                    "transitions": {"built": ci, "already_built": ci, "empty": done,
+                                    "conflict": dispatch,
+                                    **{name: failed for name in (
+                                        "source_moved", "base_moved", "stale_revision",
+                                        "wait", "human_required", "configuration_blocked",
+                                        "runtime_error")}}}
+    steps[ci] = {"type": "command", "rule": rule, "title": "ci",
+                 "source": ref(rule), "command": "integration_ci_evidence",
+                 "inputs": {"batch_id": bound("closed_repair", "batch_id"),
+                            "revision": bound("repaired_candidate", "revision")},
+                 "transitions": {"green": done, "red": done, "pending": done,
+                                 **{name: failed for name in (
+                                     "full_suite_required", "stale_subject",
+                                     "configuration_blocked", "runtime_error")}}}
+    steps[dispatch] = {"type": "command", "rule": rule, "title": "dispatch-conflict",
+                       "source": ref(rule), "command": "integration_repair_dispatch",
+                       "inputs": {"operation_id": event("operation_id")},
+                       "transitions": {name: (
+                           done if name in {"dispatched", "already_dispatched", "writer_reused"}
+                           else failed) for name in (
+                               "dispatched", "already_dispatched", "writer_reused", "busy",
+                               "configuration_blocked", "stale", "human_required", "runtime_error")}}
 
     rule = "dispatch-debug"
     done, failed = terminals(rule)

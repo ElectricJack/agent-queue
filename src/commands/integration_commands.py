@@ -852,6 +852,11 @@ class IntegrationCommandsMixin:
             batch["project_id"], "integration_build_candidate"
         ):
             return _failure("unauthorized", "caller cannot build this root batch")
+        if (
+            request.expected_revision is not None
+            and batch["current_revision"] != request.expected_revision
+        ):
+            return _failure("stale_revision", "candidate revision changed before build")
         service = await self._integration_candidate_service(batch)
         moved_main = False
         if batch["lifecycle"] == "building":
@@ -901,9 +906,99 @@ class IntegrationCommandsMixin:
                 result = await service.rebuild(
                     request.batch_id, int(batch["current_revision"]), new_base
                 )
+        if (
+            request.expected_revision is not None
+            and result.revision != request.expected_revision
+        ):
+            return _failure("stale_revision", "candidate revision changed during build")
         return {
             "success": result.outcome in {"empty", "built", "already_built"},
             **result.model_dump(mode="json"),
+        }
+
+    async def _cmd_integration_repair_close_current(self, args: dict) -> dict:
+        """Resolve a closed root writer only while its adopted revision is current."""
+        from pydantic import ValidationError
+        from sqlalchemy import select
+
+        from src.commands.contracts.integration import IntegrationRepairCloseCurrentArgs
+        from src.database.tables import (
+            integration_candidate_revisions,
+            integration_outbox,
+            integration_repair_stages,
+        )
+
+        try:
+            request = IntegrationRepairCloseCurrentArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("runtime_error", f"invalid repair close request: {exc}")
+        operation, authorized = await self._repair_command_authorized(
+            request.operation_id, "integration_repair_close_current"
+        )
+        if not authorized:
+            return _failure("unauthorized", "caller cannot resolve this repair close")
+        if operation is None:
+            return _failure("stale", "repair operation does not exist")
+        event_id = (
+            f"repair-delegate-closed-{request.operation_id}-{request.stage}-{request.task_id}"
+            f"-{request.fence_token}-{request.session_id}"
+        )
+        async with self.db._engine.connect() as conn:
+            event = (await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.id == event_id,
+                    integration_outbox.c.event_type == "integration.repair_delegate_closed",
+                )
+            )).mappings().one_or_none()
+            expected = request.model_dump(mode="json")
+            if event is None or any(
+                event["payload"].get(key) != value for key, value in expected.items()
+            ):
+                return _failure("stale", "repair close event does not match its fence")
+            if operation["target_kind"] != "batch":
+                return {"success": True, "outcome": "not_batch"}
+            batch = await self.db.get_integration_batch(operation["batch_id"])
+            if batch is None or event["project_id"] != batch["project_id"]:
+                return _failure("stale", "root batch does not match repair close")
+            stage = (await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == request.operation_id,
+                    integration_repair_stages.c.ordinal == request.stage,
+                )
+            )).mappings().one_or_none()
+            revision = event["payload"].get("revision")
+            candidate = (await conn.execute(
+                select(integration_candidate_revisions).where(
+                    integration_candidate_revisions.c.batch_id == batch["id"],
+                    integration_candidate_revisions.c.revision == revision,
+                )
+            )).mappings().one_or_none() if isinstance(revision, int) else None
+        delegate = await self.db.get_task(request.task_id)
+        subject = stage["current_subject"] if stage is not None else None
+        if (
+            operation["state"] not in {"active", "escalated"}
+            or operation["active_stage"] != request.stage
+            or stage is None
+            or stage["state"] not in {"active", "awaiting_completion"}
+            or stage["writer_kind"] != "repair_delegate"
+            or stage["repair_task_id"] != request.task_id
+            or delegate is None
+            or delegate.status is not TaskStatus.COMPLETED
+            or event["payload"].get("batch_id") != batch["id"]
+            or revision != batch["current_revision"]
+            or candidate is None
+            or candidate["head_sha"] != event["payload"].get("head_sha")
+            or subject != {
+                "kind": "batch", "revision": revision,
+                "candidate_sha": candidate["head_sha"],
+            }
+        ):
+            return _failure("stale", "repair close is no longer the current candidate")
+        return {
+            "success": True,
+            "outcome": "current",
+            "batch_id": batch["id"],
+            "revision": revision,
         }
 
     async def _cmd_integration_ci_evidence(self, args: dict) -> dict:

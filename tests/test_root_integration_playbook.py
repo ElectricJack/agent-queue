@@ -37,6 +37,7 @@ from tests.playbook_v2_engine_helpers import (
 
 
 FIXTURE = Path("tests/fixtures/playbooks/historical-v2/root-integration-train/artifact.json")
+CURRENT_FIXTURE = Path("tests/fixtures/playbooks/v2/agent-queue-root-train/artifact.json")
 
 
 def _artifact():
@@ -77,6 +78,98 @@ def test_candidate_result_routes_are_durable_and_server_derive_repair_stage():
     conflict_step = artifact.steps[construct.transitions["conflict"]]
     assert conflict_step.command == "integration_repair_dispatch"
     assert set(conflict_step.inputs) == {"operation_id"}
+
+
+async def test_reviewed_root_red_repair_close_green_continues_automatically(
+    command_handler_factory, monkeypatch
+):
+    handler = await command_handler_factory()
+    artifact = load_definition_json(CURRENT_FIXTURE.read_text(encoding="utf-8"))
+    calls = []
+
+    async def execute(command, args):
+        calls.append((command, args))
+        if command == "integration_repair_dispatch":
+            return {"success": True, "outcome": "dispatched", "operation_id": "op", "stage": 0}
+        if command == "integration_repair_close_current":
+            if args["fence_token"] != 7:
+                return {"success": False, "outcome": "stale"}
+            return {"success": True, "outcome": "current", "batch_id": "batch", "revision": 1}
+        if command == "integration_build_candidate":
+            return {"success": True, "outcome": "already_built", "batch_id": "batch",
+                    "revision": 1, "head_sha": "c" * 40}
+        if command == "integration_ci_evidence":
+            return {"success": True, "outcome": "green", "batch_id": "batch",
+                    "revision": 1}
+        if command == "integration_promote_main":
+            return {"success": True, "outcome": "promoted", "batch_id": "batch",
+                    "revision": 1}
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr(handler, "execute", execute)
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS,
+            clock=lambda: 123.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler,
+            db=handler.db,
+        ),
+        runs=runs,
+        waits=runs,
+        activations=StubActivations([artifact_ref_for(artifact)]),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        project_id="agent-queue",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=[
+            "integration_repair_dispatch", "integration_repair_close_current",
+            "integration_build_candidate", "integration_ci_evidence",
+            "integration_promote_main",
+        ]),
+    )
+    close = {
+        "event_type": "integration.repair_delegate_closed", "event_id": "closed-1",
+        "project_id": "agent-queue", "operation_id": "op", "stage": 0,
+        "task_id": "repair-task", "session_id": "session", "instance_token": "instance",
+        "workspace_id": "workspace", "fence_token": 7,
+        "batch_id": "batch", "revision": 1, "head_sha": "c" * 40,
+    }
+    set_handler_provider(lambda: handler)
+    try:
+        red = await engine.dispatch_event({
+            "event_type": "integration.candidate_red", "event_id": "red-0",
+            "project_id": "agent-queue", "operation_id": "op", "batch_id": "batch",
+            "revision": 0, "head_sha": "b" * 40,
+        }, principal)
+        continued = await engine.dispatch_event(close, principal)
+        green = await engine.dispatch_event({
+            "event_type": "integration.candidate_green", "event_id": "green-1",
+            "project_id": "agent-queue", "operation_id": "op", "batch_id": "batch",
+            "revision": 1, "head_sha": "c" * 40,
+        }, principal)
+        stale = await engine.dispatch_event({
+            **close, "event_id": "closed-stale", "fence_token": 6,
+        }, principal)
+    finally:
+        set_handler_provider(None)
+    assert red.rules_selected == ("repair-red-candidate",)
+    assert continued.rules_selected == ("continue-closed-root-repair",)
+    assert green.rules_selected == ("promote-green-candidate",)
+    assert stale.rules_selected == ("continue-closed-root-repair",)
+    assert [command for command, _ in calls] == [
+        "integration_repair_dispatch", "integration_repair_close_current",
+        "integration_build_candidate", "integration_ci_evidence",
+        "integration_promote_main", "integration_repair_close_current",
+    ]
+    assert calls[2][1] == {"batch_id": "batch", "expected_revision": 1}
+    assert calls[3][1] == {"batch_id": "batch", "revision": 1}
+    assert calls[4][1] == {"batch_id": "batch", "revision": 1}
+    assert [snapshot.lifecycle.value for snapshot in runs.snapshots.values()] == [
+        "completed", "completed", "completed", "failed",
+    ]
+    await handler.db.close()
 
 
 async def test_due_and_cleanup_events_run_real_executor_and_subject_handlers(
@@ -551,7 +644,14 @@ async def test_default_build_command_constructs_repository_bound_candidate_servi
 
     monkeypatch.setattr(CandidateService, "build", built)
 
-    result = await handler._cmd_integration_build_candidate({"batch_id": "build-batch"})
+    stale = await handler._cmd_integration_build_candidate({
+        "batch_id": "build-batch", "expected_revision": 1,
+    })
+    assert stale["outcome"] == "stale_revision"
+    resolver.assert_not_awaited()
+    result = await handler._cmd_integration_build_candidate({
+        "batch_id": "build-batch", "expected_revision": 0,
+    })
 
     assert result["outcome"] == "built"
     resolver.assert_awaited_once()

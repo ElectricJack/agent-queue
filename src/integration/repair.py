@@ -1354,6 +1354,37 @@ class RepairService:
             project_id = str(scope["project_id"])
             event_id = (f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"
                         f"-{fence_token}-{session_id}")
+            event_payload = {
+                "operation_id": operation_id,
+                "stage": stage,
+                "task_id": repair_task_id,
+                "session_id": session_id,
+                "instance_token": instance_token,
+                "workspace_id": workspace_id,
+                "fence_token": fence_token,
+            }
+            if scope["target_kind"] == "batch":
+                current = (await conn.execute(
+                    select(
+                        integration_repair_operations.c.batch_id,
+                        integration_repair_stages.c.current_subject,
+                    ).select_from(
+                        integration_repair_operations.join(
+                            integration_repair_stages,
+                            integration_repair_stages.c.operation_id
+                            == integration_repair_operations.c.id,
+                        )
+                    ).where(
+                        integration_repair_operations.c.id == operation_id,
+                        integration_repair_stages.c.ordinal == stage,
+                    )
+                )).one()
+                subject = current.current_subject
+                event_payload.update(
+                    batch_id=current.batch_id,
+                    revision=subject["revision"],
+                    head_sha=subject["candidate_sha"],
+                )
             await enqueue_integration_event(
                 conn,
                 event_id=event_id,
@@ -1361,15 +1392,7 @@ class RepairService:
                            f":{fence_token}:{session_id}"),
                 project_id=project_id,
                 event_type="integration.repair_delegate_closed",
-                payload={
-                    "operation_id": operation_id,
-                    "stage": stage,
-                    "task_id": repair_task_id,
-                    "session_id": session_id,
-                    "instance_token": instance_token,
-                    "workspace_id": workspace_id,
-                    "fence_token": fence_token,
-                },
+                payload=event_payload,
                 available_at=completed_at,
             )
         await self.db.log_blocked_flips(transition.flipped)
