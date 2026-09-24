@@ -509,7 +509,7 @@ async def test_sweep_drops_only_databases_whose_owner_lock_is_free(monkeypatch):
         f"aq_test_ownv2_{_TOKEN}_run_gw3",  # this process
         "aq_test_aqtest_run_abc_gw0",  # legacy: no owner lock to prove anything
         "aq_test_aq_test_aqtest_run_gw0_scratch_mig_t1",  # legacy scratch
-        f"aq_test_poolv2_{dead}_gw0_0",  # lease pool: tests/db_fixtures.py sweeps it
+        f"aq_test_poolv2_{dead}_gw0_0",  # earlier lease-pool shape: no owner lock
         "aq_tmpl_0123abcd",  # schema template
         "agent_queue",  # operator database
         "postgres",

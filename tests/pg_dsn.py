@@ -14,10 +14,10 @@ teardown has finished. The server drops the lock when that connection closes,
 however the process ended, so a free lock proves the owner is gone. A lock
 lost while the process lives on is taken back at once, and no database is
 created until it is. Every new worker database starts one bounded background
-sweep of ``aq_test_ownv2_*`` names whose owner lock is free. Operator
-databases, schema templates, lease-pool clones (``tests/db_fixtures.py`` reaps
-those) and older unversioned ``aq_test_*`` names never match it: they carry no
-lock that could prove anything.
+sweep of ``aq_test_ownv2_*`` names whose owner lock is free; that covers the
+lease-pool clones ``tests/db_fixtures.py`` names with :func:`owned_name` too.
+Operator databases, schema templates and older unversioned ``aq_test_*`` names
+never match it: they carry no lock that could prove anything.
 
 An unexpected existing target is treated as an ownership collision. Its
 Alembic state is inspected read-only for an actionable stale/unknown-revision
@@ -349,6 +349,16 @@ async def _hold_owner_lock(admin_dsn: str) -> None:
         )
     else:
         await _OWNER.ensure_held()
+
+
+def owned_name(*parts: str) -> str:
+    """Name for a database this process creates by other means (lease-pool clones)."""
+    return _owned_name(*parts)
+
+
+async def hold_owner_lock(base_dsn: str) -> None:
+    """Take, or confirm, this process's owner lock before such a ``CREATE DATABASE``."""
+    await _hold_owner_lock(_maintenance_dsn(base_dsn))
 
 
 async def _orphan_groups(conn, own_token: str) -> dict[str, list[str]]:

@@ -168,40 +168,36 @@ schema-mutating scratch test therefore creates a unique database, named
 drops only databases that the current process successfully created.
 
 A process killed before that teardown (SIGTERM, SIGKILL, a `timeout`) cannot
-clean up, so its databases carry a liveness proof: a PostgreSQL advisory lock
-on the maintenance `postgres` database, which the server releases when the
-holding connection closes, however the process ended.
+clean up, so its databases carry a liveness proof. Before its first
+`CREATE DATABASE` the process takes a PostgreSQL advisory lock keyed by its
+owner token, on a dedicated connection to the maintenance `postgres` database
+(application name `aq-test-db-owner`). It keeps the lock until teardown has
+dropped everything it created. The server releases the lock when that
+connection closes, however the process ended. If the connection drops while
+the process lives on (a test-server restart), the process takes the lock back
+at once and refuses to create another database until it has. The lease pool's
+template clones (`tests/db_fixtures.py`) are named under the same token
+(`aq_test_ownv2_<owner>_pool_<pool>_<worker>_<index>`), so the one lock covers
+them too.
 
-- **Worker and scratch databases** (`tests/pg_dsn.py`). The process takes a
-  lock keyed by its owner token on a dedicated connection (application name
-  `aq-test-db-owner`) before its first `CREATE DATABASE`, and keeps it until
-  teardown has dropped everything it created. If that connection drops while
-  the process lives on (a test-server restart), the process takes the lock back
-  at once and refuses to create another database until it has. Each new
-  worker database starts
-  one background sweep, with one sweeper per server at a time, that drops
-  `aq_test_ownv2_*` databases whose owner lock is free: at most eight per pass,
-  with a 30 second timeout per drop and no `WITH (FORCE)`, so an orphan that
-  somebody is still connected to stays put. The sweep never delays test
-  startup. Teardown cancels an unfinished sweep, and orphans it could not drop
-  are reported as a warning and left for a later run.
-- **Lease-pool clones** (`tests/db_fixtures.py`). They use
-  `aq_test_poolv2_<token>_<worker>_<index>` names and hold a lock for the
-  pool's lifetime. At pool startup, one worker attempts to remove matching
-  clones whose owner lock has gone away: at most eight databases per startup,
-  with a five second timeout per drop.
-
+Each new worker database starts one background sweep, with one sweeper per
+server at a time, that drops `aq_test_ownv2_*` databases whose owner lock is
+free: at most eight per pass, with a 30 second timeout per drop and no
+`WITH (FORCE)`, so an orphan that somebody is still connected to stays put.
+The sweep never delays test startup. Teardown cancels an unfinished sweep, and
+orphans it could not drop are reported as a warning and left for a later run.
 `DROP DATABASE` waits for a checkpoint, so a busy PostgreSQL checkpointer can
-prevent either sweep from dropping anything; failures warn and remain for a
-later run. Neither sweep touches a name outside those two versioned shapes:
-operator databases, `aq_tmpl_*` schema templates and names from before these
-schemes (`aq_test_<run>_<worker>`, `aq_test_aq_test_*_scratch_*`,
-`aq_test_<run>_<worker>_<index>`) carry no lock that could prove their owner
-is gone. Those older names still require manual inspection before removal. If
-a name ever collides, the harness inspects `alembic_version` read-only,
-reports stale or unknown revisions, and refuses to drop, migrate, or stamp the
-foreign database. Remove an orphan manually only after confirming that no
-other run owns it.
+keep the sweep from dropping anything.
+
+The sweep never touches a name outside that versioned shape: operator
+databases, `aq_tmpl_*` schema templates and names from before this scheme
+(`aq_test_<run>_<worker>`, `aq_test_aq_test_*_scratch_*`,
+`aq_test_<run>_<worker>_<index>`, `aq_test_poolv2_*`) carry no lock that could
+prove their owner is gone. Those older names still require manual inspection
+before removal. If a name ever collides, the harness inspects
+`alembic_version` read-only, reports stale or unknown revisions, and refuses to
+drop, migrate, or stamp the foreign database. Remove an orphan manually only
+after confirming that no other run owns it.
 
 Never point `POSTGRES_TEST_DSN` at the daemon database from
 `~/.agent-queue/config.yaml`. The production-URL refusal, worker
