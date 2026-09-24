@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 375,
+    "leaf_commands": 377,
     "registration": {
-      "generated": 262,
-      "handwritten": 113
+      "generated": 263,
+      "handwritten": 114
     },
     "ownership": {
-      "core": 336,
+      "core": 338,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 374
+      "supported": 376
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 262,
-      "registration": 99
+      "dispatch": 263,
+      "registration": 100
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 315
+      "untested": 317
     }
   },
   "commands": [
@@ -3367,6 +3367,37 @@
           "project_id",
           "--expected-generation",
           "--reason"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration record-noop",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_record_noop",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "child_task_id",
+          "--expected-head-sha"
         ],
         "optional": [
           "--json",
@@ -9569,6 +9600,40 @@
       "parameters": {
         "required": [
           "--intent-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-record-noop",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_record_noop",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--child-task-id",
+          "--expected-head-sha"
         ],
         "optional": [
           "--json",

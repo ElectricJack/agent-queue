@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-75 commands are registered.
+76 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -100,6 +100,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) | Integration Reconcile Unmaterialized | Authenticated hierarchical integration operational control. |
+| [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
 | [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) | Recover unwritten conflict resolution | Supersede a malformed reservation only after an operator proves no remote write occurred. |
