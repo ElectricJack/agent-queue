@@ -28,7 +28,7 @@ import uuid
 import warnings
 
 from src.database.schema_key import schema_key_slug
-from tests.pg_dsn import drop_databases, ensure_worker_postgres_dsn
+from tests.pg_dsn import _owned_name, _run_id, drop_databases, ensure_worker_postgres_dsn
 
 #: Advisory-lock key guarding template construction across xdist workers.
 #: Arbitrary but fixed; scoped to the maintenance database it is taken on.
@@ -462,14 +462,17 @@ class LeasePool:
     def __init__(self, base_dsn: str, worker: str, size: int = POOL_SIZE):
         self._base = base_dsn
         self._worker = _IDENT_RE.sub("_", worker) or "master"
-        self._run_id = uuid.uuid4().hex[:12]
+        # Preserve the per-pool nonce while exposing the aq test run token.
+        # A reaper can now recognize every database owned by a live slot.
+        self._run_id = _run_id()
+        self._pool_id = uuid.uuid4().hex[:12]
         self._size = size
         self._free: list[str] = []
         self._created: set[str] = set()
         self._next = 0
 
     def _name(self, index: int) -> str:
-        return f"aq_test_{self._run_id}_{self._worker}_{index}"
+        return _owned_name(self._run_id, self._pool_id, self._worker, str(index))
 
     async def acquire(self) -> str:
         """Lease a clean database; returns its DSN."""

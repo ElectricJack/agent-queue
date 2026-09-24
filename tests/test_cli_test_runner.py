@@ -368,9 +368,14 @@ class TestCommand:
         monkeypatch.setenv("AQ_DATABASE_URL", "refuse-worker-database")
         monkeypatch.setenv("AGENT_QUEUE_DB", "refuse-worker-database")
         seen: list[dict[str, str]] = []
+        slot_tokens: list[str] = []
 
         def _capture(_argv, *, env):
             seen.append(env)
+            from src.resources.semaphore import SlotSemaphore
+
+            snapshot = SlotSemaphore(isolated_test_slots, 1).snapshot()
+            slot_tokens.append(snapshot["slots"][0]["holder"]["test_run_id"])
             return 0
 
         monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _capture)
@@ -379,6 +384,7 @@ class TestCommand:
         assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
         assert len(seen) == 2
         assert seen[0]["AQ_TEST_RUN_ID"] != seen[1]["AQ_TEST_RUN_ID"]
+        assert slot_tokens == [child_env["AQ_TEST_RUN_ID"] for child_env in seen]
         for child_env in seen:
             assert child_env["AQ_DB_SCOPE"] == "worker"
             assert child_env["AQ_DATABASE_URL"] == "refuse-worker-database"

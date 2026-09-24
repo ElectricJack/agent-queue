@@ -398,6 +398,38 @@ is always the operator's next question.
 
 ---
 
+## Reaping abandoned PostgreSQL test databases
+
+An interrupted pytest process can leave its `aq_test_*` databases behind.
+Schema templates named `aq_tmpl_<slug>` also remain after their source schema
+is no longer present in any linked checkout. Run the standalone operator tool
+from the repository root with a test-server maintenance DSN:
+
+```bash
+export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+python -m scripts.reap_test_databases
+# Review the plan; when no test runs are active:
+python -m scripts.reap_test_databases --apply
+```
+
+The default is a read-only dry run that lists each test/template database and
+why it would be dropped or kept. `--apply` requires all `aq test` slots to be
+free, reserves them for the cleanup, and refuses while a bare pytest process
+is running. It also rechecks each database's identity and connections just
+before a plain `DROP DATABASE`; it never uses `WITH (FORCE)`. The database
+configured in `~/.agent-queue/config.yaml`, `postgres`, `template0`, and
+`template1` are protected. The minimum age is six hours by default;
+`--min-age-hours` can raise it. Age comes from the status-change time of the
+database's `PG_VERSION` file, so missing or recent metadata keeps a database.
+
+Template retention checks every linked Git worktree. Pass `--checkout PATH`
+once for each independent clone that may produce a different schema slug.
+If a checkout cannot be inspected, the tool keeps all templates and reports
+why. Cleanup is operator-invoked; tests continue to remove only their own
+databases during normal teardown.
+
+---
+
 ## Verification
 
 [The verification note](../analysis/2026-09-01-resource-gating-verification.md) records the
