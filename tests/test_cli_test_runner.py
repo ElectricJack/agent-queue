@@ -17,6 +17,7 @@ from src.cli.test_runner import (
     _caps,
     _compose_pytest_argv,
     _has_flag,
+    _is_full_suite,
     _missing_paths,
     _positional_args,
     _run_forwarding_signals,
@@ -560,3 +561,376 @@ class TestPerfSuiteStaysOutOfTheDefaultRun:
             f"-m 'not perf'; add pytest.mark.perf to their pytestmark\n"
             f"{proc.stdout}{proc.stderr}"
         )
+
+
+def _fake_project(root, *, modules: int = 10, subpackage: int = 2):
+    """A project whose pytest ``testpaths`` hold ``modules + subpackage`` test modules."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text('[tool.pytest.ini_options]\ntestpaths = ["tests"]\n')
+    tests = root / "tests"
+    (tests / "sub").mkdir(parents=True)
+    (tests / "conftest.py").write_text("")
+    for index in range(modules):
+        (tests / f"test_m{index}.py").write_text("")
+    for index in range(subpackage):
+        (tests / "sub" / f"test_s{index}.py").write_text("")
+    return root
+
+
+class TestFullSuiteClassification:
+    """Which invocations count as "the whole suite".
+
+    Full-suite runs are the ones that held three of four slots for over an
+    hour on 2026-09-24; a slice of the suite, however it is spelled, must
+    never be made to queue behind one.
+    """
+
+    @pytest.fixture
+    def project(self, tmp_path):
+        return _fake_project(tmp_path)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("tests/",),
+            ("tests",),
+            (".",),
+            ("-x",),  # no path: pytest collects testpaths
+            ("tests/", "-x", "--tb", "short", "-p", "no:cacheprovider"),
+            ("tests/", "-k", "not slow"),  # everything but a slice
+            ("tests/", "-knot slow and not flaky"),
+            ("-m", "", "tests/"),  # --aq-all-markers' spelling: no filter
+            ("-m", "not perf", "tests"),
+            ("--lf", "tests/"),  # nothing recorded: pytest runs everything
+        ],
+    )
+    def test_whole_suite_selections(self, project, args):
+        assert _is_full_suite(args, cwd=project)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ("tests/test_m0.py",),
+            ("tests/sub",),
+            ("tests/test_m0.py::test_x",),
+            ("tests/", "-k", "claim"),  # the documented "slice of the suite"
+            ("tests/", "-kclaim or pools"),
+            ("tests/", "-k=claim"),
+            ("-m", "perf", "tests/"),
+            ("--co", "tests/"),
+            ("--collect-only", "-q"),
+            ("tests/", "-k", "unbalanced ("),  # pytest refuses it before running
+        ],
+    )
+    def test_slices_are_focused(self, project, args):
+        assert not _is_full_suite(args, cwd=project)
+
+    def test_a_shell_expanded_glob_of_most_modules_is_the_full_suite(self, project):
+        every_top_level_module = tuple(f"tests/test_m{i}.py" for i in range(10))
+        assert _is_full_suite(every_top_level_module, cwd=project)
+        an_area = tuple(f"tests/test_m{i}.py" for i in range(3))
+        assert not _is_full_suite(an_area, cwd=project)
+
+    def test_node_ids_never_count_toward_coverage(self, project):
+        one_test_per_module = tuple(f"tests/test_m{i}.py::test_x" for i in range(10))
+        assert not _is_full_suite(one_test_per_module, cwd=project)
+
+    def test_last_failed_with_failures_on_record_is_a_slice(self, project):
+        cache = project / ".pytest_cache" / "v" / "cache"
+        cache.mkdir(parents=True)
+        (cache / "lastfailed").write_text('{"tests/test_m0.py::test_x": true}')
+        assert not _is_full_suite(("--lf",), cwd=project)
+        (cache / "lastfailed").write_text("{}")
+        assert _is_full_suite(("--lf",), cwd=project)
+
+    def test_a_bare_run_below_the_rootdir_collects_only_that_directory(self, project):
+        assert not _is_full_suite(("-x",), cwd=project / "tests" / "sub")
+        assert _is_full_suite(("-x",), cwd=project / "tests")
+
+    def test_without_pytest_config_only_the_whole_rootdir_counts(self, tmp_path):
+        (tmp_path / "pkg").mkdir()
+        assert _is_full_suite((".",), cwd=tmp_path)
+        assert not _is_full_suite(("pkg",), cwd=tmp_path)
+
+    def test_this_repository(self):
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent
+        assert _is_full_suite(("tests/",), cwd=root)
+        assert not _is_full_suite(("tests/test_cli_test_runner.py",), cwd=root)
+        assert not _is_full_suite(("tests/", "-k", "schema_setup or run_schema"), cwd=root)
+
+
+def _flat(output: str) -> str:
+    """CLI output with Rich's 80-column wrapping undone."""
+    return " ".join(output.split())
+
+
+def _hold(lock_dir, slots: int, **meta):
+    """Take a slot of the semaphore at *lock_dir* as someone else would."""
+    from src.resources.semaphore import SlotSemaphore
+
+    held = SlotSemaphore(lock_dir, slots).try_acquire(meta)
+    assert held is not None
+    return held[1]
+
+
+class TestOneFullSuiteRunAtATime:
+    @pytest.fixture
+    def box(self, runner, monkeypatch, tmp_path):
+        """A fake project as cwd, private locks, 2 slots and a fast poll."""
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        project = _fake_project(tmp_path / "project")
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        lock_dir = tmp_path / "locks" / "test-slots"
+        monkeypatch.setattr("src.resources.semaphore.default_lock_dir", lambda _config: lock_dir)
+        monkeypatch.setattr("src.cli.test_runner._caps", lambda _res: (2, 1, "", 0.05, 30))
+
+        class Box:
+            slots_dir = lock_dir
+            full_dir = full_suite_lock_dir(lock_dir)
+            slots = SlotSemaphore(lock_dir, 2)
+            full = SlotSemaphore(full_suite_lock_dir(lock_dir), 1)
+
+        return Box
+
+    def test_a_second_full_run_refuses_immediately_naming_the_first(self, runner, monkeypatch, box):
+        import os
+        import time
+
+        def _boom(*_a, **_kw):  # pragma: no cover - must not be reached
+            raise AssertionError("a second full-suite run was launched")
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _boom)
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9", since=time.time() - 3725)
+        try:
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/"])
+            # Refused without taking a normal slot either.
+            assert box.slots.snapshot()["free"] == 2
+        finally:
+            os.close(fd)
+        assert result.exit_code == 75
+        output = _flat(result.output)
+        assert "full-suite run is already in progress" in output
+        for fact in ("task first-run", "cwd /w/slot-9", "running 1h02m", "without --aq-no-wait"):
+            assert fact in output
+
+    def test_a_second_full_run_that_times_out_says_so(self, runner, monkeypatch, box):
+        import os
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kw: 0)
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9")
+        try:
+            result = runner.invoke(cli, ["test", "--aq-timeout", "0", "tests/"])
+        finally:
+            os.close(fd)
+        assert result.exit_code == 75
+        assert "for the full-suite lock; it is still held: task first-run" in _flat(result.output)
+
+    def test_a_second_full_run_queues_without_holding_a_slot(self, runner, monkeypatch, box):
+        import os
+        import threading
+        import time
+
+        fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9")
+        observed: dict = {}
+
+        def _first_run_finishes():
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if list((box.full_dir / "waiters").glob("*.json")):
+                    # The second full run is queued: it must not be sitting
+                    # on a slot a focused run could use meanwhile.
+                    observed["free_slots_while_queued"] = box.slots.snapshot()["free"]
+                    break
+                time.sleep(0.02)
+            os.close(fd)
+
+        during: list = []
+
+        def _pytest(_argv, **_kw):
+            during.append((box.full.snapshot(), box.slots.snapshot()))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _pytest)
+        releaser = threading.Thread(target=_first_run_finishes)
+        releaser.start()
+        try:
+            result = runner.invoke(cli, ["test", "tests/"])
+        finally:
+            releaser.join(timeout=30)
+        assert result.exit_code == 0, result.output
+        assert "for the full-suite lock (one full-suite run at a time)" in _flat(result.output)
+        assert observed["free_slots_while_queued"] == 2
+        full, slots = during[0]
+        assert full["slots"][0]["held"]
+        assert full["slots"][0]["holder"]["scope"] == "full"
+        assert slots["free"] == 1
+
+    def test_a_full_run_takes_the_lock_and_exactly_one_slot(self, runner, monkeypatch, box):
+        during: list = []
+
+        def _pytest(_argv, **_kw):
+            during.append((box.full.snapshot(), box.slots.snapshot()))
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", _pytest)
+        result = runner.invoke(cli, ["test", "tests/"])
+        assert result.exit_code == 0, result.output
+        assert "full-suite lock + slot 0 of 2" in result.output
+        full, slots = during[0]
+        assert full["free"] == 0
+        assert slots["free"] == 1
+        assert slots["slots"][0]["holder"]["scope"] == "full"
+        # Both come back when the run ends.
+        assert box.full.snapshot()["free"] == 1
+        assert box.slots.snapshot()["free"] == 2
+
+    def test_focused_runs_never_wait_behind_a_full_run(self, runner, monkeypatch, box):
+        import os
+
+        launched: list = []
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals",
+            lambda argv, **_kw: launched.append(argv) or 0,
+        )
+        full_fd = _hold(box.full_dir, 1, task_id="first-run", scope="full")
+        slot_fd = _hold(box.slots_dir, 2, task_id="first-run", scope="full")
+        try:
+            result = runner.invoke(cli, ["test", "--aq-no-wait", "tests/test_m0.py"])
+            area = runner.invoke(cli, ["test", "--aq-no-wait", "tests/", "-k", "claim"])
+        finally:
+            os.close(slot_fd)
+            os.close(full_fd)
+        assert result.exit_code == 0, result.output
+        assert area.exit_code == 0, area.output
+        assert len(launched) == 2
+        assert "full-suite lock" not in result.output
+
+    def test_status_shows_the_full_suite_holder_separately(self, runner, box):
+        import os
+
+        free = runner.invoke(cli, ["test", "--aq-status"])
+        assert free.exit_code == 0, free.output
+        assert "Full-suite lock: free" in _flat(free.output)
+
+        full_fd = _hold(box.full_dir, 1, task_id="first-run", cwd="/w/slot-9", scope="full")
+        slot_fd = _hold(box.slots_dir, 2, task_id="first-run", scope="full")
+        try:
+            held = runner.invoke(cli, ["test", "--aq-status"])
+        finally:
+            os.close(slot_fd)
+            os.close(full_fd)
+        assert held.exit_code == 0, held.output
+        assert "Full-suite lock: held by task first-run, cwd /w/slot-9" in _flat(held.output)
+        assert "busy (full suite)" in _flat(held.output)
+
+
+class TestFullSuiteLockReleasedOnSignals:
+    """The full-suite lock is an ``flock`` like the slots: death releases it.
+
+    Driven through a real ``aq test`` process, because the property that
+    matters is the wrapper's: SIGTERM is forwarded to pytest and both locks
+    come back, and a SIGKILLed wrapper leaves the lock with the still-running
+    pytest (a runaway stays accounted for) until that dies too.
+    """
+
+    _SCRIPT = """
+import sys
+sys.path.insert(0, {root!r})
+from src.cli.app import cli
+import src.cli.test_runner as runner
+runner._compose_pytest_argv = lambda args, **kw: [
+    sys.executable, "-c", "import time; print('pytest-started', flush=True); time.sleep(120)"
+]
+cli(["test", "tests/"], prog_name="aq")
+"""
+
+    @pytest.fixture
+    def wrapper(self, tmp_path):
+        import os
+        import signal
+        import subprocess
+        import sys
+        import threading
+        from pathlib import Path
+
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        root = Path(__file__).resolve().parent.parent
+        project = _fake_project(tmp_path / "project")
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("AQ_", "AGENT_QUEUE"))}
+        # A private HOME puts the default lock dir (and the config it would
+        # read) under tmp_path, away from this box's real test slots.
+        env.update(
+            HOME=str(home),
+            AQ_TEST_SLOTS="2",
+            AQ_TASK_ID="signalled-run",
+            POSTGRES_TEST_DSN="postgresql://test:test@localhost/postgres",
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", self._SCRIPT.format(root=str(root))],
+            cwd=project,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+
+        def _kill_group():
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        watchdog = threading.Timer(90, _kill_group)
+        watchdog.start()
+        seen = []
+        for line in proc.stdout:
+            seen.append(line)
+            if "pytest-started" in line:
+                break
+        else:
+            watchdog.cancel()
+            pytest.fail(f"aq test never started pytest:\n{''.join(seen)}{proc.stderr.read()}")
+        lock_dir = home / ".agent-queue" / "locks" / "test-slots"
+        full = SlotSemaphore(full_suite_lock_dir(lock_dir), 1)
+        slots = SlotSemaphore(lock_dir, 2)
+        assert full.snapshot()["slots"][0]["holder"]["task_id"] == "signalled-run"
+        assert slots.snapshot()["free"] == 1
+        try:
+            yield proc, full, slots
+        finally:
+            watchdog.cancel()
+            _kill_group()
+            proc.wait(timeout=30)
+
+    def test_sigterm_releases_the_lock_and_the_slot(self, wrapper):
+        import signal
+
+        proc, full, slots = wrapper
+        proc.send_signal(signal.SIGTERM)  # the wrapper only; it forwards to pytest
+        proc.wait(timeout=30)
+        assert full.snapshot()["free"] == 1
+        assert slots.snapshot()["free"] == 2
+
+    def test_a_killed_wrapper_leaves_the_lock_with_pytest_until_it_dies(self, wrapper):
+        import os
+        import signal
+        import time
+
+        proc, full, slots = wrapper
+        proc.kill()  # SIGKILL: nothing is forwarded
+        proc.wait(timeout=30)
+        assert full.snapshot()["free"] == 0, "the orphaned pytest still runs the full suite"
+        os.killpg(proc.pid, signal.SIGKILL)
+        deadline = time.monotonic() + 30
+        while full.snapshot()["free"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert full.snapshot()["free"] == 1
+        assert slots.snapshot()["free"] == 2

@@ -30,7 +30,12 @@ from src.resources.procs import (
     scan_processes,
     summarize_by_session,
 )
-from src.resources.semaphore import SlotTimeout, SlotSemaphore, default_lock_dir
+from src.resources.semaphore import (
+    SlotSemaphore,
+    SlotTimeout,
+    default_lock_dir,
+    full_suite_lock_dir,
+)
 
 __all__ = [
     "CgroupDelegation",
@@ -40,6 +45,7 @@ __all__ = [
     "SlotSemaphore",
     "cgroup_delegation",
     "default_lock_dir",
+    "full_suite_lock_dir",
     "load_average",
     "pytest_processes",
     "resolve_budget",

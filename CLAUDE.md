@@ -78,6 +78,7 @@ Rules:
   aq test --aq-help                              # -h belongs to pytest
   ```
   A `waiting for 1 of 2 test slot(s)` line means the box is busy, not that you are stuck. Exit code 75 means no slot came free — retry, it is not a test failure. Plain `pytest` still works for a single quick file.
+- **One full-suite run box-wide at a time.** An `aq test` that selects the whole suite (no path, `tests/`, most of its files, no narrowing `-k`/`-m`) also takes the full-suite lock (`src/cli/test_runner.py` `_is_full_suite`, `src/resources/semaphore.py` `full_suite_lock_dir`) and queues without holding a slot while another holds it; focused runs never wait for it. `aq test --aq-status` names the holder. See [resource gating](docs/guides/resource-gating.md#one-full-suite-run-at-a-time).
 - **Never run a bare `pytest` / `pytest tests/` mid-task.** Run only the tests for the code you touch.
 - **Never override the worker count upward.** `-n auto` inside a session already resolves to this box's per-session share (`PYTEST_XDIST_AUTO_NUM_WORKERS`, derived from cores ÷ concurrent agents); passing a bigger `-n` bypasses the gating and is what took the box down on 2026-09-01. See [resource gating](docs/guides/resource-gating.md).
 - **Find focused tests** (the layout is one file per area, `tests/test_<area>.py`, plus `tests/perf/`, `tests/llm/`, `tests/fixtures/`):

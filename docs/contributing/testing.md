@@ -99,7 +99,11 @@ order:
    does not exist is refused *before* a slot is taken — because pytest under
    xdist turns a bad path into a green-looking "no tests ran".
 3. **Takes a slot**, printing a `waiting …` line every poll so a queued run
-   looks queued rather than hung.
+   looks queued rather than hung. A run that selects the whole suite (no path,
+   `tests/`, most of its files, no narrowing `-k`/`-m`) first takes the
+   box-wide full-suite lock, so only one full-suite run goes at a time and it
+   queues without holding a slot; focused runs never wait for that lock. See
+   [resource gating](../guides/resource-gating.md#one-full-suite-run-at-a-time).
 4. **Execs pytest** with `-n <cap> --dist loadfile`, a fresh
    `AQ_TEST_RUN_ID` database-ownership token, and the default marker deselects
    — each only when you did not pass your own. An explicit `-n 0`,
@@ -118,11 +122,11 @@ pytest, including `-h`.
 | Option | Effect |
 |---|---|
 | `--aq-help` | The wrapper's help (`-h`/`--help` go to pytest). |
-| `--aq-status` | Print slot occupancy and exit. |
+| `--aq-status` | Print slot and full-suite lock occupancy and exit. |
 | `--aq-dry-run` | Print the composed pytest command line and exit. |
-| `--aq-no-wait` | Fail immediately instead of queueing for a slot. |
+| `--aq-no-wait` | Fail immediately instead of queueing for a slot (or the full-suite lock). |
 | `--aq-workers N` | Override the enforced `-n`, clamped to the machine's core count. |
-| `--aq-timeout N` | Seconds to wait for a slot (default 1800). |
+| `--aq-timeout N` | Seconds to wait for a slot, and for a full-suite run the full-suite lock too (default 1800). |
 | `--aq-all-markers` | Run the deselected markers too. |
 
 | Exit code | Meaning |
@@ -131,7 +135,7 @@ pytest, including `-h`.
 | `2` | No pytest arguments — the wrapper refuses to run the whole suite implicitly. |
 | `4` | Preflight failure: a missing path, or no `POSTGRES_TEST_DSN`. Nothing ran. |
 | `5` | pytest collected nothing. Nonzero, and the wrapper says why. |
-| `75` | No slot came free (`EX_TEMPFAIL`). **Retryable — not a test failure.** |
+| `75` | No slot came free, or another full-suite run holds the full-suite lock (`EX_TEMPFAIL`). **Retryable — not a test failure.** |
 
 Checking what a command will actually run, without running it:
 
