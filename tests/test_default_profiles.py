@@ -197,6 +197,24 @@ def test_seeded_workers_have_publication_grants_without_supervisor_grants(tmp_pa
             assert worker.allows_plugin_tool(command), (profile_id, command)
 
 
+def test_seeded_supervisor_can_run_integration_status_and_enable_and_workers_cannot(tmp_path):
+    """The supervisor drives an integration cutover; a worker never controls one."""
+    ensure_default_profiles(str(tmp_path))
+
+    def policy_for(profile_id):
+        parsed = parse_profile(_vault_profile_path(tmp_path, profile_id).read_text(encoding="utf-8"))
+        assert parsed.capabilities is not None
+        return CapabilityPolicy.from_namespaces(**parsed.capabilities)
+
+    supervisor = policy_for("supervisor")
+    for command in ("integration_status", "integration_enable"):
+        assert supervisor.allows_aq_command(command), command
+    for profile_id in WORKER_PROFILE_IDS:
+        worker = policy_for(profile_id)
+        for command in ("integration_status", "integration_enable"):
+            assert not worker.allows_aq_command(command), (profile_id, command)
+
+
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
     """Planner ships as a task-lifecycle profile."""
     ensure_default_profiles(str(tmp_path))
