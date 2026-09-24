@@ -305,10 +305,10 @@ RULES: list[tuple[str, str, str, str, str]] = [
      DOCUMENTATION, "Historical coverage report."),
     ("profile.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
      "Repository architecture briefing loaded by agents."),
-    ("CLAUDE.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
-     "Agent-facing repository instructions."),
     ("AGENTS.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
-     "Agent-facing repository instructions."),
+     "Agent-facing repository instructions (the single source of truth)."),
+    ("CLAUDE.md", "contributing", "docs/contributing/repo-map.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
 
     # ------------------------------------------------------------ generated
     ("packages/aq-client/**", "api", "docs/reference/api/python-client.md",
@@ -341,10 +341,14 @@ RULES: list[tuple[str, str, str, str, str]] = [
      SUPPORTING, "Playbook V1 JSON schema retained for validation."),
     ("src/playbook_v2_schema.json", "playbooks", "docs/concepts/playbooks.md",
      SUPPORTING, "Playbook V2 JSON schema."),
-    ("src/cli/CLAUDE.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
+    ("src/cli/AGENTS.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
      "Code-adjacent CLI authoring notes."),
-    ("dashboard/CLAUDE.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
+    ("src/cli/CLAUDE.md", "cli", "docs/reference/cli/README.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
+    ("dashboard/AGENTS.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
      "Code-adjacent frontend authoring notes."),
+    ("dashboard/CLAUDE.md", "dashboard", "docs/guides/dashboard.md", DOCUMENTATION,
+     "One-line @AGENTS.md import shim for Claude Code."),
 
     # ----------------------------------------------------------- src: python
     ("src/__init__.py", "architecture", "docs/concepts/architecture.md",

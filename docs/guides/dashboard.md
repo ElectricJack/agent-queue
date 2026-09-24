@@ -176,7 +176,7 @@ npm -w dashboard run typecheck
 npm -w dashboard run test
 ```
 
-Use a focused Vitest file while iterating, for example `npm -w dashboard run test -- src/pages/metrics/__tests__/Metrics.test.tsx`, then run the relevant family suite once before delivery. The catalog names co-located tests for each family. See [Local checks](../contributing/checks.md) for the maintained check matrix and [dashboard/CLAUDE.md](../../dashboard/CLAUDE.md) for the React/Vitest isolation and worker-cap conventions.
+Use a focused Vitest file while iterating, for example `npm -w dashboard run test -- src/pages/metrics/__tests__/Metrics.test.tsx`, then run the relevant family suite once before delivery. The catalog names co-located tests for each family. See [Local checks](../contributing/checks.md) for the maintained check matrix and [dashboard/AGENTS.md](../../dashboard/AGENTS.md) for the React/Vitest isolation and worker-cap conventions.
 
 ## Related pages
 

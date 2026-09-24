@@ -5,7 +5,7 @@ namespaces (docs/superpowers/specs/2026-09-10-dashboard-state-contract-design.md
 with no migration and no browser fallback. What may still persist in the
 browser is device-local transport state, and only through
 ``dashboard/src/deviceLocal.ts``, whose keys must each be documented in
-``dashboard/CLAUDE.md``. The vitest suite does not run in CI, so this is where
+``dashboard/AGENTS.md``. The vitest suite does not run in CI, so this is where
 the rule is enforced.
 """
 
@@ -18,11 +18,11 @@ ROOT = Path(__file__).parents[1]
 DASHBOARD = ROOT / "dashboard"
 SRC = DASHBOARD / "src"
 DEVICE_LOCAL_MODULE = SRC / "deviceLocal.ts"
-DASHBOARD_DOCS = DASHBOARD / "CLAUDE.md"
+DASHBOARD_DOCS = DASHBOARD / "AGENTS.md"
 
 # Device-local transport keys: meaningless on another device, recoverable by
 # reconnecting. Adding one needs the same kind of justification in
-# dashboard/CLAUDE.md — a remembered UI choice never qualifies.
+# dashboard/AGENTS.md — a remembered UI choice never qualifies.
 ALLOWED_DEVICE_LOCAL_KEYS = {
     "aq:ws:last_seq",
     "aq:ws:epoch",
@@ -98,7 +98,7 @@ def test_only_the_device_local_module_touches_browser_storage() -> None:
     assert violations == [], (
         "Persistent dashboard feature state belongs on the server (useDashboardDocument). "
         "Device-local transport state goes through dashboard/src/deviceLocal.ts with a key "
-        "documented in dashboard/CLAUDE.md. Offending references:\n  " + "\n  ".join(violations)
+        "documented in dashboard/AGENTS.md. Offending references:\n  " + "\n  ".join(violations)
     )
 
 
@@ -107,7 +107,7 @@ def test_device_local_registry_holds_only_documented_transport_keys() -> None:
 
     docs = DASHBOARD_DOCS.read_text(encoding="utf-8")
     undocumented = sorted(key for key in ALLOWED_DEVICE_LOCAL_KEYS if f"`{key}`" not in docs)
-    assert undocumented == [], f"device-local keys missing from dashboard/CLAUDE.md: {undocumented}"
+    assert undocumented == [], f"device-local keys missing from dashboard/AGENTS.md: {undocumented}"
 
 
 def test_retired_feature_keys_are_gone_from_source_and_tests() -> None:

@@ -25,7 +25,7 @@ Phase 0 of the framework overhaul: typed edges, persisted `is_blocked`, gates + 
 
 ## 2. Schema changes and migrations
 
-Four Alembic revisions (small, reviewable, each upgradeable on SQLite **and** PostgreSQL). All schema edits land in `src/database/tables.py` first; `alembic revision --autogenerate` output is hand-reviewed per CLAUDE.md.
+Four Alembic revisions (small, reviewable, each upgradeable on SQLite **and** PostgreSQL). All schema edits land in `src/database/tables.py` first; `alembic revision --autogenerate` output is hand-reviewed per AGENTS.md.
 
 ### 2.1 Revision 1 — `dep_type` on task_dependencies
 

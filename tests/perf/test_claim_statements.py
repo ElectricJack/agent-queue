@@ -638,7 +638,7 @@ async def measure_wire_floor(db, samples: int = 40) -> tuple[float, float]:
     """``(per transaction, per statement)`` seconds on *this* box's wire.
 
     A budget written in milliseconds is a budget on the machine as much as
-    on the code -- which is the objection CLAUDE.md raises against every
+    on the code -- which is the objection AGENTS.md raises against every
     wall-clock budget in this suite, and the reason the flat ``60 ms`` this
     file used to assert stopped meaning anything once it was read on a
     different box.  Measuring the floor in the same process, from the same
@@ -765,7 +765,7 @@ class TestClaimLatency:
         floor on their own when the round trip took ten transactions: 60-73%
         of a 60 ms budget spent before a row is read.  A number of
         milliseconds cannot separate that from a regression, which is
-        CLAUDE.md's standing objection to every wall-clock budget in this
+        AGENTS.md's standing objection to every wall-clock budget in this
         suite.  (Coalescing four of those checkouts on 2026-09-09 took the
         floor down with it -- which is the point of deriving the budget from
         the two constants rather than declaring it: the absolute

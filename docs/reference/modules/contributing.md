@@ -91,8 +91,8 @@ The index for every other shard is the [module catalog](README.md).
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`CLAUDE.md`](../../../CLAUDE.md) | The quick reference the `claude` harness reads automatically at session start: subsystem pointers, testing rules, migration prohibitions and conventions. | [repo map](../../contributing/repo-map.md#agent-facing-instruction-files) | Terse on purpose. Changing it changes agent behaviour. |
-| [`AGENTS.md`](../../../AGENTS.md) | The same contract for harnesses that follow the `AGENTS.md` convention. | [repo map](../../contributing/repo-map.md#agent-facing-instruction-files) | Keep in step with `CLAUDE.md`. |
+| [`AGENTS.md`](../../../AGENTS.md) | The quick reference every harness reads at session start: subsystem pointers, invariants, testing rules, migration prohibitions and conventions. | [repo map](../../contributing/repo-map.md#agent-facing-instruction-files) | Terse on purpose. Changing it changes agent behaviour. |
+| [`CLAUDE.md`](../../../CLAUDE.md) | A one-line `@AGENTS.md` import: Claude Code auto-loads only `CLAUDE.md`. | [repo map](../../contributing/repo-map.md#agent-facing-instruction-files) | Never put content here; edit `AGENTS.md`. |
 | [`profile.md`](../../../profile.md) | The long-form repository architecture briefing loaded when an agent primes. | [repo map](../../contributing/repo-map.md#agent-facing-instruction-files) | Architecture, codebase map and design decisions. |
 
 ## Test tree

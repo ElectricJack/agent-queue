@@ -84,8 +84,8 @@ Agent-facing and landing-page prose. Listed for completeness; the ticket in each
 
 | Path | Disposition | Note |
 |---|---|---|
-| [`AGENTS.md`](../../AGENTS.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
-| [`CLAUDE.md`](../../CLAUDE.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
+| [`AGENTS.md`](../../AGENTS.md) | `current` | The agent instruction file. Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
+| [`CLAUDE.md`](../../CLAUDE.md) | `current` | One-line `@AGENTS.md` import shim for Claude Code. Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
 | [`README.md`](../../README.md) | `current` | Owned by the `readme` ticket. |
 | [`profile.md`](../../profile.md) | `current` | Owned by the `contributing` ticket; explained in `docs/contributing/repo-map.md`. |
 
@@ -139,7 +139,7 @@ Split between current guides and retired ones. Every retired page keeps its old 
 | [`docs/guides/discord-commands.md`](../guides/discord-commands.md) | `redirect` | Accurate but thin; superseded by [Messaging](../concepts/messaging.md) and [Escalations](../guides/escalations.md). |
 | [`docs/guides/discord-migration.md`](../guides/discord-migration.md) | `archive` | Operator runbook for the single-channel cutover, which completed on 2026-09-08. |
 | [`docs/guides/discord-replacement-checklist.md`](../guides/discord-replacement-checklist.md) | `archive` | The cutover's readiness ledger; retained as the record of what replaced what. |
-| [`docs/guides/e2e-swarm.md`](../guides/e2e-swarm.md) | `current` | Referenced by `CLAUDE.md` and [local checks](../contributing/checks.md). |
+| [`docs/guides/e2e-swarm.md`](../guides/e2e-swarm.md) | `current` | Referenced by `AGENTS.md` and [local checks](../contributing/checks.md). |
 | [`docs/guides/escalations.md`](../guides/escalations.md) | `current` | Owned by the `communications` ticket. |
 | [`docs/guides/feature-merge-history.md`](../guides/feature-merge-history.md) | `update` | Describes ancestry in the optional strict integration modes; banner added to say it is not the development-mode path. |
 | [`docs/guides/getting-started.md`](../guides/getting-started.md) | `redirect` | Listed a Discord bot token as a prerequisite. Superseded by [Install](../tutorials/install.md) and [Your first task](../tutorials/first-task.md). |

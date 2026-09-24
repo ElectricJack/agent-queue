@@ -1186,7 +1186,7 @@ class MemoryContext:
 
     factsheet: str = ""  # Project factsheet (Tier 0, highest priority — always included)
     profile: str = ""  # Project profile (Tier 1, always included)
-    project_docs: str = ""  # Project documentation (CLAUDE.md etc., Tier 1.5)
+    project_docs: str = ""  # Project documentation (AGENTS.md / CLAUDE.md etc., Tier 1.5)
     topic_context: str = ""  # L2 topic-filtered knowledge (Tier 2, on-demand by topic)
     topic_memories: str = ""  # L2 memories filtered by topic frontmatter (spec §2)
     detected_topics: list[str] = field(default_factory=list)  # Topics detected from task context
