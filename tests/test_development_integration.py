@@ -11,13 +11,20 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.git.manager import GitManager
 from src.database.queries.blocked_state import _development_delivery_pending
-from src.database.tables import development_deliveries, gates, projects, task_gates, tasks
+from src.database.tables import development_deliveries, gates, messages, projects
+from src.database.tables import task_gates, tasks
+from src.doctor.integration_checks import run_check as run_doctor_check
+from src.doctor.models import Severity
 from src.event_bus import EventBus
 from src.integration.development import (
     PUBLISHER_SKIP_KEY, DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy,
 )
+from src.integration.development_validation import (
+    DEFERRAL_KIND, FAILED, INFRA_ALERT_AFTER, INFRASTRUCTURE, PASSED,
+)
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
+from tests.test_development_validation import _slot_command
 
 
 def git(path, *args):
@@ -2667,3 +2674,181 @@ async def test_doctor_reports_a_project_it_cannot_reach(setup, tmp_path):
     result = await run_check(db, "git.stale_branches", config=stale_ctx(db, tmp_path).config)
     assert result.severity == Severity.INFO
     assert result.data["errors"][0]["project_id"] == "p"
+
+
+# -- validation outcomes: "tests failed" is not "could not finish validating" --
+#
+# See tests/test_development_validation.py for the runner and classifier.
+
+async def _policy(service, **policy):
+    # Supervise at test speed: poll every 50 ms, no grace past the slot bound.
+    service.validation_poll_seconds = 0.05
+    service.slot_wait_grace_seconds = 0.0
+    await service.configure("p", policy, reason="validation test", operator_id="local")
+
+
+async def _repairs(db):
+    return [t for t in await db.list_tasks(project_id="p") if t.id.startswith("development-repair-")]
+
+
+async def _deferrals(service):
+    return [
+        r for r in await service.rows("p")
+        if r["state"] == "cancelled" and (r["evidence"] or {}).get("kind") == DEFERRAL_KIND
+    ]
+
+
+async def test_a_slot_wait_longer_than_the_timeout_still_delivers(setup):
+    db, service, _source, remote, _repo = setup
+    head = await feature(setup, "one")
+    # The incident's proportions at test scale: queued longer than the whole
+    # budget, then a run that fits in it.
+    await _policy(
+        service,
+        commands=[_slot_command(wait=1.5, run=0.2)],
+        timeout_seconds=1,
+        slot_wait_seconds=30,
+    )
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    check = next(
+        r for r in await service.rows("p") if r["reason"] == "development batch"
+    )["evidence"]["checks"][0]
+    assert check["outcome"] == PASSED and check["slot_wait_seconds"] >= 1.4
+    assert await _repairs(db) == []
+
+
+async def test_a_slot_wait_past_its_bound_defers_without_parking_or_a_repair(setup):
+    db, service, _source, remote, _repo = setup
+    before = git(remote, "rev-parse", "main")
+    await feature(setup, "one")
+    await _policy(
+        service,
+        commands=[_slot_command(wait=30, run=0)],
+        timeout_seconds=60,
+        slot_wait_seconds=1,
+    )
+    started = time.monotonic()
+    result = await service.sweep("p")
+    assert time.monotonic() - started < 20
+    assert result["outcome"] == "deferred"
+    assert result["reason"] == "slot_unavailable"
+    assert git(remote, "rev-parse", "main") == before
+    rows = await service.rows("p")
+    assert not [r for r in rows if r["state"] == "parked"]
+    assert await _repairs(db) == []
+    # Deferred, not held: the next tick with a slot free delivers it.
+    await _policy(service, commands=["true"])
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+
+
+async def test_a_real_test_failure_parks_and_the_repair_names_the_failing_test(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "one")
+    failing = "tests/test_development_integration.py::test_batch_publishes"
+    await _policy(
+        service,
+        commands=[
+            (
+                f"echo 'FAILED {failing} - AssertionError: assert 1 == 2'; "
+                "echo '1 failed, 118 passed in 209.00s'; exit 1"
+            )
+        ],
+    )
+    result = await service.sweep("p")
+    assert result["outcome"] == "parked"
+    assert result["evidence"]["conclusion"] == FAILED
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    assert parked["evidence"]["failing_tests"][0]["id"] == failing
+    (repair,) = await _repairs(db)
+    assert failing in repair.description
+    assert "AssertionError: assert 1 == 2" in repair.description
+    assert parked["id"] in repair.description
+    evidence = await db.get_task_meta(repair.id, "development_repair_evidence")
+    assert evidence["delivery_id"] == parked["id"]
+    assert evidence["failing_tests"][0]["id"] == failing
+    assert evidence["checks"][0]["exit_code"] == 1
+
+
+async def test_a_timeout_mid_run_defers_as_infrastructure_with_its_output(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "one")
+    await _policy(service, commands=["echo collected 119 items; sleep 30"], timeout_seconds=1)
+    result = await service.sweep("p")
+    assert result["outcome"] == "deferred"
+    assert result["reason"] == "timeout"
+    assert not [r for r in await service.rows("p") if r["state"] == "parked"]
+    assert await _repairs(db) == []
+    (deferral,) = await _deferrals(service)
+    assert deferral["id"] == result["deferral"]["id"]
+    run = deferral["evidence"]["runs"][-1]
+    assert run["reason"] == "timeout"
+    assert run["members"] == ["one"]
+    assert run["checks"][0]["exit_code"] == 124
+    assert "collected 119 items" in run["checks"][0]["output"]
+
+
+async def test_consecutive_infrastructure_outcomes_surface_once_not_as_repairs(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "one")
+    await _policy(service, commands=["echo 'no tests ran in 0.01s'; exit 5"])
+    for tick in range(1, INFRA_ALERT_AFTER + 2):
+        result = await service.sweep("p")
+        assert result["outcome"] == "deferred"
+        assert result["deferral"]["consecutive"] == tick
+        doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+        assert (doctor.severity is Severity.OK) == (tick < INFRA_ALERT_AFTER)
+    (deferral,) = await _deferrals(service)
+    assert deferral["evidence"]["consecutive"] == INFRA_ALERT_AFTER + 1
+    assert await _repairs(db) == []
+    stall = doctor.data["stalls"][0]
+    assert stall["cause"] == "validation_infrastructure"
+    assert stall["task_ids"] == ["one"]
+    assert "no_tests_collected" in doctor.detail
+    async with db._engine.connect() as conn:
+        sent = (await conn.execute(
+            select(messages).where(messages.c.to_id == "supervisor-p")
+        )).mappings().all()
+    assert len(sent) == 1, "one supervisor message per streak, not one per tick"
+    assert "no_tests_collected" in sent[0]["body"] and "one" in sent[0]["body"]
+
+    # A run that reaches a real conclusion ends the streak and clears doctor.
+    await _policy(service, commands=["true"])
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    (deferral,) = await _deferrals(service)
+    assert deferral["evidence"]["open"] is False
+    assert deferral["evidence"]["closed_by"] == PASSED
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.OK
+
+
+async def test_a_batch_parked_for_a_timeout_before_this_fix_is_released_not_repaired(setup):
+    db, service, _source, remote, _repo = setup
+    head = await feature(setup, "one")
+    base = git(remote, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(development_deliveries).values(
+            id="legacy-timeout",
+            project_id="p",
+            repository_id="r",
+            target_ref="refs/heads/main",
+            expected_sha=base,
+            prepared_sha=head,
+            state="parked",
+            manifest=[{"task_id": "one", "source_sha": head}],
+            evidence={
+                "kind": "local", "validation": "focused", "conclusion": "failed",
+                "checks": [{"command": "x", "exit_code": 124, "output": "validation timed out"}],
+            },
+            reason="selected validation failed",
+            created_at=now,
+            updated_at=now,
+        ))
+    await _policy(service, commands=["true"])
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    legacy = next(r for r in await service.rows("p") if r["id"] == "legacy-timeout")
+    assert legacy["state"] == "cancelled"
+    assert legacy["evidence"]["released"]["conclusion"] == INFRASTRUCTURE
+    assert await _repairs(db) == []

@@ -359,10 +359,14 @@ class GateQueriesMixin:
         status: str | None = None,
         gate_type: str | None = None,
         await_id: str | None = None,
+        task_id: str | None = None,
     ) -> list[dict]:
         """List gates with optional filters, newest first."""
         stmt = select(gates)
         conditions = []
+        if task_id is not None:
+            stmt = stmt.join(task_gates, task_gates.c.gate_id == gates.c.id)
+            conditions.append(task_gates.c.task_id == task_id)
         if project_id is not None:
             conditions.append(gates.c.project_id == project_id)
         if status is not None:

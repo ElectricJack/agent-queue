@@ -431,6 +431,21 @@ Partial unique index `uq_task_deps_single_parent` on `task_id` where
 parent per task. Created by migration revision `b2c3d4e5f6a7` after the
 existing data is canonicalised to satisfy it.
 
+### Table: `epic_dependencies`
+
+Declared ordering edges between epic tasks for integration batches. A dependent
+epic follows its dependency when both are in the batch; a missing or cyclic
+dependency defers the dependent epic. These declarations are separate from task
+readiness edges in `task_dependencies`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `dependent_task_id` | TEXT | NOT NULL | Epic whose integration waits for the dependency |
+| `dependency_task_id` | TEXT | NOT NULL | Epic that must be integrated first |
+| `declared_at` | FLOAT | NOT NULL | Timestamp of the first declaration; duplicate declarations leave it unchanged |
+| (composite PK) | | PRIMARY KEY (dependent_task_id, dependency_task_id) | One declaration per ordered pair (`pk_epic_dependencies`) |
+| (check) | | CHECK (dependent_task_id <> dependency_task_id) | No self-dependency (`ck_epic_dependencies_not_self`) |
+
 ### Table: `task_layouts`
 
 Derived spatial-layout projection for task-graph nodes. Each task has at most one row per

@@ -371,6 +371,7 @@ _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "project_id": {"type": "string", "description": "Filter by project"},
+            "task_id": {"type": "string", "description": "Filter by waiter task"},
             "status": {
                 "type": "string",
                 "enum": ["open", "resolved", "expired"],

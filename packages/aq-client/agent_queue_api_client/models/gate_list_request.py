@@ -16,11 +16,13 @@ class GateListRequest:
     """
     Attributes:
         project_id (None | str | Unset): Filter by project
+        task_id (None | str | Unset): Filter by waiter task
         status (None | str | Unset): Filter by gate status
         gate_type (None | str | Unset): Filter by gate kind
     """
 
     project_id: None | str | Unset = UNSET
+    task_id: None | str | Unset = UNSET
     status: None | str | Unset = UNSET
     gate_type: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
@@ -31,6 +33,12 @@ class GateListRequest:
             project_id = UNSET
         else:
             project_id = self.project_id
+
+        task_id: None | str | Unset
+        if isinstance(self.task_id, Unset):
+            task_id = UNSET
+        else:
+            task_id = self.task_id
 
         status: None | str | Unset
         if isinstance(self.status, Unset):
@@ -49,6 +57,8 @@ class GateListRequest:
         field_dict.update({})
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if task_id is not UNSET:
+            field_dict["task_id"] = task_id
         if status is not UNSET:
             field_dict["status"] = status
         if gate_type is not UNSET:
@@ -68,6 +78,15 @@ class GateListRequest:
             return cast(None | str | Unset, data)
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_task_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        task_id = _parse_task_id(d.pop("task_id", UNSET))
 
         def _parse_status(data: object) -> None | str | Unset:
             if data is None:
@@ -89,6 +108,7 @@ class GateListRequest:
 
         gate_list_request = cls(
             project_id=project_id,
+            task_id=task_id,
             status=status,
             gate_type=gate_type,
         )

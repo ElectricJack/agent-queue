@@ -347,7 +347,7 @@ describe("TaskDetailPane — gates", () => {
       .toHaveAttribute("href", "/reviews/review-author");
   });
 
-  it("shows only gates whose task_ids include this task", () => {
+  it("requests this task's gates and shows open and resolved gates", () => {
     mockUseTask.mockReturnValue({
       data: { ...fixtureTask, status: "IN_PROGRESS" },
       isLoading: false,
@@ -355,13 +355,19 @@ describe("TaskDetailPane — gates", () => {
     });
     mockUseGates.mockReturnValue({
       data: [
-        { id: "g1", gate_type: "human", status: "open", task_ids: ["t1"], project_id: "demo", title: "g1" },
-        { id: "g2", gate_type: "human", status: "open", task_ids: ["other"], project_id: "demo", title: "g2" },
+        { id: "g1", gate_type: "human", status: "open", project_id: "demo", title: "g1" },
+        { id: "g2", gate_type: "timer", status: "resolved", project_id: "demo", title: "g2" },
       ],
     });
     renderWithRouter(<TaskDetailPane {...noopProps()} />);
+    expect(mockUseGates).toHaveBeenCalledWith({
+      projectId: "demo",
+      taskId: "t1",
+      enabled: true,
+    });
     expect(screen.getByText(/human/)).toBeInTheDocument();
-    expect(screen.getAllByText(/human/)).toHaveLength(1);
+    expect(screen.getByText(/timer/)).toBeInTheDocument();
+    expect(screen.getByText("resolved")).toBeInTheDocument();
   });
 
   it("Approve calls useResolveGate().mutate with the gate id", () => {
@@ -373,7 +379,7 @@ describe("TaskDetailPane — gates", () => {
     });
     mockUseGates.mockReturnValue({
       data: [
-        { id: "g1", gate_type: "human", status: "open", task_ids: ["t1"], project_id: "demo", title: "g1" },
+        { id: "g1", gate_type: "human", status: "open", project_id: "demo", title: "g1" },
       ],
     });
     mockUseResolveGate.mockReturnValue({ mutate });

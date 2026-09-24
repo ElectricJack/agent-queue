@@ -19,7 +19,6 @@ import {
   type Task,
   type TaskCompletionDetail,
   type TaskRef,
-  type GateSummary,
 } from "../../api/hooks";
 import { branchesAwaitingChoice, type BranchChoice, type DiscardBranch } from "../../api/branchDiscard";
 import { integrationRemovalRefusal } from "../../api/deleteRefusals";
@@ -82,7 +81,11 @@ export default function TaskDetailPane({
   const navigate = useNavigate();
   const { data: task, isLoading, isError } = useTask(args.taskId);
   const { data: taskReviews } = useReviews({ taskId: args.taskId });
-  const { data: gates } = useGates({ projectId: task?.project_id, enabled: !!task?.project_id });
+  const { data: gates } = useGates({
+    projectId: task?.project_id,
+    taskId: args.taskId,
+    enabled: !!task?.project_id,
+  });
   const resolveGate = useResolveGate();
   const deleteTask = useDeleteTask();
   const reopenWithFeedback = useReopenWithFeedback();
@@ -115,9 +118,7 @@ export default function TaskDetailPane({
 
   const loose = task as TaskWithLooseFields | undefined;
 
-  const taskGates = (
-    (gates ?? []) as Array<GateSummary & { task_ids?: string[]; await_id?: string }>
-  ).filter((g) => (g.task_ids ?? []).includes(args.taskId));
+  const taskGates = gates ?? [];
   const waitingReviews = ((taskReviews?.reviews ?? []) as RelatedReview[])
     .filter((review) => review.relation === "waiting");
   const authoredReviews = ((taskReviews?.reviews ?? []) as RelatedReview[])

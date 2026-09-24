@@ -1,5 +1,8 @@
 """Rebase warnings and durable stuck-batch notices for the integration train."""
 
+# The imported fixtures intentionally share names with injected test parameters.
+# ruff: noqa: F811
+
 from __future__ import annotations
 
 import pytest
@@ -17,12 +20,8 @@ from src.database.tables import (
 )
 from src.integration.epic_dependencies import declare
 from src.integration.repair import RepairService
-from tests.test_integration_repair import _boundary, _policy
-
-pytest_plugins = (
-    "tests.test_epic_pr_review_evidence",
-    "tests.test_integration_repair",
-)
+from tests.test_epic_pr_review_evidence import case  # noqa: F401 -- pytest fixture
+from tests.test_integration_repair import _boundary, _policy, db  # noqa: F401 -- pytest fixture
 
 
 async def _add_dependent(case):

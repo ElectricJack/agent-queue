@@ -257,6 +257,26 @@ class TestListing:
         human_open = await db.list_gates(status="open", gate_type="human")
         assert {g["id"] for g in human_open} == {g_open_h, g_other}
 
+    async def test_task_filter_includes_resolved_gates(self, db):
+        await mktask(db, "t1")
+        await mktask(db, "t2")
+        shared, _ = await db.create_gate(
+            PROJECT, "human", "shared", await_id="shared", waiter_task_ids=["t1", "t2"]
+        )
+        resolved, _ = await db.create_gate(
+            PROJECT, "human", "resolved", await_id="resolved", waiter_task_ids=["t1"]
+        )
+        unrelated, _ = await db.create_gate(
+            PROJECT, "human", "unrelated", await_id="unrelated", waiter_task_ids=["t2"]
+        )
+        await db.resolve_gate(resolved, resolved_by="jack")
+
+        task_gates = await db.list_gates(project_id=PROJECT, task_id="t1")
+        assert {gate["id"] for gate in task_gates} == {shared, resolved}
+        assert {gate["status"] for gate in task_gates} == {"open", "resolved"}
+        assert unrelated not in {gate["id"] for gate in task_gates}
+        assert {gate["id"] for gate in await db.list_gates(task_id="t1", status="open")} == {shared}
+
     async def test_get_gates_for_task(self, db):
         await mktask(db, "t1")
         await mktask(db, "t2")
