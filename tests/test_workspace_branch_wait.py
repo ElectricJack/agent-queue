@@ -26,6 +26,7 @@ from src.database.tables import (
     integration_branch_owners,
     integration_parent_episodes,
     integration_repair_operations,
+    projects,
     task_branch_origins,
     task_integration_checkpoints,
 )
@@ -309,6 +310,53 @@ async def test_epic_root_branch_prepares_with_recorded_checkpoint(env, monkeypat
     assert actual_role == role
     assert current == fence
     assert origin["base_sha"] == ("b" if role == "verifier" else "a") * 40
+
+
+async def test_verifier_uses_its_parents_reserved_noncanonical_branch(env):
+    await env.db.create_repo(
+        RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.CLONE)
+    )
+    await env.db.update_project(
+        "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+    )
+    branch = "aq/epic/scratch-delivery"
+    parent = await _task(env, "parent", repo_id="repo", branch_name=branch)
+    verifier = await _task(env, "verifier", repo_id="repo", branch_name=branch)
+    async with env.db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="parent-origin", task_id=parent.id, repository_id="repo",
+            parent_ref="main", base_sha="a" * 40, creation_generation=0,
+            reserved=True, materialized=True, created_at=1.0, materialized_at=1.0,
+        ))
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="episode", parent_task_id=parent.id, repository_id="repo",
+            generation=1, pre_collection_checkpoint_sha="a" * 40, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="operation", target_kind="parent", parent_task_id=parent.id,
+            episode_id="episode", state="active", policy_snapshot={}, artifact_snapshot={},
+            required_check_version="test", verifier_task_id=verifier.id,
+            created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id=parent.id, repository_id="repo", branch=branch, generation=1,
+            checkpoint_sha="b" * 40, state="verifying", episode_id="episode",
+            updated_at=1.0,
+        ))
+    ownership = BranchOwnership(env.db)
+    fence = await ownership.acquire(BranchKey(repository_id="repo", branch=branch),
+                                    parent.id, "worker")
+    await ownership.transfer(fence, verifier.id, "verifier")
+
+    origin, current, role = await env.orch._hierarchy_origin_and_fence(
+        verifier, await env.db.get_project("p")
+    )
+    assert role == "verifier"
+    assert current.target.branch == branch
+    assert origin["base_sha"] == "b" * 40
 
 
 async def test_hierarchy_slot_prep_uses_pinned_origin_and_never_parent_resume(env):

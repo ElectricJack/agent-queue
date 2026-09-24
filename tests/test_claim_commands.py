@@ -260,6 +260,26 @@ class TestClaim:
         assert owner["session_id"] == sid
         assert owner["workspace_id"] == "ws-agent-1"
 
+    async def test_pool_repair_claim_passes_repository_url_to_exact_fetch(
+        self, handler, db, tmp_path
+    ):
+        ownership, fence = await self._hierarchy_task(db, tmp_path)
+        repair_fence = await ownership.transfer(fence, "child", "repair")
+        handler.orchestrator._hierarchy_origin_and_fence = AsyncMock(
+            return_value=({"base_sha": "a" * 40}, repair_fence, "repair")
+        )
+        handler.orchestrator._hierarchy_repair_start = AsyncMock(
+            return_value="a" * 40
+        )
+        sid, _wd = await pool_session(db, tmp_path)
+
+        result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+
+        assert result["result"] == "claimed"
+        assert handler.orchestrator._hierarchy_repair_start.await_args.kwargs == {
+            "repository_url": ""
+        }
+
     async def test_collector_owned_hierarchy_branch_cannot_reset_or_activate_pool_claim(
         self, handler, db, tmp_path
     ):

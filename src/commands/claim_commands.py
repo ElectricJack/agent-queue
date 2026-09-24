@@ -867,7 +867,8 @@ class ClaimCommandsMixin:
                         state="attached" if hierarchy_attached else "reserved",
                     ):
                         base_sha = await self.orchestrator._hierarchy_repair_start(
-                            slot.workspace_path, origin, fence
+                            slot.workspace_path, origin, fence,
+                            repository_url=project.repo_url or "",
                         )
                 if not hierarchy_attached:
                     await ownership.attach(

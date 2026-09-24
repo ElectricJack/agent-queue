@@ -1456,15 +1456,16 @@ async def test_pool_close_of_a_suspended_parent_releases_its_owner_row(
 
 
 @pytest.mark.parametrize('pool', [False, True])
+@pytest.mark.parametrize('task_branch', ['refs/heads/aq/parent', 'aq/parent'])
 async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
-    orchestrator_factory, tmp_path, monkeypatch, pool,
+    orchestrator_factory, tmp_path, monkeypatch, pool, task_branch,
 ):
     from src.database.tables import tasks
 
     orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
     owner = _owner() | {'ref': 'refs/heads/aq/parent'}
     async with orchestrator.db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == 'task').values(branch_name=owner['ref']))
+        await conn.execute(update(tasks).where(tasks.c.id == 'task').values(branch_name=task_branch))
         await conn.execute(update(integration_branch_owners).values(ref=owner['ref']))
         if pool:
             await conn.execute(update(sessions).values(lifecycle='pool'))
@@ -1477,6 +1478,28 @@ async def test_full_root_ref_handoff_proves_and_detaches_short_git_branch(
                else orchestrator.aconfirm_integration_owner_handoff)
     assert await confirm(owner)
     assert 'detach' in events
+
+
+async def test_repair_retry_release_finds_full_ref_after_claim_normalizes_task_branch(
+    orchestrator_factory, tmp_path, monkeypatch,
+):
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    async with orchestrator.db.immediate() as conn:
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "owner")
+            .values(ref="refs/heads/aq/parent")
+        )
+    events: list[str] = []
+    assert await _release_owner_for_retry(
+        orchestrator, monkeypatch, owner_role="repair", events=events, pool=True,
+    )
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="refs/heads/aq/parent")
+    )
+    assert owner["handoff_state"] == "reserved"
+    assert owner["fence_token"] == 5
+    assert "detach" in events
 
 
 @pytest.mark.parametrize("writer_state", ["running", "stopped"])

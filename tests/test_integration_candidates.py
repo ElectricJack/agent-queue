@@ -3359,7 +3359,8 @@ async def test_candidate_reclaims_only_exact_closed_adopted_repair(db, tmp_path,
     await db.create_task(Task(
         id="closed-repair", project_id="p", repo_id="repo", title="Repair", description="Adopted candidate repair",
         status=TaskStatus.IN_PROGRESS if case == "running" else TaskStatus.COMPLETED,
-        branch_name=target.branch, created_by_kind="integration_repair",
+        branch_name=target.branch.removeprefix("refs/heads/"),
+        created_by_kind="integration_repair",
         created_by_id=state["operation"]["id"],
     ))
     owner = await service.ownership.get_owner(target)

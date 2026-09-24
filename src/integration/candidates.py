@@ -1644,7 +1644,8 @@ class CandidateService:
         if (task is None or task["status"] != "COMPLETED"
                 or task["project_id"] != batch["project_id"]
                 or task["repo_id"] != batch["repository_id"]
-                or task["branch_name"] != batch["integration_branch"]
+                or task["branch_name"]
+                != batch["integration_branch"].removeprefix("refs/heads/")
                 or task["created_by_kind"] != "integration_repair"
                 or task["created_by_id"] != operation["id"]):
             return

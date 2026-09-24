@@ -295,7 +295,10 @@ def _reserved_repair_branch(repository_id: str | None = None):
             owner.c.session_id.is_(None),
             owner.c.workspace_id.is_(None),
             owner.c.repository_id == tasks.c.repo_id,
-            owner.c.ref == tasks.c.branch_name,
+            or_(
+                owner.c.ref == tasks.c.branch_name,
+                owner.c.ref == ("refs/heads/" + tasks.c.branch_name),
+            ),
             owner.c.repository_id == (
                 repository_id if repository_id is not None else projects.c.integration_repository_id
             ),

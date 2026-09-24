@@ -297,7 +297,8 @@ class IntegrationStateQueriesMixin:
             if (
                 delegate["project_id"] != target_project_id
                 or delegate["repo_id"] != repository_id
-                or delegate["branch_name"] != branch
+                or str(delegate["branch_name"] or "").removeprefix("refs/heads/")
+                != str(branch or "").removeprefix("refs/heads/")
             ):
                 return None
             owner = (

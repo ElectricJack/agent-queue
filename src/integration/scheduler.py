@@ -26,7 +26,7 @@ from src.integration.epic_dependencies import dependencies_for, order_members
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
-from src.integration.settling import settled
+from src.integration.settling import clear as clear_settling_window, settled
 from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -496,6 +496,7 @@ class TrainService:
                     )
                 )
                 await self._consume_request(conn, project_id, request_id, now)
+                await clear_settling_window(conn, project_id=project_id)
                 return self._result("empty", project_id, request_id, batch_id, None)
 
             integration_branch = self._integration_branch(project_id, request_id)
@@ -618,6 +619,7 @@ class TrainService:
                 )
                 .values(lifecycle="sealed", updated_at=now)
             )
+            await clear_settling_window(conn, project_id=project_id)
             return self._result(
                 "sealed", project_id, request_id, batch_id, operation["id"]
             )

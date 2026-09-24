@@ -253,6 +253,11 @@ class FakeProvider(SessionProvider):
         s = self._get(h)
         return bool(s and s.alive)
 
+    async def confirm_stopped(self, h: SessionHandle) -> bool:
+        # The fake provider has no external process: its in-memory session
+        # registry is the authoritative runtime state.
+        return h.name not in self.sessions
+
     async def process_alive(self, h: SessionHandle, process_names: tuple[str, ...] = ()) -> bool:
         s = self._get(h)
         if s is None:

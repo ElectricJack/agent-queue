@@ -63,7 +63,7 @@ async def test_legacy_parent_tick_publishes_exact_ci_and_fenced_event(ci_db, tmp
         payload=AttestationPayload.model_validate(payload_dict()), workflow_ids={21: 301, 22: 302}
     )
     monkeypatch.setattr('src.integration.parent_ci.AuthenticatedGitHubObserver',
-                        lambda client: TrustedFixtureObserver(observation))
+                        lambda client, **_kwargs: TrustedFixtureObserver(observation))
     remote = {}
     async def exact(branch):
         return remote.get(branch)

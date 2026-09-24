@@ -114,7 +114,7 @@ class ParentCIService:
             'required_check_names': tuple(required['names']),
             'ci_producer_id': required['producer_id'],
         }, boundary='parent')
-        ci = CIService(self.db, trust, AuthenticatedGitHubObserver(client))
+        ci = CIService(self.db, trust, AuthenticatedGitHubObserver(client, expected_event="push"))
 
         async def current():
             async with self.db.immediate() as conn:

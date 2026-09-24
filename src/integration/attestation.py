@@ -109,7 +109,7 @@ class IntegrationAttestationService:
             return AttestationPublicationResult(outcome="stale", subject=subject)
         try:
             trust, client = await self._load_trust(initial)
-            observation = await AuthenticatedGitHubObserver(client).observe(
+            observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
                 trust, subject.candidate_sha
             )
             if not isinstance(observation, TrustedCIObservation):
@@ -188,7 +188,7 @@ class IntegrationAttestationService:
         try:
             trust, client = await self._load_trust(initial)
             if isinstance(trust, IntegrationCITrust):
-                observation = await AuthenticatedGitHubObserver(client).observe(
+                observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
                     trust, subject.candidate_sha
                 )
                 if not isinstance(observation, TrustedCIObservation) or not isinstance(
@@ -241,7 +241,7 @@ class IntegrationAttestationService:
                 observed = await CIService(
                     self.db,
                     trust,
-                    AuthenticatedGitHubObserver(client),
+                    AuthenticatedGitHubObserver(client, expected_event="push"),
                     clock=self.clock,
                 ).observe_candidate(candidate)
                 if observed["outcome"] != "green":

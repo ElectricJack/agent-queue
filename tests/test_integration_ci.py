@@ -331,6 +331,35 @@ async def test_authenticated_observer_selects_newest_exact_producer_and_coherent
 
 
 @pytest.mark.asyncio
+async def test_candidate_push_failure_cannot_be_overridden_by_newer_pr_success():
+    manifest = trust().model_dump(by_alias=True)
+    manifest["required_checks"]["names"] = ["unit"]
+    push_check = {
+        "id": 11, "name": "unit", "head_sha": SHA, "status": "completed",
+        "conclusion": "failure", "app": {"id": 404}, "check_suite": {"id": 21},
+    }
+    pr_check = {
+        **push_check, "id": 12, "conclusion": "success", "check_suite": {"id": 22},
+    }
+    workflows = [
+        {"id": 31, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 21,
+         "head_sha": SHA, "conclusion": "failure", "event": "push"},
+        {"id": 32, "workflow_id": 301, "run_attempt": 1, "check_suite_id": 22,
+         "head_sha": SHA, "conclusion": "success", "event": "pull_request"},
+    ]
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient({"unit": [push_check, pr_check]}, workflows),
+        expected_event="push",
+    )
+
+    observation = await observer.observe(IntegrationTrustManifest.model_validate(manifest), SHA)
+
+    assert isinstance(observation, FailedCIObservation)
+    assert observation.checks[0]["check_run_id"] == 11
+    assert observation.workflow_runs[0]["workflow_run_id"] == 31
+
+
+@pytest.mark.asyncio
 async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt():
     policy = policy_snapshot()
     policy["root"]["required_checks"]["producer_id"] = "github-actions"

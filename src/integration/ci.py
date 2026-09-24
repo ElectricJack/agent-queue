@@ -875,8 +875,9 @@ class CIService:
 class AuthenticatedGitHubObserver:
     """Build canonical evidence exclusively from authenticated GitHub API reads."""
 
-    def __init__(self, client: Any):
+    def __init__(self, client: Any, *, expected_event: str | None = None):
         self.client = client
+        self.expected_event = expected_event
 
     async def observe(
         self, trust: IntegrationTrustManifest | IntegrationCITrust, head_sha: str
@@ -884,6 +885,19 @@ class AuthenticatedGitHubObserver:
         if not isinstance(head_sha, str) or re.fullmatch(_SHA_PATTERN, head_sha) is None:
             raise AttestationError("invalid CI head")
         owner, repository = trust.full_name.split("/", 1)
+        workflow_records = await self.client.paged_items(
+            f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
+            key="workflow_runs",
+        )
+        allowed_suites = (
+            {
+                _strict_int(record.get("check_suite_id"))
+                for record in workflow_records
+                if record.get("event") == self.expected_event
+            }
+            if self.expected_event is not None
+            else None
+        )
         selected: list[dict[str, Any]] = []
         for name in trust.required_checks.names:
             path = (
@@ -908,6 +922,10 @@ class AuthenticatedGitHubObserver:
                     raise AttestationError(
                         f"required check ordering identity is malformed: {name}"
                     )
+                suite = record.get("check_suite")
+                suite_id = _strict_int(suite.get("id")) if isinstance(suite, dict) else None
+                if allowed_suites is not None and suite_id not in allowed_suites:
+                    continue
                 candidates.append((record_id, record))
             if not candidates:
                 raise AttestationError(f"required check is missing: {name}")
@@ -947,10 +965,6 @@ class AuthenticatedGitHubObserver:
                 }
             )
 
-        workflow_records = await self.client.paged_items(
-            f"/repos/{owner}/{repository}/actions/runs?head_sha={head_sha}&per_page=100",
-            key="workflow_runs",
-        )
         workflow_rows: list[dict[str, Any]] = []
         workflow_ids: dict[int, int] = {}
         for suite_id in dict.fromkeys(check["check_suite_id"] for check in selected):
