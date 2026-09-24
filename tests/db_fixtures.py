@@ -28,7 +28,12 @@ import uuid
 import warnings
 
 from src.database.schema_key import schema_key_slug
-from tests.pg_dsn import drop_databases, ensure_worker_postgres_dsn
+from tests.pg_dsn import (
+    drop_databases,
+    ensure_worker_postgres_dsn,
+    hold_owner_lock,
+    owned_name,
+)
 
 #: Advisory-lock key guarding template construction across xdist workers.
 #: Arbitrary but fixed; scoped to the maintenance database it is taken on.
@@ -399,7 +404,9 @@ async def seed_task_session_attempt(
         task_status = TaskStatus.IN_PROGRESS
     if create_task:
         await db.create_task(
-            Task(id=task_id, project_id=project_id, title=task_id, description="", status=task_status)
+            Task(
+                id=task_id, project_id=project_id, title=task_id, description="", status=task_status
+            )
         )
 
     timestamp = time.time() if now is None else now
@@ -469,7 +476,10 @@ class LeasePool:
         self._next = 0
 
     def _name(self, index: int) -> str:
-        return f"aq_test_{self._run_id}_{self._worker}_{index}"
+        # Named under this process's owner token: tests/pg_dsn.py's owner lock
+        # vouches for the clone while the process lives, and its orphan sweep
+        # reaps it if the process dies before dispose() (SIGTERM, SIGKILL).
+        return owned_name("pool", self._run_id, self._worker, str(index))
 
     async def acquire(self) -> str:
         """Lease a clean database; returns its DSN."""
@@ -478,6 +488,7 @@ class LeasePool:
         global _SEED
         index, self._next = self._next, self._next + 1
         name = self._name(index)
+        await hold_owner_lock(self._base)
         dsn = await clone_database(self._base, name)
         self._created.add(name)
         if _SEED is None:
