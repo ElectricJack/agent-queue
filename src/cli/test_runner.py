@@ -61,13 +61,13 @@ _FALLBACK_WORKERS = 4
 _FALLBACK_MARKERS = "not perf and not migration and not slow and not tmux and not integration"
 
 _POSTGRES_SETUP = """POSTGRES_TEST_DSN is not set; PostgreSQL is required by this test suite.
-Nothing was run. Start the repository's disposable PostgreSQL service and set a base DSN:
+Nothing was run. Start the separate disposable test service and set a base DSN:
 
-  docker compose up -d postgres
-  export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue:agent_queue_dev@localhost:5533/postgres
+  docker compose up -d postgres-test
+  export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
 
 The test harness creates uniquely named databases under that server and removes only the
-databases it owns. Do not point POSTGRES_TEST_DSN at the daemon database from config.yaml."""
+databases it owns. Do not point POSTGRES_TEST_DSN at the daemon's :5533 server."""
 
 
 def postgres_test_dsn_error(environ: Mapping[str, str] | None = None) -> str | None:
