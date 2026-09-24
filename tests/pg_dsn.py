@@ -11,11 +11,13 @@ SIGTERM, SIGKILL or the OOM killer can end a process before that teardown. The
 owner token is therefore also a PostgreSQL advisory lock, held on a dedicated
 connection from before the process's first ``CREATE DATABASE`` until its
 teardown has finished. The server drops the lock when that connection closes,
-however the process ended, so a free lock proves the owner is gone. Every new
-worker database starts one bounded background sweep of ``aq_test_ownv2_*``
-names whose owner lock is free. Operator databases, schema templates, lease-pool
-clones (``tests/db_fixtures.py`` reaps those) and older unversioned
-``aq_test_*`` names never match it: they carry no lock that could prove anything.
+however the process ended, so a free lock proves the owner is gone. A lock
+lost while the process lives on is taken back at once, and no database is
+created until it is. Every new worker database starts one bounded background
+sweep of ``aq_test_ownv2_*`` names whose owner lock is free. Operator
+databases, schema templates, lease-pool clones (``tests/db_fixtures.py`` reaps
+those) and older unversioned ``aq_test_*`` names never match it: they carry no
+lock that could prove anything.
 
 An unexpected existing target is treated as an ownership collision. Its
 Alembic state is inspected read-only for an actionable stale/unknown-revision
@@ -64,6 +66,8 @@ _MAX_REAP_PER_SWEEP = 8
 # The sweep runs in the background, so a DROP may wait out a slow checkpoint.
 _REAP_STATEMENT_TIMEOUT_MS = 30_000
 _CLOSE_TIMEOUT_S = 10
+# How long a lost owner lock is retried, e.g. across a test-server restart.
+_RELOCK_DEADLINE_S = 120
 
 _OWNER_TOKEN: str | None = None
 _OWNER: _OwnerLease | None = None
@@ -179,6 +183,10 @@ async def _revision_diagnostic(base_dsn: str, target: str) -> str:
         await conn.close()
 
 
+class _OwnerTokenHeld(RuntimeError):
+    """Another session holds this process's owner lock."""
+
+
 class _OwnerLease:
     """This process's owner lock, held on a dedicated connection until closed.
 
@@ -191,7 +199,10 @@ class _OwnerLease:
         self.admin_dsn = admin_dsn
         self.token = token
         self.sweep_failures: list[str] = []
+        self.lost: str | None = None
         self._conn = None
+        self._closing = False
+        self._relock: asyncio.Task | None = None
         self._sweep: asyncio.Task | None = None
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -224,17 +235,62 @@ class _OwnerLease:
             raise
         if not held:
             await conn.close(timeout=_CLOSE_TIMEOUT_S)
-            raise RuntimeError(
+            raise _OwnerTokenHeld(
                 f"PostgreSQL test owner token {self.token} is already held by another "
                 "session; refusing to create test databases under it"
             )
+        conn.add_termination_listener(self._on_terminated)
         self._conn = conn
+
+    def _on_terminated(self, conn) -> None:
+        # The lock went with the connection (a server restart, a reset socket)
+        # while this process lives on. Until it is back, a sweep elsewhere may
+        # take this process's databases for orphans, so re-take it at once.
+        if self._closing or conn is not self._conn:
+            return
+        self._conn = None
+        self._relock = self._loop.create_task(self._relock_after_loss())
+
+    async def _relock_after_loss(self) -> None:
+        deadline = self._loop.time() + _RELOCK_DEADLINE_S
+        delay = 0.2
+        while not self._closing:
+            try:
+                await self._lock()
+                return
+            except _OwnerTokenHeld as exc:
+                # A sweeper claimed the token: this process's databases may
+                # already be gone. Nothing more is created under it.
+                self.lost = str(exc)
+                return
+            except Exception as exc:  # noqa: BLE001 - the server may still be restarting
+                if self._loop.time() >= deadline:
+                    self.lost = f"could not reconnect: {type(exc).__name__}: {exc}"
+                    return
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 5)
+
+    async def ensure_held(self) -> None:
+        """Refuse a new database while the owner lock is not provably held."""
+        await self._submit(self._await_held())
+
+    async def _await_held(self) -> None:
+        if self._conn is not None and self._conn.is_closed():
+            self._on_terminated(self._conn)
+        if self._relock is not None:
+            await self._relock
+        if self._conn is None:
+            raise RuntimeError(
+                "lost this process's PostgreSQL test owner lock and could not take it "
+                f"back ({self.lost}); refusing to create a database that a sweep could "
+                "take for an orphan"
+            )
 
     async def start_sweep(self) -> None:
         await self._submit(self._spawn_sweep())
 
     async def _spawn_sweep(self) -> None:
-        self._sweep = asyncio.get_running_loop().create_task(
+        self._sweep = self._loop.create_task(
             _reap_orphaned_databases(self.admin_dsn, self.token, self.sweep_failures)
         )
 
@@ -247,19 +303,29 @@ class _OwnerLease:
         return self.sweep_failures
 
     async def _release(self) -> None:
-        if self._sweep is not None:
-            # Teardown never waits on a sweep: what it did not reach is still
-            # an orphan for the next run. cancel() is a no-op once finished.
-            self._sweep.cancel()
+        self._closing = True
+        # Teardown never waits on a sweep: what it did not reach is still an
+        # orphan for the next run. cancel() is a no-op on a finished task.
+        for task in (self._relock, self._sweep):
+            if task is None:
+                continue
+            task.cancel()
             try:
-                await asyncio.wait_for(self._sweep, _CLOSE_TIMEOUT_S)
+                await asyncio.wait_for(task, _CLOSE_TIMEOUT_S)
             except (asyncio.CancelledError, TimeoutError):
                 pass
             except Exception as exc:  # noqa: BLE001 - reported at teardown, never raised
-                self.sweep_failures.append(f"sweep: {type(exc).__name__}: {exc}")
+                self.sweep_failures.append(f"{type(exc).__name__}: {exc}")
         if self._conn is not None:
             conn, self._conn = self._conn, None
-            await conn.close(timeout=_CLOSE_TIMEOUT_S)
+            try:
+                await conn.close(timeout=_CLOSE_TIMEOUT_S)
+            except Exception:  # noqa: BLE001 - the socket closes either way
+                conn.terminate()
+        # asyncpg's query-cancel requests outlive a cancelled DROP briefly.
+        pending = asyncio.all_tasks() - {asyncio.current_task()}
+        if pending:
+            await asyncio.wait(pending, timeout=_CLOSE_TIMEOUT_S)
 
     def _stop(self) -> None:
         self._loop.call_soon_threadsafe(self._loop.stop)
@@ -281,6 +347,8 @@ async def _hold_owner_lock(admin_dsn: str) -> None:
             "refusing to create a test database on a second server: this process's "
             "owner lock can vouch for databases on one PostgreSQL server only"
         )
+    else:
+        await _OWNER.ensure_held()
 
 
 async def _orphan_groups(conn, own_token: str) -> dict[str, list[str]]:
@@ -378,7 +446,12 @@ async def dispose_owned_databases() -> None:
     finally:
         # Anything left behind is an orphan now; the next run's sweep may take it.
         lease, _OWNER = _OWNER, None
-        stale = await lease.aclose() if lease is not None else []
+        stale: list[str] = []
+        if lease is not None:
+            try:
+                stale = await lease.aclose()
+            except Exception as exc:  # noqa: BLE001 - must not hide the drop failures
+                stale = [f"owner lock release: {type(exc).__name__}: {exc}"]
     if stale:
         warnings.warn(
             f"could not reap {len(stale)} orphaned PostgreSQL test database(s); a later "

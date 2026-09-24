@@ -51,6 +51,19 @@ class _FakeServer:
         self.connections.append(conn)
         return conn
 
+    def drop_connection(self, conn: _FakeConnection, *, lock_taken_by=None) -> None:
+        """The server ends *conn* (a restart, a reset socket); its locks go with it.
+
+        *lock_taken_by* models a sweeper that takes a freed lock first.
+        """
+        conn.closed = True
+        for key in [key for key, holder in self.locks.items() if holder is conn]:
+            del self.locks[key]
+            if lock_taken_by is not None:
+                self.locks[key] = lock_taken_by
+        for listener in conn.listeners:
+            conn.loop.call_soon_threadsafe(listener, conn)
+
     def module(self):
         return SimpleNamespace(
             connect=self.connect,
@@ -63,6 +76,20 @@ class _FakeConnection:
         self.server = server
         self.dsn = dsn
         self.closed = False
+        self.listeners: list = []
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = None
+
+    def add_termination_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def terminate(self) -> None:
+        self.closed = True
 
     async def fetchval(self, statement: str, *args):
         if statement == "SELECT pg_try_advisory_lock($1)":
@@ -98,6 +125,8 @@ class _FakeConnection:
         for key in [key for key, holder in self.server.locks.items() if holder is self]:
             del self.server.locks[key]
             self.server.log.append(f"unlock:{key:x}")
+        for listener in self.listeners:  # asyncpg notifies on a deliberate close too
+            asyncio.get_running_loop().call_soon(listener, self)
 
 
 def _hold(server: _FakeServer, token: str) -> _FakeConnection:
@@ -137,8 +166,7 @@ def test_concurrent_runs_derive_distinct_worker_databases(monkeypatch):
     monkeypatch.setattr(pg_dsn, "_create_owned_database", _fake_create)
     for run_id, token in (("run_one", "aaaaaaaaaaaa"), ("run_two", "bbbbbbbbbbbb")):
         _reset_derivation(monkeypatch, run_id=run_id)
-        monkeypatch.setattr(pg_dsn, "_OWNER_TOKEN", None)
-        monkeypatch.setattr(pg_dsn.uuid, "uuid4", lambda token=token: SimpleNamespace(hex=token))
+        monkeypatch.setattr(pg_dsn, "_OWNER_TOKEN", token)  # each process draws its own
         pg_dsn.ensure_worker_postgres_dsn()
 
     assert created == [
@@ -223,7 +251,14 @@ async def test_existing_stale_database_is_diagnosed_without_mutation(monkeypatch
         exceptions=SimpleNamespace(DuplicateDatabaseError=RuntimeError),
     )
     monkeypatch.setitem(__import__("sys").modules, "asyncpg", fake_asyncpg)
-    monkeypatch.setattr(pg_dsn, "_OWNER", SimpleNamespace(admin_dsn=_ADMIN))
+
+    class _HeldLease:
+        admin_dsn = _ADMIN
+
+        async def ensure_held(self):
+            return None
+
+    monkeypatch.setattr(pg_dsn, "_OWNER", _HeldLease())
 
     async def _unknown_revision(_base_dsn, _target):
         return "alembic_version contains unknown revision(s) ['foreign_rev']"
@@ -344,6 +379,58 @@ async def test_one_process_keeps_its_databases_on_one_server(monkeypatch):
             )
     finally:
         await lease.aclose()
+
+
+async def _eventually(predicate, what: str) -> None:
+    deadline = time.monotonic() + 5
+    while not predicate():
+        assert time.monotonic() < deadline, what
+        await asyncio.sleep(0.01)
+
+
+async def test_a_lost_owner_lock_is_taken_back_before_anything_else_is_created(monkeypatch):
+    server = _FakeServer()
+    monkeypatch.setitem(sys.modules, "asyncpg", server.module())
+    monkeypatch.setattr(pg_dsn, "_RELOCK_DEADLINE_S", 5)
+    worker = pg_dsn._owned_name("run_abc", "gw3")
+    await pg_dsn._create_owned_database("postgresql://u:p@h:5432/aqtest", worker)
+    lease = pg_dsn._OWNER
+    key = pg_dsn._owner_lock_key(_TOKEN)
+    first = server.locks[key]
+    try:
+        server.drop_connection(first)  # e.g. the test server restarted
+        await _eventually(lambda: key in server.locks, "owner lock was not taken back")
+
+        scratch = pg_dsn._owned_name("scratch", "after_loss")
+        await pg_dsn._create_owned_database(f"postgresql://u:p@h:5432/{worker}", scratch)
+
+        second = server.locks[key]
+        assert second is not first and not second.closed
+        assert scratch in server.databases
+    finally:
+        await lease.aclose()
+    assert key not in server.locks
+
+
+async def test_an_owner_lock_a_sweeper_took_first_refuses_new_databases(monkeypatch):
+    server = _FakeServer()
+    monkeypatch.setitem(sys.modules, "asyncpg", server.module())
+    worker = pg_dsn._owned_name("run_abc", "gw3")
+    await pg_dsn._create_owned_database("postgresql://u:p@h:5432/aqtest", worker)
+    lease = pg_dsn._OWNER
+    key = pg_dsn._owner_lock_key(_TOKEN)
+    sweeper = _FakeConnection(server, _ADMIN)
+    try:
+        server.drop_connection(server.locks[key], lock_taken_by=sweeper)
+
+        scratch = pg_dsn._owned_name("scratch", "after_loss")
+        with pytest.raises(RuntimeError, match="lost this process's PostgreSQL test owner lock"):
+            await pg_dsn._create_owned_database(f"postgresql://u:p@h:5432/{worker}", scratch)
+        assert scratch not in server.databases
+        assert "already held" in lease.lost
+    finally:
+        await lease.aclose()
+    assert server.locks == {key: sweeper}
 
 
 async def test_cleanup_drops_only_registered_databases_in_reverse_order(monkeypatch):

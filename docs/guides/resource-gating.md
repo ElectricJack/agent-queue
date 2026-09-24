@@ -175,7 +175,10 @@ holding connection closes, however the process ended.
 - **Worker and scratch databases** (`tests/pg_dsn.py`). The process takes a
   lock keyed by its owner token on a dedicated connection (application name
   `aq-test-db-owner`) before its first `CREATE DATABASE`, and keeps it until
-  teardown has dropped everything it created. Each new worker database starts
+  teardown has dropped everything it created. If that connection drops while
+  the process lives on (a test-server restart), the process takes the lock back
+  at once and refuses to create another database until it has. Each new
+  worker database starts
   one background sweep, with one sweeper per server at a time, that drops
   `aq_test_ownv2_*` databases whose owner lock is free: at most eight per pass,
   with a 30 second timeout per drop and no `WITH (FORCE)`, so an orphan that
