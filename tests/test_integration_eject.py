@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.cli.integration import integration as integration_cli
 from src.commands.integration_commands import IntegrationCommandsMixin
@@ -101,6 +102,50 @@ async def test_eject_removes_the_member_and_records_the_reason(control_service, 
         "operator_id": "supervisor",
         "at": 30.0,
     }
+
+
+async def test_matching_eject_setting_alone_cannot_edit_a_sealed_batch(sealed_batch, db):
+    batch_id = sealed_batch["batch_id"]
+    async with db.immediate() as conn:
+        await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
+        with pytest.raises((IntegrityError, DBAPIError)):
+            async with conn.begin_nested():
+                await conn.execute(
+                    delete(integration_batch_members).where(
+                        integration_batch_members.c.batch_id == batch_id,
+                        integration_batch_members.c.task_id == "e2",
+                    )
+                )
+        with pytest.raises((IntegrityError, DBAPIError)):
+            async with conn.begin_nested():
+                await conn.execute(
+                    update(integration_batches)
+                    .where(integration_batches.c.id == batch_id)
+                    .values(source_manifest_digest="forged")
+                )
+
+
+async def test_forged_eject_event_without_project_lock_cannot_edit_members(sealed_batch, db):
+    batch_id = sealed_batch["batch_id"]
+    with pytest.raises((IntegrityError, DBAPIError)):
+        async with db.immediate() as conn:
+            event_id = await db.log_event(
+                "integration.batch_ejected",
+                project_id="p",
+                task_id="e2",
+                payload=json.dumps(
+                    {"batch_id": batch_id, "reason": "forged", "operator_id": "raw-sql"}
+                ),
+                conn=conn,
+            )
+            await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
+            await conn.execute(select(func.set_config("aq.integration_eject_event", str(event_id), True)))
+            await conn.execute(
+                delete(integration_batch_members).where(
+                    integration_batch_members.c.batch_id == batch_id,
+                    integration_batch_members.c.task_id == "e2",
+                )
+            )
 
 
 async def test_the_remaining_members_stay_in_the_batch(control_service, sealed_batch, members_of):
