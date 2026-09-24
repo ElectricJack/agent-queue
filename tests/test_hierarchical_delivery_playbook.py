@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import insert, update
 
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
@@ -20,12 +20,13 @@ from tests.playbook_v2_engine_helpers import (
     StubActivations,
     artifact_ref_for,
 )
-from tests.test_integration_parent_completion import _parent_tree
-from src.database.tables import tasks
+from tests.test_integration_parent_completion import _code_receipt, _parent_tree
+from src.database.tables import integration_check_evidence, task_integration_checkpoints, tasks
 from src.models import AgentProfile, Project, TaskStatus
 
 
 FIXTURE = Path("tests/fixtures/playbooks/historical-v2/hierarchical-delivery/artifact.json")
+PARENT_FIXTURE = Path("tests/fixtures/playbooks/v2/agent-queue-parent-integration/artifact.json")
 
 
 def _artifact():
@@ -152,3 +153,88 @@ async def test_failed_delivery_event_runs_real_readiness_and_policy_commands(
     ] + [(r.step_id, r.outcome, r.selected_transition, r.error_code, r.result) for r in runs.receipts]
     assert len(await db.list_gates(project_id="p", status="open")) == gate_count
     assert (await db.get_task("parent")).status is TaskStatus.PAUSED
+
+
+async def test_hosted_parent_ci_event_verifies_without_a_live_workspace(command_handler_factory):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="integration project"))
+    _hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    head_sha = "d" * 40
+    await _code_receipt(db, children[0], "a" * 40, head_sha)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "parent")
+            .values(state="verifying", checkpoint_sha=head_sha)
+        )
+        await conn.execute(
+            insert(integration_check_evidence).values(
+                id="check-unit",
+                operation_id=checkpointed["operation_id"],
+                parent_task_id="parent",
+                parent_generation=1,
+                parent_head_sha=head_sha,
+                producer_id="forge-observer",
+                workflow_id="workflow",
+                run_id="run",
+                attempt=1,
+                required_check_version="parent-v1",
+                checks={"unit": "success"},
+                conclusion="success",
+                classification="conclusive",
+                observed_at=2.0,
+            )
+        )
+    assert await db.get_workspace_for_task("parent") is None
+
+    artifact = load_definition_json(PARENT_FIXTURE.read_text(encoding="utf-8"))
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS,
+            clock=lambda: 100.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler,
+            db=db,
+        ),
+        runs=runs,
+        waits=runs,
+        activations=StubActivations([artifact_ref_for(artifact)]),
+    )
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        project_id="p",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_parent_verify"]),
+    )
+    event = {
+        "event_id": "parent-ci-green",
+        "event_type": "integration.ci_completed",
+        "project_id": "p",
+        "operation_id": checkpointed["operation_id"],
+        "target_kind": "parent",
+        "task_id": "parent",
+        "generation": 1,
+        "head_sha": head_sha,
+        "evidence_ids": ["check-unit"],
+        "evidence_id": "check-unit",
+        "conclusion": "success",
+    }
+
+    set_handler_provider(lambda: handler)
+    try:
+        result = await engine.dispatch_event(event, principal)
+    finally:
+        set_handler_provider(None)
+
+    assert result.rules_selected == ("verify-parent",)
+    command_receipts = [
+        receipt for receipt in runs.receipts
+        if receipt.step_id == "verify-parent--verify" and receipt.outcome != "started"
+    ]
+    assert len(command_receipts) == 1
+    assert command_receipts[0].outcome == "success"
+    assert command_receipts[0].selected_transition.endswith("::verified")
+    assert {snapshot.lifecycle.value for snapshot in runs.snapshots.values()} == {"completed"}
+    checkpoint = await db.get_integration_checkpoint("parent")
+    assert checkpoint["verified_sha"] == head_sha
