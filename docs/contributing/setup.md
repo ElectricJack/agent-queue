@@ -89,6 +89,12 @@ used by the operator's daemon and must not be used for tests. The test service
 has `fsync`, `synchronous_commit`, and `full_page_writes` disabled; a crash can
 corrupt its data, so discard and recreate it if that happens.
 
+If the daemon's `postgres` service was created before the PostgreSQL 18 mount
+correction, its live cluster sits on an anonymous volume even though the named
+`pgdata` volume exists. Recreating that container would start an empty cluster;
+the operator must follow the
+[volume migration guide](../guides/postgres18-volume-migration.md) first.
+
 ```bash
 docker compose up -d postgres-test
 export POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres
@@ -125,7 +131,9 @@ docker volume rm agent-queue2_pgtestdata
 ```
 
 Never use `docker compose down -v` here: it also removes the daemon service's
-volumes.
+`pgdata` volume, which holds the operator's live database. Name
+`postgres-test` in every lifecycle command; a bare `docker compose up` or
+`down` also acts on the daemon's `postgres` service.
 
 ### Never migrate the operator's database
 
