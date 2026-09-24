@@ -881,6 +881,17 @@ async def test_two_fresh_services_reserve_one_provider_publication(attestation_d
 async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
     attestation_db, tmp_path
 ):
+    async def wait_until_phase(phase: asyncio.Event, publication: asyncio.Task) -> None:
+        """Wait for setup without treating a busy CI worker as a publication hang."""
+        waiter = asyncio.create_task(phase.wait())
+        try:
+            await asyncio.wait({waiter, publication}, return_when=asyncio.FIRST_COMPLETED)
+            if not phase.is_set():
+                pytest.fail(f"publication ended before the expected phase: {publication.result()!r}")
+        finally:
+            waiter.cancel()
+            await asyncio.gather(waiter, return_exceptions=True)
+
     now = [10.0]
     old_ready = asyncio.Event()
     release_old = asyncio.Event()
@@ -916,7 +927,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
 
     old._finish_publication = pause_old_finalizer
     old_task = asyncio.create_task(old.publish(subject()))
-    await asyncio.wait_for(old_ready.wait(), timeout=1.0)
+    await wait_until_phase(old_ready, old_task)
 
     now[0] = 311.0
     successor_client = ProviderClient()
@@ -936,7 +947,7 @@ async def test_expired_unmarked_takeover_fences_paused_old_finalizer(
         clock=lambda: now[0],
     )
     successor_task = asyncio.create_task(successor.publish(subject()))
-    await asyncio.wait_for(successor_prewrite.wait(), timeout=1.0)
+    await wait_until_phase(successor_prewrite, successor_task)
 
     release_old.set()
     old_result = await asyncio.wait_for(old_task, timeout=1.0)
