@@ -13123,8 +13123,8 @@
         "tags": [
           "task"
         ],
-        "summary": "List gates, optionally filtered by project/status/type.",
-        "description": "List gates, optionally filtered by project/status/type.",
+        "summary": "List gates, optionally filtered by project/status/type/task.",
+        "description": "List gates, optionally filtered by project/status/type/task.",
         "operationId": "gate_list",
         "requestBody": {
           "content": {
@@ -25132,6 +25132,18 @@
             ],
             "title": "Project Id",
             "description": "Filter by project"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": "Filter by waiter task"
           },
           "status": {
             "anyOf": [
