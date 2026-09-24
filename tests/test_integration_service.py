@@ -23,6 +23,7 @@ from src.database.tables import (
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.service import IntegrationService
+from src.integration.settling import note_approval
 from tests.db_fixtures import lease_dsn
 
 
@@ -639,6 +640,7 @@ async def test_two_services_coalesce_the_same_durable_schedule(db):
                 updated_at=1.0,
             )
         )
+        await note_approval(conn, project_id="p", now=1.0)
 
     scheduler = IntegrationScheduler(db)
     entered = 0
@@ -658,7 +660,7 @@ async def test_two_services_coalesce_the_same_durable_schedule(db):
     first = IntegrationService(db, CoordinatedScheduler(), empty_repair, empty_outbox)
     second = IntegrationService(db, CoordinatedScheduler(), empty_repair, empty_outbox)
 
-    await asyncio.gather(first.tick(10.0), second.tick(10.0))
+    await asyncio.gather(first.tick(301.0), second.tick(301.0))
 
     async with db._engine.connect() as conn:
         assert await conn.scalar(select(func.count()).select_from(integration_outbox)) == 1

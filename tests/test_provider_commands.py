@@ -37,6 +37,9 @@ def service(handler):
     svc = handler.orchestrator.provider_availability
     # Never shell out to a real ``codex login status`` from a test.
     svc._probe_impl = AsyncMock(return_value="cannot_tell")
+    # These command tests drive notices explicitly.  Half-change callbacks
+    # schedule background sends that can outlive a test's pooled database lease.
+    svc.on_half_change = None
     return svc
 
 
@@ -366,7 +369,6 @@ async def test_recheck_moves_a_logged_in_provider_to_probation(handler, service)
 
 
 async def test_notify_is_idempotent_per_generation(handler, service) -> None:
-    service.on_half_change = None  # drive the notice by hand
     await _trip_codex_unauthenticated(service)
     first = await handler.execute("provider_availability_notify", {"provider": "codex"})
     assert first["success"] is True
