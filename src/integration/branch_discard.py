@@ -125,7 +125,7 @@ class BranchDiscardResult(BaseModel):
     outcome: Literal["complete", "conflict", "failed", "retryable", "wait", "stale"]
     origin_id: str
     task_id: str
-    branch: str
+    branch: str | None
     attempts: int
     error: str | None = None
 
@@ -242,12 +242,15 @@ class BranchDiscardService:
 
     async def _perform(self, row: dict[str, Any]) -> tuple[str, str | None]:
         branch = self._branch(row)
+        if not branch:
+            return "failed", "origin branch is unknown; restore its exact ref before re-arming"
+        if not branch.startswith("aq/"):
+            return "conflict", "origin branch is outside the task branch namespace"
         repository = await self.db.get_repo(row["repository_id"])
         if repository is None:
             return "failed", "discard repository is unavailable"
         if branch == repository.default_branch:
-            # Unreachable through the guard (a task branch is always
-            # ``aq/<task-id>``), and catastrophic if it ever became reachable.
+            # A corrupt origin must never authorize deletion of the default ref.
             return "conflict", "default branch discard is forbidden"
         owner = await self._live_owner(row["repository_id"], branch)
         if owner is not None:
@@ -443,8 +446,8 @@ class BranchDiscardService:
         return min(RETRY_BASE_SECONDS * (2 ** max(attempts - 1, 0)), RETRY_MAX_SECONDS)
 
     @staticmethod
-    def _branch(row: dict[str, Any]) -> str:
-        return f"aq/{row['task_id']}"
+    def _branch(row: dict[str, Any]) -> str | None:
+        return row["branch_name"]
 
     def _result(
         self, outcome: str, row: dict[str, Any], *, error: str | None = None

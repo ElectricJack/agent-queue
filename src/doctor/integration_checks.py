@@ -380,7 +380,7 @@ async def _find_parked_discards(ctx: DoctorContext) -> list[dict]:
         {
             "origin_id": row["id"],
             "task_id": row["task_id"],
-            "branch": f"aq/{row['task_id']}",
+            "branch": row["branch_name"],
             "state": row["discard_state"],
             "attempts": row["discard_attempts"],
             "error": row["discard_last_error"],
@@ -408,12 +408,14 @@ async def _check_branch_discards(ctx: DoctorContext) -> CheckResult:
         id="integration.branch_discards",
         severity=Severity.WARN,
         detail=(
-            f"{len(parked)} branch discard(s) did not finish — e.g. {first['branch']}: "
+            f"{len(parked)} branch discard(s) did not finish — e.g. "
+            f"{first['branch'] or 'unknown branch'}: "
             f"{first['error']}. The task is already deleted; the ref is still on the "
-            "remote. Delete it by hand, or re-arm the discard with "
+            "remote. Restore a missing origin branch before re-arming; otherwise "
+            "delete the ref by hand, or re-arm with "
             "`aq doctor --check integration.branch_discards --fix`"
         ),
-        fixable=True,
+        fixable=all(row["branch"] for row in parked),
         data={"count": len(parked), "discards": parked},
     )
 
@@ -435,6 +437,13 @@ async def _fix_branch_discards(ctx: DoctorContext) -> CheckResult:
             id="integration.branch_discards",
             severity=Severity.OK,
             detail="no branch discard is parked",
+        )
+    if any(not row["branch"] for row in parked):
+        return CheckResult(
+            id="integration.branch_discards",
+            severity=Severity.WARN,
+            detail="restore the exact branch on origins with unknown refs before re-arming",
+            data={"count": len(parked), "discards": parked},
         )
     async with ctx.db.immediate() as conn:
         await conn.execute(

@@ -1081,7 +1081,7 @@ class HierarchyQueryMixin:
             branches = [
                 {
                     "task_id": row["task_id"],
-                    "branch": f"aq/{row['task_id']}",
+                    "branch": row["branch_name"],
                     "base_sha": row["base_sha"],
                 }
                 for row in sorted(materialized, key=lambda r: r["task_id"])

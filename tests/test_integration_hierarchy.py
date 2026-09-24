@@ -1417,6 +1417,7 @@ async def test_file_root_persists_canonical_branch_before_container_collection(d
     checkpoint = await db.get_integration_checkpoint(root_id)
     assert checkpoint["branch"] == root.branch_name
     assert (await _origins(db))[0]["branch"] == root.branch_name
+    assert (await _origin_row(db, root_id))["branch_name"] == root.branch_name
 
     # A root with a child is an untouched released container.  The bootstrap
     # must see the stored branch identity, rather than reject it as missing.

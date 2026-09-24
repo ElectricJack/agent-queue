@@ -310,7 +310,11 @@ async def live_branch_references(conn: Any) -> dict[str, str]:
         hold(row["recovery_ref"], reason)
 
     for row in await rows(
-        select(task_branch_origins.c.task_id, task_branch_origins.c.discard_state)
+        select(
+            task_branch_origins.c.task_id,
+            task_branch_origins.c.branch_name,
+            task_branch_origins.c.discard_state,
+        )
         .select_from(
             task_branch_origins.outerjoin(tasks, tasks.c.id == task_branch_origins.c.task_id)
             .outerjoin(projects, projects.c.id == tasks.c.project_id)
@@ -324,7 +328,7 @@ async def live_branch_references(conn: Any) -> dict[str, str]:
         )
     ):
         hold(
-            f"aq/{row['task_id']}",
+            row["branch_name"],
             "branch discard is pending"
             if row["discard_state"] == "pending"
             else f"hierarchy branch origin of {row['task_id']} is live",

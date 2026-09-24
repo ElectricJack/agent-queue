@@ -1345,6 +1345,7 @@ class HierarchyIntegration:
             "id": origin_id,
             "task_id": task_id,
             "repository_id": repository_id,
+            "branch_name": branch,
             "parent_task_id": parent_task_id,
             "parent_repository_id": repository_id if parent_task_id else None,
             "parent_ref": parent_ref,
