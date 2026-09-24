@@ -69,7 +69,8 @@ commands a worker needs to do its job and close out: `prime`, `task_show`,
 `task_set`, `task_comment`, `task_comments`, `task_close`, `task_children`,
 `task_progress`, `task_heartbeat`, `task_handoff`, `task_claim`,
 `session_drain_ack`, `create_task`, `reparent_task`, `project_ready`,
-`message_send`, `message_inbox`, `message_reply`, `memory_save`,
+`message_send`, `message_inbox`, `message_reply`, `message_status` (only
+for messages addressed to the caller's own mailboxes), `memory_save`,
 `memory_search`, `formula_list`, `formula_show`, `get_schema`,
 `subagent_event`, `integration_status`,
 `integration_resolve_candidate_member`. Anything else is refused:

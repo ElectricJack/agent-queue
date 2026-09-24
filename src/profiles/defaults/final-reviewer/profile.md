@@ -39,6 +39,7 @@ tags: [system, review, merge-authority, dv2-phase2]
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "pr_merge",
     "prime",
     "reopen_with_feedback",

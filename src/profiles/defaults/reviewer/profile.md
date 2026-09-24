@@ -39,6 +39,7 @@ tags: [system, review, dv2-phase2]
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "prime",
     "reopen_with_feedback",
     "session_drain_ack",

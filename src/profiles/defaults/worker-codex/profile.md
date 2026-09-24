@@ -74,6 +74,7 @@ somehow declares none.
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "pr_merge",
     "prime",
     "review_list",

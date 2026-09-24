@@ -63,6 +63,7 @@ Do:
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "prime",
     "session_drain_ack",
     "task_batch_propose",

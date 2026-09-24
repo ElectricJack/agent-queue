@@ -19,16 +19,23 @@ aq message inbox --json                       # structured (--json is
                                               # global: any position works)
 aq message list --project <pid>               # everything sent in a project
 aq message list --thread-id dashboard:<pid>   # filter to a chat thread
+aq message status <message-id> --json         # one message you were handed,
+                                              # body included
 ```
 
 Every session that starts with a bearer token gets an automatic inbox.
 Nothing renders it at every prompt boundary: the `UserPromptSubmit` hook
 that ran `aq inbox --inject` was removed on 2026-08-27. Pending messages
 reach you when `aq prime` runs (start, resume, post-compact) and through
-the cascade's nudge, which types them into the session once it goes idle.
-`aq inbox --inject` is still a supported command, so run it yourself when
-you want the queue rendered inline mid-task; `aq message inbox` is the
-same queue as data.
+the cascade's nudge, which types a one-line pointer into the session once it
+goes idle: ``Handle `aq message status <id> --json`.`` Run that command to
+read the body. The nudge has already marked the message delivered, so
+`aq message inbox` no longer lists it. A plain session may read the status
+only of messages addressed to its own session, held task or profile;
+anything else answers "not found". (A task comment is the exception: its
+body is typed in directly.) `aq inbox --inject` is still a supported command,
+so run it yourself when you want the queue rendered inline mid-task;
+`aq message inbox` is the same queue as data.
 
 ## Send
 

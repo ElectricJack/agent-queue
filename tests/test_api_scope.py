@@ -32,6 +32,7 @@ EXPECTED_AGENT_COMMANDS = {
     "message_send",
     "message_inbox",
     "message_reply",
+    "message_status",
     "memory_save",
     "memory_search",
     "task_claim",
@@ -92,6 +93,19 @@ class TestCheckCommandScope:
         for command in ("review_decide", "review_dispatch"):
             assert check_command_scope(command, {}, SESSION) == f"out of scope: {command}"
         assert check_command_scope("review_comment", {"review_id": "r1"}, SESSION) is None
+
+    def test_message_status_is_a_same_project_agent_read(self):
+        """The idle-session nudge names ``aq message status``; a worker must reach it.
+
+        The handler fences the row to the caller's own mailboxes; this gate
+        pins the project.
+        """
+        args = {"message_id": "msg-1"}
+        assert check_command_scope("message_status", args, SESSION) is None
+        assert args["project_id"] == "p1"
+        assert "project_id mismatch" in check_command_scope(
+            "message_status", {"message_id": "msg-1", "project_id": "p2"}, SESSION
+        )
 
     def test_integration_status_is_same_project_agent_read(self):
         args = {"project_id": "p1"}

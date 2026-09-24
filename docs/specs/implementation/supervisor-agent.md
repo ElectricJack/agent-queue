@@ -261,6 +261,10 @@ therefore only address the mailboxes it owns: `session:<its own session_id>`,
 session row), and `profile:<its session row's profile_id>`. `user` mailboxes
 are delivered by the delivery engine and are never agent-readable through this
 command. Local callers and elevated supervisor tokens are unrestricted.
+`message_status` applies the same fence to the one row it reads, answering
+"not found" for a message outside the caller's mailboxes. It is on the agent
+surface because the idle-session nudge names `aq message status <id>`, and
+by then the row is delivered, so `message_inbox` no longer lists it.
 
 ### 6.2 Relay API (`src/api/messages.py`)
 

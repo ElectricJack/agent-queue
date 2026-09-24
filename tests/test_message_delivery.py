@@ -8,8 +8,11 @@ does) plus an in-process :class:`FakeSessionManager` that implements
 
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -1076,3 +1079,94 @@ async def test_internal_question_handoff_does_not_generate_user_transcript_reply
     engine = make_engine(db, sessions, config=MessagesConfig(transcript_tail_fallback=True, reply_timeout=1))
     assert await engine.check_reply_timeouts() == 0
     assert await db.list_messages(to_kind="user") == []
+
+
+# --------------------------------------------------------------------------
+# The nudge must name a command its recipient may run
+# --------------------------------------------------------------------------
+
+
+_SHIPPED_PROFILES_DIR = Path(__file__).resolve().parent.parent / "src" / "profiles" / "defaults"
+_CLI_INVENTORY = (
+    Path(__file__).resolve().parent.parent / "docs" / "reference" / "cli-command-inventory.json"
+)
+
+
+def _nudged_backend_command(text: str) -> str:
+    """The daemon command behind the ``aq …`` invocation a nudge names.
+
+    Resolved through the committed CLI inventory (``tests/test_cli_inventory``
+    keeps it equal to the live Click tree), taking the longest registered
+    path so a positional argument is not read as a subcommand.
+    """
+    match = re.search(r"`(aq(?: [a-z][a-z0-9-]*)+)", text)
+    assert match, f"nudge names no aq command: {text!r}"
+    inventory = json.loads(_CLI_INVENTORY.read_text(encoding="utf-8"))
+    by_path = {row["path"]: row["backend_command"] for row in inventory["commands"]}
+    words = match.group(1).split()
+    while words and " ".join(words) not in by_path:
+        words.pop()
+    assert words, f"nudge names an unregistered aq command: {match.group(1)!r}"
+    return by_path[" ".join(words)]
+
+
+def _message_consuming_profiles() -> dict:
+    """Every shipped profile that reads its own mailbox, keyed by id.
+
+    Worker templates are included: the derived ``<class>-<harness>`` rungs
+    inherit their capabilities from them.
+    """
+    from src.profiles.capabilities import CapabilityPolicy
+    from src.profiles.parser import parse_profile
+
+    policies = {}
+    for path in sorted(_SHIPPED_PROFILES_DIR.glob("*/profile.md")):
+        parsed = parse_profile(path.read_text(encoding="utf-8"))
+        assert parsed.capabilities is not None, path
+        policy = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+        if policy.allows_aq_command("message_inbox"):
+            policies[path.parent.name] = policy
+    return policies
+
+
+class TestNudgeNamesAGrantedCommand:
+    """An idle task/pool session is told to run one command; it must be allowed to.
+
+    The nudge used to name ``aq message status`` while ``message_status`` was
+    outside ``AGENT_COMMAND_SET`` and every worker grant, so a worker that
+    followed it got ``out of scope: message_status`` and the message it had
+    just been handed (already marked delivered, so ``aq message inbox`` no
+    longer lists it) went unhandled.
+    """
+
+    @pytest.mark.parametrize("body_kind", [None, "task_recovery", "agent_question"])
+    async def test_nudged_command_passes_both_gates_for_every_message_consumer(
+        self, db, body_kind
+    ):
+        from src.api.auth import RequestScope
+        from src.api.scope import AGENT_COMMAND_SET, check_command_scope
+
+        sessions = FakeSessionManager(activity_map={("task", "task-1", "p1"): "idle"})
+        engine = make_engine(db, sessions)
+        msg = await _send(db, to_kind="task", to_id="task-1", body_kind=body_kind)
+
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+        text = sessions.nudges[0][3]
+        assert msg.id in text
+        command = _nudged_backend_command(text)
+
+        # Gate 1: the server-owned allowlist every non-elevated token is held to.
+        assert command in AGENT_COMMAND_SET
+        pool_worker = RequestScope(kind="session", session_id="s1", project_id="p1")
+        assert check_command_scope(command, {"message_id": msg.id}, pool_worker) is None
+
+        # Gate 2: the profile's own grant, for every profile that consumes messages.
+        consumers = _message_consuming_profiles()
+        assert {"worker-claude", "worker-codex"} <= set(consumers)
+        denied = sorted(pid for pid, policy in consumers.items()
+                        if not policy.allows_aq_command(command))
+        assert not denied, f"{command} is nudged but not granted to {denied}"
+
+    def test_the_resolver_reads_the_command_not_its_argument(self):
+        text = "Handle `aq message status msg-abc123 --json`."
+        assert _nudged_backend_command(text) == "message_status"

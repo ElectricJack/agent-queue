@@ -63,6 +63,7 @@ for a materialized proposal artifact.
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "playbook_v2_propose",
     "playbook_v2_validate",
     "prime",

@@ -645,6 +645,94 @@ class TestInboxMailboxFence:
 
 
 # ---------------------------------------------------------------------------
+# message_status mailbox fence — the idle-session nudge names
+# ``aq message status <id>``, so a plain session may read the messages
+# addressed to its own mailboxes and nothing else.
+# ---------------------------------------------------------------------------
+
+
+class TestStatusMailboxFence:
+    async def test_pool_worker_reads_a_nudged_message_to_its_claimed_task(self, setup):
+        """The nudge marks the row delivered, so ``inbox`` no longer lists it.
+
+        ``message_status`` is the only way the worker can reach the body.
+        """
+        handler, db, _bus = setup
+        await _seed_session_row(db, task_id="task-claimed")
+        sent = await handler._cmd_message_send(
+            _send_args(to_kind="task", to_id="task-claimed", body="rebase onto main first")
+        )
+        await db.mark_delivered(sent["message_id"], via="nudge")
+
+        inbox = await handler.execute(
+            "message_inbox",
+            {"to_kind": "task", "to_id": "task-claimed", "_scope": _session_scope(task_id=None)},
+        )
+        assert inbox["count"] == 0
+
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(task_id=None)},
+        )
+        assert "error" not in result, result
+        assert result["state"] == "delivered"
+        assert result["message"]["body"] == "rebase onto main first"
+
+    async def test_own_session_and_pinned_task_messages_are_readable(self, setup):
+        handler, _db, _bus = setup
+        for to_kind, to_id in (("session", "sess-1"), ("task", "task-1")):
+            sent = await handler._cmd_message_send(_send_args(to_kind=to_kind, to_id=to_id))
+            result = await handler.execute(
+                "message_status",
+                {"message_id": sent["message_id"], "_scope": _session_scope()},
+            )
+            assert result["state"] == "queued", (to_kind, result)
+
+    @pytest.mark.parametrize(
+        ("to_kind", "to_id"),
+        [
+            ("session", "sess-other"),
+            ("session", "supervisor-p1"),
+            ("task", "task-2"),
+            ("profile", "reviewer"),
+            ("user", "dashboard"),
+        ],
+    )
+    async def test_another_recipients_message_is_not_found(self, setup, to_kind, to_id):
+        """A refusal must not confirm the id exists, let alone return its body."""
+        handler, db, _bus = setup
+        await _seed_session_row(db)
+        sent = await handler._cmd_message_send(
+            _send_args(to_kind=to_kind, to_id=to_id, body="not yours")
+        )
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope()},
+        )
+        assert result == {"error": f"Message '{sent['message_id']}' not found"}
+        assert (await db.get_message(sent["message_id"])).delivered_at is None
+
+    async def test_pool_token_with_no_claim_reads_no_task_message(self, setup):
+        handler, db, _bus = setup
+        await _seed_session_row(db, task_id=None)
+        sent = await handler._cmd_message_send(_send_args(to_kind="task", to_id="task-x"))
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(task_id=None)},
+        )
+        assert "not found" in result["error"]
+
+    async def test_elevated_supervisor_reads_any_project_message(self, setup):
+        handler, _db, _bus = setup
+        sent = await handler._cmd_message_send(_send_args(to_id="sess-other"))
+        result = await handler.execute(
+            "message_status",
+            {"message_id": sent["message_id"], "_scope": _session_scope(elevated=True)},
+        )
+        assert result["state"] == "queued"
+
+
+# ---------------------------------------------------------------------------
 # message_list
 # ---------------------------------------------------------------------------
 

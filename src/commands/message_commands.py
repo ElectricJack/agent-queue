@@ -107,6 +107,8 @@ class MessageCommandsMixin:
         ``user`` mailboxes are delivered by the daemon's delivery engine and
         are never read through this command by an agent.  Local callers and
         elevated supervisor sessions are untouched.
+
+        ``message_status`` applies the same fence to the one row it reads.
         """
         scope = self._current_scope
         if not scope or scope.get("kind") != "session" or scope.get("elevated"):
@@ -520,7 +522,14 @@ class MessageCommandsMixin:
             return {"error": "message_id is required"}
         message = await self.db.get_message(message_id)
         project_id = args.get("project_id")
-        if message is None or (project_id is not None and message.project_id != project_id):
+        if (
+            message is None
+            or (project_id is not None and message.project_id != project_id)
+            # A plain session reads only what was addressed to it — the
+            # message a nudge pointed it at.  Answered as "not found" so the
+            # fence does not confirm another recipient's id exists.
+            or await self._inbox_mailbox_scope_error(message.to_kind, message.to_id)
+        ):
             return {"error": f"Message '{message_id}' not found"}
         state = "acknowledged" if message.read_at is not None else (
             "delivered" if message.delivered_at is not None else "queued"

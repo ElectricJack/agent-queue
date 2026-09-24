@@ -73,6 +73,7 @@ For each planning task you:
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_status",
     "phase_create",
     "phase_list",
     "prime",
