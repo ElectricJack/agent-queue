@@ -106,16 +106,17 @@ code, but changing them changes agent behaviour, so treat them as interface.
 
 | File | Read by | Contains |
 |---|---|---|
-| [`CLAUDE.md`](../../CLAUDE.md) | The `claude` harness, automatically, at session start. | The quick reference: subsystem pointers, the testing rules, the migration prohibitions, conventions. |
-| [`AGENTS.md`](../../AGENTS.md) | Harnesses that follow the `AGENTS.md` convention. | The same contract for non-Claude harnesses. |
+| [`AGENTS.md`](../../AGENTS.md) | Every harness: `codex` reads it directly, `claude` through the `CLAUDE.md` import. | The quick reference: subsystem pointers, invariants, the testing rules, the migration prohibitions, conventions. |
+| [`CLAUDE.md`](../../CLAUDE.md) | The `claude` harness, automatically, at session start. | One line, `@AGENTS.md`: Claude Code auto-loads only `CLAUDE.md`, so this shim imports the real file. Never put content here. |
 | [`profile.md`](../../profile.md) | Loaded as the repository architecture briefing when an agent primes. | The long-form architecture, codebase map and design decisions. |
 
-> **Note.** `CLAUDE.md` is the first thing an agent working in this repository
+> **Note.** `AGENTS.md` is the first thing an agent working in this repository
 > reads, and it is *terse on purpose*. When it and a page under `docs/`
 > disagree, the source wins; open an issue rather than quietly editing one of
 > them to match the other.
 
-`dashboard/CLAUDE.md` is the same idea scoped to the frontend.
+`dashboard/AGENTS.md` and `src/cli/AGENTS.md` are the same idea scoped to the
+frontend and the CLI, each with its own one-line `CLAUDE.md` shim.
 
 ## Directories that are not source
 

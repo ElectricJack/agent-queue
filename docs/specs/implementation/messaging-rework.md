@@ -14,7 +14,7 @@ tags: [implementation, messaging, discord, dashboard, api, overhaul]
 
 **Status:** Superseded for Discord by [../messaging/discord](../messaging/discord.md) and the [Discord replacement checklist](../../guides/discord-replacement-checklist.md). The retained implementation history below must not be used to restore task threads, streaming, chat, buttons, or mirrored commands.
 **Design:** [../design/messaging-rework](../design/messaging-rework.md)
-**Related:** [../design/session-runtime](../design/session-runtime.md) (event producers, transcripts), [../design/supervisor-agent](../design/supervisor-agent.md) (messages, chat relay), [../design/work-graph](../design/work-graph.md) (gates, event log, `after_seq`), [../design/aq-surface](../design/aq-surface.md) (command surface), [../messaging/base](../messaging/base.md), `dashboard/CLAUDE.md`
+**Related:** [../design/session-runtime](../design/session-runtime.md) (event producers, transcripts), [../design/supervisor-agent](../design/supervisor-agent.md) (messages, chat relay), [../design/work-graph](../design/work-graph.md) (gates, event log, `after_seq`), [../design/aq-surface](../design/aq-surface.md) (command surface), [../messaging/base](../messaging/base.md), `dashboard/AGENTS.md`
 
 ---
 

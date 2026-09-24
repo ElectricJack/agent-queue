@@ -976,6 +976,7 @@
         "profile_enabled": true,
         "profile_max_size": 5000,
         "project_docs_files": [
+          "AGENTS.md",
           "CLAUDE.md",
           "README.md"
         ],
@@ -1185,6 +1186,7 @@
         },
         "project_docs_files": {
           "default": [
+            "AGENTS.md",
             "CLAUDE.md",
             "README.md"
           ]

@@ -301,7 +301,7 @@ The subsystem is **disabled by default** — set `enabled: true` to activate it.
 | `index_specs` | `bool` | `True` | When `true`, the workspace `specs/` directory is included in the memory index. |
 | `index_docs` | `bool` | `True` | When `true`, the workspace `docs/` directory (published documentation) is included in the memory index. |
 | `index_project_docs` | `bool` | `True` | When `true`, individual project doc files are indexed separately for targeted retrieval. |
-| `project_docs_files` | `tuple[str, ...]` | `("CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
+| `project_docs_files` | `tuple[str, ...]` | `("AGENTS.md", "CLAUDE.md", "README.md")` | Files to index individually when `index_project_docs` is enabled. |
 | `index_sessions` | `bool` | `False` | When `true`, session transcripts are included in the memory index. |
 | `profile_enabled` | `bool` | `True` | Toggle project profiles — auto-generated summaries of each project. |
 | `profile_max_size` | `int` | `5000` | Maximum characters for project profile content. |

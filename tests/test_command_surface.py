@@ -109,7 +109,7 @@ KNOWN_EMPTY_SCHEMA_COMMANDS: frozenset[str] = frozenset(
 PENDING_UNLANDED_COMMANDS: frozenset[str] = frozenset(
     {
         # Provided at runtime by the external aq-memory plugin, not a
-        # CommandHandler._cmd_* method (see CLAUDE.md "Memory" entry).
+        # CommandHandler._cmd_* method (see the Plugins row in AGENTS.md).
         "memory_save",
         "memory_search",
     }

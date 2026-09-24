@@ -2,7 +2,7 @@
  * Task-scoped worktree file endpoints.
  *
  * Both endpoints live outside the generated @aq/ts-client because the
- * ``/file`` endpoint returns raw ``text/plain`` (per dashboard/CLAUDE.md,
+ * ``/file`` endpoint returns raw ``text/plain`` (per dashboard/AGENTS.md,
  * legacy-fetch is the right home for routes not modelled in the OpenAPI
  * spec).  ``/files`` could be codegen'd later; keeping both here
  * co-locates the pair.

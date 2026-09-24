@@ -188,7 +188,7 @@ dev = [
 - **`pytest>=9.0.3`** — pinned for CVE-2025-71176. This was the subject of the
   `grand-ridge` update task; future bumps should retain the minimum.
 - **`pytest-xdist`** — enables `pytest -n auto` for ~5× faster test runs
-  (see root `CLAUDE.md`).
+  (see root `AGENTS.md`).
 - **`wheel>=0.38.1`** — duplicated from the build-system requires so that the
   patched wheel is present at runtime (some plugins, e.g. `aq-vibecop`, invoke
   the wheel CLI).
