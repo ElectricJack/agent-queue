@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
+import warnings
 
 from src.database.schema_key import schema_key_slug
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -43,6 +44,19 @@ POOL_SIZE = int(os.environ.get("AQ_TEST_DB_POOL_SIZE", "4"))
 _TEMPLATE_READY: str | None = None
 
 _IDENT_RE = re.compile(r"[^a-zA-Z0-9_]")
+
+# A pool holds this lock on the maintenance database from before its first
+# clone until disposal.  A dead process loses the lock even if pytest cannot
+# run fixture teardown.  The versioned name keeps old, unlocked pool databases
+# out of the automatic sweep.
+_POOL_NAME_RE = re.compile(r"aq_test_poolv2_([0-9a-f]{12})_[a-zA-Z0-9_]{1,20}_[0-9]{1,8}\Z")
+_POOL_LOCK_PREFIX = 0x5170000000000000
+_MAX_REAP_PER_START = 8
+_REAP_STATEMENT_TIMEOUT_MS = 5000
+
+
+def _pool_lock_key(run_id: str) -> int:
+    return _POOL_LOCK_PREFIX | int(run_id, 16)
 
 
 def template_name() -> str:
@@ -371,18 +385,75 @@ class LeasePool:
 
     def __init__(self, base_dsn: str, worker: str, size: int = POOL_SIZE):
         self._base = base_dsn
-        self._worker = _IDENT_RE.sub("_", worker) or "master"
+        self._worker = (_IDENT_RE.sub("_", worker) or "master")[:20]
         self._run_id = uuid.uuid4().hex[:12]
         self._size = size
         self._free: list[str] = []
         self._created: set[str] = set()
         self._next = 0
+        self._guard = None
 
     def _name(self, index: int) -> str:
-        return f"aq_test_{self._run_id}_{self._worker}_{index}"
+        return f"aq_test_poolv2_{self._run_id}_{self._worker}_{index}"
+
+    async def _start(self) -> None:
+        if self._guard is not None:
+            return
+        prefix, _ = _split(self._base)
+        conn = await _connect_admin(f"{prefix}/postgres")
+        try:
+            await conn.execute("SELECT pg_advisory_lock($1)", _pool_lock_key(self._run_id))
+            self._guard = conn
+            await self._reap_stale(conn)
+        except BaseException:
+            self._guard = None
+            await conn.close()
+            raise
+
+    async def _reap_stale(self, conn) -> None:
+        """Drop only versioned pool databases whose owner lock is gone."""
+        rows = await conn.fetch(
+            "SELECT datname FROM pg_database WHERE datname LIKE 'aq_test_poolv2_%'"
+        )
+        groups: dict[str, list[str]] = {}
+        for row in rows:
+            name = row["datname"]
+            match = _POOL_NAME_RE.fullmatch(name)
+            if match and match[1] != self._run_id:
+                groups.setdefault(match[1], []).append(name)
+
+        # Cleanup is opportunistic: a DROP can wait on a busy checkpointer.
+        # Bound the work so it cannot hold the test suite's startup hostage.
+        attempted = 0
+        await conn.execute(f"SET statement_timeout = {_REAP_STATEMENT_TIMEOUT_MS}")
+        try:
+            for run_id, names in groups.items():
+                if attempted >= _MAX_REAP_PER_START:
+                    break
+                key = _pool_lock_key(run_id)
+                if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", key):
+                    continue
+                try:
+                    for name in sorted(names):
+                        if attempted >= _MAX_REAP_PER_START:
+                            break
+                        attempted += 1
+                        try:
+                            await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                        except Exception as exc:
+                            warnings.warn(
+                                f"could not reap stale test database {name}: {exc}",
+                                RuntimeWarning,
+                                stacklevel=2,
+                            )
+                finally:
+                    await conn.execute("SELECT pg_advisory_unlock($1)", key)
+        finally:
+            await conn.execute("RESET statement_timeout")
 
     async def acquire(self) -> str:
         """Lease a clean database; returns its DSN."""
+        await self._start()
         if self._free:
             return self._free.pop()
         global _SEED
@@ -401,10 +472,15 @@ class LeasePool:
         self._free.append(dsn)
 
     async def dispose(self) -> None:
-        for name in sorted(self._created):
-            await drop_database(self._base, name)
-        self._created.clear()
-        self._free.clear()
+        try:
+            for name in sorted(self._created):
+                await drop_database(self._base, name)
+                self._created.remove(name)
+            self._free.clear()
+        finally:
+            if self._guard is not None:
+                await self._guard.close()
+                self._guard = None
 
 
 def base_dsn() -> str | None:
