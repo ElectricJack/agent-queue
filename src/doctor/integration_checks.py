@@ -897,6 +897,10 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
             # parked was collected.  "Uncollected" means never picked up.
             collected.add((row["project_id"], member["task_id"]))
     for row in rows:
+        streak = _validation_infrastructure_stall(row)
+        if streak is not None:
+            findings.append(streak)
+            continue
         if row["state"] not in {"parked", "prepared", "publishing"}:
             continue
         diagnostic = (row["evidence"] or {}).get("publisher_diagnostic") or {}
@@ -965,6 +969,42 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
     return findings
 
 
+def _validation_infrastructure_stall(row) -> dict | None:
+    """A development validation that keeps failing to *finish*.
+
+    The publisher defers a batch whose validation verified nothing (timeout,
+    no test slot, an outage, nothing collected) instead of parking it and
+    filing a repair.  Its open streak row counts the deferrals; past the
+    alert threshold nothing will clear it but a fixed environment.
+    """
+    from src.integration.development_validation import DEFERRAL_KIND, INFRA_ALERT_AFTER
+
+    evidence = row["evidence"] or {}
+    if (
+        row["state"] != "cancelled"
+        or evidence.get("kind") != DEFERRAL_KIND
+        or not evidence.get("open")
+    ):
+        return None
+    consecutive = evidence.get("consecutive", 0)
+    if consecutive < INFRA_ALERT_AFTER:
+        return None
+    latest = (evidence.get("runs") or [{}])[-1]
+    return {
+        "project_id": row["project_id"],
+        "batch_id": row["id"],
+        "cause": "validation_infrastructure",
+        "detail": (
+            f"validation could not finish {consecutive} times in a row "
+            f"({latest.get('reason', 'unknown')}: {latest.get('detail', '')}); "
+            "the batch is deferred and no repair was filed"
+        ),
+        "consecutive_ticks": consecutive,
+        "task_ids": latest.get("members", []),
+        "first_failed_at": evidence.get("first_at"),
+    }
+
+
 async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return CheckResult(
@@ -986,6 +1026,12 @@ async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
         advice = (
             f"Run `aq integration sweep {first['project_id']} --recover-child "
             f"{first['task_ids'][0]}` to retry and verify publication"
+        )
+    elif first["cause"] == "validation_infrastructure":
+        advice = (
+            "Fix the validation environment (test database, test slots, "
+            "timeout_seconds / slot_wait_seconds); the deferral row in "
+            f"`aq integration status {first['project_id']}` holds each run's output"
         )
     else:
         advice = (

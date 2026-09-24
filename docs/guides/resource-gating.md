@@ -233,6 +233,14 @@ slot came free within `test_wait_timeout` — that is "come back later", not
 "your tests failed" — and **4** means one of the paths you named does not
 exist, so nothing was run.
 
+A caller that times a run can ask how much of it was queueing. With
+`AQ_TEST_SLOT_REPORT=<file>` set, `aq test` appends one JSON line per slot
+event (`waiting`, `acquired` with `waited`, `slot_timeout`, `released`;
+format in `src/resources/slot_report.py`), and `AQ_TEST_WAIT_TIMEOUT=<s>`
+overrides `test_wait_timeout` (`--aq-timeout` still wins). The development
+publisher sets both so its `timeout_seconds` charges only the run, not the
+wait for a slot.
+
 The path check happens before a slot is taken, because pytest under xdist
 turns a mistyped path into `no tests ran` rather than `file or directory not
 found`: a run that collected and executed *nothing* otherwise reads as a

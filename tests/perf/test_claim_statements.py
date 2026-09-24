@@ -507,12 +507,12 @@ class TestClaimStatementBudgets:
         assert c["n"] == 1
 
     async def test_reconcile_pools_no_starts_statement_budget(self, any_db, tmp_path):
-        """3 projects x 3 pool profiles, no starts -- budget <= 2 + 3*3 + 3.
+        """3 projects x 3 pool profiles, no starts -- budget <= 3 + 3*2 + 3.
 
-        One ``list_profiles()`` for the whole tick, one ``list_projects()``,
+        One ``list_profiles()``, ``list_sessions()`` and ``list_projects()``,
         then one ``count_ready_by_profile`` + one ``count_available_workspaces``
-        + one ``list_sessions`` per active project with a pool profile
-        (``_measure_pools``'s docstring), plus one first-tick
+        per active project with a pool profile (``_measure_pools``'s docstring),
+        plus one first-tick
         ``pool.bounds_rescoped`` audit write per profile. No starts means no
         further writes.
         """
@@ -552,7 +552,7 @@ class TestClaimStatementBudgets:
             await orch._reconcile_pools()
             await orch.wait_for_pool_launches()
         assert await any_db.list_sessions(lifecycle="pool") == []
-        budget = 2 + 3 * 3 + 3
+        budget = 3 + 3 * 2 + 3
         print(f"\n_reconcile_pools no-starts: {c['n']} statements (budget {budget})")
         assert c["n"] <= budget, f"{c['n']} statements > budget {budget}"
 

@@ -309,6 +309,22 @@ class TaskQueryMixin:
                 return None
             return self._row_to_task(row)
 
+    async def get_task_titles(self, task_ids: list[str]) -> dict[str, str]:
+        """Fetch titles for the given live task IDs without loading full tasks."""
+        ids = sorted(set(task_ids))
+        if not ids:
+            return {}
+        titles: dict[str, str] = {}
+        async with self._engine.begin() as conn:
+            for i in range(0, len(ids), 900):
+                rows = (
+                    await conn.execute(
+                        select(tasks.c.id, tasks.c.title).where(tasks.c.id.in_(ids[i : i + 900]))
+                    )
+                ).fetchall()
+                titles.update(rows)
+        return titles
+
     async def _get_task_conn(self, task_id: str, *, conn) -> Task | None:
         """Fetch a single task by ID on a caller-supplied connection."""
         result = await conn.execute(select(tasks).where(tasks.c.id == task_id))

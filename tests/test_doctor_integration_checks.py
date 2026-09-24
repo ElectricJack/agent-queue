@@ -872,6 +872,72 @@ async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
     assert f"aq/{repair}" in stall["detail"]
 
 
+async def _deferral_streak(db, identity, *, consecutive, open_=True):
+    import sqlalchemy as sa
+
+    from src.database.tables import development_deliveries
+
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa.insert(development_deliveries).values(
+                id=identity,
+                project_id="p",
+                repository_id="r",
+                target_ref="refs/heads/main",
+                expected_sha=None,
+                prepared_sha=None,
+                state="cancelled",
+                manifest=[],
+                evidence={
+                    "kind": "validation_deferred",
+                    "open": open_,
+                    "consecutive": consecutive,
+                    "first_at": now - 900,
+                    "last_at": now,
+                    "runs": [{
+                        "at": now, "reason": "timeout",
+                        "detail": "timed out after running 300s (budget 300s, plus 160s queued "
+                                  "for a test slot)",
+                        "members": ["smart-stone.2", "smart-stone.4"], "checks": [],
+                    }],
+                },
+                reason="validation could not finish; batch deferred to the next tick",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+
+async def test_publisher_stalled_reports_validation_that_keeps_failing_to_finish(db):
+    """The 2026-09-24 class: nothing failed, yet nothing can be verified either."""
+    await _development_project(db)
+    await _deferral_streak(db, "short", consecutive=2)
+    assert (
+        await run_check(db, "integration.development_publisher_stalled")
+    ).severity is Severity.OK
+
+    await _deferral_streak(db, "long", consecutive=3)
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.ERROR
+    stall = result.data["stalls"][0]
+    assert stall["batch_id"] == "long"
+    assert stall["cause"] == "validation_infrastructure"
+    assert stall["consecutive_ticks"] == 3
+    assert stall["task_ids"] == ["smart-stone.2", "smart-stone.4"]
+    assert "timeout" in result.detail
+    # Not "resolve or cancel the batch": there is no parked batch or repair.
+    assert "no repair" in result.detail
+
+
+async def test_publisher_stalled_ignores_a_closed_deferral_streak(db):
+    await _development_project(db)
+    await _deferral_streak(db, "closed", consecutive=9, open_=False)
+    result = await run_check(db, "integration.development_publisher_stalled")
+    assert result.severity is Severity.OK
+
+
 async def test_publisher_stalled_accepts_a_repair_the_publisher_did_pick_up(db):
     """Collected-then-parked is the publisher working, not stalling."""
     from src.models import TaskCompletion
