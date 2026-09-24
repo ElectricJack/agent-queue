@@ -40,6 +40,22 @@ def integration_status(ctx: click.Context, project_id: str) -> None:
     _execute(ctx, "integration_status", {"project_id": project_id})
 
 
+@integration.command("record-noop")
+@click.argument("child_task_id")
+@click.option("--expected-head-sha", required=True, help="Exact child checkpoint commit.")
+@click.pass_context
+@_handle_errors
+def integration_record_noop(
+    ctx: click.Context, child_task_id: str, expected_head_sha: str
+) -> None:
+    """Record a verified no-code receipt for a completed child task."""
+    _execute(
+        ctx,
+        "integration_record_noop",
+        {"child_task_id": child_task_id, "expected_head_sha": expected_head_sha},
+    )
+
+
 @integration.command("resolve-candidate-member")
 @click.option("--resolved-head-sha", required=True)
 @click.option("--resolved-tree-sha", required=True)

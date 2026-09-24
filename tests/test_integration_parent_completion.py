@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.database import Database
+from src.commands.integration_commands import IntegrationCommandsMixin
+from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
     integration_check_evidence,
     integration_episode_receipt_acceptances,
@@ -40,7 +45,8 @@ from src.integration.status import IntegrationStatusService
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchOwnership
-from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
+from src.profiles.capabilities import DENY_ALL
 from src.database.queries.task_queries import StaleClaim
 from tests.db_fixtures import lease_dsn
 
@@ -842,6 +848,135 @@ async def test_disposition_revision_supersedes_only_changed_child(db):
     status = await IntegrationStatusService(db).task_blockers("parent")
     assert status is not None
     assert "missing_receipt" not in {item["code"] for item in status["blockers"]}
+
+
+async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db)
+    reviewer_id = children[0]
+    await _code_receipt(db, children[1], "a" * 40, "d" * 40)
+    await db.create_profile(
+        AgentProfile(
+            id="reviewer", name="Reviewer", harness="codex", lifecycle="task",
+            aq_commands=[], harness_tools=[], plugin_tools=[], needs_workspace=False,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == reviewer_id).values(profile_id="reviewer")
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == reviewer_id)
+            .values(checkpoint_sha="a" * 40)
+        )
+        await conn.execute(
+            insert(integration_review_evidence).values(
+                id="approved-review",
+                source_task_id=children[1],
+                repository_id="repo",
+                source_base="a" * 40,
+                reviewed_head_sha="b" * 40,
+                reviewed_tree_sha="c" * 40,
+                reviewer_task_id=reviewer_id,
+                review_kind="leaf",
+                generation=0,
+                verdict="approved",
+                evidence={"decision_path": "review_task_close"},
+                created_at=1.0,
+            )
+        )
+    reviewer = await db.get_task(reviewer_id)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="noop-close-1", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
+            branch=reviewer.branch_name, completed_at=2.0,
+        )
+    )
+
+    @asynccontextmanager
+    async def repository_transaction(_path):
+        yield
+
+    class Promotion:
+        git = SimpleNamespace(arepository_transaction=repository_transaction)
+
+        async def _resolve_repository(self, _repository_id):
+            return SimpleNamespace(
+                repo=SimpleNamespace(project_id="p"),
+                retained_git_dir="/tmp/retained-repo",
+                origin_url="https://example.invalid/repo.git",
+            )
+
+        async def _ensure_retained_repository(self, _resolved):
+            return None
+
+        async def _fetch_all_heads(self, _path, _origin_url):
+            return None
+
+        async def _tree_oid(self, _path, _head):
+            return "c" * 40
+
+    class Handler(IntegrationCommandsMixin):
+        orchestrator = SimpleNamespace(
+            hierarchy_integration=hierarchy, promotion_service=Promotion()
+        )
+
+    handler = Handler()
+    handler.db = db
+    args = {"child_task_id": reviewer_id, "expected_head_sha": "a" * 40}
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, project_id="p", policy=DENY_ALL,
+    )
+    with principal_context(worker):
+        denied = await handler._cmd_integration_record_noop(args)
+    assert denied["outcome"] == "unauthorized"
+    assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
+
+    stale = await handler._cmd_integration_record_noop(args | {"expected_head_sha": "b" * 40})
+    assert stale["outcome"] == "stale_head"
+    recorded = await handler._cmd_integration_record_noop(args)
+    assert recorded["outcome"] == "recorded"
+    assert recorded["reviewed_tree_sha"] == "c" * 40
+    assert (await handler._cmd_integration_record_noop(args))["receipt_id"] == recorded["receipt_id"]
+    projection = await hierarchy.readiness("parent")
+    assert projection["outcome"] == "ready"
+    receipt = next(row for row in projection["receipts"] if row["source_task_id"] == reviewer_id)
+    assert receipt["verification_evidence"]["review_evidence_id"] == "approved-review"
+    assert receipt["resolution_evidence"]["completion_id"] == "noop-close-1"
+
+    await db.save_task_completion(
+        TaskCompletion(
+            id="noop-close-2", task_id=reviewer_id, outcome="pass", work_outcome="no-op",
+            branch=reviewer.branch_name, completed_at=3.0,
+        )
+    )
+    revised = await handler._cmd_integration_record_noop(args)
+    assert revised["revision"] == 1
+    assert revised["receipt_id"] != recorded["receipt_id"]
+    assert (await hierarchy.readiness("parent"))["outcome"] == "ready"
+
+
+async def test_verified_noop_refuses_a_child_branch_advanced_from_its_reserved_base(db):
+    hierarchy, _checkpointed, children = await _parent_tree(db, children=1)
+    child_id = children[0]
+    child = await db.get_task(child_id)
+    await db.save_task_completion(
+        TaskCompletion(
+            id="claimed-noop", task_id=child_id, outcome="pass", work_outcome="no-op",
+            branch=child.branch_name, completed_at=2.0,
+        )
+    )
+    with pytest.raises(HierarchyError, match="reserved base"):
+        await hierarchy.record_disposition(
+            child_id,
+            disposition="noop",
+            reviewed_head_sha="b" * 40,
+            reviewed_tree_sha="c" * 40,
+            verification_evidence={"completion_id": "claimed-noop"},
+            resolution_evidence={"completion_id": "claimed-noop"},
+            verified_completion_id="claimed-noop",
+        )
+    assert (await hierarchy.readiness("parent"))["outcome"] == "waiting"
 
 
 async def test_parent_completion_pins_exact_verification_for_rollover(db):

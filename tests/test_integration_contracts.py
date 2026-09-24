@@ -244,6 +244,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_file_children",
         "integration_checkpoint_parent",
         "integration_delivery_readiness",
+        "integration_record_noop",
         "integration_parent_verify",
         "integration_complete_parent",
         "integration_mutate_hierarchy",
@@ -421,6 +422,11 @@ def test_parent_completion_contracts_expose_prescribed_outcomes():
     assert {row.name for row in registry.require("integration_parent_verify").contract.execution.outcomes} == {
         "verified", "stale_generation", "stale_head", "invalid_evidence"
     }
+    noop = registry.require("integration_record_noop").contract.execution
+    assert {row.name for row in noop.outcomes} == {
+        "recorded", "stale_head", "invalid", "delivery_target_fixed"
+    }
+    assert noop.capability == "integration_record_noop"
     completion = registry.require("integration_complete_parent").contract.execution
     assert {row.name for row in completion.outcomes} == {
         "completed",
