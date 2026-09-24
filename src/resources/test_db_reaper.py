@@ -27,6 +27,9 @@ import yaml
 
 TEST_NAME = re.compile(r"aq_test_[A-Za-z0-9_]+\Z")
 TEMPLATE_NAME = re.compile(r"aq_tmpl_([0-9a-f]{16})\Z")
+# tests/pg_dsn.py names every database a pytest process creates under its
+# owner token, ahead of the run token: aq_test_ownv2_<owner>_<run>_...
+OWNED_NAME = re.compile(r"aq_test_ownv2_[0-9a-f]{12}_(\w+)\Z")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -237,7 +240,9 @@ def decide(
         if template.group(1) in active_template_slugs:
             return ReaperDecision(database, False, "schema produced by a checkout")
         return ReaperDecision(database, True, "unused schema template")
-    if any(name.startswith(f"aq_test_{run_id}_") for run_id in active_run_ids):
+    owned = OWNED_NAME.fullmatch(name)
+    tail = owned.group(1) if owned else name.removeprefix("aq_test_")
+    if any(tail.startswith(f"{run_id}_") for run_id in active_run_ids):
         return ReaperDecision(database, False, "live test run token")
     return ReaperDecision(
         database,

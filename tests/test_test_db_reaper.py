@@ -46,6 +46,9 @@ def _decide(candidate: DatabaseRecord, **overrides):
         _candidate("aq_test_forgotten", changed_at=None),
         _candidate("aq_test_forgotten", changed_at=NOW - timedelta(hours=1)),
         _candidate("aq_test_" + "f" * 16 + "_gw0_0"),
+        # tests/pg_dsn.py puts its owner token ahead of the run token.
+        _candidate("aq_test_ownv2_0123456789ab_" + "f" * 16 + "_gw0"),
+        _candidate("aq_test_ownv2_0123456789ab_" + "f" * 16 + "_abcdef012345_gw0_0"),
         _candidate("aq_tmpl_0123456789abcdef"),
         _candidate("aq_tmpl_0123456789abcdef_building"),
         _candidate("aq_manual_database"),
@@ -59,6 +62,13 @@ def test_old_unconnected_test_database_is_eligible():
     decision = _decide(_candidate("aq_test_abcdef012345_gw0_1", invalid=True))
     assert decision.eligible
     assert "invalid" in decision.reason
+
+
+def test_owned_database_of_a_finished_run_is_eligible():
+    decision = _decide(_candidate("aq_test_ownv2_0123456789ab_" + "a" * 16 + "_gw0"))
+    assert decision.eligible
+    # The run token must lead the tail; appearing later in the name is not ownership.
+    assert _decide(_candidate("aq_test_ownv2_0123456789ab_scratch_" + "f" * 16 + "_x")).eligible
 
 
 def test_unused_schema_template_is_eligible():
