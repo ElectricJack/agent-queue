@@ -5,3 +5,17 @@ repos:
       - id: ruff-format
       - id: ruff
         args: [--fix]
+  - repo: local
+    hooks:
+      - id: command-docs-current
+        name: command docs are current
+        entry: python scripts/gen-command-docs.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: cli-command-inventory-current
+        name: CLI command inventory is current
+        entry: python scripts/generate-cli-command-inventory.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
