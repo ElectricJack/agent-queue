@@ -801,6 +801,24 @@ async def test_zero_root_seal_is_terminal_resource_free_and_request_replay(db):
     assert [event["event_type"] for event in events] == ["integration.sweep_due"]
 
 
+async def test_seal_disarms_previous_batch_window_before_a_new_approval(db):
+    from src.integration.scheduler import TrainService
+    from src.integration.settling import note_approval
+
+    await _enable_train(db)
+    await _seed_leaf(db, "root", "b" * 40)
+    request = await _request(db)
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=10.0)
+
+    assert (await TrainService(db).seal("p", request["request_id"], 320.0))["outcome"] == "sealed"
+    async with db.immediate() as conn:
+        new_window = await note_approval(conn, project_id="p", now=4000.0)
+    assert new_window["outcome"] == "armed"
+    assert new_window["first_approval_at"] == 4000.0
+    assert new_window["fires_at"] == 4300.0
+
+
 async def test_one_root_seal_freezes_review_and_real_unstarted_operation(db):
     from src.integration.scheduler import TrainService
 

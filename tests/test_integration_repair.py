@@ -65,6 +65,19 @@ from tests.db_fixtures import lease_dsn
 STARTING_SHA = "a" * 40
 
 
+@pytest.mark.parametrize("task_branch", ["aq/integration/batch", "refs/heads/aq/integration/batch"])
+def test_repair_delegate_matches_full_root_ref_after_claim(task_branch):
+    from src.integration.repair import RepairService
+
+    task = {
+        "project_id": "p", "parent_task_id": None, "repo_id": "repo",
+        "branch_name": task_branch, "created_by_kind": "integration_repair",
+        "created_by_id": "operation", "status": TaskStatus.READY.value,
+    }
+    target = BranchKey(repository_id="repo", branch="refs/heads/aq/integration/batch")
+    assert RepairService._delegate_task_matches(task, {"id": "operation"}, target, "p")
+
+
 def _artifact() -> ArtifactSnapshot:
     return ArtifactSnapshot(
         playbook_id="hierarchical-delivery",
@@ -1454,7 +1467,7 @@ async def test_parent_green_and_timeout_serialize_to_one_debug_stage(db):
     assert stages[1]["state"] == "active"
 
 
-async def _seed_root_operation(db) -> str:
+async def _seed_root_operation(db, *, branch: str = "aq/integration/batch") -> str:
     from src.integration.repair import RepairService
 
     await db.update_project("p", hierarchical_integration_mode="train")
@@ -1482,7 +1495,7 @@ async def _seed_root_operation(db) -> str:
                 base_sha=STARTING_SHA,
                 lifecycle="testing",
                 current_revision=0,
-                integration_branch="aq/integration/batch",
+                integration_branch=branch,
                 policy_snapshot=_policy(),
                 artifact_snapshot=artifact.model_dump(mode="json"),
                 cleanup_state="pending",
@@ -4131,8 +4144,9 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
     assert "task.closed" in emitted
 
 
+@pytest.mark.parametrize("full_ref", [False, True])
 async def test_batch_repair_delegate_can_file_only_explicit_project_root(
-    command_handler_factory,
+    command_handler_factory, full_ref,
 ):
     """Batch repair grants no implicit or arbitrary structural parent scope."""
     from src.integration.repair import RepairService
@@ -4145,13 +4159,14 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
         handler.db,
         default_head_resolver=lambda _repo, _branch: STARTING_SHA,
     )
-    operation_id = await _seed_root_operation(handler.db)
+    branch = "refs/heads/aq/integration/batch" if full_ref else "aq/integration/batch"
+    operation_id = await _seed_root_operation(handler.db, branch=branch)
     async with handler.db.immediate() as conn:
         await conn.execute(
             insert(integration_branch_owners).values(
                 id="batch-owner",
                 repository_id="repo",
-                ref="aq/integration/batch",
+                ref=branch,
                 owner_id="batch",
                 owner_role="collector",
                 fence_token=1,
@@ -4171,7 +4186,7 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == repair_task_id)
-            .values(status="IN_PROGRESS")
+            .values(status="IN_PROGRESS", branch_name="aq/integration/batch")
         )
         await conn.execute(
             insert(workspaces).values(

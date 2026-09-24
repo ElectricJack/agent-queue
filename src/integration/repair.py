@@ -2713,7 +2713,8 @@ class RepairService:
             task["project_id"] == project_id
             and task["parent_task_id"] is None
             and task["repo_id"] == target.repository_id
-            and task["branch_name"] == target.branch
+            and str(task["branch_name"] or "").removeprefix("refs/heads/")
+            == target.branch.removeprefix("refs/heads/")
             and task["created_by_kind"] == "integration_repair"
             and task["created_by_id"] == operation["id"]
             and task["status"]

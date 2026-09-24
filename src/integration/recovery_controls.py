@@ -492,7 +492,8 @@ class IntegrationRecoveryControls:
         if (
             delegate["project_id"] != project_id
             or delegate["repo_id"] != repo_id
-            or delegate["branch_name"] != branch
+            or str(delegate["branch_name"] or "").removeprefix("refs/heads/")
+            != str(branch or "").removeprefix("refs/heads/")
             or delegate["created_by_kind"] != "integration_repair"
             or delegate["created_by_id"] != operation["id"]
             or delegate["assigned_agent_id"] is not None
@@ -517,7 +518,7 @@ class IntegrationRecoveryControls:
                 select(integration_branch_owners)
                 .where(
                     integration_branch_owners.c.repository_id == delegate["repo_id"],
-                    integration_branch_owners.c.ref == delegate["branch_name"],
+                    integration_branch_owners.c.ref == branch,
                 )
                 .with_for_update()
             )

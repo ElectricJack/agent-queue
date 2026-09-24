@@ -138,6 +138,16 @@ async def test_an_unscripted_harness_and_a_non_fake_config_start_normally(tmp_pa
     assert await FakeProvider().start(_spec("s3"))
 
 
+async def test_confirm_stopped_uses_live_registry_and_withholds_on_same_name_successor():
+    fake = FakeProvider()
+    old = await fake.start(_spec("worker"))
+    assert not await fake.confirm_stopped(old)
+    await fake.stop(old)
+    assert await fake.confirm_stopped(old)
+    await fake.start(_spec("worker"))
+    assert not await fake.confirm_stopped(old)
+
+
 def test_the_config_key_loads(tmp_path):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(

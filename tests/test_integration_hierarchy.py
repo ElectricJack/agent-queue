@@ -14,8 +14,11 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
+    integration_branch_owners,
     integration_outbox,
+    integration_parent_episodes,
     integration_promotion_intents,
+    integration_repair_operations,
     integration_review_evidence,
     playbook_artifacts,
     projects,
@@ -1296,6 +1299,83 @@ async def test_a_sibling_materialization_does_not_admit_an_unmaterialized_child(
     assert await _frontier_ids(db) == {first}
     assert await _hoisted_ids(db) == {first}
     assert await db.hierarchy_runnable_task_ids([first, second]) == {first}
+
+
+async def test_reserved_parent_verifier_without_origin_enters_hierarchy_frontier(db, hierarchy, monkeypatch):
+    await _create(db, "parent")
+    await hierarchy.file_children("parent", [{"title": "leaf"}], 0)
+    parent = await db.get_task("parent")
+    assert parent.branch_name
+    await db.create_task(Task(
+        id="verifier", project_id="p", repo_id="repo",
+        branch_name=parent.branch_name, title="verifier", description="verifier",
+        status=TaskStatus.READY,
+    ))
+    await db.create_task(Task(
+        id="originless", project_id="p", repo_id="repo",
+        branch_name=parent.branch_name, title="originless", description="originless",
+        status=TaskStatus.READY,
+    ))
+    assert (await db.get_task("verifier")).status is TaskStatus.READY
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="verifier-episode", parent_task_id="parent", repository_id="repo",
+            generation=1, pre_collection_checkpoint_sha=BASE, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="verifier-operation", target_kind="parent", parent_task_id="parent",
+            episode_id="verifier-episode", state="active", policy_snapshot={},
+            artifact_snapshot={}, required_check_version="test",
+            verifier_task_id="verifier", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "parent"
+        ).values(state="verifying", episode_id="verifier-episode"))
+        owner = (await conn.execute(select(integration_branch_owners.c.id).where(
+            integration_branch_owners.c.ref == parent.branch_name
+        ))).scalar_one_or_none()
+        if owner is None:
+            await conn.execute(insert(integration_branch_owners).values(
+                id="verifier-owner", repository_id="repo", ref=parent.branch_name,
+                owner_id="verifier", owner_role="verifier", fence_token=1,
+                handoff_state="reserved", created_at=1.0, updated_at=1.0,
+            ))
+        else:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == owner
+            ).values(owner_id="verifier", owner_role="verifier", handoff_state="reserved",
+                     session_id=None, workspace_id=None))
+
+    assert "verifier" in await _frontier_ids(db)
+    assert "verifier" in await _hoisted_ids(db)
+    assert "originless" not in await _frontier_ids(db)
+
+    seen = []
+    verifier = HierarchyIntegration(
+        db, checkpoint_verifier=lambda task, _repo, head: seen.append(task["id"]) or head
+    )
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(verifier.parent_completion, "verify_parent",
+                        AsyncMock(return_value={"outcome": "verified"}))
+    with pytest.raises(HierarchyError, match="attached, owned workspace"):
+        await verifier.verify_parent("parent", 1, BASE, ["check"])
+    await db.create_workspace(Workspace(
+        id="verifier-slot", project_id="p", workspace_path="/tmp/verifier-slot",
+        source_type=RepoSourceType.LINK, locked_by_task_id="verifier",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.owner_id == "verifier"
+        ).values(handoff_state="attached", session_id="verifier-session",
+                 workspace_id="verifier-slot"))
+    assert (await verifier.verify_parent("parent", 1, BASE, ["check"]))["outcome"] == "verified"
+    assert seen == ["verifier"]
+
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).where(
+            integration_repair_operations.c.parent_task_id == "parent"
+        ).values(state="cancelled"))
+    assert "verifier" not in await _frontier_ids(db)
 
 
 @pytest.mark.parametrize("mode_value", ["hierarchy", "disabled"])

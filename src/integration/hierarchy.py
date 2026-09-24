@@ -374,6 +374,29 @@ class HierarchyIntegration:
         async with self.db._engine.connect() as conn:
             task = await self._task_row(conn, task_id)
             _project, repo = await self._enabled_route(conn, task)
+        operation = await self.db.get_active_parent_integration_operation(task_id)
+        if operation is not None and operation.get("verifier_task_id"):
+            verifier_id = operation["verifier_task_id"]
+            async with self.db._engine.connect() as conn:
+                verifier = await self._task_row(conn, verifier_id)
+            owner = await self.ownership.get_owner(
+                BranchKey(repository_id=repo.id, branch=task["branch_name"])
+            )
+            workspace = await self.db.get_workspace_for_task(verifier_id)
+            if (
+                verifier["repo_id"] != repo.id
+                or verifier["branch_name"] != task["branch_name"]
+                or workspace is None
+                or workspace.locked_by_task_id != verifier_id
+                or owner is None
+                or owner["owner_id"] != verifier_id
+                or owner["owner_role"] != "verifier"
+                or owner["handoff_state"] != "attached"
+                or owner["workspace_id"] != workspace.id
+                or not owner["session_id"]
+            ):
+                raise HierarchyError("dirty", "parent verifier has no attached, owned workspace")
+            task = verifier
         actual = self.checkpoint_verifier(task, repo, head_sha)
         if inspect.isawaitable(actual):
             actual = await actual

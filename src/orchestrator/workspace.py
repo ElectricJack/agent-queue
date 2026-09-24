@@ -579,7 +579,7 @@ class WorkspaceMixin:
                 }
             else:
                 raise ValueError("repair operation target kind is invalid")
-            if task.branch_name != branch:
+            if (task.branch_name or "").removeprefix("refs/heads/") != branch.removeprefix("refs/heads/"):
                 raise ValueError("repair delegate branch does not match its target")
             target = BranchKey(repository_id=repository_id, branch=branch)
             owner = await BranchOwnership(self.db).get_owner(target)
@@ -625,7 +625,7 @@ class WorkspaceMixin:
             # a copied sibling tree or an arbitrary local merge.
             origin = dict(origin) | {"base_sha": prerequisite_head}
         branch = subject.branch_name or ""
-        if branch != f"aq/{subject_id}" or task.branch_name != branch:
+        if (operation is None and branch != f"aq/{subject_id}") or task.branch_name != branch:
             raise ValueError("task branch does not match its canonical origin")
         target = BranchKey(repository_id=repository_id, branch=branch)
         ownership = BranchOwnership(self.db)
@@ -1233,7 +1233,9 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             # A failed pool prepare used to release its task bindings before
@@ -1456,7 +1458,9 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or task.status != TaskStatus.READY
             or task.assigned_agent_id is not None
             or agent.state != AgentState.RETIRED
@@ -1590,7 +1594,9 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or task.project_id != repository.project_id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or os.path.realpath(session.work_dir) != os.path.realpath(workspace.workspace_path)
         ):
             return False
@@ -1692,6 +1698,14 @@ class WorkspaceMixin:
         target = BranchKey(repository_id=task.repo_id, branch=task.branch_name)
         ownership = BranchOwnership(self.db, confirm_handoff=self.aconfirm_integration_pool_owner_handoff)
         owner = await ownership.get_owner(target)
+        if owner is None and not task.branch_name.startswith("refs/heads/"):
+            full_target = BranchKey(
+                repository_id=task.repo_id,
+                branch=f"refs/heads/{task.branch_name}",
+            )
+            owner = await ownership.get_owner(full_target)
+            if owner is not None:
+                target = full_target
         if (
             owner is None
             or owner["owner_id"] != task.id
@@ -1800,7 +1814,9 @@ class WorkspaceMixin:
             or session.project_id != repository.project_id
             or session.task_id != task.id
             or task.repo_id != repository.id
-            or task.branch_name != owner.get("ref")
+            or not task.branch_name
+            or task.branch_name.removeprefix("refs/heads/")
+            != str(owner.get("ref") or "").removeprefix("refs/heads/")
             or owner.get("owner_id") != task.id
             or os.path.realpath(session.work_dir)
             != os.path.realpath(workspace.workspace_path)
@@ -1930,6 +1946,14 @@ class WorkspaceMixin:
             ),
         )
         owner = await ownership.get_owner(target)
+        if owner is None and not task.branch_name.startswith("refs/heads/"):
+            full_target = BranchKey(
+                repository_id=repository_id,
+                branch=f"refs/heads/{task.branch_name}",
+            )
+            owner = await ownership.get_owner(full_target)
+            if owner is not None:
+                target = full_target
         if owner is None or owner["owner_id"] != task.id:
             return False
         role = str(owner["owner_role"] or "")

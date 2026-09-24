@@ -213,7 +213,7 @@ class ProjectIntegrationMode:
 
 
 def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = None):
-    """Require an exact origin or an active repair reservation in enabled projects.
+    """Require an exact origin or an active delegate reservation in enabled projects.
 
     With *mode* supplied the ``projects`` lookup is folded away at compile
     time: a non-hierarchical project admits every task, and a hierarchical
@@ -225,7 +225,8 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
             return true()
         if mode.integration_repository_id is None:
             return false()
-        return or_(_reserved_repair_branch(mode.integration_repository_id), exists(
+        return or_(_reserved_repair_branch(mode.integration_repository_id),
+            _reserved_verifier_branch(mode.integration_repository_id), exists(
             select(literal(1)).where(
                 task_branch_origins.c.task_id == tasks.c.id,
                 task_branch_origins.c.repository_id == mode.integration_repository_id,
@@ -233,7 +234,7 @@ def materialized_origin_when_hierarchical(mode: ProjectIntegrationMode | None = 
                 task_branch_origins.c.materialized.is_(True),
             )
         ))
-    return or_(_reserved_repair_branch(), ~exists(
+    return or_(_reserved_repair_branch(), _reserved_verifier_branch(), ~exists(
         select(literal(1))
         .select_from(projects)
         .where(
@@ -286,7 +287,48 @@ def _reserved_repair_branch(repository_id: str | None = None):
             owner.c.session_id.is_(None),
             owner.c.workspace_id.is_(None),
             owner.c.repository_id == tasks.c.repo_id,
-            owner.c.ref == tasks.c.branch_name,
+            or_(
+                owner.c.ref == tasks.c.branch_name,
+                owner.c.ref == ("refs/heads/" + tasks.c.branch_name),
+            ),
+            owner.c.repository_id == (
+                repository_id if repository_id is not None else projects.c.integration_repository_id
+            ),
+        )
+    )
+
+
+def _reserved_verifier_branch(repository_id: str | None = None):
+    """A verifier owns its parent's published branch, not a child origin."""
+    operation = integration_repair_operations
+    checkpoint = task_integration_checkpoints
+    owner = integration_branch_owners
+    source = operation.join(
+        checkpoint,
+        (checkpoint.c.task_id == operation.c.parent_task_id)
+        & (checkpoint.c.episode_id == operation.c.episode_id),
+    ).join(
+        owner, owner.c.owner_id == operation.c.verifier_task_id,
+    )
+    if repository_id is None:
+        source = source.join(projects, projects.c.id == tasks.c.project_id)
+    return exists(
+        select(literal(1))
+        .select_from(source)
+        .correlate(tasks)
+        .where(
+            operation.c.target_kind == "parent",
+            operation.c.verifier_task_id == tasks.c.id,
+            operation.c.state.in_(("active", "escalated")),
+            checkpoint.c.state == "verifying",
+            checkpoint.c.repository_id == tasks.c.repo_id,
+            checkpoint.c.branch == tasks.c.branch_name,
+            owner.c.owner_role == "verifier",
+            owner.c.handoff_state == "reserved",
+            owner.c.session_id.is_(None),
+            owner.c.workspace_id.is_(None),
+            owner.c.ref == checkpoint.c.branch,
+            owner.c.repository_id == checkpoint.c.repository_id,
             owner.c.repository_id == (
                 repository_id if repository_id is not None else projects.c.integration_repository_id
             ),
