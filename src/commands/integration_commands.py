@@ -324,7 +324,13 @@ class IntegrationCommandsMixin:
         if not project_id:
             return _failure("not_found", "project_id is required")
         principal = current_principal() or TRUSTED_LOCAL
-        if principal.kind is PrincipalKind.SESSION:
+        if principal.kind is PrincipalKind.SESSION and principal.project_id is None:
+            # The global supervisor has no project scope to match, so it is
+            # admitted the way the controls admit it: as a live, elevated,
+            # named supervisor session.  A projectless worker terminal is not.
+            _label, refusal = await integration_operator(getattr(self, "db", None), project_id)
+            authorized = refusal is None
+        elif principal.kind is PrincipalKind.SESSION:
             authorized = principal.project_id == project_id
         elif principal.kind is PrincipalKind.PLAYBOOK:
             authorized = bool(

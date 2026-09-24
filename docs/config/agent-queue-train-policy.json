@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "parent": {
+    "required_checks": {
+      "version": "tests-yml-v1",
+      "names": [
+        "Tests (cli-conformance)",
+        "Tests (default)",
+        "Tests (migration-and-slow)",
+        "Tests (postgres-integration)"
+      ],
+      "producer_id": "github-actions"
+    },
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "debug_profile_id": "standard-high-codex"
+    },
+    "route": {
+      "playbook_id": "agent-queue-parent-integration",
+      "scope": "project",
+      "scope_identifier": "agent-queue",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "agent-queue-parent-integration",
+        "artifact_sha256": "sha256:a6a39410cf600b46cf90619966d604ae99284d48cf037f60b575a8d1068532eb",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:785231157149d5982aca42894c2c0fb73653624f9b1d65303afb9fbfbb73d50e",
+        "source_digest": "sha256:1de9265e7bba73272a2777fb17e042bd81014e5cc3c7e4214a6a5471eab5d200",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-09-24T01:27:10.069051Z",
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "primary_profile_id": "standard-high-codex",
+    "verifier_intelligence_class": "standard-high",
+    "verifier_profile_id": "standard-high-codex"
+  },
+  "root": {
+    "required_checks": {
+      "version": "tests-yml-v1",
+      "names": [
+        "Tests (cli-conformance)",
+        "Tests (default)",
+        "Tests (migration-and-slow)",
+        "Tests (postgres-integration)"
+      ],
+      "producer_id": "github-actions"
+    },
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "debug_profile_id": "standard-high-codex"
+    },
+    "route": {
+      "playbook_id": "agent-queue-root-train",
+      "scope": "project",
+      "scope_identifier": "agent-queue",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "agent-queue-root-train",
+        "artifact_sha256": "sha256:b4d97387fe6477bf6aef72342fb600619f71d46ca7c82bef0f5f84f1a64cce3b",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:7b6380af1d3d88ba850d53910ba311774cfe2b802e8eb3fafe2a624bd4b74b9e",
+        "source_digest": "sha256:71a471df2047632c4e18a85f32e244af7df24e5a23e15cef6677d9923f57ef62",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-09-24T01:27:10.321701Z",
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "primary_profile_id": "standard-high-codex",
+    "verifier_intelligence_class": "standard-high",
+    "verifier_profile_id": "standard-high-codex"
+  },
+  "branchless_parent": "verifier",
+  "on_failed_child": "block",
+  "on_main_moved": "rebuild",
+  "cleanup": {
+    "max_attempts": 5,
+    "retry_base_seconds": 30.0,
+    "retry_max_seconds": 3600.0,
+    "successful_source_refs": "delete",
+    "failed_work_retention_seconds": 604800
+  }
+}
