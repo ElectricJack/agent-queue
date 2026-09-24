@@ -33,6 +33,9 @@ from src.sessions.tmux import TmuxProvider
 
 pytestmark = pytest.mark.tmux
 
+#: Suffix for every live session's instance token (see ``_spec``).
+_RUN = uuid.uuid4().hex[:8]
+
 NBSP = " "
 PROMPT = f"❯{NBSP}"  # "❯ " with a non-breaking space, as Claude paints it
 
@@ -178,6 +181,9 @@ def _spec(
         command.append("--mute")
     if eat_file is not None:
         command.append(f"--eat-file={eat_file}")
+    # Unique per run: stopping a session sweeps its token box-wide, and
+    # another test file may hold a live session under the same literal.
+    token = f"{token}-{_RUN}"
     defaults = {
         "session_name": name,
         "work_dir": str(tmp_path / "wd"),
