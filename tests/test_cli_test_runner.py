@@ -42,6 +42,15 @@ def runner(monkeypatch):
     return CliRunner()
 
 
+@pytest.fixture
+def isolated_test_slots(monkeypatch, tmp_path):
+    # Command tests that mock the pytest child still acquire a slot. Keep
+    # nested ``aq test`` invocations out of the parent run's global semaphore.
+    lock_dir = tmp_path / "test-slots"
+    monkeypatch.setattr("src.resources.semaphore.default_lock_dir", lambda _config: lock_dir)
+    return lock_dir
+
+
 class TestArgvComposition:
     def test_the_worker_cap_is_added(self):
         args = _args(
@@ -192,17 +201,22 @@ class TestMissingPathsAreRefused:
         assert result.exit_code == 4
         assert "no such test path" in result.output
 
-    def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path):
+    def test_an_existing_path_still_runs(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
         monkeypatch.setattr(
             "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
         )
         result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
         assert result.exit_code == 0
+        assert isolated_test_slots.is_dir()
 
 
 class TestEmptyCollectionIsNotASuccess:
-    def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path):
+    def test_exit_code_five_is_explained(
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
+    ):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
         monkeypatch.setattr(
             "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 5
@@ -334,7 +348,7 @@ class TestCommand:
         assert not (tmp_path / "locks" / "test-slots").exists()
 
     def test_each_invocation_passes_a_fresh_database_ownership_token(
-        self, runner, monkeypatch, tmp_path
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
     ):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
         monkeypatch.setenv("AQ_DB_SCOPE", "worker")
