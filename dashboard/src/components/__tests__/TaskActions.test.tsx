@@ -220,7 +220,7 @@ describe("TaskActions ask-supervisor", () => {
       { sessionAddress: "supervisor-global", threadId: "dashboard:global" },
     );
     expect(mockNavigate).toHaveBeenCalledWith("/agents?agent=supervisor-global", {
-      state: { agentSelection: "replace" },
+      state: { agentSelection: "replace", terminalFocus: "supervisor-global" },
     });
   });
 

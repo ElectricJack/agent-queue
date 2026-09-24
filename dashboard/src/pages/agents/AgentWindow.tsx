@@ -5,16 +5,17 @@ import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
 import AgentTerminal from "./AgentTerminal";
 
-export default function AgentWindow({ agent, onClose, resetToken }: {
+export default function AgentWindow({ agent, onClose, resetToken, focusRequest }: {
   agent: FlockAgent;
   onClose: () => void;
   resetToken: string | null;
+  focusRequest: string | null;
 }) {
   const [tab, setTab] = useState<"terminal" | "settings">("terminal");
   const id = useId();
   useEffect(() => {
-    if (resetToken) setTab("terminal");
-  }, [resetToken]);
+    if (resetToken || focusRequest) setTab("terminal");
+  }, [resetToken, focusRequest]);
 
   const tabs = [
     { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
@@ -67,7 +68,7 @@ export default function AgentWindow({ agent, onClose, resetToken }: {
         </div>
       </header>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-" + tab} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <AgentTerminal agent={agent} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
+        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
       </div>
     </section>
   );

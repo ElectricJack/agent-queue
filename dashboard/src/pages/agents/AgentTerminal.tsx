@@ -5,7 +5,7 @@ import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
 import InteractiveTerminal from "../../components/InteractiveTerminal";
 
-export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
+export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAgent; focusRequest?: string | null }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
   const tmux = agent.session_provider === "tmux";
   const start = useStartAgentTerminal();
@@ -70,7 +70,7 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
       </div>
     );
   }
-  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} />;
+  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />;
 }
 
 /**
@@ -80,7 +80,7 @@ export default function AgentTerminal({ agent }: { agent: FlockAgent }) {
  * start button here, because starting a worker is what raising ``min_active``
  * on the Settings tab does.
  */
-export function PoolInstanceTerminal({ instance }: { instance: SessionSummary | null }) {
+export function PoolInstanceTerminal({ instance, focusRequest }: { instance: SessionSummary | null; focusRequest?: string | null }) {
   const live = instance && (instance.state === "running" || instance.state === "draining");
   // `SessionSummary.provider` is the session transport (tmux), not the LLM one.
   const tmux = !instance?.provider || instance.provider === "tmux";
@@ -101,5 +101,5 @@ export function PoolInstanceTerminal({ instance }: { instance: SessionSummary | 
       </div>
     );
   }
-  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} />;
+  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />;
 }

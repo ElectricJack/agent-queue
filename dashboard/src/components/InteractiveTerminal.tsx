@@ -3,15 +3,17 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { connectTerminal, terminalDimensions, type TerminalConnection, type TerminalConnectionState } from "../ws/terminalSocket";
+import { canFocusTerminal } from "./terminalFocus";
 
 const encoder = new TextEncoder();
 
-export default function InteractiveTerminal({ sessionId, name }: { sessionId: string; name: string }) {
+export default function InteractiveTerminal({ sessionId, name, focusRequest }: { sessionId: string; name: string; focusRequest?: string | null }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const focusButton = useRef<HTMLButtonElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const connectionRef = useRef<TerminalConnection | null>(null);
+  const handledFocusRequest = useRef<string | null>(null);
   const [state, setState] = useState<TerminalConnectionState>({ status: "connecting" });
   const [attempt, setAttempt] = useState(0);
   const hintId = useId();
@@ -109,6 +111,12 @@ export default function InteractiveTerminal({ sessionId, name }: { sessionId: st
     };
   }, [sessionId, name, attempt, hintId]);
 
+  useEffect(() => {
+    if (!focusRequest || state.status !== "connected" || handledFocusRequest.current === focusRequest) return;
+    handledFocusRequest.current = focusRequest;
+    if (canFocusTerminal()) terminalRef.current?.focus();
+  }, [focusRequest, state.status]);
+
   const disabled = state.status !== "connected";
   const reconnect = state.status === "disconnected" || state.status === "error";
   return (
@@ -116,8 +124,10 @@ export default function InteractiveTerminal({ sessionId, name }: { sessionId: st
       {/* One control row only: the terminal itself owns every other pixel of height. */}
       <div ref={controlsRef} tabIndex={-1} className="flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
         <span>Live tmux · interactive</span>
-        <span id={hintId} className="sr-only">Click to type · Ctrl+M releases keyboard</span>
-        <span role="status" aria-label={name + " terminal connection"} className="ml-auto capitalize">{state.status}</span>
+        <span id={hintId} className="sr-only">{disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}</span>
+        <span role="status" aria-label={name + " terminal connection"} className="ml-auto capitalize">
+          {state.status}{disabled && " · input unavailable"}
+        </span>
         <button ref={focusButton} type="button" aria-label={"Focus " + name + " terminal"} disabled={disabled}
           onClick={() => terminalRef.current?.focus()}
           className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Type</button>
@@ -129,7 +139,7 @@ export default function InteractiveTerminal({ sessionId, name }: { sessionId: st
           className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Ctrl+C</button>
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0d1117] p-2">
-        <div ref={hostRef} title="Click to type · Ctrl+M releases keyboard"
+        <div ref={hostRef} data-interactive-terminal title={disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}
           onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
       </div>
       {state.message && (

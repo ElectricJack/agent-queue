@@ -17,6 +17,7 @@ import { useNavigate } from "react-router-dom";
 import { NavigationHistoryProvider } from "./navigationHistory";
 import ReviewToasts from "./ReviewToasts";
 import ProviderUsageBars from "./ProviderUsageBars";
+import { canFocusTerminal } from "../components/terminalFocus";
 
 /**
  * Reads `?openDrawer=events|gates` on route entry, opens the drawer,
@@ -68,7 +69,10 @@ function useSectionJumps() {
     onFire: () => {
       if (!pending) return;
       setPending(false);
-      navigate("/agents?agent=supervisor-global", { state: { agentSelection: "replace" } });
+      navigate("/agents?agent=supervisor-global", { state: {
+        agentSelection: "replace",
+        ...(canFocusTerminal() ? { terminalFocus: "supervisor-global" } : {}),
+      } });
     },
     when: () => pending,
   });

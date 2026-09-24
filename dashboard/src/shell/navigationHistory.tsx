@@ -68,7 +68,7 @@ export function useNavigationHistory(): NavigationHistory {
 }
 
 /** Location state that acts once on arrival, and so must not follow a pane step. */
-const ONE_SHOT_STATE = ["agentSelection", "restoreTaskPane"];
+const ONE_SHOT_STATE = ["agentSelection", "terminalFocus", "restoreTaskPane"];
 
 function carriedState(state: unknown): Record<string, unknown> | null {
   if (typeof state !== "object" || state === null) return null;

@@ -152,6 +152,22 @@ describe("Interactive live terminal", () => {
     expect(socket.inputs()).toEqual([]);
   });
 
+  it("does not auto-focus a read-only terminal or take focus from a dialog", () => {
+    const view = render(<InteractiveTerminal name="Builder" sessionId="session-b" focusRequest="first" />);
+    const term = TerminalMock.instances[0]!;
+    act(() => vi.runOnlyPendingTimers());
+    const socket = TerminalSocketMock.instances[0]!;
+    expect(term.focus).not.toHaveBeenCalled();
+    const dialog = document.createElement("dialog");
+    dialog.setAttribute("open", "");
+    document.body.append(dialog);
+    act(() => socket.ready());
+    expect(term.focus).not.toHaveBeenCalled();
+    dialog.remove();
+    view.rerender(<InteractiveTerminal name="Builder" sessionId="session-b" focusRequest="second" />);
+    expect(term.focus).toHaveBeenCalledOnce();
+  });
+
   it("lets keyboard users leave the terminal after its connection drops", () => {
     const { term, socket } = terminal();
     act(() => socket.ready());
