@@ -1907,11 +1907,10 @@ class GitManager:
             )
             seeded_tips = 0
             if borrowable_objects is not None:
-                alternates = imported / "objects" / "info" / "alternates"
-                alternates.parent.mkdir(parents=True, exist_ok=True)
-                alternates.write_text(f"{borrowable_objects}\n", encoding="utf-8")
-                seeded_tips = await self._aseed_origin_fetch_haves(
-                    imported, destination_git_dir, home=home, deadline=deadline
+                seeded_tips = await self._alend_fetch_objects(
+                    imported, destination_git_dir, borrowable_objects,
+                    patterns=("refs/remotes/origin", "refs/tags"),
+                    home=home, deadline=deadline,
                 )
             mode = "incremental" if borrowable_objects is not None else "full"
             try:
@@ -1933,9 +1932,8 @@ class GitManager:
                 raise GitError(
                     f"{exc}; origin_fetch={mode}, seeded_tips={seeded_tips}"
                 ) from None
-            received = await self._run_isolated_import_git(
-                [f"--git-dir={imported}", "count-objects", "-v"],
-                home=home, deadline=deadline,
+            received_objects, received_kib = await self._areceived_objects(
+                imported, home=home, deadline=deadline
             )
             await self._run_isolated_import_git(
                 ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
@@ -1976,19 +1974,11 @@ class GitManager:
                 )
                 if destination_map.get(destination_ref) != oid:
                     raise GitError("authenticated Git fetch imported a different ref")
-        counts = {
-            key: int(value)
-            for key, _, value in (
-                line.partition(": ")
-                for line in received.decode("ascii", errors="replace").splitlines()
-            )
-            if value.isdigit()
-        }
         transfer = _OriginFetchTransfer(
             mode=mode,
             seeded_tips=seeded_tips,
-            objects=counts.get("count", 0) + counts.get("in-pack", 0),
-            size_kib=counts.get("size", 0) + counts.get("size-pack", 0),
+            objects=received_objects,
+            size_kib=received_kib,
             elapsed_seconds=loop.time() - started,
         )
         logger.info(
@@ -2000,13 +1990,7 @@ class GitManager:
         return transfer
 
     async def _aorigin_fetch_destination(self, checkout_path: str) -> tuple[str, Path | None]:
-        """Return the checkout's Git dir and the object store a fetch may borrow.
-
-        ``None`` means download everything.  A shallow checkout lacks the
-        history behind its tips and a partial one lacks promised objects, so
-        reporting those tips as held would make the remote leave out objects
-        the checkout does not have.
-        """
+        """Return the checkout's Git dir and the object store a fetch may borrow."""
         resolved = (await self._arun(
             ["rev-parse", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir",
              "--is-shallow-repository"],
@@ -2015,6 +1999,17 @@ class GitManager:
         if len(resolved) != 3:
             raise GitError("could not resolve the checkout's Git directory")
         git_dir, common_dir, shallow = resolved
+        return git_dir, self._borrowable_objects(common_dir, shallow)
+
+    @staticmethod
+    def _borrowable_objects(common_dir: str, shallow: str) -> Path | None:
+        """Return the object store under *common_dir* a fetch may borrow.
+
+        ``None`` means download everything.  A shallow repository lacks the
+        history behind its tips and a partial one lacks promised objects, so
+        reporting those tips as held would make the remote leave out objects
+        the destination does not have.
+        """
         objects = Path(common_dir) / "objects"
         if (
             shallow != "false"
@@ -2025,21 +2020,41 @@ class GitManager:
             or "\n" in str(objects)
             or any((objects / "pack").glob("*.promisor"))
         ):
-            return git_dir, None
-        return git_dir, objects
+            return None
+        return objects
 
-    async def _aseed_origin_fetch_haves(
-        self, imported: Path, destination_git_dir: str, *, home: Path, deadline: float
+    #: Most a fetch reports as held: the destination's newest distinct tips.
+    #: Negotiation walks back from each tip it names, so older tips rarely
+    #: change what is sent; the cap bounds the work as daemon stores
+    #: accumulate refs.
+    _FETCH_HAVE_LIMIT = 512
+
+    async def _alend_fetch_objects(
+        self,
+        imported: Path,
+        destination_git_dir: str,
+        objects: Path,
+        *,
+        patterns: tuple[str, ...],
+        home: Path,
+        deadline: float,
     ) -> int:
-        """Name the checkout's origin tips in *imported* so a fetch reports them as held.
+        """Lend *objects* to *imported* and name the destination's tips there.
 
-        Runs credential-free, before the network fetch.  Returns how many
-        distinct tips were named; on failure it names none and the fetch
+        *imported* reads the destination's object store through
+        ``objects/info/alternates`` (Git never writes into an alternate), and
+        the destination's refs matching *patterns* (all refs when empty) are
+        named under ``refs/aq/have/`` so fetch negotiation reports them as
+        held.  Runs credential-free, before the network fetch.  Returns how
+        many distinct tips were named; on failure it names none and the fetch
         downloads everything, which is slow but correct.
         """
+        alternates = imported / "objects" / "info" / "alternates"
+        alternates.parent.mkdir(parents=True, exist_ok=True)
+        alternates.write_text(f"{objects}\n", encoding="utf-8")
         listed = await self._run_isolated_import_git(
-            [f"--git-dir={destination_git_dir}", "for-each-ref", "--format=%(objectname)",
-             "refs/remotes/origin", "refs/tags"],
+            [f"--git-dir={destination_git_dir}", "for-each-ref", "--sort=-committerdate",
+             f"--count={self._FETCH_HAVE_LIMIT}", "--format=%(objectname)", *patterns],
             home=home, deadline=deadline,
         )
         tips = sorted({
@@ -2058,11 +2073,59 @@ class GitManager:
             )
         except GitError:
             logger.warning(
-                "authenticated origin fetch could not name %d checkout tips; "
+                "authenticated fetch could not name %d destination tips; "
                 "downloading the full history instead", len(tips),
             )
             return 0
         return len(tips)
+
+    async def _aholds_complete_commit(
+        self, imported: Path, oid: str, *, home: Path, deadline: float
+    ) -> bool:
+        """Whether *imported* already holds commit *oid* and everything it references.
+
+        The same check ``git fetch`` makes before transferring anything, run
+        credential-free: the walk stops at the named tips, whose history the
+        destination holds.  A commit left without its trees or parents (an
+        interrupted unpack) is not held, so it is still fetched.
+        """
+        try:
+            peeled = await self._run_isolated_import_git(
+                [f"--git-dir={imported}", "rev-parse", "--verify", "--quiet",
+                 f"{oid}^{{commit}}"],
+                home=home, deadline=deadline,
+            )
+            if peeled.decode("ascii", errors="replace") != oid:
+                return False
+            await self._run_isolated_import_git(
+                [f"--git-dir={imported}", "rev-list", "--objects", "--quiet", oid,
+                 "--not", "--all"],
+                home=home, deadline=deadline,
+            )
+        except GitError:
+            return False
+        return True
+
+    async def _areceived_objects(
+        self, imported: Path, *, home: Path, deadline: float
+    ) -> tuple[int, int]:
+        """Objects and KiB *imported* wrote itself, excluding what it borrowed."""
+        received = await self._run_isolated_import_git(
+            [f"--git-dir={imported}", "count-objects", "-v"],
+            home=home, deadline=deadline,
+        )
+        counts = {
+            key: int(value)
+            for key, _, value in (
+                line.partition(": ")
+                for line in received.decode("ascii", errors="replace").splitlines()
+            )
+            if value.isdigit()
+        }
+        return (
+            counts.get("count", 0) + counts.get("in-pack", 0),
+            counts.get("size", 0) + counts.get("size-pack", 0),
+        )
 
     async def avalidate_checkout(self, checkout_path: str) -> bool:
         if not os.path.isdir(checkout_path):
@@ -3669,7 +3732,22 @@ class GitManager:
         destination_ref: str,
         timeout_seconds: float | None = None,
     ) -> str:
-        """Fetch an exact commit in isolation, then import only that OID locally."""
+        """Fetch an exact commit in isolation, then import only that OID locally.
+
+        The credentialed fetch runs in a throwaway repository so the token
+        never meets the destination's Git configuration.  Like the origin
+        fetch (:meth:`_afetch_origin_with_auth_to_url`), that repository
+        borrows the destination's object store read-only and names the
+        destination's tips — every ref, since the daemon's retained stores and
+        the PR-diff cache hold only ``refs/aq/*`` — under ``refs/aq/have/``,
+        so the remote sends only what the destination lacks rather than the
+        commit's whole history.  A commit the destination already holds with
+        everything it references is pinned without the network: ``git fetch``
+        would skip the transfer anyway, and an App credential that is never
+        requested reads as a failure.  A shallow or partial destination (the
+        PR-diff cache after an existing-login ``--filter=blob:none`` fetch)
+        keeps the full download.
+        """
         if _OID_RE.fullmatch(oid) is None:
             raise GitError("invalid exact fetch OID")
         if not destination_ref.startswith("refs/aq/"):
@@ -3684,7 +3762,9 @@ class GitManager:
         fetch_timeout = timeout_seconds if timeout_seconds is not None else self._GIT_TIMEOUT
         if not math.isfinite(fetch_timeout) or fetch_timeout <= 0:
             raise GitError("invalid authenticated Git fetch deadline")
-        deadline = asyncio.get_running_loop().time() + fetch_timeout
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        deadline = started + fetch_timeout
         with tempfile.TemporaryDirectory(prefix="aq-app-fetch-") as temporary:
             root = Path(temporary)
             root.chmod(0o700)
@@ -3695,14 +3775,54 @@ class GitManager:
                 ["init", "--bare", "--template=", str(imported)],
                 home=home, deadline=deadline,
             )
-            await self._arun_authenticated_git(
-                [f"--git-dir={imported}", "fetch", "--no-tags", "--force",
-                 destination_url, f"{oid}:refs/aq/exact"],
-                home=home,
-                repository_url=destination_url,
-                token=token,
-                deadline=deadline,
-                budget_seconds=fetch_timeout,
+            resolved = (await self._run_isolated_import_git(
+                [f"--git-dir={destination}", "rev-parse", "--path-format=absolute",
+                 "--git-common-dir", "--is-shallow-repository"],
+                home=home, deadline=deadline,
+            )).decode("utf-8", errors="replace").splitlines()
+            if len(resolved) != 2:
+                raise GitError("could not resolve the exact fetch destination's Git directory")
+            borrowable_objects = self._borrowable_objects(*resolved)
+            seeded_tips = 0
+            held = False
+            if borrowable_objects is not None:
+                seeded_tips = await self._alend_fetch_objects(
+                    imported, str(destination), borrowable_objects,
+                    patterns=(), home=home, deadline=deadline,
+                )
+                held = await self._aholds_complete_commit(
+                    imported, oid, home=home, deadline=deadline
+                )
+            mode = (
+                "local" if held
+                else "incremental" if borrowable_objects is not None
+                else "full"
+            )
+            if held:
+                await self._run_isolated_import_git(
+                    [f"--git-dir={imported}", "update-ref", "refs/aq/exact", oid],
+                    home=home, deadline=deadline,
+                )
+            else:
+                try:
+                    await self._arun_authenticated_git(
+                        # The destination's tips reach negotiation only through
+                        # the seeded refs, as in the origin fetch.
+                        ["-c", "core.alternateRefsCommand=true", "-c", "maintenance.auto=false",
+                         f"--git-dir={imported}", "fetch", "--no-tags", "--force",
+                         destination_url, f"{oid}:refs/aq/exact"],
+                        home=home,
+                        repository_url=destination_url,
+                        token=token,
+                        deadline=deadline,
+                        budget_seconds=fetch_timeout,
+                    )
+                except GitError as exc:
+                    raise GitError(
+                        f"{exc}; exact_fetch={mode}, seeded_tips={seeded_tips}"
+                    ) from None
+            received_objects, received_kib = await self._areceived_objects(
+                imported, home=home, deadline=deadline
             )
             verified = await self._run_isolated_import_git(
                 [f"--git-dir={imported}", "rev-parse", "refs/aq/exact^{commit}"],
@@ -3722,6 +3842,11 @@ class GitManager:
             )
             if local.decode("ascii", errors="replace") != oid:
                 raise GitError("authenticated exact Git import returned another object")
+        logger.info(
+            "authenticated exact fetch: exact_fetch=%s, seeded_tips=%d, "
+            "received_objects=%d, received_kib=%d, elapsed=%.1fs",
+            mode, seeded_tips, received_objects, received_kib, loop.time() - started,
+        )
         return oid
 
     @staticmethod

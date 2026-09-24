@@ -578,6 +578,257 @@ async def test_isolated_origin_fetch_downloads_everything_for_a_shallow_checkout
     assert _git(["rev-parse", "refs/remotes/origin/main"], shallow) == tip
 
 
+def _exact_fetch_case(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """The 40-commit source of ``_origin_fetch_case`` and an empty daemon-owned store."""
+    work, source, _checkout = _origin_fetch_case(tmp_path)
+    store = tmp_path / "retained.git"
+    _git(["init", "--bare", "--template=", str(store)], tmp_path)
+    return work, source, store
+
+
+def _count_objects(git_dir: Path) -> tuple[int, int]:
+    """Objects and KiB a repository stores itself; objects it borrows are not counted."""
+    counted = dict(
+        line.split(": ", 1)
+        for line in _git([f"--git-dir={git_dir}", "count-objects", "-v"], git_dir).splitlines()
+    )
+    return (
+        int(counted["count"]) + int(counted["in-pack"]),
+        int(counted["size"]) + int(counted["size-pack"]),
+    )
+
+
+def _write_object_only(work: Path, store: Path, oid: str) -> str:
+    """Copy commit *oid*'s object into *store* without its tree or parents."""
+    content = subprocess.run(
+        ["git", "cat-file", "commit", oid], cwd=work, capture_output=True, check=True
+    ).stdout
+    written = subprocess.run(
+        ["git", f"--git-dir={store}", "hash-object", "-t", "commit", "-w", "--stdin"],
+        input=content, capture_output=True, check=True,
+    )
+    return written.stdout.decode().strip()
+
+
+def _watch_exact_fetches(
+    manager: GitManager, monkeypatch: pytest.MonkeyPatch, *, lender: Path | None = None
+) -> list[dict[str, object]]:
+    """Record what each credentialed fetch saw and what it took off the network."""
+    observed: list[dict[str, object]] = []
+    real_fetch = manager._arun_authenticated_git
+
+    async def watched_fetch(args, **kwargs):
+        git_dir = Path(next(arg for arg in args if arg.startswith("--git-dir=")).split("=", 1)[1])
+        alternates = git_dir / "objects" / "info" / "alternates"
+        record: dict[str, object] = {
+            "args": list(args),
+            "alternates": alternates.read_text() if alternates.exists() else None,
+            "seeded": sorted(
+                str(path.relative_to(git_dir)) for path in (git_dir / "refs").rglob("*")
+                if path.is_file()
+            ),
+            "temporary": git_dir.parent,
+        }
+        before = _object_store_snapshot(lender) if lender is not None else None
+        output = await real_fetch(args, **kwargs)
+        if lender is not None:
+            record["lender_unchanged"] = _object_store_snapshot(lender) == before
+        record["objects"], record["size_kib"] = _count_objects(git_dir)
+        observed.append(record)
+        return output
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", watched_fetch)
+    return observed
+
+
+async def _exact_fetch(
+    manager: GitManager, destination: Path | str, source: Path, oid: str, ref: str
+) -> str:
+    return await manager._afetch_exact_oid_with_app_auth_to_url(
+        str(destination),
+        destination_url=source.as_uri(),
+        token="local-test-token",
+        oid=oid,
+        destination_ref=ref,
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_downloads_only_what_the_destination_lacks(tmp_path, monkeypatch):
+    work, source, store = _exact_fetch_case(tmp_path)
+    source_objects, _size = _count_objects(source)
+    first_tip = _git(["rev-parse", "HEAD"], work)
+    manager = GitManager()
+    fetches = _watch_exact_fetches(manager, monkeypatch)
+
+    await _exact_fetch(manager, store, source, first_tip, "refs/aq/exact/first")
+    second_tip = _commit_and_publish(work, source, "one more\n")
+    result = await _exact_fetch(manager, store, source, second_tip, "refs/aq/exact/second")
+
+    first, second = fetches
+    # An empty store has nothing to lend, so the first fetch is the whole history.
+    assert first["seeded"] == []
+    assert first["objects"] >= source_objects > 120
+    assert first["size_kib"] >= 1024
+    # The store holds only daemon refs (no origin remote): they are what the
+    # second fetch reports as held, so one new commit is one commit, one tree
+    # and one blob — not the 1 MiB history.
+    assert second["seeded"] == ["refs/aq/have/0"]
+    assert second["objects"] <= 5
+    assert second["size_kib"] < 64
+    assert result == second_tip
+    assert _git(["for-each-ref", "--format=%(objectname) %(refname)"], store).splitlines() == [
+        f"{first_tip} refs/aq/exact/first", f"{second_tip} refs/aq/exact/second"
+    ]
+    # The store owns every object it now references; nothing borrows back.
+    assert not (store / "objects" / "info" / "alternates").exists()
+    _git(["fsck", "--connectivity-only", "--no-dangling"], store)
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_borrows_destination_objects_read_only(tmp_path, monkeypatch, caplog):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+    first_tip = _git(["rev-parse", "HEAD"], work)
+    await _exact_fetch(manager, store, source, first_tip, "refs/aq/exact/first")
+    # Several refs naming one commit are reported to the remote once.
+    _git(["update-ref", "refs/aq/exact/alias", first_tip], store)
+    tip = _commit_and_publish(work, source, "one more\n")
+    objects = store / "objects"
+    fetches = _watch_exact_fetches(manager, monkeypatch, lender=objects)
+
+    with caplog.at_level(logging.INFO, logger="src.git.manager"):
+        await _exact_fetch(manager, store, source, tip, "refs/aq/exact/second")
+
+    [observed] = fetches
+    assert observed["alternates"] == f"{objects.resolve()}\n"
+    assert observed["seeded"] == ["refs/aq/have/0"]
+    # The credentialed process writes only into its own repository, and never
+    # runs for-each-ref against the destination to discover its tips.
+    assert observed["lender_unchanged"] is True
+    assert "core.alternateRefsCommand=true" in observed["args"]
+    assert "maintenance.auto=false" in observed["args"]
+    assert not Path(observed["temporary"]).exists()
+    assert not (objects / "info" / "alternates").exists()
+    assert "exact_fetch=incremental, seeded_tips=1" in caplog.text
+    assert "local-test-token" not in caplog.text
+    # The seeded refs/aq/have/* names stay in the throwaway repository.
+    assert _git(["for-each-ref", "--format=%(refname)"], store).split() == [
+        "refs/aq/exact/alias", "refs/aq/exact/first", "refs/aq/exact/second"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_into_a_linked_worktree_borrows_the_common_object_store(
+    tmp_path, monkeypatch
+):
+    work, source, _store = _exact_fetch_case(tmp_path)
+    checkout = tmp_path / "checkout"
+    _git(["clone", "--quiet", source.as_uri(), str(checkout)], tmp_path)
+    slot = tmp_path / "slot"
+    _git(["worktree", "add", "--quiet", "--detach", str(slot), "HEAD"], checkout)
+    # The push path's observed-old-OID recovery passes the slot's own Git dir.
+    git_dir = _git(["rev-parse", "--absolute-git-dir"], slot)
+    assert Path(git_dir) != checkout / ".git"
+    tip = _commit_and_publish(work, source, "one more\n")
+    manager = GitManager()
+    fetches = _watch_exact_fetches(manager, monkeypatch)
+
+    await _exact_fetch(manager, git_dir, source, tip, "refs/aq/push-observed/test")
+
+    [observed] = fetches
+    assert observed["alternates"] == f"{(checkout / '.git' / 'objects').resolve()}\n"
+    assert observed["objects"] <= 5
+    assert _git(["rev-parse", "refs/aq/push-observed/test"], slot) == tip
+    _git(["fsck", "--connectivity-only", "--no-dangling"], checkout)
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_downloads_everything_for_a_partial_destination(
+    tmp_path, monkeypatch, caplog
+):
+    # The PR-diff cache's existing-login branch fetches with --filter=blob:none,
+    # so the cache can be a partial clone: its tips do not prove their blobs.
+    work, source, store = _exact_fetch_case(tmp_path)
+    _git(["config", "uploadpack.allowFilter", "true"], source)
+    first_tip = _git(["rev-parse", "HEAD"], work)
+    _git(["fetch", "--quiet", "--no-tags", "--filter=blob:none", source.as_uri(),
+          f"{first_tip}:refs/aq/pr/head"], store)
+    assert list((store / "objects" / "pack").glob("*.promisor"))
+    tip = _commit_and_publish(work, source, "one more\n")
+    manager = GitManager()
+    fetches = _watch_exact_fetches(manager, monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="src.git.manager"):
+        assert await _exact_fetch(manager, store, source, tip, "refs/aq/pr/base") == tip
+
+    [observed] = fetches
+    assert (observed["alternates"], observed["seeded"]) == (None, [])
+    assert observed["objects"] > 120
+    assert "exact_fetch=full, seeded_tips=0" in caplog.text
+    assert _git(["rev-parse", "refs/aq/pr/base"], store) == tip
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_of_a_held_commit_pins_it_without_the_network(
+    tmp_path, monkeypatch, caplog
+):
+    # parent CI imports a head for its trust manifest and then again to
+    # publish it: the second import must not need (or fail on) the network.
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    manager = GitManager()
+    await _exact_fetch(manager, store, source, tip, "refs/aq/attestation-trust/x")
+
+    async def no_network(*_args, **_kwargs):
+        raise AssertionError("a held commit must not be fetched")
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", no_network)
+    with caplog.at_level(logging.INFO, logger="src.git.manager"):
+        result = await _exact_fetch(manager, store, source, tip, "refs/aq/parent-ci/x")
+
+    assert result == tip
+    assert _git(["rev-parse", "refs/aq/parent-ci/x"], store) == tip
+    assert "exact_fetch=local, seeded_tips=1, received_objects=0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_completes_a_commit_held_without_its_history(
+    tmp_path, monkeypatch
+):
+    work, source, store = _exact_fetch_case(tmp_path)
+    tip = _git(["rev-parse", "HEAD"], work)
+    # The commit object alone (say, left by an interrupted unpack) is not the
+    # commit: its tree and parents are missing, so it must still be fetched.
+    assert _write_object_only(work, store, tip) == tip
+    manager = GitManager()
+    fetches = _watch_exact_fetches(manager, monkeypatch)
+
+    assert await _exact_fetch(manager, store, source, tip, "refs/aq/exact/tip") == tip
+
+    assert len(fetches) == 1
+    _git(["fsck", "--connectivity-only", "--no-dangling"], store)
+
+
+@pytest.mark.asyncio
+async def test_exact_oid_fetch_failure_names_its_mode(tmp_path, monkeypatch):
+    work, source, store = _exact_fetch_case(tmp_path)
+    manager = GitManager()
+
+    async def timed_out(*_args, **_kwargs):
+        raise GitError("authenticated Git acquisition failed: exception TimeoutError: phase=x")
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git", timed_out)
+    with pytest.raises(GitError) as caught:
+        await _exact_fetch(
+            manager, store, source, _git(["rev-parse", "HEAD"], work), "refs/aq/exact/tip"
+        )
+    assert str(caught.value) == (
+        "authenticated Git acquisition failed: exception TimeoutError: phase=x; "
+        "exact_fetch=incremental, seeded_tips=0"
+    )
+
+
 @pytest.mark.asyncio
 async def test_pr_delivery_diff_imports_pinned_oids_with_fresh_app_credentials(
     tmp_path, monkeypatch
