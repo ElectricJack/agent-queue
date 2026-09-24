@@ -88,6 +88,18 @@ describe("<ProviderAvailabilityBanner />", () => {
     expect(screen.getByTestId("provider-banner-codex").className).toContain("red");
   });
 
+  it("calls out an indefinite disable with its reason and author, without expected recovery", async () => {
+    api.response = { now: NOW, providers: [
+      status({ state: "disabled", half: "unavailable", until: null,
+        override: { state: "disabled", until: null, reason: "billing", by: "human:local-operator" } }),
+    ] };
+    mount();
+
+    const line = await screen.findByTestId("provider-banner-claude");
+    expect(line).toHaveTextContent(/disabled indefinitely since [^·]+ · reason: billing · by human:local-operator/);
+    expect(line).not.toHaveTextContent(/expected back|in \d/);
+  });
+
   it("shows nothing when the availability read fails", async () => {
     api.fail = new Error("down");
     mount();

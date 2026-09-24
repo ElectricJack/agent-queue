@@ -387,6 +387,21 @@ describe("<ProviderUsage /> availability header", () => {
     expect(badge).toHaveAttribute("title", "Reason: billing");
   });
 
+  it("labels an indefinite disable with its reason and author, without a countdown", async () => {
+    api.availability = {
+      success: true, mode: "enforce", now: NOW,
+      providers: [status({
+        state: "disabled", half: "unavailable", until: null,
+        override: { state: "disabled", until: null, by: "human:local-operator", reason: "billing", set_at: NOW },
+      })],
+    };
+    page();
+
+    const badge = await screen.findByTestId("provider-override-codex");
+    expect(badge).toHaveTextContent("disabled indefinitely · reason: billing · by human:local-operator");
+    expect(screen.queryByTestId("provider-countdown-codex")).toBeNull();
+  });
+
   it("gives a provider with no usage reading its header anyway", async () => {
     api.response = { now: NOW, snapshots: [snap({ provider: "claude" })], series: {} };
     api.availability = {
@@ -422,7 +437,7 @@ describe("<ProviderUsage /> availability header", () => {
     page();
 
     await screen.findByTestId("provider-availability-codex");
-    fireEvent.click(screen.getByRole("button", { name: "Disable for…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disable…" }));
     const submit = screen.getByRole("button", { name: "Disable" });
     // A reason is required before the request can go.
     expect(submit).toBeDisabled();
@@ -440,6 +455,29 @@ describe("<ProviderUsage /> availability header", () => {
     expect(await screen.findByText("Codex disabled for 4h.")).toBeInTheDocument();
   });
 
+  it("sends only no_expiry for an indefinite disable and still requires a reason", async () => {
+    api.availability = { success: true, mode: "enforce", now: NOW, providers: [status()] };
+    api.setState.mockResolvedValue({ data: { success: true, provider: "codex", state: "disabled" } });
+    page();
+
+    await screen.findByTestId("provider-availability-codex");
+    fireEvent.click(screen.getByRole("button", { name: "Disable…" }));
+    expect(screen.getByRole("option", { name: "Until I re-enable it" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Disable duration"), { target: { value: "indefinite" } });
+    const submit = screen.getByRole("button", { name: "Disable" });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "  billing incident  " } });
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(api.setState).toHaveBeenCalledTimes(1));
+    expect(api.setState.mock.calls[0]![0]).toEqual({
+      path: { provider: "codex" },
+      body: { state: "disabled", no_expiry: true, reason: "billing incident" },
+      throwOnError: true,
+    });
+    expect(await screen.findByText("Codex disabled indefinitely.")).toBeInTheDocument();
+  });
+
   it("clears an active override with state auto", async () => {
     api.availability = {
       success: true, mode: "enforce", now: NOW,
@@ -448,13 +486,17 @@ describe("<ProviderUsage /> availability header", () => {
         override: { state: "disabled", until: null, by: "human:local-operator", reason: "x", set_at: NOW },
       })],
     };
-    api.setState.mockResolvedValue({ data: { success: true, provider: "codex", state: "available" } });
+    api.setState.mockImplementation(async () => {
+      api.availability = { success: true, mode: "enforce", now: NOW, providers: [status()] };
+      return { data: { success: true, provider: "codex", state: "available" } };
+    });
     page();
 
     fireEvent.click(await screen.findByRole("button", { name: "Clear override" }));
     await waitFor(() => expect(api.setState).toHaveBeenCalledTimes(1));
     expect(api.setState.mock.calls[0]![0]).toMatchObject({ path: { provider: "codex" }, body: { state: "auto" } });
-    expect(screen.getByTestId("provider-override-codex")).toHaveTextContent("no expiry");
+    await waitFor(() => expect(screen.queryByTestId("provider-override-codex")).toBeNull());
+    expect(screen.getByTestId("provider-state-codex")).toHaveTextContent("Available");
   });
 
   it("rechecks the provider and reports what the probe said", async () => {
@@ -478,7 +520,7 @@ describe("<ProviderUsage /> availability header", () => {
     page();
 
     await screen.findByTestId("provider-availability-codex");
-    fireEvent.click(screen.getByRole("button", { name: "Disable for…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disable…" }));
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "why" } });
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/^the override would already have expired$/);

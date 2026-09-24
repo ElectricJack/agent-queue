@@ -274,6 +274,12 @@ async def test_no_expiry_is_for_disabled_only(handler, service) -> None:
     )
     assert refused["success"] is False
     assert "always expires" in refused["error"]
+    cleared = await handler.execute(
+        "provider_set_state", {"provider": "codex", "state": "auto"},
+    )
+    assert cleared["success"] is True
+    assert cleared["status"]["override"] is None
+    assert cleared["state"] == "available"
 
 
 async def test_available_override_always_expires_and_beats_the_evidence(handler, service) -> None:

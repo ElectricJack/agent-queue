@@ -4,7 +4,7 @@
  * State pill, reason, *since*, the countdown to expected recovery, the
  * operator override with its expiry and author, probation, the held and
  * re-routed counts, the remediation while unavailable — and the three
- * operator actions: *Disable for…*, *Recheck*, *Clear override*.
+ * operator actions: *Disable…*, *Recheck*, *Clear override*.
  *
  * Nothing on this header is decided in the browser.  The pill is the
  * server's effective state, the override badge appears because the response
@@ -25,6 +25,7 @@ import {
   formatOverrideExpiry,
   formatRecovery,
   formatSince,
+  isIndefinitelyDisabled,
   isUnavailable,
   probeLabel,
   providerName,
@@ -34,6 +35,7 @@ import {
 
 const actionButton =
   "rounded-md border border-gray-700 px-2 py-1 text-xs text-gray-200 hover:bg-gray-800 disabled:cursor-wait disabled:opacity-50";
+const INDEFINITE_DURATION = "indefinite";
 
 export default function ProviderAvailabilityHeader({
   status,
@@ -54,9 +56,10 @@ export default function ProviderAvailabilityHeader({
   const name = providerName(key);
   const tone = TONE_CLASSES[stateTone(status.state)];
   const override = status.override ?? null;
+  const indefinite = isIndefinitelyDisabled(status);
   const unavailable = isUnavailable(status);
   const since = formatSince(status.since, now);
-  const recovery = formatRecovery(status.until, now);
+  const recovery = indefinite ? null : formatRecovery(status.until, now);
   const reasonText = status.reason || status.reason_code || "";
   const pending = setState.isPending || recheck.isPending;
   const failure = setState.error ?? recheck.error;
@@ -75,11 +78,15 @@ export default function ProviderAvailabilityHeader({
     // saves a round trip, it does not replace the server's check.
     if (!why) return;
     setState.mutate(
-      { provider: key, state: "disabled", for: duration, reason: why },
+      duration === INDEFINITE_DURATION
+        ? { provider: key, state: "disabled", no_expiry: true, reason: why }
+        : { provider: key, state: "disabled", for: duration, reason: why },
       {
         onSuccess: () => {
           setDisableOpen(false);
-          setNotice(`${name} disabled for ${duration}.`);
+          setNotice(duration === INDEFINITE_DURATION
+            ? `${name} disabled indefinitely.`
+            : `${name} disabled for ${duration}.`);
         },
       },
     );
@@ -138,9 +145,19 @@ export default function ProviderAvailabilityHeader({
               title={override.reason ? `Reason: ${override.reason}` : undefined}
               className="rounded-full border border-indigo-700/60 bg-indigo-500/10 px-2 py-0.5 text-[11px] text-indigo-200"
             >
-              Override: {stateLabel(override.state).toLowerCase()} ·{" "}
-              {formatOverrideExpiry(override.until, now)}
-              {override.by ? ` · by ${override.by}` : ""}
+              {indefinite ? (
+                <>
+                  disabled indefinitely
+                  {override.reason ? ` · reason: ${override.reason}` : ""}
+                  {override.by ? ` · by ${override.by}` : ""}
+                </>
+              ) : (
+                <>
+                  Override: {stateLabel(override.state).toLowerCase()} ·{" "}
+                  {formatOverrideExpiry(override.until, now)}
+                  {override.by ? ` · by ${override.by}` : ""}
+                </>
+              )}
             </span>
           )}
           {override && status.derived_state && status.derived_state !== status.state && (
@@ -165,7 +182,7 @@ export default function ProviderAvailabilityHeader({
             aria-expanded={disableOpen}
             className={actionButton}
           >
-            Disable for…
+            Disable…
           </button>
           <button
             type="button"
@@ -225,7 +242,7 @@ export default function ProviderAvailabilityHeader({
           className="flex flex-wrap items-center gap-2 rounded-md border border-gray-800 bg-gray-950/60 p-2"
         >
           <label className="flex items-center gap-1.5 text-xs text-gray-400">
-            For
+            Duration
             <select
               aria-label="Disable duration"
               value={duration}
@@ -237,6 +254,7 @@ export default function ProviderAvailabilityHeader({
                   {d.label}
                 </option>
               ))}
+              <option value={INDEFINITE_DURATION}>Until I re-enable it</option>
             </select>
           </label>
           <input

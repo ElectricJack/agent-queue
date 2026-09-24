@@ -20,6 +20,7 @@ import { useProviderAvailability, type ProviderAvailabilityStatus } from "../api
 import {
   TONE_CLASSES,
   formatClock,
+  isIndefinitelyDisabled,
   isUnavailable,
   providerName,
   sortStatuses,
@@ -37,10 +38,15 @@ function BannerLine({ status, now }: { status: ProviderAvailabilityStatus; now: 
   const tone = TONE_CLASSES[stateTone(status.state)];
   const rerouted = status.rerouted ?? 0;
   const held = status.held ?? 0;
+  const indefinite = isIndefinitelyDisabled(status);
+  const override = status.override;
   const parts = [
+    indefinite && override?.reason ? `reason: ${override.reason}` : null,
+    indefinite && override?.by ? `by ${override.by}` : null,
     rerouted > 0 ? `${plural(rerouted, "task", "tasks")} moved` : null,
     held > 0 ? `${held} held` : null,
-    status.until != null && status.until > now ? `expected back ${formatClock(status.until, now)}` : null,
+    !indefinite && status.until != null && status.until > now
+      ? `expected back ${formatClock(status.until, now)}` : null,
   ].filter(Boolean);
   return (
     <div
@@ -52,7 +58,7 @@ function BannerLine({ status, now }: { status: ProviderAvailabilityStatus; now: 
       <ExclamationTriangleIcon aria-hidden="true" className="h-4 w-4 shrink-0" />
       <span className="font-medium">{providerName(key)} unavailable</span>{" "}
       <span>
-        — {stateWords(status.state)}
+        — {indefinite ? "disabled indefinitely" : stateWords(status.state)}
         {status.since != null ? ` since ${formatClock(status.since, now)}` : ""}
         {parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}
       </span>{" "}

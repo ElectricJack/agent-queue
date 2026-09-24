@@ -103,6 +103,13 @@ export function isUnavailable(status: Pick<ProviderAvailabilityStatus, "half">):
   return status.half === UNAVAILABLE_HALF;
 }
 
+/** An operator disable with no deadline stays in force until auto clears it. */
+export function isIndefinitelyDisabled(
+  status: Pick<ProviderAvailabilityStatus, "state" | "override">,
+): boolean {
+  return status.state === "disabled" && status.override?.state === "disabled" && status.override.until == null;
+}
+
 /** Stable order so a card never swaps places between polls. */
 export function sortStatuses(statuses: ProviderAvailabilityStatus[]): ProviderAvailabilityStatus[] {
   return [...statuses].sort((a, b) => a.provider.localeCompare(b.provider));
