@@ -1916,10 +1916,16 @@ async def test_real_git_detached_verifier_baseline_requires_current_publication(
     await run("switch", "--detach", baseline)
     workspace = SimpleNamespace(workspace_path=str(checkout))
     lock = asyncio.Lock()
+    authenticated_fetch = AsyncMock(wraps=git.afetch_origin)
+    git.afetch_origin = authenticated_fetch
     assert await detach_workspace_for_integration_handoff(
         git, lambda _: lock, workspace, expected_branch="aq/parent",
+        repository_url=str(remote), default_branch="main",
         require_detached=True,
         allow_published_detached_head=True,
+    )
+    authenticated_fetch.assert_awaited_once_with(
+        str(checkout), repository_url=str(remote), lock_held=True
     )
     assert await run("rev-parse", "HEAD") == baseline
     await run("commit", "--allow-empty", "-m", "unpublished detached work")
@@ -2586,4 +2592,3 @@ async def test_public_transfer_refuses_an_orphaned_attachment_with_newer_session
         ).transfer(Fence(target=target, owner_id="task", token=4), "operation", "collector")
 
     assert events == []
-

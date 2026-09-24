@@ -703,6 +703,8 @@ async def detach_slot_for_integration_handoff(
     workspace,
     *,
     expected_branch: str,
+    repository_url: str | None = None,
+    default_branch: str | None = None,
     allow_published_detached_head: bool = False,
     require_detached: bool = False,
 ) -> bool:
@@ -727,6 +729,8 @@ async def detach_slot_for_integration_handoff(
         workspace,
         mutex_path=base.workspace_path,
         expected_branch=expected_branch,
+        repository_url=repository_url,
+        default_branch=default_branch,
         allow_published_detached_head=allow_published_detached_head,
         require_detached=require_detached,
     )
@@ -739,6 +743,8 @@ async def detach_workspace_for_integration_handoff(
     *,
     mutex_path: str | None = None,
     expected_branch: str,
+    repository_url: str | None = None,
+    default_branch: str | None = None,
     allow_published_detached_head: bool = False,
     require_detached: bool = False,
 ) -> bool:
@@ -761,7 +767,12 @@ async def detach_workspace_for_integration_handoff(
         if status:
             return False
 
-        await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
+        if repository_url:
+            await git.afetch_origin(
+                mutex_path, repository_url=repository_url, lock_held=True
+            )
+        else:
+            await git._arun_unlocked(["fetch", "origin"], cwd=mutex_path)
         local_tip = await git._arun_unlocked(["rev-parse", branch_ref], cwd=checkout)
         remote_tip = await git._arun_unlocked(["rev-parse", remote_ref], cwd=checkout)
         head = await git._arun_unlocked(["rev-parse", "HEAD"], cwd=checkout)
@@ -773,11 +784,19 @@ async def detach_workspace_for_integration_handoff(
             # Failed verifier preparation can leave the published default
             # branch detached. Preserve it and prove publication afresh;
             # a stale remote-tracking ref cannot authorize release.
-            remote_head = await git._arun_unlocked(
-                ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=checkout
-            )
-            if remote_head.split() != [head, "HEAD"]:
-                return False
+            if repository_url and default_branch:
+                published_head = await git._arun_unlocked(
+                    ["rev-parse", f"refs/remotes/origin/{default_branch}"],
+                    cwd=checkout,
+                )
+                if published_head != head:
+                    return False
+            else:
+                remote_head = await git._arun_unlocked(
+                    ["ls-remote", "--exit-code", "origin", "HEAD"], cwd=checkout
+                )
+                if remote_head.split() != [head, "HEAD"]:
+                    return False
 
         if current == expected_branch:
             await git._arun_unlocked(["switch", "--detach", head], cwd=checkout)

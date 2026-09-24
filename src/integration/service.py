@@ -34,6 +34,7 @@ class IntegrationService:
         collection_handler: DrainHandler | None = None,
         development_handler: DrainHandler | None = None,
         owner_recovery_handler: DrainHandler | None = None,
+        review_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -57,6 +58,7 @@ class IntegrationService:
         self._branch_materialization_handler = branch_materialization_handler
         self._collection_handler = collection_handler
         self._owner_recovery_handler = owner_recovery_handler
+        self._review_handler = review_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -91,6 +93,8 @@ class IntegrationService:
                 await self._source(
                     "branch materialization", self._branch_materialization_handler, now
                 )
+            if self._review_handler is not None:
+                await self._source("GitHub PR reviews", self._review_handler, now)
             await self._source("schedule", self._tick_schedules, now)
             if self._collection_handler is not None:
                 await self._source("child collection", self._collection_handler, now)

@@ -47,12 +47,19 @@ class ReviewEvidenceProducer:
         reviewed_sha: str,
         summary: str = "",
         feedback: str = "",
+        github_review_id: int | None = None,
     ) -> dict[str, Any] | None:
         """Store a GitHub verdict against the exact verified train epic head."""
         if verdict not in {"approved", "rejected"}:
             raise ValueError(f"unsupported verdict: {verdict}")
         if not reviewer_login or not reviewer_login.strip():
             raise ValueError("reviewer_login is required")
+        if github_review_id is not None and (
+            isinstance(github_review_id, bool)
+            or not isinstance(github_review_id, int)
+            or github_review_id <= 0
+        ):
+            raise ValueError("github_review_id must be a positive integer")
 
         async with self.db._engine.connect() as conn:
             source = await self._pull_request_source_on(conn, epic_task_id)
@@ -90,6 +97,7 @@ class ReviewEvidenceProducer:
                     verdict,
                     reviewer_login,
                     source["pr_url"],
+                    str(github_review_id) if github_review_id is not None else "",
                 )
             )
             evidence_id = f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}"
@@ -140,6 +148,11 @@ class ReviewEvidenceProducer:
                     "reviewed_sha": reviewed_sha,
                     "pr_url": source["pr_url"],
                     "verification_id": source["verification_id"],
+                    **(
+                        {"github_review_id": github_review_id}
+                        if github_review_id is not None
+                        else {}
+                    ),
                 },
                 "created_at": created_at,
             }
