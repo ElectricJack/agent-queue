@@ -56,9 +56,6 @@ _refuse_production_database()
 # PostgreSQL is the suite's only backend. Every test leases a run-owned,
 # template-cloned database. See tests/db_fixtures.py and the SQLite-removal
 # implementation spec §T0.
-_PG_POOL = None
-_PG_POOL_DSNS: list[str] = []
-
 _PG_BASE_DSN: str | None = None
 
 
@@ -95,12 +92,23 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     asyncio.run(dispose_owned_databases())
 
 
-@pytest.fixture(scope="session", autouse=True)
-async def _dispose_pg_pool():
-    """Remove this worker's template-cloned lease databases."""
-    yield
-    if _PG_POOL is not None:
-        await _PG_POOL.dispose()
+@pytest.fixture(scope="session")
+async def _pg_pool_dsns():
+    """Create and dispose the lease pool on the same session event loop."""
+    from tests.db_fixtures import POOL_SIZE, LeasePool
+
+    if not _PG_BASE_DSN:
+        pytest.fail("PostgreSQL test preflight did not provision this worker's database")
+    pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
+    try:
+        pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
+    except BaseException:
+        await pool.dispose()
+        raise
+    try:
+        yield pool_dsns
+    finally:
+        await pool.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +130,7 @@ def _no_provider_login_probes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-async def _pg_backend():
+async def _pg_backend(_pg_pool_dsns):
     """Arm this test's pool of leasable Postgres databases.
 
     ``lease_dsn("name")`` hands out one database per distinct name, and each
@@ -130,22 +138,9 @@ async def _pg_backend():
     "x.db"))`` idiom the suite grew under SQLite: there is no file to name any
     more, so the name is just a key.
     """
-    global _PG_POOL, _PG_POOL_DSNS
     from tests import db_fixtures
-    from tests.db_fixtures import POOL_SIZE, LeasePool
 
-    if _PG_POOL is None:
-        if not _PG_BASE_DSN:
-            pytest.fail("PostgreSQL test preflight did not provision this worker's database")
-        pool = LeasePool(_PG_BASE_DSN, os.environ.get("PYTEST_XDIST_WORKER", "master"))
-        try:
-            pool_dsns = [await pool.acquire() for _ in range(POOL_SIZE)]
-        except BaseException:
-            await pool.dispose()
-            raise
-        _PG_POOL, _PG_POOL_DSNS = pool, pool_dsns
-
-    db_fixtures.begin_test(_PG_POOL_DSNS)
+    db_fixtures.begin_test(_pg_pool_dsns)
     try:
         yield
     finally:
