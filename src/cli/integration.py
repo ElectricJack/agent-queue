@@ -260,13 +260,27 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 @click.option("--validation", type=click.Choice(["focused", "advisory", "none"]), default="focused")
 @click.option("--command", "commands", multiple=True, help="Local validation command; repeatable.")
 @click.option("--interval-seconds", type=click.IntRange(min=1), default=300)
+@click.option("--timeout-seconds", type=click.IntRange(1, 3600), default=None,
+              help="Seconds each command may run (default 300); slot wait is not counted.")
+@click.option("--slot-wait-seconds", type=click.IntRange(0, 3600), default=None,
+              help="Seconds a command may queue for a test slot before the batch is "
+                   "deferred (default 600).")
 @click.option("--reason", required=True)
 @click.pass_context
 @_handle_errors
-def integration_develop(ctx, project_id, validation, commands, interval_seconds, reason):
+def integration_develop(
+    ctx, project_id, validation, commands, interval_seconds, timeout_seconds,
+    slot_wait_seconds, reason,
+):
     """Use automatic development batches with explicit local validation."""
+    policy = {"validation": validation, "commands": list(commands),
+              "interval_seconds": interval_seconds}
+    if timeout_seconds is not None:
+        policy["timeout_seconds"] = timeout_seconds
+    if slot_wait_seconds is not None:
+        policy["slot_wait_seconds"] = slot_wait_seconds
     _execute(ctx, "integration_develop", {"project_id": project_id, "reason": reason,
-        "policy": {"validation": validation, "commands": list(commands), "interval_seconds": interval_seconds}})
+        "policy": policy})
 
 
 @integration.command("adopt")

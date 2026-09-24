@@ -116,6 +116,37 @@ def _client(result):
             "integration_recover_candidate_member",
             {"reservation_id": "frozen-resolution"},
         ),
+        (
+            ["develop", "p", "--command", "aq test tests/x.py", "--reason", "dev"],
+            "integration_develop",
+            {
+                "project_id": "p",
+                "reason": "dev",
+                "policy": {
+                    "validation": "focused",
+                    "commands": ["aq test tests/x.py"],
+                    "interval_seconds": 300,
+                },
+            },
+        ),
+        (
+            [
+                "develop", "p", "--command", "aq test tests/x.py", "--reason", "slow box",
+                "--timeout-seconds", "900", "--slot-wait-seconds", "1200",
+            ],
+            "integration_develop",
+            {
+                "project_id": "p",
+                "reason": "slow box",
+                "policy": {
+                    "validation": "focused",
+                    "commands": ["aq test tests/x.py"],
+                    "interval_seconds": 300,
+                    "timeout_seconds": 900,
+                    "slot_wait_seconds": 1200,
+                },
+            },
+        ),
     ],
 )
 def test_integration_commands_use_generic_execute_and_json_envelope(argv, command, args):

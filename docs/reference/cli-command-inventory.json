@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 373,
+    "leaf_commands": 375,
     "registration": {
-      "generated": 261,
-      "handwritten": 112
+      "generated": 262,
+      "handwritten": 113
     },
     "ownership": {
-      "core": 334,
+      "core": 336,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 372
+      "supported": 374
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 261,
-      "registration": 98
+      "dispatch": 262,
+      "registration": 99
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 313
+      "untested": 315
     }
   },
   "commands": [
@@ -3238,6 +3238,40 @@
           "--validation",
           "--command",
           "--interval-seconds",
+          "--timeout-seconds",
+          "--slot-wait-seconds",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration eject",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_eject",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--task-id",
+          "--reason"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
@@ -7415,6 +7449,8 @@
         ],
         "optional": [
           "--note",
+          "--responder-class",
+          "--responder-profile",
           "--json",
           "--brief",
           "--api-url"
@@ -9283,6 +9319,41 @@
       "parameters": {
         "required": [
           "--task-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-eject",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_eject",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--batch-id",
+          "--task-id",
+          "--reason"
         ],
         "optional": [
           "--json",

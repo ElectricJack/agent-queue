@@ -167,8 +167,8 @@ Each streak of deferrals is one `cancelled` journal row with
 row the publisher logs an error, messages `supervisor-<project>` once, and
 `aq doctor --check integration.development_publisher_stalled` reports
 `validation_infrastructure`. Fix the environment — the test database, the
-slots, or the budgets (`timeout_seconds`/`slot_wait_seconds`, maximum 3600,
-set with another `aq integration develop … --reason …`). The first validation
+slots, or the budgets (`aq integration develop … --timeout-seconds N
+--slot-wait-seconds N --reason …`, maximum 3600 each). The first validation
 that reaches a conclusion closes the streak.
 
 A batch parked as `selected validation failed` before outcomes were

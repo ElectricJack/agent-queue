@@ -85,6 +85,8 @@ Options:
 | `--validation none` | Runs nothing; the journal records `not_run`. |
 | `--command` | Repeatable. Runs under `bash -c` in AQ's retained clone, with the daemon's environment. |
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
+| `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
+| `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
 > **Note.** Validation commands do not run in a worker's worktree. They run in
