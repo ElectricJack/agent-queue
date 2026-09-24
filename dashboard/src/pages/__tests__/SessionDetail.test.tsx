@@ -18,8 +18,8 @@ vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null,
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
 
-function page() {
-  return <MemoryRouter initialEntries={["/sessions/session-a"]}><Routes>
+function page(initial: string | { pathname: string; state: unknown } = "/sessions/session-a") {
+  return <MemoryRouter initialEntries={[initial]}><Routes>
     <Route path="/sessions/:sessionId" element={<SessionDetail />} />
   </Routes></MemoryRouter>;
 }
@@ -33,6 +33,22 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Session terminal", () => {
+  it("opens and focuses a selected live session only after its terminal is ready", async () => {
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    expect(screen.getByText("Live tmux · interactive")).toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    const term = TerminalMock.instances[0]!;
+    expect(term.focus).not.toHaveBeenCalled();
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(term.textarea).toHaveFocus();
+  });
+
+  it("explains why a selected stopped session has no interactive terminal", () => {
+    state.session.state = "stopped";
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    expect(screen.getByText(/Terminal input unavailable: session state is stopped/)).toBeInTheDocument();
+    expect(TerminalMock.instances).toHaveLength(0);
+  });
   it.each(["stopped", "sleeping", "starting", "stopping", "failed"])("hides Pane for %s sessions", (sessionState) => {
     state.session.state = sessionState;
     render(page());

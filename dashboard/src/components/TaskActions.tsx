@@ -28,6 +28,7 @@ import { integrationRemovalRefusal } from "../api/deleteRefusals";
 import Modal from "./Modal";
 import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
+import { canFocusTerminal } from "./terminalFocus";
 import { workspaceHref } from "../shell/projectNavigation";
 
 interface TaskActionsProps {
@@ -75,7 +76,10 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         sessionAddress: SUPERVISOR_SESSION,
         threadId: SUPERVISOR_THREAD,
       });
-      navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: { agentSelection: "replace" } });
+      navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: {
+        agentSelection: "replace",
+        ...(canFocusTerminal() ? { terminalFocus: SUPERVISOR_SESSION } : {}),
+      } });
     } catch (err) {
       setAskError(err instanceof Error ? err : new Error(String(err)));
     } finally {

@@ -11,7 +11,7 @@ import { usePoolFlock } from "./pools";
 
 export default function AgentWorkspace() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
-  const { selectedIds, selections, select, close, setInstance, resetToken, adding, setAdding } = useAgentSelection();
+  const { selectedIds, selections, select, close, setInstance, resetToken, focusSelection, adding, setAdding } = useAgentSelection();
   const { entries: pools } = usePoolFlock();
   const columns = selectedIds.length > 1 ? "lg:grid-cols-2" : "grid-cols-1";
   const rows = selectedIds.length > 2 ? "lg:grid-rows-2" : "lg:grid-rows-1";
@@ -61,13 +61,15 @@ export default function AgentWorkspace() {
                 return (
                   <PoolWindow key={entry.key} entry={entry} instanceId={selection.instanceId}
                     onInstanceChange={(instanceId) => setInstance(id, instanceId)}
-                    onClose={() => close(id)} resetToken={resetToken} />
+                    onClose={() => close(id)} resetToken={resetToken}
+                    focusRequest={focusSelection?.key === selectionAddress(id) ? focusSelection.request : null} />
                 );
               }
             }
             const agent = selection.kind === "agent" ? agents.find((item) => item.id === selection.agentId) : undefined;
             return agent ? (
-              <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken} />
+              <AgentWindow key={id} agent={agent} onClose={() => close(id)} resetToken={resetToken}
+                focusRequest={focusSelection?.key === id ? focusSelection.request : null} />
             ) : (
               <section key={id} aria-label={id + " agent window"}
                 className="flex min-h-80 flex-col rounded-xl border border-gray-800 p-4 lg:min-h-0">

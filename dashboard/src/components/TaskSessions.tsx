@@ -34,7 +34,7 @@ export default function TaskSessions({ taskId, onOpenSession, fromTaskPane = fal
                 <div className="flex items-center justify-between gap-2">
                   <Link
                     to={`/sessions/${encodeURIComponent(attempt.session_id)}?attempt=${encodeURIComponent(attempt.id)}&taskId=${encodeURIComponent(taskId)}`}
-                    state={{ from, taskPane: fromTaskPane ? { taskId } : undefined }} onClick={onOpenSession}
+                    state={{ from, taskPane: fromTaskPane ? { taskId } : undefined, terminalFocus: true }} onClick={onOpenSession}
                     title={name} className="min-w-0 truncate text-sm font-medium text-indigo-400 hover:underline"
                   >{name}</Link>
                   {attempt.state && <span className="shrink-0 rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300">{attempt.state}</span>}
