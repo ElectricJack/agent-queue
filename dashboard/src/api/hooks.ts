@@ -8,6 +8,7 @@ import {
   createMcpServer,
   createTask,
   deleteMcpServer,
+  deleteIntelligenceClass,
   deleteProfile,
   deleteProject,
   deleteTask,
@@ -697,6 +698,27 @@ export function useEditIntelligenceClass() {
       void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
     },
     // Refetch a conflict's latest revision without replacing the editor's draft.
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] }); },
+  });
+}
+
+export function useDeleteIntelligenceClass() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { class_id: string; expected_revision: string }) => {
+      const { data } = await deleteIntelligenceClass({ body: input, throwOnError: true });
+      return data.class_id;
+    },
+    retry: false,
+    onSuccess: (classId) => {
+      queryClient.setQueryData<IntelligenceClassesResponse>(["intelligence-classes"], (previous) => previous
+        ? { ...previous, classes: previous.classes.filter((row) => row.id !== classId) }
+        : undefined);
+      void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] });
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
+      void queryClient.invalidateQueries({ queryKey: ["effective-profile"] });
+      void queryClient.invalidateQueries({ queryKey: ["profiles"] });
+    },
     onError: () => { void queryClient.invalidateQueries({ queryKey: ["intelligence-classes"] }); },
   });
 }

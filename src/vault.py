@@ -1589,7 +1589,7 @@ def ensure_default_playbooks(data_dir: str) -> dict:
 def ensure_default_intelligence_classes(data_dir: str) -> dict:
     """Install bundled intelligence classes into ``vault/intelligence-classes/``.
 
-    Idempotent — an existing file is never overwritten.
+    Idempotent — an existing or retired file is never overwritten.
     """
     defaults_dir = os.path.join(
         os.path.dirname(__file__), "prompts", "default_intelligence_classes"
@@ -1605,7 +1605,7 @@ def ensure_default_intelligence_classes(data_dir: str) -> dict:
         if not filename.endswith(".md"):
             continue
         dst = os.path.join(dst_root, filename)
-        if os.path.exists(dst):
+        if os.path.exists(dst) or os.path.exists(dst + ".retired"):
             result["skipped"].append(filename)
             continue
         shutil.copy2(os.path.join(defaults_dir, filename), dst)

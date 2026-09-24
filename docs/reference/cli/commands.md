@@ -627,6 +627,7 @@ group is large.
 | `aq system config set` | `—` | hand | Set one key by dotted path, e.g. |
 | `aq system create-workflow` | `create_workflow` | gen | Create a new coordination workflow record. |
 | `aq system db-preflight-hierarchy` | `db_preflight_hierarchy` | gen | Dry-run the hierarchy canonicalisation used by migration revision b2c3d4e5f6a7 (spec §17): pick one canonical parent per task from the current pare… |
+| `aq system delete-intelligence-class` | `delete_intelligence_class` | gen | Retire an unreferenced intelligence class in the vault; refuses active agent, profile, and task references. |
 | `aq system delivery-promote` | `delivery_promote` | gen | Prepare and lease-push one reviewed squash to its immediate parent. |
 | `aq system delivery-receipts` | `delivery_receipts` | gen | Read repository-qualified delivery evidence for one source task. |
 | `aq system doctor` | `doctor` | gen | Run the health-check catalog for this install and return one result per check: id, severity (ok/info/warn/error), detail, whether it is fixable, an… |

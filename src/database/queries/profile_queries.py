@@ -7,8 +7,8 @@ import time
 
 from sqlalchemy import case, delete, insert, null, or_, select, update
 
-from src.database.tables import agent_profiles, projects, tasks
-from src.models import AgentProfile
+from src.database.tables import agent_profiles, agents, projects, tasks
+from src.models import AgentProfile, TaskStatus
 
 
 def _dump_namespace(value: list[str] | None) -> str | None:
@@ -33,6 +33,39 @@ def _load_namespace(raw) -> list[str] | None:
 
 class ProfileQueryMixin:
     """Query mixin for agent profile operations.  Expects ``self._engine``."""
+
+    async def intelligence_class_references(self, class_id: str) -> list[dict]:
+        """Return current rows that must be repointed before a class retires."""
+        references: list[dict] = []
+        async with self._engine.begin() as conn:
+            agent_rows = (await conn.execute(
+                select(agents.c.id, agents.c.name).where(
+                    agents.c.intelligence_class == class_id,
+                    agents.c.deleted_at.is_(None),
+                ).order_by(agents.c.id)
+            )).all()
+            profile_rows = (await conn.execute(
+                select(agent_profiles.c.id, agent_profiles.c.name, agent_profiles.c.lifecycle)
+                .where(agent_profiles.c.default_class == class_id)
+                .order_by(agent_profiles.c.id)
+            )).all()
+            task_rows = (await conn.execute(
+                select(tasks.c.id, tasks.c.title, tasks.c.status).where(
+                    tasks.c.intelligence_class == class_id,
+                    tasks.c.status.notin_((TaskStatus.COMPLETED.value, TaskStatus.FAILED.value,
+                                            TaskStatus.BLOCKED.value)),
+                ).order_by(tasks.c.id)
+            )).all()
+        references.extend({"kind": "agent", "id": row.id, "name": row.name} for row in agent_rows)
+        references.extend(
+            {"kind": "profile", "id": row.id, "name": row.name, "lifecycle": row.lifecycle}
+            for row in profile_rows
+        )
+        references.extend(
+            {"kind": "task", "id": row.id, "name": row.title, "status": row.status}
+            for row in task_rows
+        )
+        return references
 
     async def create_profile(self, profile: AgentProfile) -> None:
         """Insert a new agent profile."""

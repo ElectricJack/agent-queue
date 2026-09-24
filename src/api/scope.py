@@ -170,7 +170,7 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: review control requires local operator"
     if command == "edit_project" and INTEGRATION_ROLLOUT_FIELDS.intersection(args):
         return "out of scope: integration configuration requires local operator"
-    if command == "edit_intelligence_class" and not (
+    if command in {"edit_intelligence_class", "delete_intelligence_class"} and not (
         scope.elevated and scope.project_id is None and scope.task_id is None
     ):
         return "out of scope: intelligence-class settings require global admin"

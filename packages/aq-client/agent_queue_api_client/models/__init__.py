@@ -141,6 +141,10 @@ from .delegation_policy_dto import DelegationPolicyDTO
 from .delete_agent_request import DeleteAgentRequest
 from .delete_agent_response import DeleteAgentResponse
 from .delete_agent_response_422 import DeleteAgentResponse422
+from .delete_intelligence_class_conflict_response import DeleteIntelligenceClassConflictResponse
+from .delete_intelligence_class_request import DeleteIntelligenceClassRequest
+from .delete_intelligence_class_response import DeleteIntelligenceClassResponse
+from .delete_intelligence_class_response_422 import DeleteIntelligenceClassResponse422
 from .delete_mcp_server_request import DeleteMcpServerRequest
 from .delete_mcp_server_response import DeleteMcpServerResponse
 from .delete_mcp_server_response_422 import DeleteMcpServerResponse422
@@ -496,6 +500,8 @@ from .install_profile_response import InstallProfileResponse
 from .install_profile_response_422 import InstallProfileResponse422
 from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
+from .intelligence_class_reference import IntelligenceClassReference
+from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
@@ -1448,6 +1454,10 @@ __all__ = (
     "DeleteAgentResponse",
     "DeleteAgentResponse422",
     "DeletedBranch",
+    "DeleteIntelligenceClassConflictResponse",
+    "DeleteIntelligenceClassRequest",
+    "DeleteIntelligenceClassResponse",
+    "DeleteIntelligenceClassResponse422",
     "DeleteMcpServerRequest",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponse422",
@@ -1796,6 +1806,8 @@ __all__ = (
     "InstallProfileResponse422",
     "IntelligenceClassModel",
     "IntelligenceClassModelMapping",
+    "IntelligenceClassReference",
+    "IntelligenceClassReferenceKind",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",
