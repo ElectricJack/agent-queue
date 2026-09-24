@@ -521,6 +521,23 @@ class TestDesiredStateCommands:
         # Intent moved; observed state deliberately did not (see B2 above).
         assert row.desired_state == "stopped" and row.state == "running"
 
+    async def test_kill_records_intent_before_signalling_provider(
+        self, handler, db, provider, monkeypatch
+    ):
+        await _make_task(db)
+        await _make_session(db, provider)
+        stop = provider.stop
+
+        async def inspect_then_stop(handle, *, grace):
+            assert (await db.get_session("sess-1")).desired_state == "stopped"
+            await stop(handle, grace=grace)
+
+        monkeypatch.setattr(provider, "stop", inspect_then_stop)
+
+        result = await handler.execute("session_kill", {"session_id": "sess-1"})
+
+        assert result["success"] is True
+
     async def test_sleep_sets_intent_without_signalling(self, handler, db, provider):
         await _make_task(db)
         await _make_session(db, provider)
