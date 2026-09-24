@@ -12,7 +12,12 @@ import "./index.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 10_000,
+      // Live data reaches the cache through the event stream (which keeps
+      // invalidating while the tab is hidden) and each query's own poll, so a
+      // read younger than this is current. At 10s — shorter than nearly every
+      // poll — each return to the tab and each revisit of a page refetched
+      // every mounted query at once, ahead of whatever the user clicked next.
+      staleTime: 30_000,
       refetchOnWindowFocus: true,
     },
   },
