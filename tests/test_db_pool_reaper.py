@@ -8,9 +8,16 @@ from tests import db_fixtures
 
 
 class _AdminConnection:
-    def __init__(self, names: list[str], live_tokens: set[str] = frozenset()):
+    def __init__(
+        self,
+        names: list[str],
+        live_tokens: set[str] = frozenset(),
+        *,
+        sweep_busy: bool = False,
+    ):
         self.names = names
         self.live_tokens = live_tokens
+        self.sweep_busy = sweep_busy
         self.held: set[int] = set()
         self.dropped: list[str] = []
         self.closed = False
@@ -33,6 +40,8 @@ class _AdminConnection:
 
     async def fetchval(self, statement: str, key: int):
         assert statement == "SELECT pg_try_advisory_lock($1)"
+        if key == db_fixtures._REAP_LOCK_KEY and self.sweep_busy:
+            return False
         if any(key == db_fixtures._pool_lock_key(token) for token in self.live_tokens):
             return False
         self.held.add(key)
@@ -70,6 +79,23 @@ async def test_pool_reaps_only_unlocked_versioned_names(monkeypatch):
     assert not conn.closed
     await pool.dispose()
     assert conn.closed
+
+
+@pytest.mark.asyncio
+async def test_pool_skips_cleanup_when_another_worker_is_sweeping(monkeypatch):
+    name = "aq_test_poolv2_abc123def456_gw0_0"
+    conn = _AdminConnection([name], sweep_busy=True)
+
+    async def connect(_dsn):
+        return conn
+
+    monkeypatch.setattr(db_fixtures, "_connect_admin", connect)
+    pool = db_fixtures.LeasePool("postgresql://u:p@h/worker", "gw1")
+    await pool._start()
+
+    assert conn.dropped == []
+    assert conn.held == {db_fixtures._pool_lock_key(pool._run_id)}
+    await pool.dispose()
 
 
 @pytest.mark.asyncio

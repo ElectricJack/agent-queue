@@ -51,6 +51,7 @@ _IDENT_RE = re.compile(r"[^a-zA-Z0-9_]")
 # out of the automatic sweep.
 _POOL_NAME_RE = re.compile(r"aq_test_poolv2_([0-9a-f]{12})_[a-zA-Z0-9_]{1,20}_[0-9]{1,8}\Z")
 _POOL_LOCK_PREFIX = 0x5170000000000000
+_REAP_LOCK_KEY = 0x5171000000000000
 _MAX_REAP_PER_START = 8
 _REAP_STATEMENT_TIMEOUT_MS = 5000
 
@@ -412,44 +413,51 @@ class LeasePool:
 
     async def _reap_stale(self, conn) -> None:
         """Drop only versioned pool databases whose owner lock is gone."""
-        rows = await conn.fetch(
-            "SELECT datname FROM pg_database WHERE datname LIKE 'aq_test_poolv2_%'"
-        )
-        groups: dict[str, list[str]] = {}
-        for row in rows:
-            name = row["datname"]
-            match = _POOL_NAME_RE.fullmatch(name)
-            if match and match[1] != self._run_id:
-                groups.setdefault(match[1], []).append(name)
-
-        # Cleanup is opportunistic: a DROP can wait on a busy checkpointer.
-        # Bound the work so it cannot hold the test suite's startup hostage.
-        attempted = 0
-        await conn.execute(f"SET statement_timeout = {_REAP_STATEMENT_TIMEOUT_MS}")
+        # Only one xdist worker should spend time on cleanup.  If a sweep is
+        # already underway, this worker can start testing immediately.
+        if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", _REAP_LOCK_KEY):
+            return
         try:
-            for run_id, names in groups.items():
-                if attempted >= _MAX_REAP_PER_START:
-                    break
-                key = _pool_lock_key(run_id)
-                if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", key):
-                    continue
-                try:
-                    for name in sorted(names):
-                        if attempted >= _MAX_REAP_PER_START:
-                            break
-                        attempted += 1
-                        try:
-                            await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-                        except Exception as exc:
-                            warnings.warn(
-                                f"could not reap stale test database {name}: {exc}",
-                                RuntimeWarning,
-                                stacklevel=2,
-                            )
-                finally:
-                    await conn.execute("SELECT pg_advisory_unlock($1)", key)
+            rows = await conn.fetch(
+                "SELECT datname FROM pg_database WHERE datname LIKE 'aq_test_poolv2_%'"
+            )
+            groups: dict[str, list[str]] = {}
+            for row in rows:
+                name = row["datname"]
+                match = _POOL_NAME_RE.fullmatch(name)
+                if match and match[1] != self._run_id:
+                    groups.setdefault(match[1], []).append(name)
+
+            # Cleanup is opportunistic: a DROP can wait on a busy checkpointer.
+            # Bound the work so it cannot hold the test suite's startup hostage.
+            attempted = 0
+            await conn.execute(f"SET statement_timeout = {_REAP_STATEMENT_TIMEOUT_MS}")
+            try:
+                for run_id, names in groups.items():
+                    if attempted >= _MAX_REAP_PER_START:
+                        break
+                    key = _pool_lock_key(run_id)
+                    if not await conn.fetchval("SELECT pg_try_advisory_lock($1)", key):
+                        continue
+                    try:
+                        for name in sorted(names):
+                            if attempted >= _MAX_REAP_PER_START:
+                                break
+                            attempted += 1
+                            try:
+                                await conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                            except Exception as exc:
+                                warnings.warn(
+                                    f"could not reap stale test database {name}: {exc}",
+                                    RuntimeWarning,
+                                    stacklevel=2,
+                                )
+                    finally:
+                        await conn.execute("SELECT pg_advisory_unlock($1)", key)
+            finally:
+                await conn.execute("RESET statement_timeout")
         finally:
-            await conn.execute("RESET statement_timeout")
+            await conn.execute("SELECT pg_advisory_unlock($1)", _REAP_LOCK_KEY)
 
     async def acquire(self) -> str:
         """Lease a clean database; returns its DSN."""
