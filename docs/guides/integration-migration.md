@@ -22,8 +22,13 @@ development mode carries a validation policy, so it is configured rather than
 switched. `aq integration develop` is the only way in, and it works from any
 current mode.
 
-Both commands require local operator authority — a worker session's token is
-refused ([`src/commands/integration_commands.py`](../../src/commands/integration_commands.py)).
+Both commands require the local operator or a live supervisor session: the
+project's own supervisor, or the global supervisor for any project. A worker
+session's token is refused, and so is a token that outlived its supervisor
+([`src/commands/supervisor_authority.py`](../../src/commands/supervisor_authority.py)).
+`aq integration status` is readable by the same callers, and by a session whose
+profile grants `integration_status`, for its own project only (the shipped worker
+profiles do not grant it).
 
 ## Generation: the compare-and-swap token
 

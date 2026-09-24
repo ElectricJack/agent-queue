@@ -55,6 +55,7 @@ async def db():
     for session_id, project_id, profile_id, state, desired_state in (
         ("super-p", "p", "supervisor", "running", "running"),
         ("super-global", None, "supervisor", "starting", "running"),
+        ("super-global-stopped", None, "supervisor", "stopped", "stopped"),
         ("super-stopped", "p", "supervisor", "stopped", "stopped"),
         ("super-other", "other", "supervisor", "draining", "running"),
         ("worker", "p", "worker", "running", "running"),
@@ -195,3 +196,101 @@ def test_operator_control_scope_defers_live_session_validation_to_the_handler():
     for command in OPERATOR_INTEGRATION_CONTROLS:
         assert check_command_scope(command, {}, elevated) is None
         assert check_command_scope(command, {}, worker) is not None
+
+
+def _handler_with_controls(db) -> tuple[IntegrationCommandsMixin, AsyncMock]:
+    controls = AsyncMock()
+    controls.status.return_value = {"outcome": "status"}
+    controls.enable.return_value = {"outcome": "enabled", "generation": 1}
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(integration_control_service=controls)
+    return handler, controls
+
+
+_ENABLE_ARGS = {
+    "project_id": "p",
+    "mode": "observe",
+    "expected_generation": 0,
+    "reason": "train cutover",
+}
+
+
+async def test_global_supervisor_reads_integration_status_for_any_project(db):
+    """The global supervisor has no project scope, so status cannot match on it."""
+    handler, controls = _handler_with_controls(db)
+    with principal_context(_session("super-global", None)):
+        for project_id in ("p", "other"):
+            result = await handler._cmd_integration_status({"project_id": project_id})
+            assert result["outcome"] == "status", project_id
+    assert [call.args for call in controls.status.await_args_list] == [("p",), ("other",)]
+
+
+async def test_global_supervisor_enables_integration_under_its_own_audit_label(db):
+    handler, controls = _handler_with_controls(db)
+    with principal_context(_session("super-global", None)):
+        result = await handler._cmd_integration_enable(dict(_ENABLE_ARGS))
+    assert result["outcome"] == "enabled"
+    controls.enable.assert_awaited_once_with(
+        "p",
+        mode="observe",
+        expected_generation=0,
+        reason="train cutover",
+        operator_id="supervisor session:super-global",
+        waiver_id=None,
+        interval_seconds=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        # A token that outlived its global supervisor.
+        _session("super-global-stopped", None),
+        # A projectless session that is not elevated: a manually opened terminal.
+        _session("super-global", None, elevated=False),
+        # Elevation alone is not enough; the row must be a named supervisor.
+        _session("worker", None),
+        _session("super-other", "other"),
+        _session("worker", "other", elevated=False),
+    ],
+)
+async def test_status_refuses_other_projects_and_projectless_non_supervisors(db, principal):
+    handler, controls = _handler_with_controls(db)
+    with principal_context(principal):
+        result = await handler._cmd_integration_status({"project_id": "p"})
+    assert result["outcome"] == "unauthorized"
+    controls.status.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _session("worker", "p", elevated=False),
+        _session("worker", "p"),
+        _session("worker", None, elevated=False),
+        _session("super-global-stopped", None),
+        _session("super-global", None, elevated=False),
+    ],
+)
+async def test_workers_and_non_live_supervisors_cannot_enable_integration(db, principal):
+    handler, controls = _handler_with_controls(db)
+    with principal_context(principal):
+        result = await handler._cmd_integration_enable(dict(_ENABLE_ARGS))
+    assert result["outcome"] == "unauthorized"
+    controls.enable.assert_not_awaited()
+
+
+def test_global_supervisor_scope_admits_status_and_enable_and_worker_scope_does_not():
+    global_supervisor = RequestScope(
+        kind="session", session_id="super-global", project_id=None, elevated=True
+    )
+    worker = RequestScope(kind="session", session_id="worker", task_id="t", project_id="p")
+    projectless_worker = RequestScope(kind="session", session_id="worker", project_id=None)
+    for command in ("integration_status", "integration_enable"):
+        args = {"project_id": "p"}
+        assert check_command_scope(command, args, global_supervisor) is None, command
+        assert args == {"project_id": "p"}, command
+        assert check_command_scope(command, {"project_id": "p"}, projectless_worker), command
+    assert check_command_scope("integration_enable", {"project_id": "p"}, worker)
+    assert check_command_scope("integration_status", {"project_id": "other"}, worker)
