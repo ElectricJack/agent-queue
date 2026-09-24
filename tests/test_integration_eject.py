@@ -15,6 +15,7 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import Database
 from src.database.tables import (
+    events,
     integration_batch_members,
     integration_batches,
     integration_review_evidence,
@@ -146,6 +147,32 @@ async def test_forged_eject_event_without_project_lock_cannot_edit_members(seale
                     integration_batch_members.c.task_id == "e2",
                 )
             )
+
+
+async def test_prior_eject_event_cannot_authorize_a_later_manifest_edit(
+    control_service, sealed_batch, db
+):
+    batch_id = sealed_batch["batch_id"]
+    await control_service.eject(batch_id, task_id="e2", reason="manual", operator_id="supervisor")
+    async with db.immediate() as conn:
+        event_id = (
+            await conn.execute(
+                select(events.c.id)
+                .where(events.c.event_type == "integration.batch_ejected")
+                .order_by(events.c.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        await db.lock_hierarchy_project(conn, "p")
+        await conn.execute(select(func.set_config("aq.integration_eject_batch", batch_id, True)))
+        await conn.execute(select(func.set_config("aq.integration_eject_event", str(event_id), True)))
+        with pytest.raises((IntegrityError, DBAPIError)):
+            async with conn.begin_nested():
+                await conn.execute(
+                    update(integration_batches)
+                    .where(integration_batches.c.id == batch_id)
+                    .values(source_manifest_digest="forged")
+                )
 
 
 async def test_the_remaining_members_stay_in_the_batch(control_service, sealed_batch, members_of):
