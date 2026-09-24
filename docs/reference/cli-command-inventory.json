@@ -3281,38 +3281,6 @@
       }
     },
     {
-      "path": "aq integration eject",
-      "registration": "handwritten",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": null,
-      "callback": "src.cli.integration.integration_eject",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "registration",
-      "evidence": [
-        "click-registration"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--batch-id",
-          "--task-id",
-          "--reason"
-        ],
-        "optional": [
-          "--json",
-          "--brief",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
       "path": "aq integration enable",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -11513,6 +11481,7 @@
         "required": [],
         "optional": [
           "--project-id",
+          "--task-id",
           "--status",
           "--gate-type",
           "--json",
