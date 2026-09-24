@@ -316,11 +316,14 @@ class SessionQueryMixin:
         live_only: bool = False,
         agent_id: str | None = None,
         claim_phase: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[SessionRecord]:
-        """List sessions, newest first.
+        """List sessions, newest first, with optional limit and offset.
 
         ``live_only=True`` is shorthand for ``states=("starting", "running",
-        "draining")`` — the set the reconciler observes each tick.
+        "draining")`` — the set the reconciler observes each tick.  The id
+        breaks timestamp ties so adjacent pages cannot overlap.
         """
         query = select(sessions)
         if state is not None:
@@ -341,7 +344,11 @@ class SessionQueryMixin:
             query = query.where(sessions.c.agent_id == agent_id)
         if claim_phase is not None:
             query = query.where(sessions.c.claim_phase == claim_phase)
-        query = query.order_by(sessions.c.started_at.desc())
+        query = query.order_by(sessions.c.started_at.desc(), sessions.c.id.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        if offset:
+            query = query.offset(offset)
         async with self._engine.begin() as conn:
             result = await conn.execute(query)
             return [_row_to_session(r) for r in result.mappings().fetchall()]

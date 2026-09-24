@@ -596,6 +596,8 @@ class DatabaseBackend(Protocol):
         live_only: bool = False,
         agent_id: str | None = None,
         claim_phase: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[SessionRecord]: ...
     async def update_session(self, session_id: str, *, conn=None, **fields) -> int: ...
     async def update_session_instance(
