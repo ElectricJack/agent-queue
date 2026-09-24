@@ -2623,6 +2623,12 @@ class TestEndToEndOnFakeProvider:
         _ownership, fence = await self._enable_hierarchy_launch(db, tmp_path)
         provider.script_startup_death("s-t1")
 
+        async def unknown_stop(_handle):
+            # The fake confirms a stop from its registry; this is the
+            # provider that cannot prove the dead start is gone.
+            return False
+
+        monkeypatch.setattr(provider, "confirm_stopped", unknown_stop)
         real_orch.git = _handoff_git()
         real_orch._git_mutex = lambda _path: asyncio.Lock()
         task = await db.get_task("t1")

@@ -428,7 +428,10 @@ class TestReconcilePools:
         assert updated.state == "stopped"
         assert not os.path.exists(claim_path)
 
-    async def test_terminate_pool_session_retains_attached_integration_owner(self, orch, db):
+    @pytest.mark.parametrize("stop_confirmed", [False, True])
+    async def test_terminate_pool_session_retains_attached_integration_owner(
+        self, orch, db, monkeypatch, stop_confirmed
+    ):
         await ready(db, "t1")
         await orch._reconcile_pools()
         await orch.wait_for_pool_launches()
@@ -450,11 +453,19 @@ class TestReconcilePools:
                 )
             )
 
+        if not stop_confirmed:
+            # The fake confirms a stop from its registry; a provider that
+            # cannot prove the exit must leave the session unstopped.
+            provider = orch.session_providers.create(session.provider, orch.config)
+            monkeypatch.setattr(provider, "confirm_stopped", AsyncMock(return_value=False))
+
         await orch._terminate_pool_session(session, reason="integration_owner")
 
         updated = await db.get_session(session.id)
         agent = await db.get_agent(session.agent_id)
-        assert updated.state != "stopped"
+        # A confirmed exit is recorded (recovery needs it) without releasing
+        # anything the attached owner still holds.
+        assert (updated.state == "stopped") is stop_confirmed
         assert updated.task_id == "t1"
         assert agent.state is not AgentState.IDLE
         assert (await db.get_workspace(workspace.id)).locked_by_agent_id == session.agent_id

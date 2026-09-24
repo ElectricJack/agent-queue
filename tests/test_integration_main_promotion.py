@@ -454,7 +454,7 @@ class RootAttestationProvider:
             return [
                 {"id": 31 + index, "workflow_id": 301 + index, "run_attempt": 1,
                  "check_suite_id": 21 + index, "head_sha": HEAD,
-                 "conclusion": "success"}
+                 "conclusion": "success", "event": "push"}
                 for index in range(2)
             ]
         for index, name in enumerate(("unit", "postgres")):
@@ -1221,7 +1221,7 @@ async def test_exact_green_ci_never_reclaims_attached_or_assigned_delegate(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["red", "unknown"])
+@pytest.mark.parametrize("outcome", ["red", "unknown", "pull_request_only"])
 async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcome):
     db, data_dir = prepared_db
     delegate_id = await _escalate_to_unclaimed_root_delegate(db)
@@ -1234,6 +1234,10 @@ async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcom
         rows = await original(path, key=key)
         if outcome == "red" and key == "workflow_runs":
             return [{**rows[0], "conclusion": "failure"}, *rows[1:]]
+        if outcome == "pull_request_only" and key == "workflow_runs":
+            # A green pull_request run tested a merge ref, not the exact
+            # candidate SHA: it must never stand in for the push run.
+            return [{**row, "event": "pull_request"} for row in rows]
         return rows
 
     provider.paged_items = non_green
