@@ -143,11 +143,12 @@ class GateCommandsMixin:
             })
 
     async def _cmd_gate_list(self, args: dict) -> dict:
-        """List gates, optionally filtered by project/status/type."""
+        """List gates, optionally filtered by project/status/type/task."""
         gates = await self.db.list_gates(
             project_id=args.get("project_id"),
             status=args.get("status"),
             gate_type=args.get("gate_type"),
+            task_id=args.get("task_id"),
         )
         return {"success": True, "gates": gates}
 

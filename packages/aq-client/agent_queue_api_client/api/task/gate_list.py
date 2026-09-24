@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: GateListRequest,
 ) -> Response[GateListResponse | GateListResponse422]:
-    """List gates, optionally filtered by project/status/type.
+    """List gates, optionally filtered by project/status/type/task.
 
-     List gates, optionally filtered by project/status/type.
+     List gates, optionally filtered by project/status/type/task.
 
     Args:
         body (GateListRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: GateListRequest,
 ) -> GateListResponse | GateListResponse422 | None:
-    """List gates, optionally filtered by project/status/type.
+    """List gates, optionally filtered by project/status/type/task.
 
-     List gates, optionally filtered by project/status/type.
+     List gates, optionally filtered by project/status/type/task.
 
     Args:
         body (GateListRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: GateListRequest,
 ) -> Response[GateListResponse | GateListResponse422]:
-    """List gates, optionally filtered by project/status/type.
+    """List gates, optionally filtered by project/status/type/task.
 
-     List gates, optionally filtered by project/status/type.
+     List gates, optionally filtered by project/status/type/task.
 
     Args:
         body (GateListRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: GateListRequest,
 ) -> GateListResponse | GateListResponse422 | None:
-    """List gates, optionally filtered by project/status/type.
+    """List gates, optionally filtered by project/status/type/task.
 
-     List gates, optionally filtered by project/status/type.
+     List gates, optionally filtered by project/status/type/task.
 
     Args:
         body (GateListRequest):
