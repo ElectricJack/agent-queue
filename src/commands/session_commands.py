@@ -446,9 +446,10 @@ class SessionCommandsMixin:
 
         This deliberately does **not** transition the task, **and does not
         write ``state`` on the row either**: the next reconciler tick sees a
-        dead process and classifies it, so a manual kill and a crash travel
-        the same path — and a human killing a session can never accidentally
-        mark a task complete.
+        dead process and classifies it.  ``desired_state="stopped"`` records
+        that this exit was requested, so a pool kill does not quarantine its
+        project as a rapid crash.  A human killing a session can never
+        accidentally mark a task complete.
 
         Writing ``state="stopped"`` here used to *guarantee* the opposite of
         that docstring.  ``_step_exits`` iterates live rows only, so dropping
@@ -464,18 +465,16 @@ class SessionCommandsMixin:
         provider = self._provider_for_session(session)
         if provider is None:
             return {"error": f"Provider '{session.provider}' is not available"}
+        # Intent, not observation: state stays live so the exit classifier
+        # can still run.  Persist intent before signalling because a tick can
+        # observe the death while stop() is waiting for the provider.
+        await self.db.update_session(session.id, desired_state="stopped")
         try:
             await provider.stop(
                 self._session_handle(session), grace=float(args.get("grace") or 2.0)
             )
         except Exception as exc:
             return {"error": f"kill failed: {exc}"}
-        # Intent, not observation.  The docstring above is about ``state``:
-        # writing that would hide the exit from the classifier.  Intent is
-        # the opposite case -- a human killing a session plainly does not
-        # want it back, and without this the reconciler's up-convergence
-        # would restart a named session the operator just killed.
-        await self.db.update_session(session.id, desired_state="stopped")
         await self.orchestrator.bus.emit(
             "session.killed",
             {

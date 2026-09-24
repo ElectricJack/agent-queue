@@ -267,7 +267,10 @@ def api(command: str, args: dict | None = None, *, token: str | None = None) -> 
     return payload.get("result") or {}
 
 
-def wait_for(predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = 2.0):
+def wait_for(
+    predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = 2.0,
+    extend_if=None, diagnostic=None,
+):
     """Poll *predicate* until it returns something truthy, or fail loudly.
 
     Every wait in this file is on the 5s cascade, so the failure message
@@ -276,12 +279,29 @@ def wait_for(predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interva
     """
     deadline = time.monotonic() + timeout
     last = None
-    while time.monotonic() < deadline:
+    extended = False
+    allowed = timeout
+    while True:
         last = predicate()
         if last:
             return last
-        time.sleep(interval)
-    raise Failure(f"timed out after {timeout:.0f}s waiting for {what} (last saw {last!r})")
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(interval, remaining))
+            continue
+        if extend_if is not None and not extended:
+            extra = extend_if()
+            if extra > 0:
+                extended = True
+                allowed += extra
+                deadline = time.monotonic() + extra
+                print(f"     pool wait for {what}: allowing {extra:.0f}s more for convergence")
+                continue
+        detail = f"; {diagnostic()}" if diagnostic is not None else ""
+        raise Failure(
+            f"timed out after {allowed:.0f}s waiting for {what} "
+            f"(last saw {last!r}{detail})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -296,14 +316,79 @@ def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
     raise Failure(f"no pool row for {project_id}/{profile_id}")
 
 
-def pool_sessions(project_id: str | None = PROJECT) -> list[dict]:
+def pool_sessions(
+    project_id: str | None = PROJECT, *, include_draining: bool = False,
+) -> list[dict]:
     rows = collection_rows(aq("session", "list", "--lifecycle", "pool"), "sessions")
-    live = ("starting", "running")
+    live = ("starting", "running", "draining") if include_draining else ("starting", "running")
     return [
         s
         for s in rows
         if (project_id is None or s["project_id"] == project_id) and s["state"] in live
     ]
+
+
+def pool_wait_state(project_id: str, profile_id: str) -> dict:
+    """The daemon's own placement inputs, kept compact for a timeout report."""
+    try:
+        row = pool_row(project_id, profile_id)
+    except (CliError, Failure) as exc:
+        return {"project": project_id, "profile": profile_id, "status_error": str(exc)}
+    project = next(
+        (item for item in row.get("projects", []) if item["project_id"] == project_id),
+        {},
+    )
+    return {
+        "project": project_id,
+        "profile": profile_id,
+        "enabled": row.get("enabled"),
+        "ready": row.get("ready"),
+        "desired": row.get("desired"),
+        "running_idle": row.get("running_idle"),
+        "running_busy": row.get("running_busy"),
+        "starting": row.get("starting"),
+        "draining": row.get("draining"),
+        "provider_unavailable": row.get("provider_unavailable"),
+        "placement": project,
+        "instances": [
+            {key: instance.get(key) for key in ("session_id", "state", "task_id", "quarantine_reason")}
+            for instance in row.get("instances", [])
+            if instance.get("project_id") == project_id
+        ],
+    }
+
+
+def wait_for_pool_session(
+    predicate, *, what: str, project_id: str = PROJECT, profile_id: str = POOL_PROFILE,
+    timeout: float = CONVERGE_TIMEOUT,
+):
+    """Give an observable launch one more window and explain a failed placement."""
+    def status() -> dict:
+        return pool_wait_state(project_id, profile_id)
+
+    def extend_if() -> float:
+        snapshot = status()
+        placement = snapshot.get("placement") or {}
+        if snapshot.get("provider_unavailable") or snapshot.get("enabled") is False:
+            return 0
+        quarantine_left = (placement.get("quarantined_until") or 0) - time.time()
+        # A launch backoff that will clear within the extra window is
+        # convergence.  A long crash quarantine is a real blocker; report it
+        # at the original deadline instead of waiting pointlessly.
+        if quarantine_left > 0:
+            return timeout if quarantine_left < timeout else 0
+        if placement.get("starting", 0):
+            return timeout
+        supply = sum(snapshot.get(key) or 0 for key in ("running_idle", "running_busy", "starting"))
+        if (placement.get("ready", 0) and placement.get("workspace_capacity", 0)
+                and (snapshot.get("desired") or 0) > supply):
+            return timeout
+        return 0
+
+    return wait_for(
+        predicate, what=what, timeout=timeout, extend_if=extend_if,
+        diagnostic=lambda: f"pool_status={json.dumps(status(), sort_keys=True)}",
+    )
 
 
 def session_token(session_id: str) -> str:
@@ -425,7 +510,9 @@ def fresh_workers(
     def _quiesced():
         for cleanup_project_id in cleanup_projects:
             _delete_open_pool_tasks(cleanup_project_id)
-        live = pool_sessions(None)
+        # Draining rows still consume supply/capacity until the reconciler
+        # marks them stopped.  Leaving them behind can starve the next case.
+        live = pool_sessions(None, include_draining=True)
         for s in live:
             aq("session", "kill", s["id"], check_ok=False)
         return not live and not any(
@@ -443,9 +530,10 @@ def fresh_workers(
         rows = pool_sessions(project_id)
         return rows if len(rows) >= count else None
 
-    live = wait_for(
+    live = wait_for_pool_session(
         _enough_sessions,
         what=f"{count} fresh pool sessions",
+        project_id=project_id,
     )
     for task_id in fillers:
         aq("task", "delete", "--task-id", task_id)
@@ -486,7 +574,7 @@ def idle_worker() -> Worker:
                 return s["id"]
         return None
 
-    sid = wait_for(_find, what="an idle pool session")
+    sid = wait_for_pool_session(_find, what="an idle pool session")
     return Worker.adopt(sid)
 
 
@@ -561,7 +649,7 @@ def s1_pool_sizing(state: dict) -> str:
         row = pool_row()
         return row if row["running_idle"] + row["running_busy"] + row["starting"] == 2 else None
 
-    row = wait_for(_pool_at_max, what="the pool to reach max_active=2 sessions")
+    row = wait_for_pool_session(_pool_at_max, what="the pool to reach max_active=2 sessions")
     check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
     check(row["ready"] >= 3, f"expected >=3 ready tasks, saw {row['ready']}")
     check(
@@ -638,7 +726,7 @@ def s2_claim_loop(state: dict) -> str:
         f"pools.orphan_agents is {orphan_check.get('severity')}: {orphan_check.get('detail')}",
     )
 
-    replacement = wait_for(
+    replacement = wait_for_pool_session(
         lambda: next(
             (s for s in pool_sessions() if s["id"] not in initial_session_ids),
             None,
@@ -833,7 +921,9 @@ def _close_next_child(container: str) -> None:
                     return (child["id"], s["id"])
         return None
 
-    task_id, session_id = wait_for(_held, what=f"a session to pick up a child of {container}")
+    task_id, session_id = wait_for_pool_session(
+        _held, what=f"a session to pick up a child of {container}"
+    )
     token = session_token(session_id)
     # ``no-op`` is the truthful outcome: under Tier 1 this runner *is* the
     # session and it commits nothing.  A ``shipped`` close is held to the
@@ -1716,7 +1806,7 @@ def _quiesce_failover() -> None:
 
     def _quiet():
         _delete_open_pool_tasks(PROJECT)
-        live = pool_sessions(None)
+        live = pool_sessions(None, include_draining=True)
         for s in live:
             aq("session", "kill", s["id"], check_ok=False)
         return not live and not _open_pool_tasks(PROJECT)
@@ -1858,7 +1948,9 @@ def _s16(state: dict) -> str:
         peak = max(peak, len(live))
         return live[0] if live else None
 
-    sess = wait_for(_provb_session, what="a provb pool session for the moved task")
+    sess = wait_for_pool_session(
+        _provb_session, what="a provb pool session for the moved task", profile_id=STD_B,
+    )
     worker = Worker.adopt(sess["id"])
     claimed = worker.claim_next()
     check(claimed.get("result") == "claimed", f"provb worker claim: {claimed}")
@@ -1941,9 +2033,10 @@ def _s16(state: dict) -> str:
     worker_a.close(summary="S16 held task done on prova")
     worker_a.drain_ack()
     if expected != pinned:
-        sess_a = wait_for(
+        sess_a = wait_for_pool_session(
             lambda: next(iter(live_sessions_for(STD_A)), None),
             what="a std-high-prova session for the pinned task",
+            profile_id=STD_A,
         )
         worker_p = Worker.adopt(sess_a["id"])
         claimed = worker_p.claim_next()
@@ -1983,7 +2076,7 @@ def _s16(state: dict) -> str:
         aq("session", "kill", sess["id"], check_ok=False)
     wait_provider(PROVA, ("unauthenticated",), what="the second logout")
     filler = create_task("S16 claude worker", profile=POOL_PROFILE)
-    claude_sess = wait_for(
+    claude_sess = wait_for_pool_session(
         lambda: next(iter(live_sessions_for(POOL_PROFILE)), None),
         what="a claude pool session to hold across the outage",
     )
@@ -2211,7 +2304,7 @@ def s17_phased_graph(state: dict) -> str:
         retired_session_ids.add(worker.session_id)
 
     def replacement_worker(expected_task_id: str, what: str) -> Worker:
-        session = wait_for(
+        session = wait_for_pool_session(
             lambda: next(
                 (
                     row
@@ -2221,6 +2314,7 @@ def s17_phased_graph(state: dict) -> str:
                 None,
             ),
             what=what,
+            project_id=project_id,
         )
         worker = Worker.adopt(session["id"])
         claim = worker.claim_next()
@@ -2429,12 +2523,13 @@ def s19_scoped_planner_graph(state: dict) -> str:
     held_task = create_task(
         "S19 planner graph parent", profile=PLANNER_PROFILE, intelligence_class=POOL_CLASS,
     )
-    planner_session = wait_for(
+    planner_session = wait_for_pool_session(
         lambda: next(
             (row for row in live_sessions_for(PLANNER_PROFILE) if not row.get("task_id")),
             None,
         ),
         what="an idle planner pool session",
+        profile_id=PLANNER_PROFILE,
     )
     planner = Worker.adopt(planner_session["id"])
     claimed = planner.claim_next()

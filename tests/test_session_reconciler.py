@@ -11,6 +11,7 @@ See docs/specs/implementation/session-runtime.md §3.6, §8, §9.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -358,6 +359,16 @@ class TestExitClassifier:
             self._row(started_at=NOW - 30), self._task(), "", now=NOW, rapid_crash_window=600
         )
         assert v.verdict is Verdict.RAPID_CRASH
+
+    def test_intentionally_stopped_pool_worker_is_a_drain_even_with_open_task(self):
+        row = replace(
+            self._row(started_at=NOW - 30), lifecycle="pool", desired_state="stopped"
+        )
+
+        verdict = classify_exit(row, self._task(), "", now=NOW)
+
+        assert verdict.verdict is Verdict.DRAINED
+        assert verdict.reason == "pool session intentionally stopped"
 
     def test_productive_death_outside_the_window(self):
         v = classify_exit(
@@ -1022,6 +1033,20 @@ class TestAbandonedPoolClaimLoop:
 
 
 class TestPoolLifecycle:
+    async def test_killed_pool_worker_requeues_task_without_quarantining_pool(
+        self, db, provider, pool_reconciler, tmp_path
+    ):
+        row = await _claimed_pool_session(db, provider, tmp_path, started_at=NOW - 30)
+        await db.update_session(row.id, desired_state="stopped")
+        provider.script_death(row.name)
+
+        await pool_reconciler.tick(now=NOW)
+
+        task = await db.get_task("t1")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+        assert pool_reconciler.test_orch.terminations == [(row.id, "drained")]
+        assert ("p1", "claude-opus") not in pool_reconciler.test_orch._pool_quarantine
+
     async def test_pool_exit_terminates_pool_and_returns_held_task_ready(
         self, db, provider, pool_reconciler, tmp_path
     ):
