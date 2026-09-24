@@ -265,6 +265,211 @@ function connect() {
 // Start immediately on module load
 connect();
 
+// --- Query-cache pass ---
+
+/** Window over which a burst of frames collapses into one roster / pool refetch. */
+const ROSTER_INVALIDATE_MS = 1_000;
+
+const coalescedInvalidations = new WeakMap<
+  QueryClient,
+  Map<string, ReturnType<typeof setTimeout>>
+>();
+
+/**
+ * Invalidate `queryKey` once at the end of a `delayMs` window opened by the
+ * first frame; frames arriving inside the window ride along. The refetch
+ * therefore always starts after the last frame of a burst, so it cannot miss
+ * the change that frame announced.
+ */
+function scheduleCoalescedInvalidation(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  delayMs: number,
+): void {
+  let pending = coalescedInvalidations.get(queryClient);
+  if (!pending) {
+    pending = new Map();
+    coalescedInvalidations.set(queryClient, pending);
+  }
+  const address = JSON.stringify(queryKey);
+  if (pending.has(address)) return;
+  pending.set(address, setTimeout(() => {
+    pending?.delete(address);
+    void queryClient.invalidateQueries({ queryKey });
+  }, delayMs));
+}
+
+/**
+ * Apply one frame to a QueryClient's cache. Runs once per frame per client —
+ * not once per mounted `useEventStream` — because several of them are always
+ * mounted (the root provider, the shell's agent-push bridge, the project
+ * graph, the activity drawer, open panes) and each repeat re-issued the same
+ * invalidations: with React Query's default `cancelRefetch` the second one
+ * restarts the first's refetch, and since the fetchers ignore the abort
+ * signal every restart was one more request to the daemon.
+ */
+function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
+  const type = event.event_type;
+
+  // The metrics sampler ticks once a second and owns no query cache of
+  // its own — the Metrics page subscribes to the raw frame directly.
+  if (type.startsWith("metrics.")) return;
+
+  if (type === "dashboard_state.changed.v1") {
+    const change = dashboardStateChange(event);
+    if (change) scheduleDashboardStateInvalidation(queryClient, change);
+    return;
+  }
+
+  if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
+    // Coalesced: one run emits a frame per step, and refetching both
+    // lists on each of them would turn a ten-step playbook into twenty
+    // requests. Let in-flight snapshots finish; polling also recovers
+    // any frame missed while disconnected.
+    if (playbookInvalidation == null) {
+      playbookInvalidation = setTimeout(() => {
+        playbookInvalidation = null;
+        queryClient.invalidateQueries({ queryKey: ["playbooks"] }, { cancelRefetch: false });
+        queryClient.invalidateQueries({ queryKey: ["playbook-runs"] }, { cancelRefetch: false });
+      }, PLAYBOOK_INVALIDATE_MS);
+    }
+  }
+
+  // Flock metadata includes assignments and direct-child activity across
+  // projects, so nearly every frame touches it — and the roster read is
+  // one of the daemon's most expensive. A burst refreshes it once.
+  if (/^(agent|session|task|message)\./.test(type)) {
+    scheduleCoalescedInvalidation(queryClient, ["agents"], ROSTER_INVALIDATE_MS);
+  }
+
+  if (type.startsWith("pool.")) {
+    queryClient.invalidateQueries({ queryKey: ["pools"] });
+    queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
+    return;
+  }
+
+  if ((type as string) === "dashboard_state.changed.v1") {
+    queryClient.invalidateQueries({ queryKey: ["dashboard-state"] });
+    return;
+  }
+
+  // Prefix-based invalidation for the wave-4 event families (gate.*,
+  // message.*, session.*, task.blocked/unblocked). Handled *before* the
+  // notify.* switch so the union type stays simple.
+  if (type === "gate.created" || type === "gate.resolved" || type === "gate.expired") {
+    queryClient.invalidateQueries({ queryKey: ["gates"] });
+    queryClient.invalidateQueries({ queryKey: ["gate"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    queryClient.invalidateQueries({ queryKey: ["explain"] });
+    return;
+  }
+  if (
+    type === "message.sent" ||
+    type === "message.delivered" ||
+    type === "message.replied"
+  ) {
+    queryClient.invalidateQueries({ queryKey: ["chat"] });
+    return;
+  }
+  if (
+    type === "session.started" ||
+    type === "session.exited" ||
+    type === "session.adopted"
+  ) {
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    const sid = (event as { session_id?: string }).session_id;
+    if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
+    // A pool's supply is its live sessions; its status row counts them.
+    scheduleCoalescedInvalidation(queryClient, ["pools"], ROSTER_INVALIDATE_MS);
+    return;
+  }
+  if (type.startsWith("task.")) {
+    const tid = (event as { task_id?: string }).task_id;
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    if (tid) {
+      queryClient.invalidateQueries({ queryKey: ["task", tid] });
+      queryClient.invalidateQueries({ queryKey: ["explain", tid] });
+    }
+    return;
+  }
+  // Provider availability (provider-failover D19/D20): a state change, a
+  // re-route batch or a half change refetches the availability read the
+  // outage banner and the Metrics cards share, and the held-task list.
+  if (type.startsWith("provider.") || (type as string) === "notify.provider_state") {
+    queryClient.invalidateQueries({ queryKey: ["providers", "availability"] });
+    queryClient.invalidateQueries({ queryKey: ["providers", "held-tasks"] });
+    return;
+  }
+  if (type === "proposal.status_changed") {
+    const pid = (event as ProposalStatusChangedEvent).proposal_id;
+    queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
+    return;
+  }
+  if (type.startsWith("review.")) {
+    const reviewId = (event as { review_id?: string }).review_id;
+    queryClient.invalidateQueries({ queryKey: ["reviews"] });
+    if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
+    return;
+  }
+
+  switch (type) {
+    case "notify.task_started":
+    case "notify.task_completed":
+    case "notify.task_failed":
+    case "notify.task_blocked":
+    case "notify.task_stopped":
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
+      scheduleCoalescedInvalidation(queryClient, ["agents"], ROSTER_INVALIDATE_MS);
+      break;
+
+    case "notify.agent_question":
+    case "notify.plan_awaiting_approval":
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
+      break;
+
+    case "notify.pr_created":
+    case "notify.merge_conflict":
+    case "notify.push_failed":
+      queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      break;
+
+    case "notify.budget_warning":
+      queryClient.invalidateQueries({ queryKey: ["system"] });
+      break;
+
+    case "notify.system_online":
+      queryClient.invalidateQueries({ queryKey: ["health"] });
+      queryClient.invalidateQueries({ queryKey: ["system"] });
+      break;
+
+    case "notify.task_message":
+      // Delivered to each hook's onTaskMessage callback, not the cache.
+      break;
+
+    case "notify.task_thread_open":
+    case "notify.task_thread_close":
+      break;
+
+    case "notify.chain_stuck":
+    case "notify.stuck_defined_task":
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      break;
+
+    case "notify.text":
+      break;
+  }
+}
+
+/** Clients whose cache follows the stream, with the number of hooks holding each. */
+const cacheClients = new Map<QueryClient, number>();
+
+eventListeners.add((event) => {
+  for (const client of cacheClients.keys()) applyEventToCache(client, event);
+});
+
 // --- React hook ---
 
 interface UseEventStreamOptions {
@@ -298,165 +503,28 @@ export function useEventStream(options: UseEventStreamOptions = {}) {
     return () => { statusListeners.delete(handleStatus); };
   }, [onStatusChange, queryClient]);
 
-  // Subscribe to events
+  // The cache follows the stream while any hook for this client is mounted.
+  useEffect(() => {
+    cacheClients.set(queryClient, (cacheClients.get(queryClient) ?? 0) + 1);
+    return () => {
+      const held = (cacheClients.get(queryClient) ?? 1) - 1;
+      if (held > 0) cacheClients.set(queryClient, held);
+      else cacheClients.delete(queryClient);
+    };
+  }, [queryClient]);
+
+  // Per-hook callbacks only; the cache pass above is shared.
   const handleEvent = useCallback(
     (event: NotifyEvent) => {
       onEvent?.(event);
-
-      const type = event.event_type;
-
-      // The metrics sampler ticks once a second and owns no query cache of
-      // its own — the Metrics page subscribes to the raw frame directly.
-      if (type.startsWith("metrics.")) return;
-
-      if (type === "dashboard_state.changed.v1") {
-        const change = dashboardStateChange(event);
-        if (change) scheduleDashboardStateInvalidation(queryClient, change);
-        return;
-      }
-
-      if (type.startsWith("notify.playbook_run_") || type.startsWith("playbook.")) {
-        // Coalesced: one run emits a frame per step, and refetching both
-        // lists on each of them would turn a ten-step playbook into twenty
-        // requests. Let in-flight snapshots finish; polling also recovers
-        // any frame missed while disconnected.
-        if (playbookInvalidation == null) {
-          playbookInvalidation = setTimeout(() => {
-            playbookInvalidation = null;
-            queryClient.invalidateQueries({ queryKey: ["playbooks"] }, { cancelRefetch: false });
-            queryClient.invalidateQueries({ queryKey: ["playbook-runs"] }, { cancelRefetch: false });
-          }, PLAYBOOK_INVALIDATE_MS);
-        }
-      }
-
-      // Flock metadata includes assignments and direct-child activity across projects.
-      if (/^(agent|session|task|message)\./.test(type)) {
-        queryClient.invalidateQueries({ queryKey: ["agents"] });
-      }
-
-      if (type.startsWith("pool.")) {
-        queryClient.invalidateQueries({ queryKey: ["pools"] });
-        queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
-        return;
-      }
-
-      if ((type as string) === "dashboard_state.changed.v1") {
-        queryClient.invalidateQueries({ queryKey: ["dashboard-state"] });
-        return;
-      }
-
-      // Prefix-based invalidation for the wave-4 event families (gate.*,
-      // message.*, session.*, task.blocked/unblocked). Handled *before* the
-      // notify.* switch so the union type stays simple.
-      if (type === "gate.created" || type === "gate.resolved" || type === "gate.expired") {
-        queryClient.invalidateQueries({ queryKey: ["gates"] });
-        queryClient.invalidateQueries({ queryKey: ["gate"] });
-        queryClient.invalidateQueries({ queryKey: ["tasks"] });
-        queryClient.invalidateQueries({ queryKey: ["explain"] });
-        return;
-      }
-      if (
-        type === "message.sent" ||
-        type === "message.delivered" ||
-        type === "message.replied"
-      ) {
-        queryClient.invalidateQueries({ queryKey: ["chat"] });
-        return;
-      }
-      if (
-        type === "session.started" ||
-        type === "session.exited" ||
-        type === "session.adopted"
-      ) {
-        queryClient.invalidateQueries({ queryKey: ["sessions"] });
-        const sid = (event as { session_id?: string }).session_id;
-        if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
-        return;
-      }
-      if (type.startsWith("task.")) {
-        const tid = (event as { task_id?: string }).task_id;
-        queryClient.invalidateQueries({ queryKey: ["tasks"] });
-        if (tid) {
-          queryClient.invalidateQueries({ queryKey: ["task", tid] });
-          queryClient.invalidateQueries({ queryKey: ["explain", tid] });
-        }
-        return;
-      }
-      // Provider availability (provider-failover D19/D20): a state change, a
-      // re-route batch or a half change refetches the availability read the
-      // outage banner and the Metrics cards share, and the held-task list.
-      if (type.startsWith("provider.") || (type as string) === "notify.provider_state") {
-        queryClient.invalidateQueries({ queryKey: ["providers", "availability"] });
-        queryClient.invalidateQueries({ queryKey: ["providers", "held-tasks"] });
-        return;
-      }
-      if (type === "proposal.status_changed") {
-        const pid = (event as ProposalStatusChangedEvent).proposal_id;
-        queryClient.invalidateQueries({ queryKey: ["proposal", pid] });
-        return;
-      }
-      if (type.startsWith("review.")) {
-        const reviewId = (event as { review_id?: string }).review_id;
-        queryClient.invalidateQueries({ queryKey: ["reviews"] });
-        if (reviewId) queryClient.invalidateQueries({ queryKey: ["review", reviewId] });
-        return;
-      }
-
-      switch (type) {
-        case "notify.task_started":
-        case "notify.task_completed":
-        case "notify.task_failed":
-        case "notify.task_blocked":
-        case "notify.task_stopped":
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
-          queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
-          queryClient.invalidateQueries({ queryKey: ["agents"] });
-          break;
-
-        case "notify.agent_question":
-        case "notify.plan_awaiting_approval":
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
-          queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
-          break;
-
-        case "notify.pr_created":
-        case "notify.merge_conflict":
-        case "notify.push_failed":
-          queryClient.invalidateQueries({ queryKey: ["task", event.task.id] });
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
-          break;
-
-        case "notify.budget_warning":
-          queryClient.invalidateQueries({ queryKey: ["system"] });
-          break;
-
-        case "notify.system_online":
-          queryClient.invalidateQueries({ queryKey: ["health"] });
-          queryClient.invalidateQueries({ queryKey: ["system"] });
-          break;
-
-        case "notify.task_message":
-          onTaskMessage?.(event as TaskMessageEvent);
-          break;
-
-        case "notify.task_thread_open":
-        case "notify.task_thread_close":
-          break;
-
-        case "notify.chain_stuck":
-        case "notify.stuck_defined_task":
-          queryClient.invalidateQueries({ queryKey: ["tasks"] });
-          break;
-
-        case "notify.text":
-          break;
-      }
+      if (event.event_type === "notify.task_message") onTaskMessage?.(event as TaskMessageEvent);
     },
-    [queryClient, onTaskMessage, onEvent],
+    [onTaskMessage, onEvent],
   );
 
   useEffect(() => {
+    if (!onEvent && !onTaskMessage) return;
     eventListeners.add(handleEvent);
     return () => { eventListeners.delete(handleEvent); };
-  }, [handleEvent]);
+  }, [handleEvent, onEvent, onTaskMessage]);
 }

@@ -41,7 +41,8 @@ export function Palette() {
 
   const actions = useActions();
   const { data: projects } = useProjects();
-  const { data: tasks } = useActiveTasksAllProjects();
+  // Only the "#" task search reads this; a closed palette used to poll it.
+  const { data: tasks } = useActiveTasksAllProjects({ enabled: open });
 
   const prefix = q[0];
   const body = q.slice(prefix === ">" || prefix === "#" || prefix === "@" ? 1 : 0).trim().toLowerCase();

@@ -17,6 +17,8 @@ under-count that announces itself is worth more than a plausible lie.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any
 
 from src.models import AgentState, SessionRecord, Task, TaskStatus
 
@@ -26,6 +28,77 @@ _ACTIVE_TASKS = {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING
 _NO_EVENTS: dict[str, int] = {"starts": 0, "stops": 0}
 
 
+def _is_busy_on(agent, task: Task) -> bool:
+    return bool(
+        agent is not None and agent.state == AgentState.BUSY
+        and agent.current_task_id == task.id
+    )
+
+
+@dataclass
+class SubagentIndex:
+    """The part of the fold that does not depend on which agent is asked.
+
+    Who owns each session and which (task, worker) pairs are executing are
+    facts about the whole flock. Built once, the flock view answers every
+    agent from it instead of re-deriving it from every session per agent —
+    at ~100 agents and a few thousand sessions that repetition, plus one
+    agent read per call, was most of what made the roster the daemon's
+    slowest read.
+    """
+
+    db: Any
+    task_by_id: dict[str, Task]
+    sessions_by_owner: dict[str | None, list[SessionRecord]]
+    active_holders: set[tuple[str, str | None]]
+    agents: dict[str, Any] = field(default_factory=dict)
+
+    async def get_agent(self, agent_id: str):
+        if agent_id not in self.agents:
+            self.agents[agent_id] = await self.db.get_agent(agent_id)
+        return self.agents[agent_id]
+
+
+async def build_subagent_index(
+    db,
+    sessions: Sequence[SessionRecord],
+    tasks: Sequence[Task],
+    *,
+    agents: Mapping[str, Any] | None = None,
+) -> SubagentIndex:
+    """Index *sessions* by owner for :func:`subagent_counts`.
+
+    *agents* seeds the agent lookup (the flock view already listed them);
+    an id it does not hold — a deleted agent, say — is read from *db*.
+    """
+    index = SubagentIndex(
+        db=db,
+        task_by_id={task.id: task for task in tasks},
+        sessions_by_owner={},
+        active_holders=set(),
+        agents=dict(agents or {}),
+    )
+    for session in sessions:
+        owner = session.agent_id
+        if owner is None and session.state in _ACTIVE_SESSIONS:
+            # An old unlinked session cannot inherit today's task assignment.
+            # Recover only an active execution whose worker pointer agrees;
+            # a recorded epoch from an earlier claim cannot establish ownership.
+            task = index.task_by_id.get(session.task_id)
+            if (
+                task is not None and task.status in _ACTIVE_TASKS
+                and task.assigned_agent_id
+                and (session.last_claim_epoch is None or session.last_claim_epoch == task.claim_epoch)
+            ):
+                worker = await index.get_agent(task.assigned_agent_id)
+                if _is_busy_on(worker, task):
+                    owner = task.assigned_agent_id
+        index.sessions_by_owner.setdefault(owner, []).append(session)
+        if session.state in _ACTIVE_SESSIONS and session.task_id:
+            index.active_holders.add((session.task_id, owner))
+    return index
+
+
 async def subagent_counts(
     db,
     agent_id: str,
@@ -33,6 +106,7 @@ async def subagent_counts(
     tasks: Sequence[Task],
     *,
     native_by_session: Mapping[str, Mapping[str, int]] | None = None,
+    index: SubagentIndex | None = None,
 ) -> dict:
     """Count this agent's active children across all of its sessions.
 
@@ -44,46 +118,19 @@ async def subagent_counts(
     *native_by_session* is ``{session_id: {"starts": n, "stops": n}}``, the
     fold of ``subagent_events``.  The flock view computes it once for every
     session and passes it in; omitting it costs one extra query per call.
+
+    *index* is :func:`build_subagent_index` over the same *sessions* and
+    *tasks*; the flock view builds it once for every agent. Omitted, it is
+    built here.
     """
-    task_by_id = {task.id: task for task in tasks}
+    if index is None:
+        index = await build_subagent_index(db, sessions, tasks)
+    task_by_id = index.task_by_id
+    get_agent = index.get_agent
 
-    agents = {}
-
-    async def get_agent(worker_id: str):
-        if worker_id not in agents:
-            agents[worker_id] = await db.get_agent(worker_id)
-        return agents[worker_id]
-
-    def is_busy_on(agent, task: Task) -> bool:
-        return bool(
-            agent is not None and agent.state == AgentState.BUSY
-            and agent.current_task_id == task.id
-        )
-
-    owners = {}
-    for session in sessions:
-        owner = session.agent_id
-        if owner is None and session.state in _ACTIVE_SESSIONS:
-            # An old unlinked session cannot inherit today's task assignment.
-            # Recover only an active execution whose worker pointer agrees;
-            # a recorded epoch from an earlier claim cannot establish ownership.
-            task = task_by_id.get(session.task_id)
-            if (
-                task is not None and task.status in _ACTIVE_TASKS
-                and task.assigned_agent_id
-                and (session.last_claim_epoch is None or session.last_claim_epoch == task.claim_epoch)
-            ):
-                worker = await get_agent(task.assigned_agent_id)
-                if is_busy_on(worker, task):
-                    owner = task.assigned_agent_id
-        owners[session.id] = owner
-
-    owned = [session for session in sessions if owners[session.id] == agent_id]
+    owned = index.sessions_by_owner.get(agent_id, [])
     parent_session_ids = {session.id for session in owned}
-    active_holders = {
-        (session.task_id, owners[session.id])
-        for session in sessions if session.state in _ACTIVE_SESSIONS and session.task_id
-    }
+    active_holders = index.active_holders
 
     children = set()
     for task in tasks:
@@ -98,7 +145,7 @@ async def subagent_counts(
         worker = await get_agent(worker_id)
         if worker is None or getattr(worker, "role", "worker") != "worker":
             continue
-        if (task.id, worker_id) in active_holders or is_busy_on(worker, task):
+        if (task.id, worker_id) in active_holders or _is_busy_on(worker, task):
             children.add(worker_id)
 
     if native_by_session is None:
@@ -111,7 +158,7 @@ async def subagent_counts(
     live = [session for session in owned if session.state in _ACTIVE_SESSIONS]
     running = bool(live) or bool(
         parent_task is not None and parent_task.status in _ACTIVE_TASKS
-        and parent_task.assigned_agent_id == agent_id and is_busy_on(parent, parent_task)
+        and parent_task.assigned_agent_id == agent_id and _is_busy_on(parent, parent_task)
     )
 
     def events(session_id: str) -> Mapping[str, int]:

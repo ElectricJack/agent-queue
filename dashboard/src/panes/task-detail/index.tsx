@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ClipboardEvent, DragEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -37,6 +38,8 @@ import { useShellPaneStore } from "../store";
 import type { PaneViewProps } from "../types";
 import type { TaskDetailArgs } from "./manifest";
 import { useReviews } from "../../api/reviews";
+import { taskPreview } from "./preview";
+import { prefetchTaskPane } from "./prefetch";
 
 /** One row of the deliverables checklist, verdict included. */
 type DeliverableRow = { id: string; kind: string; target: string; met: boolean; reason: string };
@@ -79,7 +82,9 @@ export default function TaskDetailPane({
   setShortcuts,
 }: PaneViewProps<TaskDetailArgs>) {
   const navigate = useNavigate();
-  const { data: task, isLoading, isError } = useTask(args.taskId);
+  const queryClient = useQueryClient();
+  const { data: task, isError } = useTask(args.taskId);
+  useEffect(() => prefetchTaskPane(queryClient, args.taskId), [queryClient, args.taskId]);
   const { data: taskReviews } = useReviews({ taskId: args.taskId });
   const { data: gates } = useGates({
     projectId: task?.project_id,
@@ -117,6 +122,11 @@ export default function TaskDetailPane({
   const historyRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const loose = task as TaskWithLooseFields | undefined;
+  // Until the full read lands, the header shows what the row or card showed.
+  const preview = task ? null : taskPreview(args.taskId);
+  const status = task?.status ?? preview?.status;
+  const projectId = task?.project_id ?? preview?.project_id;
+  const priority = task ? task.priority : preview?.priority;
 
   const taskGates = gates ?? [];
   const waitingReviews = ((taskReviews?.reviews ?? []) as RelatedReview[])
@@ -229,14 +239,14 @@ export default function TaskDetailPane({
       <header className="min-w-0">
         <p className="truncate font-mono text-xs text-gray-500">{args.taskId}</p>
         <h2 className="mt-0.5 truncate text-lg font-semibold text-gray-100">
-          {isLoading && !task ? "Loading…" : (task?.title ?? "Loading…")}
+          {task?.title ?? preview?.title ?? "Loading…"}
         </h2>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          {task?.status && <StatusBadge status={task.status} />}
-          {task?.project_id && <span className="text-gray-400">{task.project_id}</span>}
-          {task?.priority != null && (
+          {status && <StatusBadge status={status} />}
+          {projectId && <span className="text-gray-400">{projectId}</span>}
+          {priority != null && (
             <span className="rounded bg-gray-800 px-2 py-0.5 text-gray-300">
-              P{task.priority}
+              P{priority}
             </span>
           )}
           {task?.task_type && (

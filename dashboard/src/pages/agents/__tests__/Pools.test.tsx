@@ -714,6 +714,13 @@ describe("enabling and disabling a pool from the directory", () => {
 
   it("disables an idle pool and keeps its row listed for re-enabling", async () => {
     api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool(idle)] } });
+    // The daemon persists the change before answering, so every later status
+    // read reports it.
+    const setEnabled = api.poolSetEnabled.getMockImplementation();
+    api.poolSetEnabled.mockImplementation(async (...args: unknown[]) => {
+      api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ ...idle, enabled: false })] } });
+      return setEnabled ? setEnabled(...(args as [never])) : { data: { success: true, profile_id: "worker-standard", enabled: false, warnings: [] } };
+    });
     renderAgents("/agents");
     const directory = within(await screen.findByRole("region", { name: "Worker pools" }, SLOW));
 
@@ -723,8 +730,8 @@ describe("enabling and disabling a pool from the directory", () => {
     expect(api.poolSetEnabled.mock.calls[0]![0].body).toEqual({
       profile_id: "worker-standard", enabled: false,
     });
-    // The next poll reports the persisted state; the row stays in the list.
-    api.poolStatus.mockResolvedValue({ data: { success: true, pools: [pool({ ...idle, enabled: false })] } });
+    // The mutation's own refresh (not a later poll) reports the persisted
+    // state; the row stays in the list.
     expect(await directory.findByRole("switch", { name: "Enable worker-standard pool" }, SLOW)).toBeInTheDocument();
     expect(directory.getByRole("button", { name: "Open pool worker-standard" })).toBeInTheDocument();
     expect(directory.getByText(/no new work is claimed/i)).toBeInTheDocument();

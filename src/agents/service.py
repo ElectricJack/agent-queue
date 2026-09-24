@@ -25,7 +25,7 @@ def configured_settings(agent) -> dict:
 
 async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> list[dict]:
     """Return durable identities; a project filter means current assignment."""
-    from src.agents.subagents import subagent_counts
+    from src.agents.subagents import build_subagent_index, subagent_counts
 
     db = orchestrator.db
     agents = await db.list_agents()
@@ -47,17 +47,29 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
     lease_ttl = getattr(getattr(config, "sessions", None), "lease_ttl_seconds", 0) or 0
     registry = getattr(orchestrator, "harness_registry", None)
     builder = getattr(orchestrator, "session_spec_builder", None)
+    # Each agent's candidate sessions come from these two maps rather than a
+    # scan of every session per agent (agents x sessions was ~350k steps per
+    # read). Positions keep the candidates in list order, which the stable
+    # sort below relies on to break ties exactly as before.
+    by_agent: dict[str, list[tuple[int, object]]] = {}
+    unlinked_by_task: dict[str, list[tuple[int, object]]] = {}
+    for position, session in enumerate(sessions):
+        if session.agent_id:
+            by_agent.setdefault(session.agent_id, []).append((position, session))
+        elif session.task_id:
+            unlinked_by_task.setdefault(session.task_id, []).append((position, session))
+    subagent_index = await build_subagent_index(
+        db, sessions, tasks, agents={agent.id: agent for agent in agents},
+    )
     rows = []
     for agent in agents:
-        owned = [
-            session for session in sessions
-            if session.agent_id == agent.id or (
-                not session.agent_id and agent.current_task_id
-                and session.task_id == agent.current_task_id
-            )
-        ]
+        candidates = list(by_agent.get(agent.id, ()))
+        if agent.current_task_id:
+            candidates += unlinked_by_task.get(agent.current_task_id, ())
+            candidates.sort(key=lambda entry: entry[0])
+        owned = [session for _, session in candidates]
 
-        def is_current_session(candidate) -> bool:
+        def is_current_session(candidate, agent=agent) -> bool:
             if candidate.state not in _ACTIVE_SESSIONS:
                 return False
             if not candidate.task_id:
@@ -155,7 +167,8 @@ async def list_agent_flock(orchestrator, *, project_id: str | None = None) -> li
                     for key in ("id", "question", "state", "requires_human", "created_at")
                 }
         count = await subagent_counts(
-            db, agent.id, sessions, tasks, native_by_session=native_by_session
+            db, agent.id, sessions, tasks,
+            native_by_session=native_by_session, index=subagent_index,
         )
         last_activity = session_last_activity(live)
         state = agent.state.value.lower()

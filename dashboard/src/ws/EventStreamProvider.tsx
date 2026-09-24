@@ -10,6 +10,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -25,31 +26,30 @@ export interface EventEntry {
   event: NotifyEvent;
 }
 
-interface EventStreamContextValue {
-  status: ConnectionStatus;
+interface EventBufferValue {
   events: EventEntry[];
   clearEvents: () => void;
-  onTaskMessage: (handler: (event: TaskMessageEvent) => void) => () => void;
 }
 
-const EventStreamContext = createContext<EventStreamContextValue>({
-  status: "disconnected",
-  events: [],
-  clearEvents: () => {},
-  onTaskMessage: () => () => {},
-});
+// Three contexts, because they change at very different rates: the buffer on
+// every frame, the status on (re)connect, the subscription never. One shared
+// value re-rendered every status reader (the Metrics page) on every frame.
+const StatusContext = createContext<ConnectionStatus>("disconnected");
+const BufferContext = createContext<EventBufferValue>({ events: [], clearEvents: () => {} });
+const TaskMessageContext = createContext<
+  (handler: (event: TaskMessageEvent) => void) => () => void
+>(() => () => {});
 
 export function useEventStreamStatus(): ConnectionStatus {
-  return useContext(EventStreamContext).status;
+  return useContext(StatusContext);
 }
 
 export function useEventBuffer() {
-  const ctx = useContext(EventStreamContext);
-  return { events: ctx.events, clearEvents: ctx.clearEvents };
+  return useContext(BufferContext);
 }
 
 export function useTaskMessageSubscription() {
-  return useContext(EventStreamContext).onTaskMessage;
+  return useContext(TaskMessageContext);
 }
 
 export function EventStreamProvider({ children }: { children: ReactNode }) {
@@ -103,9 +103,13 @@ export function EventStreamProvider({ children }: { children: ReactNode }) {
     onStatusChange: setStatus,
   });
 
+  const buffer = useMemo(() => ({ events, clearEvents }), [events, clearEvents]);
+
   return (
-    <EventStreamContext.Provider value={{ status, events, clearEvents, onTaskMessage }}>
-      {children}
-    </EventStreamContext.Provider>
+    <StatusContext.Provider value={status}>
+      <TaskMessageContext.Provider value={onTaskMessage}>
+        <BufferContext.Provider value={buffer}>{children}</BufferContext.Provider>
+      </TaskMessageContext.Provider>
+    </StatusContext.Provider>
   );
 }

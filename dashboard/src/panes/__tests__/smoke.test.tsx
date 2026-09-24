@@ -11,21 +11,24 @@ vi.hoisted(() => {
 });
 afterAll(() => vi.unstubAllGlobals());
 
+import { Suspense } from "react";
 import { render, screen } from "@testing-library/react";
 import { PANE_REGISTRY } from "../registry";
 
-test("stub-smoke view is registered and renders", () => {
+test("stub-smoke view is registered and renders", async () => {
   const entry = PANE_REGISTRY["__stub-smoke"];
   expect(entry).toBeDefined();
   const { Component } = entry!;
   render(
-    <Component
-      args={{ text: "hello pane" }}
-      close={() => {}}
-      setArgs={() => {}}
-      setToolbar={() => {}}
-      setShortcuts={() => {}}
-    />,
+    <Suspense fallback={null}>
+      <Component
+        args={{ text: "hello pane" }}
+        close={() => {}}
+        setArgs={() => {}}
+        setToolbar={() => {}}
+        setShortcuts={() => {}}
+      />
+    </Suspense>,
   );
-  expect(screen.getByTestId("stub-smoke")).toHaveTextContent("hello pane");
+  expect(await screen.findByTestId("stub-smoke")).toHaveTextContent("hello pane");
 });
