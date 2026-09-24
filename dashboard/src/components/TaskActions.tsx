@@ -93,9 +93,10 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
     deleteTask.isPending ||
     provideInput.isPending;
 
-  // Each integration removal refusal includes its actionable remedy from the
-  // server (settle an operation, release a resource, deliver, or archive).
-  const historyRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
+  // An integration refusal is not worth another attempt: history is a permanent
+  // record (explained in plain words), and any other hold names the command that
+  // clears it. Either way the dialog says so instead of offering the button.
+  const integrationRefusal = deleteTask.isError ? integrationRemovalRefusal(deleteTask.error) : null;
 
   const s = task.status?.toUpperCase() ?? "";
 
@@ -283,17 +284,17 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
           <p className="text-sm text-gray-300">
             Delete <strong>{task.title}</strong> and any descendant tasks? This cannot be undone.
           </p>
-          {branchPrompt && !historyRefusal && (
+          {branchPrompt && !integrationRefusal && (
             <BranchDiscardPrompt
               branches={branchPrompt}
               choice={branchChoice}
               onChoose={setBranchChoice}
             />
           )}
-          {historyRefusal && (
-            <p role="alert" className="text-sm text-amber-200">{historyRefusal}</p>
+          {integrationRefusal && (
+            <p role="alert" className="text-sm text-amber-200">{integrationRefusal}</p>
           )}
-          {deleteTask.isError && !branchPrompt && !historyRefusal && (
+          {deleteTask.isError && !branchPrompt && !integrationRefusal && (
             <p role="alert" className="text-sm text-red-300">
               Could not delete task. {deleteTask.error.message}
             </p>
@@ -307,7 +308,7 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
             </button>
             <button
               onClick={handleSubmitModal}
-              disabled={isPending || !!historyRefusal}
+              disabled={isPending || !!integrationRefusal}
               className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
             >
               {isPending
