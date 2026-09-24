@@ -1,14 +1,14 @@
 """Integration tests for the PostgreSQL database adapter.
 
-These tests require a running PostgreSQL instance.  They are skipped
-automatically when the ``POSTGRES_TEST_DSN`` environment variable is
-not set.
+These tests require the separate test PostgreSQL service and a
+``POSTGRES_TEST_DSN`` environment variable. Collection fails early if the
+variable is absent.
 
 To run locally::
 
-    docker compose up -d
-    POSTGRES_TEST_DSN=postgresql://agent_queue:agent_queue_dev@localhost:5533/agent_queue \
-        pytest tests/test_database_postgresql.py -v
+    docker compose up -d postgres-test
+    POSTGRES_TEST_DSN=postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres \
+        aq test tests/test_database_postgresql.py
 """
 
 from __future__ import annotations
