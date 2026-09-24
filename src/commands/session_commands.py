@@ -174,13 +174,26 @@ class SessionCommandsMixin:
 
     async def _cmd_session_list(self, args: dict) -> dict:
         """List sessions with lifecycle, state, task, harness, activity."""
+        limit = args.get("limit")
+        offset = args.get("offset")
+        if limit is not None and (type(limit) is not int or not 1 <= limit <= 500):
+            return {"error": "limit must be an integer from 1 to 500"}
+        if offset is None:
+            offset = 0
+        if type(offset) is not int or offset < 0:
+            return {"error": "offset must be a non-negative integer"}
         sessions = await self.db.list_sessions(
             state=args.get("state"),
             desired_state=args.get("desired_state"),
             lifecycle=args.get("lifecycle"),
             project_id=args.get("project_id") or self._active_project_id,
             live_only=bool(args.get("live_only")),
+            limit=limit + 1 if limit is not None else None,
+            offset=offset,
         )
+        has_more = limit is not None and len(sessions) > limit
+        if has_more:
+            sessions = sessions[:limit]
         now = time.time()
         ttl = self.config.sessions.lease_ttl_seconds
         rows = []
@@ -193,7 +206,7 @@ class SessionCommandsMixin:
             row["idle_seconds"] = max(0.0, now - last)
             row["stalled"] = bool(s.state == "running" and ttl > 0 and (now - last) > ttl)
             rows.append(row)
-        return {"success": True, "sessions": rows, "count": len(rows)}
+        return {"success": True, "sessions": rows, "count": len(rows), "has_more": has_more}
 
     async def _cmd_session_show(self, args: dict) -> dict:
         """Full detail for one session."""

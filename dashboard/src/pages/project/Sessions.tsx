@@ -1,18 +1,22 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useSessions } from "../../api/hooks";
+import { SessionPager } from "../../components/SessionPager";
+import { useSessionPage } from "../../hooks/useSessionPage";
 
 const COLUMNS = 5;
 
 export default function ProjectSessions() {
   const { projectId = "" } = useParams();
   const location = useLocation();
-  const { data: sessions = [], isLoading } = useSessions(projectId);
+  const { page, setPage } = useSessionPage();
+  const { data, isLoading, error } = useSessions(projectId, page);
+  const sessions = data?.sessions ?? [];
   const scrollRef = useRef<HTMLDivElement>(null);
-  // A project's session history runs to thousands of rows, and each poll
-  // changes every row's idle time. Rendering all of them made every refresh
-  // a long task; only the rows in view (plus overscan) are mounted.
+  // Each poll changes every row's idle time, so rendering a whole page of
+  // session history made every refresh a long task; only the rows in view
+  // (plus overscan) are mounted.
   const virtualizer = useVirtualizer({
     count: sessions.length,
     getScrollElement: () => scrollRef.current,
@@ -25,9 +29,15 @@ export default function ProjectSessions() {
     ? virtualizer.getTotalSize() - items[items.length - 1]!.end
     : 0;
 
+  // The scroll container outlives a page change; start each page at its top.
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [page]);
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
       {isLoading && <p className="text-sm text-gray-400">Loading…</p>}
+      {error && <p className="text-sm text-red-400">Failed to load sessions: {error.message}</p>}
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto rounded border border-gray-800">
         <table className="w-full text-sm">
           <thead className="sticky top-0 z-10 bg-gray-900 text-left text-xs uppercase tracking-wider text-gray-500">
@@ -72,16 +82,17 @@ export default function ProjectSessions() {
               );
             })}
             {padBottom > 0 && <tr aria-hidden="true"><td colSpan={COLUMNS} style={{ height: padBottom, padding: 0, border: 0 }} /></tr>}
-            {sessions.length === 0 && !isLoading && (
+            {sessions.length === 0 && !isLoading && !error && (
               <tr>
                 <td colSpan={COLUMNS} className="px-3 py-6 text-center text-gray-500">
-                  No sessions for this project.
+                  {page === 0 ? "No sessions for this project." : "No sessions on this page."}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+      <SessionPager page={page} setPage={setPage} hasMore={data?.hasMore ?? false} loading={isLoading} />
     </div>
   );
 }

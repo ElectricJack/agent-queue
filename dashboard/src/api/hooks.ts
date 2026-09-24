@@ -1258,14 +1258,23 @@ export function useTaskDeps(taskId: string) {
 
 export type { SessionSummary, ListSessionsResponse, SessionLogsResponse };
 
-export function useSessions(projectId?: string) {
+export const SESSIONS_PAGE_SIZE = 100;
+
+export function useSessions(projectId?: string, page = 0) {
   return useQuery({
-    queryKey: ["sessions", projectId ?? "all"],
+    queryKey: ["sessions", projectId ?? "all", page],
     queryFn: async () => {
-      const body: Record<string, unknown> = {};
+      const body: Record<string, unknown> = {
+        limit: SESSIONS_PAGE_SIZE,
+        offset: page * SESSIONS_PAGE_SIZE,
+      };
       if (projectId) body.project_id = projectId;
       const { data } = await sessionList({ body, throwOnError: true });
-      return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
+      const result = data as ListSessionsResponse;
+      return {
+        sessions: (result.sessions ?? []) as SessionSummary[],
+        hasMore: result.has_more,
+      };
     },
     refetchInterval: 15_000,
   });
