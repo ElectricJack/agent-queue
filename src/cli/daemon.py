@@ -217,8 +217,29 @@ def _ensure_docker_postgres() -> bool:
     if not _is_container_running("aq-postgres"):
         console.print("[dim]Starting PostgreSQL container...[/]")
         try:
+            inspection = subprocess.run(
+                ["docker", "container", "inspect", "aq-postgres"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if inspection.returncode == 0:
+                command = ["docker", "start", "aq-postgres"]
+            elif any(
+                f"no such {kind}: aq-postgres" in inspection.stderr.lower()
+                for kind in ("container", "object")
+            ):
+                command = [
+                    "docker", "compose", "-f", compose_file,
+                    "up", "-d", "--no-recreate", "postgres",
+                ]
+            else:
+                console.print("[bold red]Error:[/] Could not inspect PostgreSQL container")
+                if inspection.stderr:
+                    console.print(f"[dim]{inspection.stderr.strip()}[/]")
+                return False
             result = subprocess.run(
-                ["docker", "compose", "-f", compose_file, "up", "-d", "postgres"],
+                command,
                 capture_output=True,
                 text=True,
                 timeout=60,
