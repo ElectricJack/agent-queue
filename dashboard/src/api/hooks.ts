@@ -1368,18 +1368,20 @@ export function useSessionLogs(sessionId: string, limit = 200) {
 export type { GateSummary, GateListResponse };
 
 export function useGates(
-  opts: { projectId?: string; status?: string; gateType?: string; enabled?: boolean } = {},
+  opts: { projectId?: string; taskId?: string; status?: string; gateType?: string; enabled?: boolean } = {},
 ) {
   return useQuery({
     queryKey: [
       "gates",
       opts.projectId ?? "all",
+      opts.taskId ?? "all",
       opts.status ?? "any",
       opts.gateType ?? "any",
     ],
     queryFn: async () => {
       const body: Record<string, unknown> = {};
       if (opts.projectId) body.project_id = opts.projectId;
+      if (opts.taskId) body.task_id = opts.taskId;
       if (opts.status) body.status = opts.status;
       if (opts.gateType) body.gate_type = opts.gateType;
       const { data } = await gateList({ body, throwOnError: true });

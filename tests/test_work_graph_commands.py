@@ -389,6 +389,9 @@ class TestGateCommands:
         gid = create["gate_id"]
         listed = await handler._cmd_gate_list({"project_id": PROJECT_ID})
         assert any(g["id"] == gid for g in listed["gates"])
+        filtered = await handler._cmd_gate_list({"project_id": PROJECT_ID, "task_id": "t1"})
+        assert [g["id"] for g in filtered["gates"]] == [gid]
+        assert (await handler._cmd_gate_list({"project_id": PROJECT_ID, "task_id": "missing"}))["gates"] == []
         shown = await handler._cmd_gate_show({"gate_id": gid})
         assert shown["success"] is True
         assert shown["gate"]["id"] == gid
