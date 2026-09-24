@@ -289,12 +289,15 @@ hours is better as facts).
 
 ## 7. Dependencies and sequencing
 
-1. **Shared primitive with [agent sleep/wake](2026-09-24-agent-sleep-wake.md):** "deliver a
-   message to an agent without waking it; wake by policy (schedule, threshold, explicit)". C
-   does not strictly need it (the window *is* the batching), but the per-completion hook for
-   voice drops and interactive use does, and the narrative brief should be expressible as
-   "wake now with these accumulated items" once it exists. Agree the message-level flag
-   (`wake: false`/`wake_policy`) there, not here.
+1. **Shared primitive with [agent sleep/wake](2026-09-24-agent-sleep-wake.md):** that spec's
+   durable wait (`owner_kind = supervisor`, `kind` ∈ timer/task/event, `wake_policy` ∈
+   nudge/resume/fresh/`notify_only`, satisfied by a `WaitReconciler`) lists this feature as a
+   consumer with an hourly `timer` wait. Reconcile the two framings: under Option C the digest
+   window *already is* the hourly timer and the batch, so the narrative needs no wait of its
+   own; the `digest_narrative_request` message is simply the `notify_only` delivery. The
+   per-completion subscription in that table is what voice drops and interactive use need, and
+   it should stay "record without waking" so it cannot turn into a wake per completion. Settle
+   the vocabulary in the sleep/wake spec, not here.
 2. **[Wake context compaction](2026-09-24-wake-context-compaction.md)** before enabling C by
    default: hourly resumed wakes are the heaviest steady consumer of supervisor context.
 3. **Build order:** (a) `digest.window_ready` event + `due_at` hold + payload choice in
