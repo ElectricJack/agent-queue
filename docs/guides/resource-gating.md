@@ -122,6 +122,7 @@ aq test tests/ -k claim                  # a slice of the suite
 aq test --aq-status                      # who is holding the slots
 aq test --aq-no-wait tests/              # fail instead of queueing
 aq test --aq-dry-run tests/              # print the pytest command
+aq test --aq-reap-orphans [--aq-apply]   # free slots held by dead sessions
 aq test --aq-help                        # this help (-h belongs to pytest)
 ```
 
@@ -299,6 +300,56 @@ It also works with the daemon down, which matters because `aq test` runs
 inside worktrees during restarts, and a test wrapper that fails closed when
 the daemon is unavailable would simply be routed around.
 
+### Orphaned runs
+
+`flock` releases a *dead* holder for free. It cannot release a *live* run
+nobody owns any more. On 2026-09-24 three stopped tasks' full-suite runs
+outlived their sessions and held three of the box's four slots for well over
+an hour. Each had been started from a detached Bash-tool shell. Harness Bash
+calls run under `setsid`, so when the drained harness exited, the shell was
+reparented to init. After that, nothing that stopped the session could reach
+it.
+
+Two things now close that gap.
+
+- **Stopping a session sweeps its leftovers.** Every process a session spawns
+  inherits its `AQ_INSTANCE_TOKEN`. The tmux and subprocess providers' `stop`
+  still kill the pane's process tree. They then also terminate every process
+  still carrying the token, plus its descendants: `SIGTERM`, then `SIGKILL`
+  after the grace period (`proctable.kill_marked`). The sweep runs even when
+  the tmux session is already gone. It never signals the caller, the caller's
+  ancestors, or a tmux server. Tokens are minted per launch, so a same-named
+  successor is never matched. The drain, stall-restart, task-close,
+  pool-termination and `aq session kill` paths all end in `stop`. A process
+  meant to outlive a session must be launched with the session markers
+  stripped, as `aq start` does for the daemon and the dashboard server.
+- **Slot holders are attributable, and orphans are reapable.** The slot record
+  names the session (`session_id`), the task (read from `.aq/claim.json` for a
+  pool worker, whose environment has no `AQ_TASK_ID`), the pid and start time
+  of the session's harness (`session_root`), and the `AQ_TEST_RUN_ID` its
+  pytest children inherit. A held slot is one of three kinds:
+  - `live`: the harness is still running. **Never reaped**, whatever its
+    task's status. Stop the session instead.
+  - `orphaned`: the harness has exited. A record written before attribution
+    existed counts as orphaned only when every session-marked process keeping
+    the lock has been reparented to init.
+  - `unattributed`: no session at all, such as a human's shell or CI. Reported,
+    never reaped.
+
+```bash
+aq test --aq-status                          # Session column: live / orphaned / unattributed
+aq test --aq-reap-orphans                    # dry run: what would be terminated
+aq test --aq-reap-orphans --aq-apply         # terminate them; exit 1 if a slot stays held
+aq doctor --check resources.orphaned_test_runs [--fix]
+```
+
+A reap terminates only processes that belong to the dead run: those that
+keep the slot file open and carry the run's id, the dead session's token or
+the recorded wrapper pid, plus every process carrying the run's
+`AQ_TEST_RUN_ID` and their descendants. A live session's waiter probing the
+same slot file is left alone. The verdict is re-derived immediately before
+any signal, and the lock is re-tested afterwards.
+
 ---
 
 ## Layer 3 — cgroup v2 scopes (optional)
@@ -375,6 +426,7 @@ session, nice +10, 2 global test slot(s)
 ```bash
 aq doctor --check resources.load
 aq doctor --check resources.test_pressure
+aq doctor --check resources.orphaned_test_runs
 aq test --aq-status
 ```
 
@@ -383,6 +435,7 @@ aq test --aq-status
 | `resources.load` | 5-min load > `cores × load_warn_ratio` | the load figures plus the pytest processes per session |
 | `resources.test_pressure` | more than `max_pytest_processes` pytest processes box-wide | the count and which sessions own them |
 | `resources.cgroups` | always | whether hard limits are actually in force |
+| `resources.orphaned_test_runs` | a test slot is held by a run whose session is gone (fixable) | each held slot's verdict; `--fix` terminates the orphans ([Orphaned runs](#orphaned-runs)) |
 
 The load check reads the **5-minute** average on purpose. A 1-minute spike
 is a build starting; five minutes above one runnable task per core is a box
@@ -407,5 +460,6 @@ Unit coverage:
 
 ```bash
 aq test tests/test_resource_limits.py tests/test_resource_semaphore.py \
-        tests/test_resource_doctor.py tests/test_cli_test_runner.py
+        tests/test_resource_doctor.py tests/test_cli_test_runner.py \
+        tests/test_resource_test_runs.py
 ```

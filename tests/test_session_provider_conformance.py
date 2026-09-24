@@ -23,6 +23,7 @@ See docs/specs/implementation/session-runtime.md §8.
 from __future__ import annotations
 
 import sys
+import uuid
 from dataclasses import dataclass, field
 
 import pytest
@@ -105,7 +106,19 @@ def provider(case, tmp_path):
     return case.factory(config=_Cfg())
 
 
+#: Stopping a session sweeps every process still carrying its instance
+#: token (``proctable.kill_marked``), box-wide.  A literal token shared with
+#: another test file's live session — run concurrently by another xdist
+#: worker — would be swept with it, so every live token is unique per run.
+_RUN = uuid.uuid4().hex[:8]
+
+
+def _tok(base: str) -> str:
+    return f"{base}-{_RUN}"
+
+
 def _spec(case, tmp_path, name="s-t1", token="tok-1") -> SessionSpec:
+    token = _tok(token)
     return SessionSpec(
         session_name=name,
         work_dir=str(tmp_path / "wd"),
@@ -181,7 +194,7 @@ class TestLifecycle:
         try:
             assert handle.name == "s-t1"
             assert handle.provider == provider.name
-            assert handle.instance_token == "tok-1"
+            assert handle.instance_token == _tok("tok-1")
         finally:
             await provider.stop(handle)
 
