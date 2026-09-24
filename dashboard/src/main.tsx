@@ -42,9 +42,14 @@ createRoot(document.getElementById("root")!).render(
 
 // Pane views and routes are code-split. Fetch the chunks the next click most
 // likely needs — the task pane any task opens, and the project workspace's
-// graph and task list — once the first screen is up, not on that click.
-const whenIdle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 1500));
-whenIdle(() => {
+// graph and task list — once the first screen is up, not on that click. The
+// main thread is idle while the first screen waits on the daemon, so an idle
+// callback alone would run then and put the chunks' download and evaluation
+// in the first screen's path; wait a moment past load first.
+const whenIdle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 0));
+const preloadNextViews = () => window.setTimeout(() => whenIdle(() => {
   void PANE_REGISTRY["task-detail"]?.preload?.();
   preloadWorkspaceViews();
-});
+}), 2_000);
+if (document.readyState === "complete") preloadNextViews();
+else window.addEventListener("load", preloadNextViews, { once: true });
