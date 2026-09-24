@@ -1914,7 +1914,7 @@ class IntegrationCommandsMixin:
                 )
             return await service.sweep(args["project_id"], retry=args.get("retry", False))
         except (ValueError, RuntimeError, KeyError) as exc:
-            return _failure("blocked", str(exc))
+            return _failure("blocked", str(exc).strip() or repr(exc))
 
     async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
         operation_id = str(args.get("operation_id") or "")

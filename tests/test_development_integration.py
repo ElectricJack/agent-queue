@@ -12,7 +12,7 @@ from src.database import Database
 from src.git.manager import GitManager
 from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.tables import development_deliveries, gates, messages, projects
-from src.database.tables import task_gates, tasks
+from src.database.tables import task_dependencies, task_gates, tasks
 from src.doctor.integration_checks import run_check as run_doctor_check
 from src.doctor.models import Severity
 from src.event_bus import EventBus
@@ -85,6 +85,41 @@ async def feature(setup, task_id, *, filename=None, content="new\n"):
         )
     )
     return head
+
+
+async def repair_cycle(setup, *, source_contract):
+    db, service, source, _remote, _repo = setup
+    older = "development-repair-older"
+    older_sha = await feature(setup, older, filename="older.txt")
+    newer = service._repair_identity([{"task_id": older, "source_sha": older_sha}])
+    newer_sha = await feature(setup, newer, filename="newer.txt")
+    git(source, "checkout", newer)
+    (source / "older.txt").write_text("new\n")
+    git(source, "add", "older.txt")
+    git(source, "commit", "-m", "carry older repair content")
+    newer_sha = git(source, "rev-parse", "HEAD")
+    for task_id in (older, newer):
+        git(source, "push", "origin", f"{task_id}:aq/{task_id}")
+    async with db.immediate() as conn:
+        for task_id in (older, newer):
+            await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+                branch_name=f"aq/{task_id}"
+            ))
+        await conn.execute(insert(task_dependencies).values(
+            task_id=older, depends_on_task_id=newer, dep_type="blocks",
+        ))
+    await db.set_task_meta(newer, "development_repair_sources", [
+        {"task_id": older, "source_sha": older_sha if source_contract else "invalid"}
+    ])
+    await db.save_task_completion(TaskCompletion(
+        id="older-close", task_id=older, outcome="pass", commits=[older_sha],
+        completed_at=time.time(),
+    ))
+    await db.save_task_completion(TaskCompletion(
+        id="newer-close", task_id=newer, outcome="pass", commits=[newer_sha],
+        completed_at=time.time(),
+    ))
+    return older, newer, older_sha, newer_sha
 
 
 async def _live_parent_operation(db, parent_task_id, *, operation_id="live-parent-operation"):
@@ -589,7 +624,7 @@ async def test_branchless_dependency_ignores_parked_newer_attempt(setup):
     assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
 
 
-async def test_branchful_undelivered_dependency_still_blocks_publication(setup):
+async def test_branchful_undelivered_dependency_still_blocks_publication(setup, caplog):
     db, service, source, remote, _repo = setup
     await feature(setup, "unpublished")
     git(source, "push", "origin", "--delete", "unpublished")
@@ -600,8 +635,10 @@ async def test_branchful_undelivered_dependency_still_blocks_publication(setup):
 
     assert (await service.sweep("p"))["outcome"] == "idle"
     skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
-    assert skip["reason"] == "dependency_unavailable"
+    assert skip["reason"] == "missing_ref"
     assert skip["dependency_id"] == "unpublished"
+    assert any("dependent" in row.getMessage() and "unpublished" in row.getMessage()
+               and "missing ref" in row.getMessage() for row in caplog.records)
     assert git(remote, "rev-parse", "main") != git(source, "rev-parse", "dependent")
 
 
@@ -621,6 +658,7 @@ async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup,
 
     assert any(
         "dependent" in record.getMessage() and "blocked" in record.getMessage()
+        and "undelivered dependency" in record.getMessage()
         for record in caplog.records
     )
     assert all(member["task_id"] != "dependent" for row in await service.rows("p")
@@ -630,8 +668,85 @@ async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup,
     await service.sweep("p")
     skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
     assert skip["dependency_id"] == "blocked"
-    assert skip["reason"] == "dependency_unavailable"
+    assert skip["reason"] == "undelivered_dependency"
     assert skip["consecutive_ticks"] == 3
+
+
+async def test_repair_cycle_publishes_newest_and_satisfies_older(setup):
+    db, service, _source, remote, _repo = setup
+    older, newer, older_sha, newer_sha = await repair_cycle(setup, source_contract=True)
+    await _park(service, "older-failed-delivery", [
+        {"task_id": older, "source_sha": older_sha}
+    ])
+    await db.create_task(Task(id="successor", project_id="p", title="successor", description=""))
+    await db.add_dependency("successor", older, "blocks")
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", newer_sha, "main") == ""
+    assert git(remote, "show", "main:older.txt") == "new"
+    assert not (await db.get_task("successor")).is_blocked
+    delivery = next(row for row in await service.rows("p") if row["state"] == "delivered"
+                    and row["target_ref"] == "refs/heads/main")
+    assert {member["task_id"] for member in delivery["manifest"]} == {older, newer}
+    assert next(member for member in delivery["manifest"] if member["task_id"] == older) == {
+        "task_id": older, "source_sha": older_sha, "superseded_by": newer,
+    }
+    parked = next(row for row in await service.rows("p") if row["id"] == "older-failed-delivery")
+    assert parked["state"] == "adopted"
+    assert parked["evidence"]["resolved_by_delivered_repair"]["task_id"] == newer
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+
+async def test_recover_older_repair_collects_cycle_peer(setup):
+    db, service, _source, remote, _repo = setup
+    older, newer, older_sha, _newer_sha = await repair_cycle(setup, source_contract=True)
+    unrelated_sha = await feature(setup, "unrelated")
+
+    result = await service.recover_child("p", older)
+
+    assert result["outcome"] == "delivered"
+    assert result["recovered_task_id"] == older
+    assert result["source_sha"] == older_sha
+    assert git(remote, "show", "main:older.txt") == "new"
+    with pytest.raises(subprocess.CalledProcessError):
+        git(remote, "merge-base", "--is-ancestor", unrelated_sha, "main")
+    assert await db.get_task_meta(older, PUBLISHER_SKIP_KEY) is None
+    assert await db.get_task_meta(newer, PUBLISHER_SKIP_KEY) is None
+
+
+async def test_unproven_repair_cycle_reports_both_tasks(setup, caplog):
+    import logging
+
+    db, service, _source, _remote, _repo = setup
+    older, newer, _older_sha, _newer_sha = await repair_cycle(setup, source_contract=False)
+
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+
+    assert any(older in row.getMessage() and newer in row.getMessage()
+               and "cycle" in row.getMessage() for row in caplog.records)
+    for task_id, dependency_id in ((older, newer), (newer, older)):
+        skip = await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY)
+        assert skip["reason"] == "dependency_cycle"
+        assert skip["dependency_id"] == dependency_id
+
+
+async def test_recover_child_command_reports_empty_exception_type():
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    handler = IntegrationCommandsMixin()
+    handler.db = object()
+    service = AsyncMock()
+    service.recover_child.side_effect = RuntimeError()
+    handler._development_integration = lambda: service
+    with patch("src.commands.integration_commands.integration_operator", return_value=("user", None)):
+        result = await handler._cmd_integration_development_sweep({
+            "project_id": "p", "recover_child": "child",
+        })
+    assert result["success"] is False
+    assert result["error"] == "RuntimeError()"
 
 
 @pytest.mark.parametrize("blocker", ["human_gate", "unfinished_dependency"])
