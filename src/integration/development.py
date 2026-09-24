@@ -81,6 +81,41 @@ def _manifest_members(manifest):
     return [m for m in manifest or [] if isinstance(m, dict) and m.get("task_id")]
 
 
+def _dependency_cycles(dependencies, task_ids):
+    """Return strongly connected components that actually contain a cycle."""
+    index = 0
+    indices, lowlinks, stack, on_stack, cycles = {}, {}, [], set(), []
+
+    def visit(task_id):
+        nonlocal index
+        indices[task_id] = lowlinks[task_id] = index
+        index += 1
+        stack.append(task_id)
+        on_stack.add(task_id)
+        for dependency_id in sorted(dependencies.get(task_id, set()) & task_ids):
+            if dependency_id not in indices:
+                visit(dependency_id)
+                lowlinks[task_id] = min(lowlinks[task_id], lowlinks[dependency_id])
+            elif dependency_id in on_stack:
+                lowlinks[task_id] = min(lowlinks[task_id], indices[dependency_id])
+        if lowlinks[task_id] != indices[task_id]:
+            return
+        component = set()
+        while True:
+            member = stack.pop()
+            on_stack.remove(member)
+            component.add(member)
+            if member == task_id:
+                break
+        if len(component) > 1 or task_id in dependencies.get(task_id, set()):
+            cycles.append(component)
+
+    for task_id in sorted(task_ids):
+        if task_id not in indices:
+            visit(task_id)
+    return cycles
+
+
 @dataclass(frozen=True)
 class ResolvedTask:
     """The publisher's view of a task, wherever the task currently lives.
@@ -849,6 +884,12 @@ class DevelopmentIntegration:
             )
             manifest, conflicts = [], []
             async with self.db._engine.connect() as conn:
+                # Recovering a repair must see its completed repair peers:
+                # selecting only one vertex hides a repair dependency cycle.
+                isolated_child = (
+                    recover_child_id if recover_child_id and not
+                    recover_child_id.startswith("development-repair-") else None
+                )
                 candidates = (
                     (
                         await conn.execute(
@@ -858,7 +899,7 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 has_publishable_artifact(tasks.c.branch_name),
-                                *([tasks.c.id == recover_child_id] if recover_child_id else []),
+                                *([tasks.c.id == isolated_child] if isolated_child else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
                                 # but do not wait for our own earlier publication.
@@ -890,7 +931,84 @@ class DevelopmentIntegration:
             dependencies = {}
             for link in links:
                 dependencies.setdefault(link["task_id"], set()).add(link["depends_on_task_id"])
-            remaining = {t["id"]: t for t in candidates}
+            candidate_by_id = {task["id"]: task for task in candidates}
+            candidate_ids = set(candidate_by_id)
+            repair_sources = await self.db.get_task_meta_bulk(
+                sorted(task_id for task_id in candidate_ids
+                       if task_id.startswith("development-repair-")),
+                "development_repair_sources",
+            )
+            # A repair's source contract is a provenance edge, while the
+            # source's blocks edge waits for that repair's delivery. Together
+            # they form the repair/source cycle seen in production, even when
+            # the blocking-edge graph alone is acyclic.
+            repair_graph = {task_id: set(required) for task_id, required in dependencies.items()}
+            for repair_id, contract in repair_sources.items():
+                repair_graph.setdefault(repair_id, set()).update(
+                    member["task_id"] for member in _manifest_members(contract)
+                    if member["task_id"] in candidate_ids
+                    and member["task_id"].startswith("development-repair-")
+                )
+            cycles = _dependency_cycles(repair_graph, candidate_ids)
+            if recover_child_id and not isolated_child:
+                # Keep --recover-child scoped to the named repair's cycle.
+                # Unrelated completed work must not turn an explicit recovery
+                # into a project-wide batch with sibling conflicts.
+                selected = next(
+                    (component for component in cycles if recover_child_id in component),
+                    {recover_child_id},
+                )
+                candidates = [task for task in candidates if task["id"] in selected]
+                candidate_by_id = {task["id"]: task for task in candidates}
+                candidate_ids = set(candidate_by_id)
+                dependencies = {
+                    task_id: required for task_id, required in dependencies.items()
+                    if task_id in candidate_ids
+                }
+                cycles = [component for component in cycles if component <= candidate_ids]
+            superseded = {}  # old task id -> (new repair id, exact source sha)
+            cycle_blocked = {}
+            for component in cycles:
+                newest = max(component, key=lambda task_id: (
+                    candidate_by_id[task_id]["created_at"], task_id
+                ))
+                contract = repair_sources.get(newest)
+                sources = {
+                    member["task_id"]: member.get("source_sha")
+                    for member in _manifest_members(contract)
+                }
+                older = component - {newest}
+                if (
+                    newest.startswith("development-repair-")
+                    and older
+                    and all(is_valid_git_oid(sources.get(task_id)) for task_id in older)
+                ):
+                    for task_id in older:
+                        superseded[task_id] = (newest, sources[task_id])
+                    # The replacement carries the older revisions. Preserve
+                    # prerequisites outside this component and make every
+                    # successor wait for the replacement's publication.
+                    dependencies.setdefault(newest, set()).update(
+                        dependency_id
+                        for task_id in older
+                        for dependency_id in dependencies.get(task_id, set())
+                        if dependency_id not in component
+                    )
+                    for task_id, required in dependencies.items():
+                        if task_id == newest:
+                            required.difference_update(older)
+                        elif required & older:
+                            required.difference_update(older)
+                            required.add(newest)
+                else:
+                    for task_id in component:
+                        cycle_blocked[task_id] = sorted(component - {task_id})[0] if (
+                            component - {task_id}
+                        ) else task_id
+            remaining = {
+                task_id: task for task_id, task in candidate_by_id.items()
+                if task_id not in superseded and task_id not in cycle_blocked
+            }
             ordered = []
             while remaining:
                 eligible = [
@@ -899,11 +1017,16 @@ class DevelopmentIntegration:
                     if not (dependencies.get(t["id"], set()) & remaining.keys())
                 ]
                 if not eligible:
-                    break  # Invalid cyclic graph is never guessed through.
+                    # A cycle without a proven replacement is held with its
+                    # actual cause; never guess that a source ref was deleted.
+                    for task_id in remaining:
+                        cycle_blocked[task_id] = sorted(
+                            dependencies.get(task_id, set()) & remaining.keys()
+                        )[0]
+                    break
                 for task in eligible:
                     ordered.append(task)
                     remaining.pop(task["id"])
-            candidate_ids = {task["id"] for task in candidates}
             dependency_ids = set().union(*dependencies.values()) if dependencies else set()
             unavailable = {task_id for task_id, _source in parked}
             # An old parked receipt cannot make a branchless container require
@@ -982,7 +1105,16 @@ class DevelopmentIntegration:
             head = base
             parent_heads = {}
             blocked_parents = set()
-            processed, skipped = set(), {}
+            processed, skipped = set(cycle_blocked), {
+                task_id: ("dependency_cycle", dependency_id)
+                for task_id, dependency_id in cycle_blocked.items()
+            }
+            for task_id, dependency_id in sorted(cycle_blocked.items()):
+                logger.warning(
+                    "development publisher: skipping %s: dependency cycle with %s",
+                    task_id, dependency_id,
+                )
+            unavailable.update(cycle_blocked)
             assembly_id = uuid4().hex[:12]
             # Fetch above pins one remote snapshot. Do not make a network request
             # for every historical task branch on every sweep.
@@ -992,6 +1124,29 @@ class DevelopmentIntegration:
             source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
             for task in ordered:
                 processed.add(task["id"])
+                replacements = {
+                    old_id: source_sha for old_id, (new_id, source_sha) in superseded.items()
+                    if new_id == task["id"]
+                }
+                changed_source = next((
+                    old_id for old_id, expected in sorted(replacements.items())
+                    if source_heads.get(
+                        "refs/remotes/origin/" + candidate_by_id[old_id]["branch_name"]
+                        .removeprefix("refs/heads/")
+                    ) not in {None, expected}
+                ), None)
+                if changed_source:
+                    unavailable.update({task["id"], *replacements})
+                    processed.update(replacements)
+                    skipped[task["id"]] = ("dependency_cycle_source_changed", changed_source)
+                    for old_id in replacements:
+                        skipped[old_id] = ("dependency_cycle_source_changed", task["id"])
+                    logger.warning(
+                        "development publisher: skipping %s: dependency cycle with %s; "
+                        "listed source changed",
+                        task["id"], changed_source,
+                    )
+                    continue
                 if (
                     task["parent_task_id"] in blocked_parents
                     and requires_publication(task["parent_task_id"])
@@ -1006,10 +1161,20 @@ class DevelopmentIntegration:
                 }
                 if unavailable_dependencies:
                     for dependency_id in sorted(unavailable_dependencies):
+                        dependency_reason = skipped.get(dependency_id, (None, None))[0]
+                        dependency_kind = (
+                            "dependency_cycle" if dependency_reason == "dependency_cycle" else
+                            "missing_ref" if dependency_reason == "missing_ref" else
+                            "undelivered_dependency"
+                        )
+                        detail = {
+                            "dependency_cycle": "dependency cycle with",
+                            "missing_ref": "missing ref for dependency",
+                            "undelivered_dependency": "undelivered dependency",
+                        }[dependency_kind]
                         logger.warning(
-                            "development publisher: skipping %s because dependency %s is unavailable",
-                            task["id"],
-                            dependency_id,
+                            "development publisher: skipping %s: %s %s",
+                            task["id"], detail, dependency_id,
                             extra={
                                 "candidate_task_id": task["id"],
                                 "dependency_task_id": dependency_id,
@@ -1017,8 +1182,13 @@ class DevelopmentIntegration:
                             },
                         )
                     unavailable.add(task["id"])
+                    unavailable.update(replacements)
+                    first_dependency = sorted(unavailable_dependencies)[0]
+                    first_reason = skipped.get(first_dependency, (None, None))[0]
                     skipped[task["id"]] = (
-                        "dependency_unavailable", sorted(unavailable_dependencies)[0]
+                        "dependency_cycle" if first_reason == "dependency_cycle" else
+                        "missing_ref" if first_reason == "missing_ref" else
+                        "undelivered_dependency", first_dependency,
                     )
                     continue
                 source = source_heads.get(
@@ -1048,16 +1218,26 @@ class DevelopmentIntegration:
                     )
                 key = (task["id"], source)
                 if not source:
+                    was_parked = task["id"] in unavailable
                     unavailable.add(task["id"])
-                    skipped[task["id"]] = ("source_unavailable", None)
+                    unavailable.update(replacements)
+                    skipped[task["id"]] = (
+                        "source_parked" if was_parked else "missing_ref",
+                        task["id"],
+                    )
                     continue
                 contained_in_main = await self.git.ais_ancestor(str(store), source, base)
                 if key in parked and not contained_in_main:
                     unavailable.add(task["id"])
+                    unavailable.update(replacements)
                     skipped[task["id"]] = ("source_parked", None)
                     continue
-                if key in done and contained_in_main:
+                if key in done and contained_in_main and all(
+                    (old_id, old_sha) in done for old_id, old_sha in replacements.items()
+                ):
                     unavailable.discard(task["id"])
+                    unavailable.difference_update(replacements)
+                    processed.update(replacements)
                     continue
                 member = {
                     "task_id": task["id"],
@@ -1067,6 +1247,11 @@ class DevelopmentIntegration:
                 if contained_in_main:
                     unavailable.discard(task["id"])
                     manifest.append(member)
+                    for old_id, old_sha in sorted(replacements.items()):
+                        manifest.append({"task_id": old_id, "source_sha": old_sha,
+                                         "superseded_by": task["id"]})
+                        unavailable.discard(old_id)
+                        processed.add(old_id)
                     if len(manifest) >= policy.max_batch_size:
                         break
                     continue
@@ -1148,11 +1333,17 @@ class DevelopmentIntegration:
                     if parent_id:
                         blocked_parents.add(parent_id)
                     unavailable.add(task["id"])
+                    unavailable.update(replacements)
                     skipped[task["id"]] = ("merge_conflict", None)
                     continue
                 head = await self.run_git(store, "rev-parse", "HEAD")
                 unavailable.discard(task["id"])
                 manifest.append(member)
+                for old_id, old_sha in sorted(replacements.items()):
+                    manifest.append({"task_id": old_id, "source_sha": old_sha,
+                                     "superseded_by": task["id"]})
+                    unavailable.discard(old_id)
+                    processed.add(old_id)
                 if len(manifest) >= policy.max_batch_size:
                     break
             await self._record_candidate_skips(processed, skipped)
@@ -1409,7 +1600,7 @@ class DevelopmentIntegration:
         return None
 
     async def _delivered_source(self, store, history, task_id, base, *, repository_id):
-        """Return a receipted source for *task_id* already contained in *base*.
+        """Return a receipted source contained in or superseded on *base*.
 
         A candidate or parent assembly may have been delivered to a temporary
         ref and later merged into the target. Its manifest and target ancestry
@@ -1426,7 +1617,17 @@ class DevelopmentIntegration:
                 if (
                     member["task_id"] == task_id
                     and is_valid_git_oid(source)
-                    and await self.git.ais_ancestor(str(store), source, base)
+                    and (
+                        await self.git.ais_ancestor(str(store), source, base)
+                        or (
+                            member.get("superseded_by")
+                            and row["target_ref"].startswith("refs/heads/")
+                            and is_valid_git_oid(row.get("prepared_sha"))
+                            and await self.git.ais_ancestor(
+                                str(store), row["prepared_sha"], base
+                            )
+                        )
+                    )
                 ):
                     return source
         return None
