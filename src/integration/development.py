@@ -5,13 +5,10 @@ No synthetic review/CI receipts are written. Legacy episodes remain audit histor
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
-import signal
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -23,9 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import insert, select, text, update
 
 from src.database.queries.blocked_state import blocked_predicate
-from src.database.tables import archived_tasks, development_deliveries as deliveries
-from src.database.tables import projects, sessions, tasks
+from src.database.tables import archived_tasks, projects, sessions, tasks
+from src.database.tables import development_deliveries as deliveries
 from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.integration import development_validation as validation_outcomes
 from src.integration.delegate_release import release_delegates_on
 from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
@@ -38,6 +36,7 @@ from src.integration.delivery_branches import (
     released_integration_refs,
     remote_heads,
 )
+from src.integration.development_validation import run_check as run_validation_check
 from src.integration.publishable_artifact import has_publishable_artifact
 from src.models import TaskStatus
 
@@ -63,6 +62,14 @@ BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
 PUBLISHER_SKIP_KEY = "development_publisher_skip"
+#: Runs whose full evidence a deferral streak row keeps (the count is kept
+#: for every run; older runs' output is dropped).
+DEFERRAL_RUNS_KEPT = 5
+#: Task metadata key holding what a repair's parked batch recorded.
+REPAIR_EVIDENCE_KEY = "development_repair_evidence"
+#: How much of a failure a repair description quotes.
+REPAIR_TESTS_LISTED = 20
+REPAIR_OUTPUT_TAIL_CHARS = 3000
 
 
 def armed_for_branch_cleanup(evidence):
@@ -102,7 +109,12 @@ class DevelopmentPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     validation: str = "focused"
     commands: list[str] = Field(default_factory=list)
+    #: Seconds a validation command may *run*.  Time it spends queued for a
+    #: test slot is not charged here; ``slot_wait_seconds`` bounds that.
     timeout_seconds: int = Field(default=300, gt=0, le=3600)
+    #: Seconds a validation command may wait for a test slot before the batch
+    #: is deferred to the next tick (never parked, never repaired).
+    slot_wait_seconds: int = Field(default=600, ge=0, le=3600)
     interval_seconds: int = Field(default=300, gt=0)
     max_batch_size: int = Field(default=50, gt=0, le=500)
 
@@ -137,6 +149,11 @@ class DevelopmentIntegration:
         self._project_faults = {}
         self.confirm_stopped = confirm_stopped
         self.owner_recovery = owner_recovery
+        #: How often a running validation is checked against its budgets, and
+        #: how far past ``slot_wait_seconds`` a queued command may go before
+        #: the publisher stops it (``aq test`` normally gives up first).
+        self.validation_poll_seconds = 1.0
+        self.slot_wait_grace_seconds = 10.0
 
     async def on_task_completed(self, event):
         """Wake delivery without doing Git or validation in the completion path.
@@ -324,44 +341,225 @@ class DevelopmentIntegration:
                 )
 
     async def validate(self, store, policy):
+        """Run the selected validation and classify it.
+
+        ``evidence["conclusion"]`` is ``passed``, ``failed`` (tests ran and
+        failed), ``infrastructure`` (nothing was verified: a timeout, no test
+        slot, an outage, a kill, nothing collected) or ``not_run``.  The first
+        infrastructure outcome ends the run: the batch will be deferred, so
+        later commands would verify nothing either.
+        """
         evidence = {"kind": "local", "validation": policy.validation, "checks": []}
         if policy.validation == "none":
             evidence["conclusion"] = "not_run"
             return evidence, True
+        reports = self.data_dir / "slot-reports"
         for command in policy.commands:
-            process = await asyncio.create_subprocess_exec(
-                "/bin/bash",
-                "-c",
+            check = await run_validation_check(
                 command,
-                cwd=str(store),
-                start_new_session=True,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+                cwd=store,
+                timeout_seconds=policy.timeout_seconds,
+                slot_wait_seconds=policy.slot_wait_seconds,
+                report_path=reports / f"{uuid4()}.jsonl",
+                poll_seconds=self.validation_poll_seconds,
+                slot_grace_seconds=self.slot_wait_grace_seconds,
             )
-            try:
-                output, _ = await asyncio.wait_for(process.communicate(), policy.timeout_seconds)
-                code = process.returncode
-            except (TimeoutError, asyncio.CancelledError):
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await process.wait()
-                if asyncio.current_task().cancelling():
-                    raise
-                output, code = b"validation timed out", 124
-            evidence["checks"].append(
-                {
-                    "command": command,
-                    "exit_code": code,
-                    "output": output.decode(errors="replace")[-8000:],
-                }
-            )
-        passed = bool(evidence["checks"]) and all(c["exit_code"] == 0 for c in evidence["checks"])
-        evidence["conclusion"] = (
-            "passed" if passed else "failed" if evidence["checks"] else "not_run"
-        )
+            evidence["checks"].append(check)
+            if check["outcome"] == validation_outcomes.INFRASTRUCTURE:
+                break
+        conclusion = validation_outcomes.conclude(evidence["checks"])
+        evidence["conclusion"] = conclusion
+        evidence["failing_tests"] = validation_outcomes.failing_tests(evidence)
+        passed = conclusion == validation_outcomes.PASSED
         return evidence, passed or policy.validation == "advisory"
+
+    # -- validation that could not finish ----------------------------------
+
+    @staticmethod
+    def _open_deferral(history, repository_id):
+        for row in reversed(history):
+            evidence = row.get("evidence") or {}
+            if (
+                row["state"] == "cancelled"
+                and row["repository_id"] == repository_id
+                and evidence.get("kind") == validation_outcomes.DEFERRAL_KIND
+                and evidence.get("open")
+            ):
+                return row
+        return None
+
+    async def _record_validation_deferral(self, repo, target, base, head, manifest, evidence):
+        """Journal one infrastructure outcome on the project's open streak row.
+
+        One ``cancelled`` row per streak, with an empty manifest: a deferral
+        collects nothing and releases nothing.  It keeps the count, the time
+        the streak began and the full evidence of its most recent runs, so
+        ``aq integration status`` and doctor can say what kept failing
+        without anyone reproducing it by hand.
+        """
+        now = time.time()
+        failing = next(
+            c for c in evidence["checks"]
+            if c.get("outcome") == validation_outcomes.INFRASTRUCTURE
+        )
+        run = {
+            "at": now,
+            "reason": failing["infra_reason"],
+            "detail": failing["detail"],
+            "base_sha": base,
+            "head_sha": head,
+            "members": [m["task_id"] for m in _manifest_members(manifest)],
+            "checks": evidence["checks"],
+        }
+        streak = self._open_deferral(await self.rows(repo.project_id), repo.id)
+        if streak is None:
+            row = {
+                "id": str(uuid4()),
+                "project_id": repo.project_id,
+                "repository_id": repo.id,
+                "target_ref": target,
+                "expected_sha": base,
+                "prepared_sha": head,
+                "state": "cancelled",
+                "manifest": [],
+                "evidence": {
+                    "kind": validation_outcomes.DEFERRAL_KIND,
+                    "open": True,
+                    "consecutive": 1,
+                    "first_at": now,
+                    "last_at": now,
+                    "runs": [run],
+                },
+                "reason": "validation could not finish; batch deferred to the next tick",
+                "created_at": now,
+                "updated_at": now,
+            }
+            await self.save(row)
+            identity, recorded = row["id"], row["evidence"]
+        else:
+            previous = streak["evidence"]
+            recorded = {
+                **previous,
+                "consecutive": previous.get("consecutive", 0) + 1,
+                "last_at": now,
+                "runs": [*previous.get("runs", []), run][-DEFERRAL_RUNS_KEPT:],
+            }
+            identity = streak["id"]
+            await self.change(
+                identity, evidence=recorded, expected_sha=base, prepared_sha=head
+            )
+        consecutive = recorded["consecutive"]
+        alerting = consecutive >= validation_outcomes.INFRA_ALERT_AFTER
+        logger.log(
+            logging.ERROR if alerting else logging.WARNING,
+            "development validation for %s could not finish (%s: %s); batch of %d "
+            "deferred, no repair filed (%d consecutive; evidence on journal row %s)",
+            repo.project_id, run["reason"], run["detail"], len(run["members"]),
+            consecutive, identity,
+            extra={"project": repo.project_id, "deferral": identity,
+                   "reason": run["reason"], "consecutive": consecutive},
+        )
+        if alerting:
+            await self._alert_validation_infrastructure(repo, identity, recorded)
+        return {"id": identity, "consecutive": consecutive, "reason": run["reason"]}
+
+    async def _alert_validation_infrastructure(self, repo, identity, evidence):
+        """Tell the project supervisor once per streak; the id makes it idempotent."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.database.tables import messages
+
+        latest = evidence["runs"][-1]
+        project_id = repo.project_id
+        body = (
+            f"Development validation for {project_id} has not finished "
+            f"{evidence['consecutive']} times in a row; latest: {latest['reason']} "
+            f"({latest['detail']}). The batch ({', '.join(latest['members']) or 'none'}) "
+            "is deferred, not parked, and no repair was filed: nothing has shown the "
+            "code to be broken. Check the validation environment (test database, test "
+            "slots, timeout_seconds / slot_wait_seconds). Evidence: journal row "
+            f"{identity} in `aq integration status {project_id}`."
+        )
+        async with self.db._engine.begin() as conn:
+            await conn.execute(
+                pg_insert(messages)
+                .values(
+                    id=f"msg-dev-validation-infra-{identity}",
+                    project_id=project_id,
+                    from_kind="system",
+                    from_id="development-integration",
+                    to_kind="session",
+                    to_id=f"supervisor-{project_id}",
+                    subject=f"Development validation for {project_id} keeps failing to finish",
+                    body=body,
+                    created_at=time.time(),
+                    priority=50,
+                    archive_after_inject=1,
+                    body_kind="development_validation_infrastructure",
+                )
+                .on_conflict_do_nothing(index_elements=[messages.c.id])
+            )
+
+    async def _close_validation_deferrals(self, repo, conclusion, head):
+        """A validation that reached a conclusion ends the deferral streak."""
+        streak = self._open_deferral(await self.rows(repo.project_id), repo.id)
+        if streak is None:
+            return
+        evidence = {
+            **streak["evidence"],
+            "open": False,
+            "closed_at": time.time(),
+            "closed_by": conclusion,
+            "closed_head_sha": head,
+        }
+        await self.change(streak["id"], evidence=evidence)
+        logger.info(
+            "development validation for %s reached a conclusion (%s) after %d "
+            "deferred run(s)",
+            repo.project_id, conclusion, evidence.get("consecutive", 0),
+            extra={"project": repo.project_id, "deferral": streak["id"]},
+        )
+
+    async def _release_unverified_parks(self, repo, history):
+        """Release batches parked as validation failures that verified nothing.
+
+        Before validation outcomes were classified, a timeout or an outage
+        parked its batch as ``selected validation failed`` and filed a repair.
+        Such a row holds its sources out of every later batch until that
+        repair lands, for a failure no test ever showed.  Release it — the
+        row keeps its evidence and says why — so the sources are validated
+        again.  Returns *history* with the released rows updated.
+        """
+        released = []
+        for row in history:
+            if (
+                row["state"] != "parked"
+                or row["repository_id"] != repo.id
+                or row.get("reason") != "selected validation failed"
+                or (row.get("evidence") or {}).get("kind") != "local"
+            ):
+                continue
+            conclusion = validation_outcomes.reclassify(row["evidence"])
+            if conclusion != validation_outcomes.INFRASTRUCTURE:
+                continue
+            if await self.resolve_task(self._repair_identity(row["manifest"])) is not None:
+                # A repair is already in flight; its delivery (or its own
+                # ``blocks`` edges on the sources) settles this row as before.
+                continue
+            evidence = {
+                **row["evidence"],
+                "released": {"at": time.time(), "conclusion": conclusion},
+            }
+            await self.change(row["id"], state="cancelled", evidence=evidence)
+            logger.warning(
+                "development batch %s was parked for a validation that verified "
+                "nothing; released for revalidation", row["id"],
+                extra={"batch": row["id"], "project": repo.project_id},
+            )
+            released.append(row["id"])
+        if not released:
+            return history
+        return await self.rows(repo.project_id)
 
     async def publish(
         self, repo, store, target_ref, head, expected, manifest, evidence, reason,
@@ -590,7 +788,7 @@ class DevelopmentIntegration:
             if not base:
                 raise ValueError("default branch does not exist")
             await self.run_git(store, "checkout", "--detach", "--force", base)
-            history = await self.rows(project_id)
+            history = await self._release_unverified_parks(repo, await self.rows(project_id))
             done = {
                 (m["task_id"], m.get("source_sha"))
                 for r in history
@@ -943,6 +1141,21 @@ class DevelopmentIntegration:
                 await self.publish(
                     repo, store, snapshot, head, None, manifest, evidence, "candidate preservation"
                 )
+            if not passed and evidence["conclusion"] == validation_outcomes.INFRASTRUCTURE:
+                # Nothing was verified, so nothing failed: no park, no repair.
+                # The members stay eligible and the next tick validates again.
+                deferral = await self._record_validation_deferral(
+                    repo, target, base, head, manifest, evidence
+                )
+                await self.reconcile_parked(repo, store, base)
+                return {
+                    "outcome": "deferred",
+                    "reason": deferral["reason"],
+                    "head_sha": head,
+                    "evidence": evidence,
+                    "deferral": deferral,
+                }
+            await self._close_validation_deferrals(repo, evidence["conclusion"], head)
             if not passed:
                 now = time.time()
                 await self.save(
@@ -1035,6 +1248,11 @@ class DevelopmentIntegration:
         if (source is None or not bound_to_main or (latest and latest != source)
                 or (branch and branch != source)):
             skip = await self.db.get_task_meta(child_id, PUBLISHER_SKIP_KEY)
+            if result.get("outcome") == "deferred":
+                skip = (
+                    f"validation could not finish ({result['reason']}); the batch is "
+                    "deferred to the next tick, not parked"
+                )
             raise ValueError(
                 f"{child_id} remains unpublished after sweep: "
                 f"{skip or 'no receipt for the current source'}"
@@ -1063,7 +1281,7 @@ class DevelopmentIntegration:
         a worker mid-assembly spends tokens repairing work this batch already fixes.
         Parked rows are durable, so a subsequent sweep resumes dispatch after a crash.
         """
-        history = await self.rows(repo.project_id)
+        history = await self._release_unverified_parks(repo, await self.rows(repo.project_id))
         pending = {r["id"]: r for r in history if r["state"] == "parked" and r["manifest"]
                    and r["repository_id"] == repo.id}
         # Resolve repair-of-repair chains before dispatching any more work.
@@ -1103,7 +1321,7 @@ class DevelopmentIntegration:
                 await self.ensure_repair(
                     repo.project_id, repo.id, row["manifest"],
                     row["prepared_sha"] or accepted_head, reason=row["reason"],
-                    diagnostics=diagnostics,
+                    diagnostics=diagnostics, parked=row,
                 )
             except Exception as exc:  # noqa: BLE001 - isolation is the point
                 diagnostics.append(
@@ -2475,7 +2693,8 @@ class DevelopmentIntegration:
         return preserved
 
     async def ensure_repair(
-        self, project_id, repository_id, manifest, candidate_sha, *, reason, diagnostics=None
+        self, project_id, repository_id, manifest, candidate_sha, *, reason, diagnostics=None,
+        parked=None,
     ):
         """File one deliberately-rooted repair with provenance and delivery holds.
 
@@ -2563,6 +2782,7 @@ class DevelopmentIntegration:
                     "is delivered to main, that delivery also satisfies those sources for their successors. "
                     "Do not push main. The development publisher will collect your branch. "
                     "This is one resumable repair task; queue and provider waits do not expire it."
+                    + self._repair_failure_text(project_id, parked)
                 ),
                 branch_name="aq/" + identity,
                 status=TaskStatus.READY,
@@ -2616,4 +2836,79 @@ class DevelopmentIntegration:
                     completed_parent_for_repair=True,
                 )
         await self.db.set_task_meta(identity, "development_repair_sources", manifest)
+        if parked is not None:
+            await self.db.set_task_meta(
+                identity, REPAIR_EVIDENCE_KEY, self._repair_evidence(parked)
+            )
         return identity
+
+    @staticmethod
+    def _repair_evidence(parked):
+        """What the parked batch recorded, compact enough for task metadata."""
+        evidence = parked.get("evidence") or {}
+        return {
+            "delivery_id": parked["id"],
+            "reason": parked.get("reason"),
+            "kind": evidence.get("kind"),
+            "conclusion": evidence.get("conclusion"),
+            "head_sha": evidence.get("head_sha") or parked.get("prepared_sha"),
+            "failing_tests": validation_outcomes.failing_tests(evidence),
+            "checks": [
+                {
+                    key: check.get(key)
+                    for key in (
+                        "command", "exit_code", "outcome", "detail", "duration_seconds",
+                        "slot_wait_seconds", "run_seconds", "summary",
+                    )
+                    if key in check
+                }
+                for check in evidence.get("checks") or []
+                if isinstance(check, dict)
+            ],
+            "merge_conflict": (
+                evidence.get("detail") if evidence.get("kind") == "merge_conflict" else None
+            ),
+        }
+
+    @staticmethod
+    def _repair_failure_text(project_id, parked):
+        """The part of a repair description that names what failed."""
+        if parked is None:
+            return ""
+        evidence = parked.get("evidence") or {}
+        lines = [
+            "",
+            "",
+            (
+                f"What failed (development delivery row {parked['id']}, "
+                f"`aq integration status {project_id}`):"
+            ),
+        ]
+        if evidence.get("kind") == "merge_conflict":
+            detail = str(evidence.get("detail") or "").strip()
+            lines += ["Merge conflict:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
+            return "\n".join(lines)
+        tests = validation_outcomes.failing_tests(evidence)
+        if tests:
+            lines.append("Failing tests:")
+            for test in tests[:REPAIR_TESTS_LISTED]:
+                reason = f" — {test['reason']}" if test["reason"] else ""
+                lines.append(f"- {test['id']}{reason}")
+            if len(tests) > REPAIR_TESTS_LISTED:
+                lines.append(f"- … and {len(tests) - REPAIR_TESTS_LISTED} more (see the row)")
+        else:
+            lines.append("Failing tests: none identified in the output; see the tail below.")
+        for check in evidence.get("checks") or []:
+            if not isinstance(check, dict) or check.get("exit_code") == 0:
+                continue
+            timing = ""
+            if "run_seconds" in check:
+                timing = (
+                    f" after running {check['run_seconds']:.0f}s "
+                    f"({check.get('slot_wait_seconds', 0):.0f}s queued for a test slot)"
+                )
+            lines.append(f"Command `{check.get('command')}` exited {check.get('exit_code')}{timing}.")
+            output = str(check.get("output") or "").rstrip()
+            if output:
+                lines += ["Output tail:", "```", output[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
+        return "\n".join(lines)

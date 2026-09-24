@@ -122,18 +122,60 @@ What you can do:
 
 ```text
 "evidence": {"kind": "local", "validation": "focused",
-             "checks": [{"command": "…", "exit_code": 1, "output": "…"}],
+             "checks": [{"command": "…", "exit_code": 1, "outcome": "failed",
+                         "failing_tests": [{"id": "tests/test_x.py::test_y", "reason": "…"}],
+                         "duration_seconds": 231.4, "slot_wait_seconds": 12.0,
+                         "run_seconds": 219.4, "summary": {"failed": 1, "passed": 118},
+                         "output": "…"}],
+             "failing_tests": […],
              "conclusion": "failed"}
 "reason": "selected validation failed"
 ```
 
-The batch was assembled and preserved as a ref, and nothing was published. The
-`output` field holds the last 8,000 characters of that command's combined
-output — read it before anything else; it is the actual failure.
+A batch parks only when tests ran and **failed**. The batch was assembled and
+preserved as a ref, and nothing was published. `failing_tests` names what
+failed (parsed from pytest's short test summary), and the `output` field holds
+the last 8,000 characters of that command's combined output — read it before
+anything else; it is the actual failure. The repair task the publisher files
+quotes both, names the journal row, and keeps a compact copy in its
+`development_repair_evidence` task metadata.
 
-Exit code 124 means the command hit `timeout_seconds` (default 300) and its
-process group was killed. Raise `timeout_seconds` (maximum 3600) with another
-`aq integration develop … --reason …`, or make the check smaller.
+## Validation could not finish (deferred)
+
+```text
+{"outcome": "deferred", "reason": "timeout", "deferral": {"id": "…", "consecutive": 1, …}}
+```
+
+A validation that verified nothing is **infrastructure**, not a failure: the
+run hit `timeout_seconds`, no test slot came free within `slot_wait_seconds`
+(or `aq test` exited 75), the process was killed, pytest collected nothing or
+could not start (exit 3/4/5), the command could not be executed (126/127), or
+every failing test failed on a database/box outage (connection refused, too
+many clients, …). The batch is **deferred**: it is not parked, no repair is
+filed, and the next tick validates it again.
+
+`timeout_seconds` covers the run only. Time the command spent queued for a
+test slot is reported by `aq test` (`$AQ_TEST_SLOT_REPORT`, see
+[resource gating](resource-gating.md)) and bounded separately by
+`slot_wait_seconds` (default 600). Each check records `slot_wait_seconds`
+and `run_seconds` so you can see which one ran out.
+
+Each streak of deferrals is one `cancelled` journal row with
+`evidence.kind: "validation_deferred"`, visible in `aq integration status
+<project>`: it counts the consecutive deferrals and keeps the full evidence
+(command, exit code, timing, output tail) of the last five. After three in a
+row the publisher logs an error, messages `supervisor-<project>` once, and
+`aq doctor --check integration.development_publisher_stalled` reports
+`validation_infrastructure`. Fix the environment — the test database, the
+slots, or the budgets (`timeout_seconds`/`slot_wait_seconds`, maximum 3600,
+set with another `aq integration develop … --reason …`). The first validation
+that reaches a conclusion closes the streak.
+
+A batch parked as `selected validation failed` before outcomes were
+classified (for example exit code 124 with the output `validation timed
+out`) and not yet given a repair is released for revalidation rather than
+repaired; its row becomes `cancelled` with `evidence.released`. One whose
+repair was already filed is left to that repair.
 
 The candidate itself is on the remote as
 `refs/heads/aq/development/<project digest>/<head sha>`, so you can check it

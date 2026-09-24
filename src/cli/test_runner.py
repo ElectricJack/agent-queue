@@ -100,6 +100,25 @@ def _env_int(key: str) -> int | None:
     return value if value > 0 else None
 
 
+def _slot_wait_timeout(configured: int, flag: int | None) -> int:
+    """Seconds to wait for a slot: ``--aq-timeout``, else the env, else config.
+
+    ``AQ_TEST_WAIT_TIMEOUT`` is how a supervising caller — the development
+    publisher running its selected validation — bounds queueing separately
+    from the run it times.  ``0`` means "try once", as for the flag.
+    """
+    if flag is not None:
+        return flag
+    from src.resources.slot_report import WAIT_TIMEOUT_ENV
+
+    raw = os.environ.get(WAIT_TIMEOUT_ENV)
+    try:
+        value = int(raw) if raw else None
+    except ValueError:
+        value = None
+    return value if value is not None and value >= 0 else configured
+
+
 def _caps(resources) -> tuple[int, int, str, float, int]:
     """``(slots, workers, markers, poll, timeout)`` from env → config → defaults."""
     slots = _env_int("AQ_TEST_SLOTS")
@@ -383,6 +402,7 @@ def test_command(
     says so.
     """
     from src.resources.semaphore import SlotSemaphore, SlotTimeout, default_lock_dir
+    from src.resources.slot_report import REPORT_ENV, append_event
 
     config = _load_config()
     resources = getattr(config, "resources", None)
@@ -395,8 +415,7 @@ def test_command(
         workers = min(aq_workers, cores)
         if workers < aq_workers:
             console.print(f"[yellow]aq test:[/] --aq-workers clamped to {cores} (cores)")
-    if aq_timeout is not None:
-        timeout = aq_timeout
+    timeout = _slot_wait_timeout(timeout, aq_timeout)
 
     sem = SlotSemaphore(default_lock_dir(config), slots)
 
@@ -445,7 +464,18 @@ def test_command(
         "command": shlex.join(argv),
     }
 
+    # A supervising caller (the development publisher) asks, through the
+    # env, to be told how long this run queued, so it can charge its run
+    # budget for running only.  See src/resources/slot_report.py.
+    report = os.environ.get(REPORT_ENV) or None
+    queued_at = time.monotonic()
+    announced = False
+
     def _on_wait(waited: float, snapshot: dict) -> None:
+        nonlocal announced
+        if report and not announced:
+            append_event(report, "waiting", at=time.time() - waited)
+            announced = True
         # Printed every poll on purpose: the daemon reads terminal silence
         # as a stall, and an agent queued behind a busy box must be visibly
         # queued rather than looking hung.
@@ -466,6 +496,10 @@ def test_command(
             meta=meta,
             on_wait=_on_wait,
         ) as slot:
+            if report:
+                append_event(
+                    report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
+                )
             console.print(f"[dim]aq test: slot {slot} of {slots}, -n {workers}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
             child_env = os.environ.copy()
@@ -473,7 +507,11 @@ def test_command(
             # invocations are separate owners and must never derive the same
             # PostgreSQL database names.
             child_env["AQ_TEST_RUN_ID"] = _new_test_run_id()
-            returncode = _run_forwarding_signals(argv, env=child_env)
+            try:
+                returncode = _run_forwarding_signals(argv, env=child_env)
+            finally:
+                if report:
+                    append_event(report, "released")
         if returncode == 5:
             # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
             # about *why*: say plainly that nothing was verified.
@@ -483,6 +521,8 @@ def test_command(
             )
         ctx.exit(returncode)
     except SlotTimeout as exc:
+        if report:
+            append_event(report, "slot_timeout", waited=round(time.monotonic() - queued_at, 3))
         console.print(f"[red]aq test:[/] {exc}")
         console.print("[dim]Run `aq test --aq-status` to see who is holding them.[/]")
         ctx.exit(75)  # EX_TEMPFAIL — retryable, not a test failure

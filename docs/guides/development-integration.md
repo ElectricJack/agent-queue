@@ -91,8 +91,12 @@ Options:
 > AQ's own clone under `<data_dir>/development-integration/…`, with whatever
 > is installed for the daemon's user. Point at an absolute interpreter or a
 > small wrapper script rather than assuming a virtualenv is active. Each
-> command is bounded by a 300-second timeout (`timeout_seconds`, up to 3600);
-> a timeout is recorded as exit code 124.
+> command may *run* for 300 seconds (`timeout_seconds`, up to 3600); time it
+> spends queued for a test slot under `aq test` is bounded separately
+> (`slot_wait_seconds`, default 600). A timeout is recorded as exit code 124
+> and, like any validation that verified nothing, defers the batch rather
+> than parking it — see
+> [Validation could not finish](integration-troubleshooting.md#validation-could-not-finish-deferred).
 
 Policy changes take effect on the next batch. There is no drain to wait for.
 
@@ -134,7 +138,8 @@ The outcomes you will see:
 |---|---|---|
 | `delivered` | The batch is on the default branch. | Nothing. |
 | `idle` | Nothing was eligible this pass. | Nothing. `parked` lists members that conflicted. |
-| `parked` | A batch was assembled but validation failed. | Read the evidence; fix, or retry — see below. |
+| `parked` | A batch was assembled and its tests failed. | Read the evidence; fix, or retry — see below. |
+| `deferred` | Validation could not finish (timeout, no test slot, outage, nothing collected). Not parked; no repair. | Nothing, unless it repeats — then fix the validation environment. |
 | `base_moved` | The default branch moved while publishing was being prepared. | Nothing. The next sweep rebuilds on the new base. |
 | `adopted` | Recorded already-delivered work. | Nothing. |
 

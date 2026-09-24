@@ -380,6 +380,89 @@ class TestCommand:
         assert "no test slot free" in result.output
 
 
+class TestSlotReport:
+    """``$AQ_TEST_SLOT_REPORT`` tells a supervising caller how long it queued.
+
+    The development publisher bounds its validation with ``timeout_seconds``;
+    without this report it charged the wait for a test slot to the test run.
+    """
+
+    def _isolate(self, monkeypatch, tmp_path, slots="1"):
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+        monkeypatch.setenv("AQ_TEST_SLOTS", slots)
+        lock_dir = tmp_path / "locks" / "test-slots"
+        monkeypatch.setattr(
+            "src.resources.semaphore.default_lock_dir",
+            lambda config=None, **kw: lock_dir,
+        )
+        return lock_dir
+
+    def test_an_immediate_slot_is_reported_acquired_then_released(
+        self, runner, monkeypatch, tmp_path
+    ):
+        import json
+
+        self._isolate(monkeypatch, tmp_path)
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in report.read_text().splitlines()]
+        assert [e["event"] for e in events] == ["acquired", "released"]
+        assert events[0]["waited"] >= 0 and events[0]["slot"] == 0
+
+    def test_a_slot_timeout_is_reported_and_the_wait_env_bounds_it(
+        self, runner, monkeypatch, tmp_path
+    ):
+        import os
+
+        from src.resources.semaphore import SlotSemaphore
+        from src.resources.slot_report import read_slot_wait
+
+        lock_dir = self._isolate(monkeypatch, tmp_path)
+        report = tmp_path / "slot.jsonl"
+        monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
+        # One second, not the config's half hour: the supervising caller
+        # budgets queueing on its own and must be able to say so.
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "1")
+        # Config says 15 s; the env's 1 s must win.
+        monkeypatch.setattr("src.cli.test_runner._caps", lambda _res: (1, 1, "", 0.05, 15))
+        held = SlotSemaphore(lock_dir, 1).try_acquire({"task_id": "someone-else"})
+        assert held is not None
+        try:
+            result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        finally:
+            os.close(held[1])
+        assert result.exit_code == 75
+        wait = read_slot_wait(report)
+        assert wait.timed_out
+        assert 1.0 <= wait.total_seconds < 10.0
+        assert wait.waiting_seconds == 0.0
+
+    def test_no_report_is_written_unless_asked(self, runner, monkeypatch, tmp_path):
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.delenv("AQ_TEST_SLOT_REPORT", raising=False)
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
+        )
+        assert runner.invoke(cli, ["test", "tests/test_config.py"]).exit_code == 0
+        assert not list(tmp_path.glob("*.jsonl"))
+
+    def test_the_wait_env_overrides_config_but_not_the_flag(self, monkeypatch):
+        from src.cli.test_runner import _slot_wait_timeout
+
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "120")
+        assert _slot_wait_timeout(1800, None) == 120
+        assert _slot_wait_timeout(1800, 5) == 5
+        monkeypatch.setenv("AQ_TEST_WAIT_TIMEOUT", "banana")
+        assert _slot_wait_timeout(1800, None) == 1800
+        monkeypatch.delenv("AQ_TEST_WAIT_TIMEOUT")
+        assert _slot_wait_timeout(1800, None) == 1800
+
+
 class TestSignalForwarding:
     def test_inheritable_slot_fd_reaches_the_pytest_process(self, tmp_path):
         import os
