@@ -30,7 +30,10 @@ from src.api.models.dashboard import (
     DashboardStateErrorResponse,
 )
 from src.api.models.escalation import EscalationErrorResponse
-from src.api.models.system import EditIntelligenceClassConflictResponse
+from src.api.models.system import (
+    DeleteIntelligenceClassConflictResponse,
+    EditIntelligenceClassConflictResponse,
+)
 from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
@@ -136,6 +139,8 @@ HIERARCHY_REFUSAL_COMMANDS: frozenset[str] = frozenset(
 # Non-default statuses keyed by the command and its stable command error code.
 ERROR_STATUS: dict[tuple[str, str], int] = {
     ("edit_intelligence_class", "revision_conflict"): 409,
+    ("delete_intelligence_class", "revision_conflict"): 409,
+    ("delete_intelligence_class", "class_referenced"): 409,
     **{(command, "human_required"): 403 for command in DASHBOARD_STATE_COMMANDS},
     ("dashboard_state_put", "revision_conflict"): 409,
 }
@@ -430,6 +435,17 @@ def build_category_routers() -> list[APIRouter]:
                                 }
                             }
                             if cmd_name == "edit_intelligence_class"
+                            else {}
+                        ),
+                        **(
+                            {
+                                409: {
+                                    "description": "Intelligence class is referenced or changed",
+                                    "model": DeleteIntelligenceClassConflictResponse
+                                    | EditIntelligenceClassConflictResponse,
+                                }
+                            }
+                            if cmd_name == "delete_intelligence_class"
                             else {}
                         ),
                         **(
