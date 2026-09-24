@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 377,
+    "leaf_commands": 379,
     "registration": {
-      "generated": 263,
+      "generated": 265,
       "handwritten": 114
     },
     "ownership": {
-      "core": 338,
+      "core": 340,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 376
+      "supported": 378
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 263,
+      "dispatch": 265,
       "registration": 100
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 317
+      "untested": 319
     }
   },
   "commands": [
@@ -8608,6 +8608,40 @@
       }
     },
     {
+      "path": "aq system delete-intelligence-class",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "delete_intelligence_class",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--class-id"
+        ],
+        "optional": [
+          "--expected-revision",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system delivery-promote",
       "registration": "generated",
       "owner_kind": "core",
@@ -9182,12 +9216,15 @@
           "--batch-id"
         ],
         "optional": [
+          "--expected-revision",
           "--json",
           "--brief",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--expected-revision"
+        ]
       }
     },
     {
@@ -9734,6 +9771,45 @@
       "parameters": {
         "required": [
           "--batch-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system integration-repair-close-current",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_repair_close_current",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--operation-id",
+          "--stage",
+          "--task-id",
+          "--session-id",
+          "--instance-token",
+          "--workspace-id",
+          "--fence-token"
         ],
         "optional": [
           "--json",
