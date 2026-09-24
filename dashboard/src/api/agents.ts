@@ -12,6 +12,14 @@ export type AgentSettings = NonNullable<FlockAgent["settings"]>;
 // One request feeds both the roster and its sub-agent rollup. Splitting them
 // into two queries would let the header and the rows disagree about the same
 // poll — the total is derived from these exact rows, server-side.
+//
+// The roster is live through the event stream: every agent.*, session.*,
+// task.* and message.* frame refreshes it (coalesced, ws/useEventStream.ts),
+// which covers assignments, state, questions and session turnover. The poll
+// is only reconciliation. It used to run every 5s from the always-mounted
+// shell rail, and the roster is one of the daemon's most expensive reads
+// (0.7s alone, several seconds under load, blocking other requests while it
+// runs), so each open dashboard kept the daemon busy and every click waited.
 const flockQuery = {
   queryKey: ["agents", "flock"],
   queryFn: async () => {
@@ -19,7 +27,7 @@ const flockQuery = {
     return data;
   },
   staleTime: 2_000,
-  refetchInterval: 5_000,
+  refetchInterval: 30_000,
 } as const;
 
 export function useAgentFlock() {
@@ -36,7 +44,7 @@ export function useFlockAgent(agentId: string) {
     queryKey: ["agents", "detail", agentId],
     queryFn: async () => (await getAgent({ body: { agent_id: agentId }, throwOnError: true })).data,
     enabled: !!agentId,
-    refetchInterval: 5_000,
+    refetchInterval: 30_000,
   });
 }
 

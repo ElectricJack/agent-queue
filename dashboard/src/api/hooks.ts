@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import { apiGet } from "./legacy-fetch";
 import {
   addWorkspace,
@@ -314,7 +315,10 @@ export function usePoolStatus(projectId?: string) {
       return ((data as PoolStatusResponse).pools ?? []) as PoolStatusRow[];
     },
     staleTime: 2_000,
-    refetchInterval: 5_000,
+    // pool.* and session.* frames refresh this (ws/useEventStream.ts); the
+    // poll only reconciles. At 5s from the shell rail it was, with the
+    // roster, most of what an idle dashboard asked the daemon for.
+    refetchInterval: 30_000,
   });
 }
 
@@ -330,7 +334,8 @@ export function usePoolSessions() {
       return ((data as ListSessionsResponse).sessions ?? []) as SessionSummary[];
     },
     staleTime: 2_000,
-    refetchInterval: 5_000,
+    // session.* and pool.* frames refresh this; the poll only reconciles.
+    refetchInterval: 30_000,
   });
 }
 
@@ -456,13 +461,14 @@ export function useDeleteTaskAttachment() {
   });
 }
 
-export function useActiveTasksAllProjects() {
+export function useActiveTasksAllProjects(opts?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["tasks", "active", "all"],
     queryFn: async () => {
       const { data } = await listActiveTasksAllProjects({ body: {}, throwOnError: true });
       return (data as ListTasksResponse).tasks ?? [];
     },
+    enabled: opts?.enabled ?? true,
     refetchInterval: 60_000,
   });
 }
@@ -1392,29 +1398,34 @@ export function useGates(
 
 /**
  * Every open gate across every project. Backs the shell TopBar badge and the
- * Activity drawer Gates tab. Fans out one gateList per project because the
- * daemon's list endpoint is project-scoped.
+ * Activity drawer Gates tab.
+ *
+ * One unscoped gateList: the daemon lists every project's gates when no
+ * project is named. This used to fan out one request per project every 20s
+ * from the always-mounted TopBar — thirteen projects made it 39 requests a
+ * minute, half of an idle dashboard's traffic. gate.created / resolved /
+ * expired frames refresh it (ws/useEventStream.ts); the poll only reconciles.
+ * Rows are still limited to the projects the dashboard lists, as before.
  */
 export function useAllOpenGates() {
   const { data: projects } = useProjects();
   const ids = (projects ?? []).map((p) => p.id);
-  return useQuery({
-    queryKey: ["gates", "open", "all", ids],
-    queryFn: async () => {
-      if (ids.length === 0) return [] as GateSummary[];
-      const results = await Promise.all(
-        ids.map((pid) =>
-          gateList({
-            body: { project_id: pid, status: "open" },
-            throwOnError: true,
-          }),
-        ),
-      );
-      return results.flatMap(
-        (r) => ((r.data as GateListResponse).gates ?? []) as GateSummary[],
-      );
+  const idKey = ids.join("\u0000");
+  const select = useCallback(
+    (gates: GateSummary[]) => {
+      const known = new Set(idKey.split("\u0000"));
+      return gates.filter((gate) => known.has(gate.project_id));
     },
-    refetchInterval: 20_000,
+    [idKey],
+  );
+  return useQuery({
+    queryKey: ["gates", "open", "all"],
+    queryFn: async () => {
+      const { data } = await gateList({ body: { status: "open" }, throwOnError: true });
+      return ((data as GateListResponse).gates ?? []) as GateSummary[];
+    },
+    select,
+    refetchInterval: 60_000,
     enabled: ids.length > 0,
   });
 }
