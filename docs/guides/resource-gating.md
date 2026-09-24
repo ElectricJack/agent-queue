@@ -163,9 +163,15 @@ assertions ran.
 Each `aq test` invocation passes a fresh ownership token to pytest. Every
 xdist worker and every schema-mutating scratch test therefore creates a unique
 `aq_test_*` database. A normal session teardown drops only databases that the
-current process successfully created. An interrupted run can leave an orphan,
-but the next run chooses new names and never reuses or stamps it. If an
-explicit/reused `AQ_TEST_RUN_ID` collides, the harness inspects
+current process successfully created. The lease pool's template clones use
+`aq_test_poolv2_<token>_<worker>_<index>` names and hold a PostgreSQL advisory
+lock for their lifetime. At pool startup, one worker attempts to remove
+matching clones whose owner lock has gone away. The sweep tries at most eight
+databases per startup, with a five second timeout per drop. A busy PostgreSQL
+checkpointer can prevent a drop; failures warn and remain for a later run.
+Older pool names, worker databases, and scratch databases have no such lock.
+They still require manual inspection before removal. If an explicit/reused
+`AQ_TEST_RUN_ID` collides, the harness inspects
 `alembic_version` read-only, reports stale or unknown revisions, and refuses to
 drop, migrate, or stamp the foreign database. Remove an orphan manually only
 after confirming that no other run owns it.
