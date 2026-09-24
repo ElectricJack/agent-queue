@@ -10,11 +10,7 @@ import pytest
 from sqlalchemy import insert
 
 from src.api.auth import RequestScope
-from src.api.scope import (
-    INTEGRATION_CONFIGURE_CAPABILITY,
-    OPERATOR_INTEGRATION_CONTROLS,
-    check_command_scope,
-)
+from src.api.scope import OPERATOR_INTEGRATION_CONTROLS, check_command_scope
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.project_commands import ProjectCommandsMixin
@@ -411,9 +407,7 @@ def test_global_supervisor_scope_admits_status_and_enable_and_worker_scope_does_
     assert check_command_scope("integration_status", {"project_id": "other"}, worker)
 
 
-_CONFIGURE = CapabilityPolicy.from_namespaces(
-    aq_commands=["edit_project", INTEGRATION_CONFIGURE_CAPABILITY]
-)
+_CONFIGURE = CapabilityPolicy.from_namespaces(aq_commands=["edit_project"])
 _CONFIGURE_ARGS = {
     "project_id": "p",
     "integration_repository_id": "r",
@@ -443,7 +437,7 @@ def _configure_handler(db) -> tuple[_ConfigureHandler, AsyncMock]:
         (_session("super-global", None, policy=_CONFIGURE), "supervisor session:super-global"),
     ],
 )
-async def test_supervisor_with_capability_binds_integration_configuration(
+async def test_live_supervisor_binds_integration_configuration(
     db, principal, expected_label
 ):
     """The train cutover binds repository, review mode and policy from the supervisor."""
@@ -466,9 +460,7 @@ async def test_supervisor_with_capability_binds_integration_configuration(
 @pytest.mark.parametrize(
     "principal",
     [
-        # A live supervisor whose profile does not grant the capability.
-        _session("super-p", "p"),
-        # The capability without a live, named, same-project supervisor row.
+        # ``edit_project`` without a live, named, same-project supervisor row.
         _session("worker", "p", policy=_CONFIGURE),
         _session("worker", "p", elevated=False, policy=_CONFIGURE),
         _session("super-stopped", "p", policy=_CONFIGURE),
@@ -476,7 +468,7 @@ async def test_supervisor_with_capability_binds_integration_configuration(
         _session("super-global-stopped", None, policy=_CONFIGURE),
     ],
 )
-async def test_workers_and_uncapable_sessions_cannot_bind_integration_configuration(
+async def test_workers_and_stale_supervisors_cannot_bind_integration_configuration(
     db, principal
 ):
     handler, controls = _configure_handler(db)
@@ -493,7 +485,7 @@ async def test_workers_and_uncapable_sessions_cannot_bind_integration_configurat
 
 
 def test_integration_configuration_scope_admits_supervisors_and_refuses_workers():
-    """Scope lets an elevated supervisor reach the handler's capability check."""
+    """Scope lets an elevated supervisor reach the handler's live-supervisor check."""
     elevated = RequestScope(kind="session", session_id="super-p", project_id="p", elevated=True)
     worker = RequestScope(kind="session", session_id="worker", task_id="t", project_id="p")
     for field in (

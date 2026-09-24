@@ -32,12 +32,12 @@ policy snapshot to conceal it.
 
 After the development publisher is safely drained and the project can enter
 disabled mode, bind the repository, review mode, and policy in order. The
-project-scoped supervisor runs these itself. Its shipped profile grants the
-`integration_configure` capability, which `aq project set` checks for the three
-integration keys, and `integration_adopt_legacy_deliveries`, alongside every
-operator integration control. Shipped profiles are write-if-absent, so a vault
-supervisor profile seeded earlier lacks both grants. On such an install the
-operator adds them once with
+project-scoped supervisor runs these itself: `aq project set` admits the three
+integration keys from a live, named supervisor of the project, the same gate as
+every operator integration control, and its shipped profile already grants
+`edit_project`. It also grants `integration_adopt_legacy_deliveries`. Shipped
+profiles are write-if-absent, so a vault supervisor profile seeded earlier
+lacks that grant. On such an install the operator adds it once with
 `aq agent profile-reseed --profile-id supervisor --grants-only`. The
 repository ID `agent-queue2` comes from the existing development deliveries;
 verify that its stored GitHub origin and default branch are exact before

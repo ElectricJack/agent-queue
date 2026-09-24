@@ -349,21 +349,20 @@ class ProjectCommandsMixin:
             if key in args
         }
         if sensitive:
-            from src.api.scope import INTEGRATION_CONFIGURE_CAPABILITY
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
             from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
             if principal.kind is PrincipalKind.LOCAL:
                 operator_id = principal.describe()
-            elif principal.kind is PrincipalKind.SESSION and principal.policy.allows(
-                "aq_commands", INTEGRATION_CONFIGURE_CAPABILITY
-            ):
+            elif principal.kind is PrincipalKind.SESSION:
                 # The supervisor drives the train cutover end to end: it may
                 # bind the repository, review mode and policy, but only as a
-                # live named supervisor of this project whose profile grants
-                # the capability.  The disabled-and-drained state and the
-                # generation CAS below still apply to it exactly as to LOCAL.
+                # live named supervisor of this project, the gate every
+                # operator integration control uses (dispatch has already
+                # checked the ``edit_project`` grant).  The disabled-and-drained
+                # state and the generation CAS below still apply to it exactly
+                # as to LOCAL.
                 operator_id, refusal = await integration_operator(self.db, pid)
                 if refusal is not None:
                     return {"error": f"Integration configuration refused: {refusal}"}

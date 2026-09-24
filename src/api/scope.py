@@ -146,8 +146,9 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
 LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which
-#: admits only a live named supervisor whose profile grants
-#: :data:`INTEGRATION_CONFIGURE_CAPABILITY`; everyone else is refused here.
+#: admits only a live named supervisor of the project (``integration_operator``),
+#: exactly as for :data:`OPERATOR_INTEGRATION_CONTROLS`; everyone else is
+#: refused here.
 INTEGRATION_ROLLOUT_FIELDS = frozenset(
     {
         "integration_repository",
@@ -161,12 +162,6 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
         "expected_integration_generation",
     }
 )
-#: The profile capability (``aq_commands`` namespace) that lets a supervisor
-#: session bind a project's integration repository, review mode and policy.
-#: It names no command of its own: ``edit_project`` checks it for exactly the
-#: integration configuration fields, as the playbook engine checks
-#: ``playbook_admin``.
-INTEGRATION_CONFIGURE_CAPABILITY = "integration_configure"
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:

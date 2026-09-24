@@ -228,9 +228,9 @@ source paths and refuses IDs owned by another project. Use
 `integration-repository-id` instead when the existing record is already correct.
 Repository, review-mode, and policy changes all require the fresh integration
 generation while disabled and drained. They are open to the LOCAL operator
-and to a live, named supervisor session of the project whose profile grants
-`integration_configure` (the shipped supervisor profile does). A worker
-session is refused at scope.
+and to a live, named supervisor session of the project holding the
+`edit_project` grant (the shipped supervisor profile does), the same gate as
+every operator integration control. A worker session is refused at scope.
 
 Do not put rollout mode fields through `aq project set`; mode changes exist
 only under `aq integration enable`.

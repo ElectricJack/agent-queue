@@ -88,7 +88,6 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_adopt",
     "integration_adopt_legacy_deliveries",
     "integration_cancel_preserving",
-    "integration_configure",
     "integration_develop",
     "integration_development_sweep",
     "integration_eject",

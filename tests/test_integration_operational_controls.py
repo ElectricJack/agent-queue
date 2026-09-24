@@ -1390,7 +1390,8 @@ async def test_sensitive_project_configuration_is_local_generation_cas_and_delet
                 "expected_integration_generation": 1,
             },
         )
-    assert "LOCAL" in denied["error"]
+    # Elevated and granted ``edit_project``, but no live named supervisor row.
+    assert "live named supervisor" in denied["error"]
     assert controls.configure.await_count == 1
 
     rejected = await handler.execute(
