@@ -145,8 +145,10 @@ Never. It is a LOCAL operator control exposed as
 5. **Nothing to do** — no selected rows at all is `nothing_to_retry`.
 6. **Requeue** — otherwise every selected row is updated in one statement to
    `state="retryable"`, `attempts=0`, `next_attempt_at=now`,
-   `terminal_at=None`. The scheduler's next cleanup pass picks them up. The
-   outcome is `requeued` with the item `count`.
+   `terminal_at=None`. A failed item can make the batch aggregate `conflict`;
+   when no conflict item remains, the aggregate returns to `pending` so the
+   scheduler can settle it after the retry. The outcome is `requeued` with the
+   item `count`.
 
 Note the scope: the update matches on `domain_key`, the normalized identity of
 the cleanup target, so requeueing is expressed in terms of *what* is being
@@ -157,7 +159,9 @@ cleaned up rather than a row id.
 * Updates the batch's `integration_cleanup_items` rows in `retryable`/`failed`
   to be immediately due again, clearing their attempt counters and terminal
   timestamps.
-* Changes no irreversible marker, no lease, no schedule, no batch lifecycle.
+* Reopens a `conflict` batch cleanup aggregate as `pending` when no conflict
+  item remains. Changes no irreversible marker, lease, schedule, or batch
+  lifecycle.
 * Performs no Git or forge I/O of its own — the retry happens later, in
   [`integration_cleanup`](integration_cleanup.md).
 * Declares an `update` side effect on the integration operation subject and is

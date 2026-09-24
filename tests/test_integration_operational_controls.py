@@ -1886,7 +1886,10 @@ def test_pushed_candidate_resolution_refusal_names_the_required_invariant():
     ]
 
 
-async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db):
+@pytest.mark.parametrize("ambiguous_state", ["retryable", "failed"])
+async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(
+    db, ambiguous_state
+):
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
@@ -1956,11 +1959,12 @@ async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db)
                 revision=0,
                 target_ref="refs/heads/aq/integration/ambiguous",
                 expected_sha="b" * 40,
-                state="retryable",
+                state=ambiguous_state,
                 attempts=1,
                 next_attempt_at=999.0,
                 irreversible_nonce="posted",
                 irreversible_prewrite_at=79.0,
+                terminal_at=79.0 if ambiguous_state == "failed" else None,
                 created_at=70.0,
                 updated_at=79.0,
             )
@@ -1977,9 +1981,110 @@ async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db)
     async with db._engine.connect() as conn:
         marker = (
             await conn.execute(
-                select(integration_cleanup_items.c.irreversible_prewrite_at).where(
+                select(
+                    integration_cleanup_items.c.state,
+                    integration_cleanup_items.c.irreversible_prewrite_at,
+                ).where(
                     integration_cleanup_items.c.domain_key == "cleanup:ambiguous"
                 )
             )
-        ).scalar_one()
-    assert marker == 79.0
+        ).one()
+    assert marker == (ambiguous_state, 79.0)
+
+
+@pytest.mark.parametrize(
+    ("has_conflict_item", "expected_cleanup_state"),
+    [(False, "pending"), (True, "conflict")],
+)
+async def test_cleanup_retry_requeues_failed_item_on_postgres(
+    db, has_conflict_item, expected_cleanup_state
+):
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id="failed-cleanup-batch",
+                project_id="p",
+                repository_id="repo",
+                request_id="failed-cleanup-request",
+                trigger="manual",
+                source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="a" * 40,
+                lifecycle="promoted",
+                integration_branch="refs/heads/aq/integration/cleanup",
+                final_main_sha="b" * 40,
+                policy_snapshot=_policy(),
+                artifact_snapshot=_artifact().model_dump(mode="json"),
+                cleanup_state="conflict",
+                created_at=70.0,
+                updated_at=70.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_cleanup_items).values(
+                batch_id="failed-cleanup-batch",
+                kind="remote_ref",
+                identity="failed",
+                domain_key="cleanup:failed",
+                project_id="p",
+                repository_id="repo",
+                repository_numeric_id=1234,
+                repository_full_name="acme/widgets",
+                revision=0,
+                target_ref="refs/heads/aq/integration/failed",
+                expected_sha="b" * 40,
+                state="failed",
+                attempts=5,
+                next_attempt_at=999.0,
+                last_error="forge unavailable",
+                terminal_at=79.0,
+                created_at=70.0,
+                updated_at=79.0,
+            )
+        )
+        if has_conflict_item:
+            await conn.execute(
+                insert(integration_cleanup_items).values(
+                    batch_id="failed-cleanup-batch",
+                    kind="remote_ref",
+                    identity="conflict",
+                    domain_key="cleanup:conflict",
+                    project_id="p",
+                    repository_id="repo",
+                    repository_numeric_id=1234,
+                    repository_full_name="acme/widgets",
+                    revision=0,
+                    target_ref="refs/heads/aq/integration/conflict",
+                    expected_sha="b" * 40,
+                    state="conflict",
+                    attempts=1,
+                    next_attempt_at=79.0,
+                    terminal_at=79.0,
+                    created_at=70.0,
+                    updated_at=79.0,
+                )
+            )
+
+    retried = await IntegrationControlService(db, clock=lambda: 80.0).retry_cleanup(
+        "failed-cleanup-batch"
+    )
+    assert retried["outcome"] == "requeued"
+    assert retried["count"] == 1
+    async with db._engine.connect() as conn:
+        failed = (
+            await conn.execute(
+                select(integration_cleanup_items).where(
+                    integration_cleanup_items.c.domain_key == "cleanup:failed"
+                )
+            )
+        ).mappings().one()
+        cleanup_state = await conn.scalar(
+            select(integration_batches.c.cleanup_state).where(
+                integration_batches.c.id == "failed-cleanup-batch"
+            )
+        )
+    assert failed["state"] == "retryable"
+    assert failed["attempts"] == 0
+    assert failed["next_attempt_at"] == 80.0
+    assert failed["terminal_at"] is None
+    assert failed["last_error"] == "forge unavailable"
+    assert cleanup_state == expected_cleanup_state
