@@ -6,6 +6,7 @@ import App from "./App";
 import { DashboardStateProvider } from "./api/DashboardStateProvider";
 import { EventStreamProvider } from "./ws/EventStreamProvider";
 import { BrowserHistoryContext } from "./shell/historyState";
+import { PANE_REGISTRY } from "./panes/registry";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -32,3 +33,10 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </StrictMode>,
 );
+
+// Pane views are code-split. The task pane is what a click on any task opens,
+// so fetch its chunk once the first screen is up rather than on that click.
+const whenIdle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 1500));
+whenIdle(() => {
+  void PANE_REGISTRY["task-detail"]?.preload?.();
+});
