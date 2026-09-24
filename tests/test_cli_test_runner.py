@@ -201,22 +201,34 @@ class TestMissingPathsAreRefused:
         assert result.exit_code == 4
         assert "no such test path" in result.output
 
-    def test_an_existing_path_still_runs(
-        self, runner, monkeypatch, tmp_path, isolated_test_slots
-    ):
-        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
+    def test_an_existing_path_still_runs(self, runner, monkeypatch, tmp_path, isolated_test_slots):
+        from types import SimpleNamespace
+
+        from src.resources.semaphore import SlotSemaphore
+
+        # Model the parent's shared gate with its only slot occupied. The
+        # nested command must use isolated_test_slots even when the shared
+        # gate cannot grant another slot.
+        shared_data_dir = tmp_path / "shared-data"
+        shared_lock_dir = shared_data_dir / "locks" / "test-slots"
+        monkeypatch.setattr(
+            "src.cli.test_runner._load_config",
+            lambda: SimpleNamespace(
+                data_dir=str(shared_data_dir), resources=ResourcesConfig(test_slots=1)
+            ),
+        )
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
         monkeypatch.setattr(
             "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
         )
-        result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
+        with SlotSemaphore(shared_lock_dir, 1).acquire(timeout=0):
+            result = runner.invoke(cli, ["test", "tests/test_cli_test_runner.py"])
         assert result.exit_code == 0
         assert isolated_test_slots.is_dir()
 
 
 class TestEmptyCollectionIsNotASuccess:
-    def test_exit_code_five_is_explained(
-        self, runner, monkeypatch, tmp_path, isolated_test_slots
-    ):
+    def test_exit_code_five_is_explained(self, runner, monkeypatch, tmp_path, isolated_test_slots):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
         monkeypatch.setattr(
             "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 5
