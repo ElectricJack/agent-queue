@@ -690,6 +690,50 @@ class GitOpsMixin:
                 )
         return ctx.repo is not None
 
+    async def _vault_only_delivery(self, ctx: PipelineContext) -> bool:
+        """Recognize an explicit vault-only task with a usable vault attachment.
+
+        A pool worker still runs in its reserved source slot even when the
+        task requests only the vault.  The explicit requirement, rather than
+        the automatically attached vault on every code task, is the intent
+        that permits a source branch without a remote task ref.
+        """
+        requirements = await self.db.fetch_task_workspace_requirements(ctx.task.id)
+        if len(requirements) != 1 or requirements[0].kind_id != "vault":
+            return False
+        kind = await self.db.resolve_workspace_kind(ctx.task.project_id, "vault")
+        if kind is None or kind.is_git_repo:
+            return False
+        return await self.db.first_workspace_of_kind(
+            project_id=ctx.task.project_id, kind_id="vault"
+        ) is not None
+
+    async def _vault_only_source_unchanged(self, ctx: PipelineContext) -> bool:
+        """Prove a pool source slot contains no task code before vault close."""
+        if not ctx.workspace_path:
+            # A task with a recorded source branch must still own its slot;
+            # a lost lock must not look like a workspace-free vault task.
+            return not bool(ctx.task.branch_name)
+        if not await self._task_uses_git(ctx):
+            return True
+        workspace = ctx.workspace_path
+        branch = ctx.task.branch_name
+        if not branch or not await self.git.avalidate_checkout(workspace):
+            return False
+        if await self.git.ahas_remote(workspace, strict=True) is not True:
+            return False
+        current = await self.git.aget_current_branch(workspace, strict=True)
+        if current != branch.removeprefix("refs/heads/"):
+            return False
+        proved = await self._task_proves_no_work(
+            ctx, current_branch=current, has_remote=True
+        )
+        if proved:
+            # This proof is about the source slot, not the vault artifact.
+            # A shipped vault commit must not emit a no-code completion.
+            ctx.no_work_proven = False
+        return proved
+
     async def _commits_ahead_of_default(
         self,
         workspace: str,
@@ -940,6 +984,13 @@ class GitOpsMixin:
         project = await self.db.get_project(ctx.task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
             # Published work is complete; aggregate/root delivery is asynchronous.
+            if await self._vault_only_delivery(ctx):
+                if await self._vault_only_source_unchanged(ctx):
+                    return (ctx.pr_url, True)
+                await self._development_delivery_refusal(
+                    ctx, ValueError("vault-only task has uncommitted or undelivered source work")
+                )
+                return (ctx.pr_url, False)
             if not ctx.workspace_path or not await self._task_uses_git(ctx):
                 return (ctx.pr_url, True)
             try:

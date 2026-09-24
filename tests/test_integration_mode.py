@@ -1606,6 +1606,69 @@ class TestDevelopmentModeCompletion:
         assert ctx.verification_issues == []
         assert ctx.verification_retry_in_session is False
 
+    async def _vault_ctx(self, orch, task_id):
+        task, ctx = await self._dev_ctx(orch, task_id, f"aq/{task_id}")
+        await orch.db.create_workspace(
+            Workspace(
+                id=f"vault-{task_id}",
+                project_id="p-1",
+                workspace_path=f"/tmp/vault-{task_id}",
+                source_type=RepoSourceType.LINK,
+                kind_id="vault",
+            )
+        )
+        await orch.db.add_task_workspace_requirements(task_id, [("vault", None)])
+        ctx.work_outcome = "shipped"
+        return task, ctx
+
+    async def test_vault_only_shipped_close_needs_no_source_push(self, orch):
+        _, ctx = await self._vault_ctx(orch, "t-vault-only")
+        orch.git.acount_commits_ahead = AsyncMock(return_value=0)
+        orch.git.als_remote_ref = AsyncMock(
+            side_effect=AssertionError("vault delivery must not require source publication")
+        )
+
+        assert await orch._run_completion_pipeline(ctx) == (None, True)
+        assert ctx.no_work_proven is False
+        assert await orch._task_produces_no_code(ctx) is False
+
+    @pytest.mark.parametrize("source_state", ["dirty", "commit"])
+    async def test_vault_only_close_refuses_source_work(self, orch, source_state):
+        _, ctx = await self._vault_ctx(orch, f"t-vault-{source_state}")
+        if source_state == "dirty":
+            orch.git.ahas_uncommitted_changes = AsyncMock(return_value=True)
+        else:
+            orch.git.acount_commits_ahead = AsyncMock(return_value=1)
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert "undelivered source work" in ctx.verification_issues[0]
+
+    async def test_vault_only_close_refuses_lost_source_slot(self, orch):
+        _, ctx = await self._vault_ctx(orch, "t-vault-lost-slot")
+        ctx.workspace_path = None
+        ctx.workspace_id = None
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert "undelivered source work" in ctx.verification_issues[0]
+
+    async def test_auto_attached_vault_does_not_waive_code_push(self, orch):
+        _, ctx = await self._dev_ctx(orch, "t-code-unpushed", "aq/t-code-unpushed")
+        await orch.db.create_workspace(
+            Workspace(
+                id="vault-code",
+                project_id="p-1",
+                workspace_path="/tmp/vault-code",
+                source_type=RepoSourceType.LINK,
+                kind_id="vault",
+            )
+        )
+        orch.git.als_remote_ref = AsyncMock(
+            return_value=RemoteRefResult(RemoteRefState.ABSENT)
+        )
+
+        assert await orch._run_completion_pipeline(ctx) == (None, False)
+        assert "exactly pushed" in ctx.verification_issues[0]
+
     async def test_a_task_with_no_recorded_branch_says_so_and_names_the_remedy(self, orch):
         """The branchless cause names itself, and the worker can clear it."""
         _task, ctx = await self._dev_ctx(orch, "t-dev-nobranch", None)

@@ -1025,6 +1025,14 @@ aq doctor --check profiles.system_drift                          # which vault c
 aq agent profile-reseed --profile-id <id> --grants-only           # merge in only the missing grants
 ```
 
+The shipped `worker-codex` and `worker-claude` profiles grant `git_push` for
+source delivery. If a code task is denied that command, inspect profile drift
+and have the operator apply the grants-only repair; do not use another Git
+surface to evade the denied capability. A task explicitly requiring only the
+vault (`--requires-kind vault`) can deliver a vault commit without a source
+push when its source slot is proved unchanged. Keep its work outcome `shipped`
+and pass the vault artifact SHA with `aq task close --commit <vault-commit-sha>`.
+
 `profiles.system_drift` is report-only by design — overwriting a vault copy
 would discard operator edits silently. `--grants-only` appends only the
 grant names the shipped default has that your vault copy lacks to its own
