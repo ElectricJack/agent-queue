@@ -401,22 +401,16 @@ class TestSlotReport:
     without this report it charged the wait for a test slot to the test run.
     """
 
-    def _isolate(self, monkeypatch, tmp_path, slots="1"):
+    @pytest.fixture(autouse=True)
+    def _one_private_slot(self, monkeypatch, tmp_path, isolated_test_slots):
         monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "config.yaml"))
-        monkeypatch.setenv("AQ_TEST_SLOTS", slots)
-        lock_dir = tmp_path / "locks" / "test-slots"
-        monkeypatch.setattr(
-            "src.resources.semaphore.default_lock_dir",
-            lambda config=None, **kw: lock_dir,
-        )
-        return lock_dir
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
 
     def test_an_immediate_slot_is_reported_acquired_then_released(
         self, runner, monkeypatch, tmp_path
     ):
         import json
 
-        self._isolate(monkeypatch, tmp_path)
         report = tmp_path / "slot.jsonl"
         monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
         monkeypatch.setattr(
@@ -429,14 +423,14 @@ class TestSlotReport:
         assert events[0]["waited"] >= 0 and events[0]["slot"] == 0
 
     def test_a_slot_timeout_is_reported_and_the_wait_env_bounds_it(
-        self, runner, monkeypatch, tmp_path
+        self, runner, monkeypatch, tmp_path, isolated_test_slots
     ):
         import os
 
         from src.resources.semaphore import SlotSemaphore
         from src.resources.slot_report import read_slot_wait
 
-        lock_dir = self._isolate(monkeypatch, tmp_path)
+        lock_dir = isolated_test_slots
         report = tmp_path / "slot.jsonl"
         monkeypatch.setenv("AQ_TEST_SLOT_REPORT", str(report))
         # One second, not the config's half hour: the supervising caller
@@ -457,7 +451,6 @@ class TestSlotReport:
         assert wait.waiting_seconds == 0.0
 
     def test_no_report_is_written_unless_asked(self, runner, monkeypatch, tmp_path):
-        self._isolate(monkeypatch, tmp_path)
         monkeypatch.delenv("AQ_TEST_SLOT_REPORT", raising=False)
         monkeypatch.setattr(
             "src.cli.test_runner._run_forwarding_signals", lambda _argv, **_kwargs: 0
