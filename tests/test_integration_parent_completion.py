@@ -1304,6 +1304,84 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
     assert (await db.get_task(delegate.id)).status is TaskStatus.READY
 
 
+@pytest.mark.parametrize(
+    "invalid", [None, "operation", "role", "attached", "branch", "binding", "target"]
+)
+async def test_woken_verifier_delegate_passes_the_pool_claim_origin_gate(db, invalid):
+    """A verifier delegate is claimable only on its exact reserved parent fence.
+
+    It checks the parent's branch and never gets a ``task_branch_origins`` row
+    of its own, so the hierarchy origin gate must admit it by reservation, as
+    it does a repair delegate.  Before that, a pool never saw it: ``aq task
+    claim --next`` answered ``no_ready_work`` while the parent waited forever.
+    """
+    from src.database.queries.claim_queries import _frontier_where
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    await db.create_profile(AgentProfile(id="verifier", name="Verifier", harness="claude"))
+    hierarchy, checkpointed, children = await _parent_tree(db, children=1)
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await db._apply_transition(
+            conn, "parent", TaskStatus.PAUSED, _manual_pause_control=True
+        )
+        await hierarchy.parent_completion.mark_ready_on(conn, "parent")
+    operation = await db.get_integration_operation(checkpointed["operation_id"])
+    delegate_id = operation["verifier_task_id"]
+    target = BranchKey(repository_id="repo", branch="aq/parent")
+    ownership = BranchOwnership(db)
+    owner = await ownership.get_owner(target)
+    collector = await ownership.transfer(
+        Fence(target=target, owner_id=owner["owner_id"], token=owner["fence_token"]),
+        checkpointed["operation_id"],
+        "collector",
+    )
+    verifier = await ownership.transfer(collector, delegate_id, "verifier")
+    assert (await hierarchy.wake_verifier("parent", verifier))["outcome"] == "woken"
+    assert (await db.get_task(delegate_id)).status is TaskStatus.READY
+
+    verifier_owner = update(integration_branch_owners).where(
+        integration_branch_owners.c.owner_id == delegate_id
+    )
+    this_operation = update(integration_repair_operations).where(
+        integration_repair_operations.c.id == operation["id"]
+    )
+    async with db.immediate() as conn:
+        if invalid == "operation":
+            await conn.execute(this_operation.values(state="completed"))
+        elif invalid == "role":
+            await conn.execute(verifier_owner.values(owner_role="worker"))
+        elif invalid == "attached":
+            await conn.execute(
+                verifier_owner.values(
+                    handoff_state="attached", session_id="session", workspace_id="slot"
+                )
+            )
+        elif invalid == "branch":
+            await conn.execute(verifier_owner.values(ref="aq/unrelated"))
+        elif invalid == "binding":
+            await conn.execute(this_operation.values(verifier_task_id="impostor"))
+        elif invalid == "target":
+            await conn.execute(
+                update(tasks).where(tasks.c.id == "parent").values(branch_name="aq/other")
+            )
+        for mode in (None, ProjectIntegrationMode(True, "repo")):
+            claimable = await conn.scalar(
+                select(tasks.c.id).where(tasks.c.id == delegate_id, _frontier_where("p", mode))
+            )
+            assert (claimable == delegate_id) is (invalid is None), mode
+            selected = await db.select_ready_for_profile(
+                conn,
+                project_id="p",
+                profile_id="verifier",
+                default_profile_id=None,
+                agent_id="pool-agent",
+                hierarchy_mode=mode,
+            )
+            assert (selected == delegate_id) is (invalid is None), mode
+    assert await db.is_hierarchy_task_runnable(delegate_id) is (invalid is None)
+
+
 async def test_transfer_owner_replay_after_crash_still_wakes_verifier(
     command_handler_factory,
 ):
