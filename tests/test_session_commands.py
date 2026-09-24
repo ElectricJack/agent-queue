@@ -1095,7 +1095,9 @@ class TestEndToEndOnFakeProvider:
             )
         return str(wd)
 
-    async def _enable_hierarchy_launch(self, db, tmp_path, *, materialized=True):
+    async def _enable_hierarchy_launch(
+        self, db, tmp_path, *, materialized=True, checkpoint=True
+    ):
         await db.create_repo(
             RepoConfig(
                 id="repo",
@@ -1116,6 +1118,7 @@ class TestEndToEndOnFakeProvider:
                     id="origin-t1",
                     task_id="t1",
                     repository_id="repo",
+                    branch_name="aq/t1",
                     parent_ref="main",
                     base_sha="a" * 40,
                     creation_generation=0,
@@ -1125,6 +1128,19 @@ class TestEndToEndOnFakeProvider:
                     materialized_at=time.time() if materialized else None,
                 )
             )
+            if checkpoint:
+                await conn.execute(
+                    task_integration_checkpoints.insert().values(
+                        task_id="t1",
+                        repository_id="repo",
+                        branch="aq/t1",
+                        checkpoint_sha="a" * 40,
+                        generation=0,
+                        state="working",
+                        version=0,
+                        updated_at=time.time(),
+                    )
+                )
         ownership = BranchOwnership(db)
         fence = await ownership.acquire(
             BranchKey(repository_id="repo", branch="aq/t1"), "t1", "worker"
@@ -1827,7 +1843,19 @@ class TestEndToEndOnFakeProvider:
                 wd,
             )
         )
-        await entered.wait()
+        entered_wait = asyncio.create_task(entered.wait())
+        done, _ = await asyncio.wait(
+            {launch, entered_wait}, timeout=30, return_when=asyncio.FIRST_COMPLETED
+        )
+        entered_wait.cancel()
+        await asyncio.gather(entered_wait, return_exceptions=True)
+        if launch in done:
+            await launch  # Surface a launch failure instead of waiting forever.
+            pytest.fail("session launch returned before starting the provider")
+        if not entered.is_set():
+            launch.cancel()
+            await asyncio.gather(launch, return_exceptions=True)
+            pytest.fail("session launch did not reach the provider within 30 seconds")
         row = await db.get_session_for_task("t1")
         proceed.set()
         await launch
@@ -1928,7 +1956,7 @@ class TestEndToEndOnFakeProvider:
         from src.git.manager import RemoteRefState
 
         wd = await self._setup(db, tmp_path)
-        await self._enable_hierarchy_launch(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path, checkpoint=False)
         async with db.immediate() as conn:
             await conn.execute(
                 task_integration_checkpoints.insert().values(
@@ -2004,7 +2032,7 @@ class TestEndToEndOnFakeProvider:
         from src.models import PhaseResult
 
         wd = await self._setup(db, tmp_path)
-        await self._enable_hierarchy_launch(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path, checkpoint=False)
         await self._install_hierarchy_policy(db)
         async with db.immediate() as conn:
             await conn.execute(
@@ -2083,7 +2111,9 @@ class TestEndToEndOnFakeProvider:
         from src.models import PhaseResult
 
         wd = await self._setup(db, tmp_path)
-        ownership, _ = await self._enable_hierarchy_launch(db, tmp_path)
+        ownership, _ = await self._enable_hierarchy_launch(
+            db, tmp_path, checkpoint=False
+        )
         await self._install_hierarchy_policy(db)
         async with db.immediate() as conn:
             await conn.execute(
@@ -2208,7 +2238,9 @@ class TestEndToEndOnFakeProvider:
         from src.integration.parent_completion import ParentCompletion
 
         wd = await self._setup(db, tmp_path)
-        ownership, worker_fence = await self._enable_hierarchy_launch(db, tmp_path)
+        ownership, worker_fence = await self._enable_hierarchy_launch(
+            db, tmp_path, checkpoint=False
+        )
         await self._install_hierarchy_policy(db)
         head = "a" * 40
         async with db.immediate() as conn:
@@ -2341,7 +2373,9 @@ class TestEndToEndOnFakeProvider:
         from src.integration.parent_completion import ParentCompletion
 
         wd = await self._setup(db, tmp_path)
-        ownership, worker_fence = await self._enable_hierarchy_launch(db, tmp_path)
+        ownership, worker_fence = await self._enable_hierarchy_launch(
+            db, tmp_path, checkpoint=False
+        )
         await self._install_hierarchy_policy(db)
         head = "b" * 40
         async with db.immediate() as conn:
