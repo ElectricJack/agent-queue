@@ -2197,15 +2197,17 @@ async def test_exact_helper_launched_by_fake_git_descendant_cannot_take_credenti
     ["transport", "original", "other_repository", "wrong_alias"],
 )
 @pytest.mark.parametrize("operation", ["ls-remote", "clone"])
-async def test_supported_git_https_remote_helper_is_credential_origin(
+async def test_git_app_broker_refuses_other_repository_and_mismatched_remote_helpers(
     tmp_path, broker_url, operation
 ):
     requests = 0
+    first_http_request = asyncio.Event()
 
     async def respond(reader, writer):
         nonlocal requests
         requests += 1
         await reader.readuntil(b"\r\n\r\n")
+        first_http_request.set()
         status = b"401 Unauthorized" if requests <= 2 else b"403 Forbidden"
         authenticate = b'WWW-Authenticate: Basic realm="agent-queue"\r\n' if requests <= 2 else b""
         writer.write(
@@ -2263,6 +2265,9 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
     )
     request.close()
     try:
+        # Wait until Git has contacted the repository before timing the broker.
+        # Clone startup can otherwise outlast a short refusal timeout on a busy host.
+        await asyncio.wait_for(first_http_request.wait(), timeout=10)
         served = await asyncio.wait_for(
             serve_one_credential(
                 broker,
@@ -2283,7 +2288,7 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
                     "wrong_alias": remote_url,
                 }[broker_url],
                 prompt=prompt,
-                timeout=2 if broker_url == "transport" else 0.2,
+                timeout=2,
             ),
             timeout=3,
         )
@@ -2293,7 +2298,10 @@ async def test_supported_git_https_remote_helper_is_credential_origin(
         await server.wait_closed()
 
     stderr = await process.stderr.read()
-    assert served is (broker_url == "transport"), (requests, stderr)
+    if broker_url == "other_repository":
+        assert served is False, "App credentials must be refused for a different repository"
+    else:
+        assert served is (broker_url == "transport"), (requests, stderr)
     assert token == bytearray()
     assert requests >= 1
 
