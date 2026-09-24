@@ -40,7 +40,7 @@ Two mechanisms make that safe:
 * **Worker cap** — the `-n` value `aq test` enforces, derived from cores ÷
   expected concurrent agents. Never raise it.
 * **Lease database** — one of a small pool of PostgreSQL databases cloned from
-  a migrated template, handed to a test and truncated on release.
+  a migrated template, handed to a test and wiped on release.
 
 ## Run the tests for what you changed
 
@@ -230,18 +230,33 @@ to clone, and it is marked `datistemplate` / `NOT datallowconn` once ready.
 
 | Tier | Fixture | For |
 |---|---|---|
-| 1 — lease pool | `lease_dsn("name")` (armed by the autouse `_pg_backend` fixture) | ~95% of tests. Each xdist worker owns `AQ_TEST_DB_POOL_SIZE` (default 4) clones of the template; a lease is truncated and re-seeded on release, which costs milliseconds. |
+| 1 — lease pool | `lease_dsn("name")` (armed by the autouse `_pg_backend` fixture) | ~95% of tests. Each xdist worker owns `AQ_TEST_DB_POOL_SIZE` (default 4) clones of the template; a lease is wiped and re-seeded on release, which costs milliseconds. |
 | 2 — fresh clone | `db_fixtures.clone_database()` | A test that mutates schema and cannot hand the database back to the pool. |
 | 3 — scratch | `tests.pg_dsn.create_scratch_database()` | A test that drives `alembic upgrade` / `downgrade` itself. |
 
-Teardown truncates *and* replays the migration seed rows: the built-in
-`workspace_kinds` live in the template, and a bare truncate would leave every
+Teardown wipes *and* replays the migration seed rows: the built-in
+`workspace_kinds` live in the template, and a bare wipe would leave every
 test after the first without them.
+
+The wipe (`db_fixtures.reset_all`) deletes rows rather than truncating tables.
+`TRUNCATE ... CASCADE` gives every table in the foreign-key closure new files —
+279 of them after a test that wrote one `projects` row — and each new file is
+an fsync the next checkpoint owes. Every `DROP DATABASE` waits for a
+server-wide checkpoint, so on a shared server that debt landed on whichever
+run was tearing down: checkpoints of 641,642 files took 17 minutes and held
+`aq test` slots for as long. The reset runs its `DELETE`s under
+`session_replication_role = replica` (so foreign keys and the schema's delete
+guards do not constrain the order), restarts the sequences the test used, and
+`VACUUM`s the emptied tables back to zero pages. A role that may not set
+`session_replication_role` falls back to the truncate, with a warning; use a
+superuser test role (the compose service's is one).
 
 [`tests/pg_dsn.py`](../../tests/pg_dsn.py) derives a per-xdist-worker database
 name from the base DSN (`…/agent_queue_gw0`, `…_gw1`, …) and creates it on
 first use, so concurrent workers cannot truncate each other's in-flight state.
 `dispose_owned_databases()` at session finish removes only what this run owns.
+It and the lease pool's disposal issue their drops together, one connection
+each, so they wait for one shared checkpoint rather than one apiece.
 
 ### Other fixtures worth knowing
 
@@ -270,7 +285,7 @@ boot — is described in [migrations](../guides/migrations.md).
 ```text
 tests/
   conftest.py                  root fixtures, the DSN preflight, the production fence
-  db_fixtures.py               template, lease pool, truncate/seed reset
+  db_fixtures.py               template, lease pool, row-level reset + seed replay
   pg_dsn.py                    per-worker DSN derivation and owned-database cleanup
   *_helpers.py                 shared builders (git mocks, playbook V2, session dispatch, …)
   test_<area>.py               ~549 files, one per area
