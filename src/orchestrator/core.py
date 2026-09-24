@@ -877,7 +877,9 @@ class Orchestrator(
 
         return await self.db.get_profile(profile_id)
 
-    async def _backfill_default_profile_id(self, project: Any) -> str | None:
+    async def _backfill_default_profile_id(
+        self, project: Any, *, system_profiles: list[AgentProfile] | None = None
+    ) -> str | None:
         """Pick and persist a system-default profile for *project*.
 
         Rung 3 of :meth:`_resolve_profile`. Mirrors
@@ -892,7 +894,7 @@ class Orchestrator(
         from src.profiles.catalog import active_catalog_profile_ids
         from src.profiles.default_selection import select_default_profile_id
 
-        profiles = await self.db.list_profiles()
+        profiles = system_profiles if system_profiles is not None else await self.db.list_profiles()
         chosen = select_default_profile_id(
             profiles, eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir)
         )
@@ -918,7 +920,9 @@ class Orchestrator(
         )
         return chosen
 
-    async def _effective_default_profile_id(self, project: Any) -> str | None:
+    async def _effective_default_profile_id(
+        self, project: Any, *, system_profiles: list[AgentProfile] | None = None
+    ) -> str | None:
         """Project's effective default profile id — rungs 2-3 of ``_resolve_profile``.
 
         Rung 2 (``project.default_profile_id``) then rung 3
@@ -932,11 +936,19 @@ class Orchestrator(
         raw, which skips rung 3 and can disagree with what a real dispatch
         resolves.
         """
-        raw = project.default_profile_id or await self._backfill_default_profile_id(project)
-        return await self._availability_aware_default(raw, getattr(project, "id", None))
+        raw = project.default_profile_id or await self._backfill_default_profile_id(
+            project, system_profiles=system_profiles
+        )
+        return await self._availability_aware_default(
+            raw, getattr(project, "id", None), system_profiles=system_profiles
+        )
 
     async def _availability_aware_default(
-        self, default_profile_id: str | None, project_id: str | None = None
+        self,
+        default_profile_id: str | None,
+        project_id: str | None = None,
+        *,
+        system_profiles: list[AgentProfile] | None = None,
     ) -> str | None:
         """The default's equivalent rung while its provider is unavailable (D13).
 
@@ -952,7 +964,10 @@ class Orchestrator(
         if availability is None or reroute is None or not availability.suppressed_providers():
             return default_profile_id
         try:
-            profiles = {profile.id: profile for profile in await self.db.list_profiles()}
+            available = (
+                system_profiles if system_profiles is not None else await self.db.list_profiles()
+            )
+            profiles = {profile.id: profile for profile in available}
         except Exception:
             logger.debug("availability-aware default: profiles unreadable", exc_info=True)
             return default_profile_id
