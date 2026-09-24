@@ -60,6 +60,7 @@ from src.database.tables import (
     integration_episode_receipt_acceptances,
     integration_history_waiver_consumptions,
     integration_history_waivers,
+    integration_legacy_deliveries,
     integration_legacy_gate_applicability,
     integration_legacy_suppression,
     integration_operation_artifact_pins,
@@ -263,6 +264,7 @@ _ORDERED_TABLES = [
     # No FK dependencies
     development_deliveries,
     integration_batches,
+    integration_legacy_deliveries,
     integration_branch_owners,
     integration_candidate_revisions,
     integration_check_evidence,

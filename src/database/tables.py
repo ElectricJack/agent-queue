@@ -4305,3 +4305,41 @@ Index(
     development_deliveries.c.project_id,
     development_deliveries.c.state,
 )
+
+
+# A terminal child of a terminal parent delivered outside the train (by the
+# development publisher or before trains existed) can never get a train
+# receipt: its parent is never collected.  ``aq integration
+# adopt-legacy-deliveries`` records one row per such child once it proves the
+# child's delivered commit is on the default branch, or once an operator
+# explicitly accepts one it cannot prove.  Integration status then accepts the
+# child (src/integration/legacy_deliveries.py).  Durable audit, no foreign
+# key: an archived child keeps its row.
+integration_legacy_deliveries = Table(
+    "integration_legacy_deliveries",
+    metadata,
+    Column("task_id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("parent_task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("target_ref", Text, nullable=False),
+    # The default-branch tip the proof was made against.
+    Column("target_sha", Text, nullable=False),
+    # The commit proven to be an ancestor of ``target_sha``; null only for an
+    # operator acceptance.
+    Column("delivered_sha", Text, nullable=True),
+    Column("proof", Text, nullable=False),
+    Column("development_delivery_id", Text, nullable=True),
+    Column("operator_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint(
+        "proof IN ('development_delivery', 'branch_tip', 'operator_accepted')",
+        name="ck_integration_legacy_deliveries_proof",
+    ),
+    CheckConstraint(
+        "proof = 'operator_accepted' OR delivered_sha IS NOT NULL",
+        name="ck_integration_legacy_deliveries_delivered_sha",
+    ),
+    Index("idx_integration_legacy_deliveries_parent", "project_id", "parent_task_id"),
+)

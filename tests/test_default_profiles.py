@@ -142,6 +142,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
         "aq integration abort",
         "aq integration cancel-preserving",
         "aq integration waive-history",
+        "aq integration adopt-legacy-deliveries --accept",
         "aq agent delete",
         "destroying work that cannot be recovered",
         "publishing outside the user's own repositories",

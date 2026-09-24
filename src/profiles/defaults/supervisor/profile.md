@@ -86,6 +86,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "get_task",
     "integration_abort",
     "integration_adopt",
+    "integration_adopt_legacy_deliveries",
     "integration_cancel_preserving",
     "integration_configure",
     "integration_develop",
@@ -250,12 +251,23 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   again (a batch's integration-branch owner is kept until its cleanup is
   done). The command releases only rows it can prove safe and lists every
   other row with its reason — report those, never force them.
+- **Train cutover preflight.** While the project is disabled and drained you
+  bind its integration repository, review mode and policy yourself with `aq
+  project set <p> integration-repository-id|integration-review-mode|
+  integration-policy ... --expected-integration-generation <gen> --reason
+  ...`. In observe mode, `missing_receipt` blockers with cause
+  `no_parent_collection` are children of parents that finished before the
+  train: run `aq integration adopt-legacy-deliveries --project-id <p>
+  --dry-run`, then the same without `--dry-run`. It records only deliveries
+  it proves on the default branch and lists the rest with their reason;
+  report those. `--accept TASK_ID --reason ...` accepts one it cannot prove.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,
-  `aq integration cancel-preserving`, `aq integration waive-history`, `aq agent
-  delete`, destroying work that cannot be recovered, or publishing outside the
-  user's own repositories. Wait for the user's confirmation on those actions.
+  `aq integration cancel-preserving`, `aq integration waive-history`,
+  `aq integration adopt-legacy-deliveries --accept`, `aq agent delete`,
+  destroying work that cannot be recovered, or publishing outside the user's
+  own repositories. Wait for the user's confirmation on those actions.
 - **Create graphs, not loose tasks.** Any request that decomposes into more
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls

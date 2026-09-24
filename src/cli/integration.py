@@ -280,6 +280,48 @@ def integration_release_stale_owners(
     _execute(ctx, "integration_release_stale_owners", args)
 
 
+@integration.command("adopt-legacy-deliveries")
+@click.option("--project-id", required=True)
+@click.option("--dry-run", is_flag=True, help="Report what would be adopted; change nothing.")
+@click.option(
+    "--accept",
+    "accept",
+    multiple=True,
+    metavar="TASK_ID",
+    help="Record this unprovable child as operator-accepted (repeatable; needs --reason).",
+)
+@click.option("--reason", help="Audit reason; required with --accept.")
+@click.pass_context
+@_handle_errors
+def integration_adopt_legacy_deliveries(
+    ctx: click.Context,
+    project_id: str,
+    dry_run: bool,
+    accept: tuple[str, ...],
+    reason: str | None,
+) -> None:
+    """Adopt delivered children of parents that finished before the train.
+
+    Observe-mode status reports `missing_receipt` for a terminal child of a
+    terminal parent with no parent collection: such a parent is never
+    collected, so no train receipt can ever exist.  Status already accepts a
+    child the development publisher delivered to the default branch.  For
+    every other flagged child this fetches the designated repository and
+    records a legacy delivery when a development delivery's commit or the
+    child's branch tip is an ancestor of the default branch; it lists every
+    child it cannot prove with the reason.  `--accept TASK_ID --reason ...`
+    records a named unprovable child as operator-accepted.  Safe to repeat.
+    """
+    if accept and not reason:
+        raise click.UsageError("--accept requires --reason")
+    args: dict[str, Any] = {"project_id": project_id, "dry_run": dry_run}
+    if accept:
+        args["accept"] = list(accept)
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_adopt_legacy_deliveries", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

@@ -252,6 +252,59 @@ async def test_release_stale_owners_runs_under_the_derived_operator_label(db, mo
     run.assert_not_awaited()
 
 
+async def test_adopt_legacy_deliveries_runs_under_the_derived_operator_label(db, monkeypatch):
+    run = AsyncMock(
+        return_value={
+            "outcome": "adopted",
+            "project_id": "p",
+            "dry_run": True,
+            "count": 1,
+            "outcomes": [],
+        }
+    )
+    monkeypatch.setattr(
+        "src.integration.legacy_deliveries.legacy_delivery_adoption_for",
+        lambda _handler: SimpleNamespace(run=run),
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace()
+
+    local = await handler._cmd_integration_adopt_legacy_deliveries(
+        {"project_id": "p", "dry_run": True}
+    )
+    assert (local["success"], local["outcome"]) == (True, "adopted")
+    assert run.await_args.args == ("p",)
+    assert run.await_args.kwargs == {
+        "principal": "human:local-operator",
+        "dry_run": True,
+        "accept": (),
+        "reason": None,
+    }
+
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_adopt_legacy_deliveries(
+            {"project_id": "p", "accept": ["c1"], "reason": "no-code task"}
+        )
+    assert run.await_args.kwargs == {
+        "principal": "supervisor session:super-p",
+        "dry_run": False,
+        "accept": ("c1",),
+        "reason": "no-code task",
+    }
+
+    run.reset_mock()
+    invalid = await handler._cmd_integration_adopt_legacy_deliveries(
+        {"project_id": "p", "accept": ["c1"]}
+    )
+    assert invalid["outcome"] == "invalid"
+    for principal in (_session("worker", "p"), _session("super-stopped", "p")):
+        with principal_context(principal):
+            refused = await handler._cmd_integration_adopt_legacy_deliveries({"project_id": "p"})
+        assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 def test_operator_control_scope_defers_live_session_validation_to_the_handler():
     elevated = RequestScope(kind="session", session_id="supervisor", project_id="p", elevated=True)
     worker = RequestScope(kind="session", session_id="worker", project_id="p", elevated=False)

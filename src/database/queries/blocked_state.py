@@ -39,8 +39,8 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 from src.integration.publishable_artifact import has_publishable_artifact
+from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -84,32 +84,17 @@ _WITHHOLDING_PARENT_STATUSES = (
 # every edge as ``status != COMPLETED``.
 
 
-def _development_delivery_pending(task, *, include_foreign_repos=False):
-    """Completed code is usable only after publication to the configured default ref.
+def development_delivery_receipt(task, project, repo):
+    """Whether the development publisher delivered *task*'s latest completion.
 
-    Candidate preservation and parent aggregates are not worker checkout bases.
-    A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks have no repository artifact to publish.
-
-    *include_foreign_repos* also counts a task whose ``repo_id`` names a
-    repository that is not one of its project's own.  The publisher never
-    collects such a task, so readiness leaves it out, but its work has not
-    reached the default branch either: the archive sweep asks with this set,
-    because ``fleet-meadow`` carried another project's repository id and was
-    archived undelivered.
+    True when a ``delivered`` or ``adopted`` development delivery of *project*
+    to *repo*'s default branch lists *task* with the source of its latest
+    completion (or binds that exact close through ``completion_sources``).
+    That row is the development publisher's delivery receipt: blocked-state
+    readiness releases dependents on it, and integration status accepts it for
+    a child whose terminal parent the train will never collect.  *task*,
+    *project* and *repo* are tables or aliases correlated by the caller.
     """
-    project = projects.alias()
-    repo = repos.alias()
-    repo_scope = or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id)
-    if include_foreign_repos:
-        own = repos.alias()
-        repo_scope = or_(
-            repo_scope,
-            ~select(literal(1))
-            .where(own.c.id == task.c.repo_id, own.c.project_id == task.c.project_id)
-            .correlate(task)
-            .exists(),
-        )
     delivery = development_deliveries.alias()
     completion = task_completion_records.alias()
     source_sha = (
@@ -155,6 +140,36 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
         .correlate(task, project, repo)
         .exists()
     )
+    return delivered
+
+
+def _development_delivery_pending(task, *, include_foreign_repos=False):
+    """Completed code is usable only after publication to the configured default ref.
+
+    Candidate preservation and parent aggregates are not worker checkout bases.
+    A delivery of an older revision cannot release a new completion revision.
+    Branchless tasks have no repository artifact to publish.
+
+    *include_foreign_repos* also counts a task whose ``repo_id`` names a
+    repository that is not one of its project's own.  The publisher never
+    collects such a task, so readiness leaves it out, but its work has not
+    reached the default branch either: the archive sweep asks with this set,
+    because ``fleet-meadow`` carried another project's repository id and was
+    archived undelivered.
+    """
+    project = projects.alias()
+    repo = repos.alias()
+    repo_scope = or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id)
+    if include_foreign_repos:
+        own = repos.alias()
+        repo_scope = or_(
+            repo_scope,
+            ~select(literal(1))
+            .where(own.c.id == task.c.repo_id, own.c.project_id == task.c.project_id)
+            .correlate(task)
+            .exists(),
+        )
+    delivered = development_delivery_receipt(task, project, repo)
     return (
         select(literal(1))
         .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))

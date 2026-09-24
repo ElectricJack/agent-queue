@@ -137,6 +137,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_development_sweep",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_adopt_legacy_deliveries",
         "integration_flush",
         "integration_eject",
         "integration_transfer_owner",

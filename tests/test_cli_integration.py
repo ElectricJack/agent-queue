@@ -127,6 +127,19 @@ def _client(result):
             {"project_id": "p", "dry_run": True, "older_than": "2d"},
         ),
         (
+            ["adopt-legacy-deliveries", "--project-id", "p", "--dry-run"],
+            "integration_adopt_legacy_deliveries",
+            {"project_id": "p", "dry_run": True},
+        ),
+        (
+            [
+                "adopt-legacy-deliveries", "--project-id", "p",
+                "--accept", "c1", "--accept", "c2", "--reason", "no-code task",
+            ],
+            "integration_adopt_legacy_deliveries",
+            {"project_id": "p", "dry_run": False, "accept": ["c1", "c2"], "reason": "no-code task"},
+        ),
+        (
             ["recover-candidate-member", "frozen-resolution"],
             "integration_recover_candidate_member",
             {"reservation_id": "frozen-resolution"},

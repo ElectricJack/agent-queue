@@ -73,6 +73,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_delegates",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_adopt_legacy_deliveries",
         "integration_resolve_candidate_member",
     }
 )
@@ -154,6 +155,20 @@ class IntegrationReleaseStaleOwnersArgs(CommandArgs):
 
             parse_duration(value)
         return value
+
+
+class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = False
+    #: Children to record as operator-accepted when no proof reaches them.
+    accept: tuple[str, ...] = ()
+    reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def accept_needs_reason(self):
+        if self.accept and self.reason is None:
+            raise ValueError("accept requires a reason")
+        return self
 
 
 class IntegrationRecoverCandidateMemberArgs(CommandArgs):
@@ -776,6 +791,22 @@ INTEGRATION_RELEASE_STALE_OWNERS = _operational_contract(
     RELEASE_STALE_OWNERS_OUTCOMES,
     successes=frozenset({"released", "nothing_to_release"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+ADOPT_LEGACY_DELIVERIES_OUTCOMES = (
+    "adopted",
+    "nothing_to_adopt",
+    "blocked",
+    "invalid",
+    "not_found",
+)
+
+INTEGRATION_ADOPT_LEGACY_DELIVERIES = _operational_contract(
+    "integration_adopt_legacy_deliveries",
+    IntegrationAdoptLegacyDeliveriesArgs,
+    ADOPT_LEGACY_DELIVERIES_OUTCOMES,
+    successes=frozenset({"adopted", "nothing_to_adopt"}),
+    side_effect=SideEffectClass.CREATE,
 )
 
 INTEGRATION_RECOVER_CANDIDATE_MEMBER = CommandContract(
@@ -2160,6 +2191,18 @@ async def _release_stale_owners_adapter(
     )
 
 
+async def _adopt_legacy_deliveries_adapter(
+    args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_adopt_legacy_deliveries",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        set(ADOPT_LEGACY_DELIVERIES_OUTCOMES),
+    )
+
+
 async def _recover_candidate_member_adapter(
     args: IntegrationRecoverCandidateMemberArgs, ctx: CommandContext | None
 ):
@@ -2223,6 +2266,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
+        (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),

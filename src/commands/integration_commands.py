@@ -618,6 +618,32 @@ class IntegrationCommandsMixin:
         )
         return {"success": result["outcome"] != "not_found", **result}
 
+    async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
+        """Record provable pre-train deliveries of children no train will collect."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationAdoptLegacyDeliveriesArgs
+        from src.integration.legacy_deliveries import legacy_delivery_adoption_for
+
+        try:
+            request = IntegrationAdoptLegacyDeliveriesArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid legacy delivery adoption request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        service = legacy_delivery_adoption_for(self)
+        if service is None:
+            return _failure("runtime_error", "legacy delivery adoption is unavailable")
+        result = await service.run(
+            request.project_id,
+            principal=principal,
+            dry_run=request.dry_run,
+            accept=request.accept,
+            reason=request.reason,
+        )
+        return {"success": result["outcome"] in {"adopted", "nothing_to_adopt"}, **result}
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

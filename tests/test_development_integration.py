@@ -977,6 +977,41 @@ async def test_parent_assembly_does_not_require_parent_verifier(setup):
     assert result["manifest"][0]["parent_task_id"] == "epic"
 
 
+async def test_development_delivery_is_a_receipt_observe_readiness_accepts(setup):
+    """A child the development publisher delivered never blocks a train cutover.
+
+    Its finished parent has no train collection and never will, so the
+    delivery row itself is the receipt integration status accepts.
+    """
+    from src.integration.status import IntegrationStatusService
+
+    db, service, _source, _remote, _repo = setup
+    await db.create_task(
+        Task(id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED)
+    )
+    await feature(setup, "child")
+    async with db.immediate() as conn:
+        await db.set_parent("child", "epic", conn=conn)
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    async with db.immediate() as conn:
+        # The parent finishes before the cutover (it is manually paused here
+        # only so the publisher leaves it alone).
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="COMPLETED"))
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                hierarchical_integration_mode="observe",
+                hierarchical_integration_desired_mode="observe",
+            )
+        )
+
+    projection = await IntegrationStatusService(db).task_blockers("epic")
+
+    assert projection["integration_active"] is True
+    assert [b for b in projection["blockers"] if b["code"] == "missing_receipt"] == []
+
+
 async def test_conflict_parks_dependent_but_delivers_independent(setup):
     db, service, _source, _remote, _repo = setup
     await feature(setup, "one", filename="base.txt", content="one\n")

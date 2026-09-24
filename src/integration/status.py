@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -25,13 +26,16 @@ from src.database.tables import (
     project_integration_leases,
     project_integration_schedules,
     projects,
-    task_integration_checkpoints,
     task_branch_origins,
+    task_integration_checkpoints,
     tasks,
 )
-from src.integration.parent_completion import ParentCompletion
+from src.integration.legacy_deliveries import (
+    NO_PARENT_COLLECTION,
+    legacy_delivered_children_on,
+)
 from src.integration.models import RepairPolicy
-
+from src.integration.parent_completion import ParentCompletion
 
 ACTIVE_BATCH_STATES = (
     "sealing",
@@ -575,18 +579,26 @@ class IntegrationStatusService:
                         )
                     )
         else:
+            # No collection: a terminal parent is never collected, so a child
+            # it delivered outside the train (development publisher, adopted
+            # legacy delivery) is settled rather than missing a receipt.
+            legacy = await legacy_delivered_children_on(
+                conn, row, [child["id"] for child in child_rows]
+            )
             for child in child_rows:
-                code = (
-                    "open_child"
-                    if child["status"] not in TERMINAL_TASK_STATES
-                    else "missing_receipt"
-                )
-                detail = (
-                    "child task is not terminal"
-                    if code == "open_child"
-                    else "no current parent collection exists for the terminal child"
-                )
-                blockers.append(_blocker(code, detail, child["id"]))
+                if child["status"] not in TERMINAL_TASK_STATES:
+                    blockers.append(
+                        _blocker("open_child", "child task is not terminal", child["id"])
+                    )
+                elif child["id"] not in legacy:
+                    blockers.append(
+                        _blocker(
+                            "missing_receipt",
+                            "no current parent collection exists for the terminal child",
+                            child["id"],
+                            cause=NO_PARENT_COLLECTION,
+                        )
+                    )
         repair = await self._repair_projection(conn, operation_rows)
         for item in repair:
             if item["state"] == "human_required":
