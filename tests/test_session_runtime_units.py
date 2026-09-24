@@ -14,6 +14,8 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -391,3 +393,135 @@ class TestProctable:
             pid=os.getpid(), ppid=0, comm=comm, start_ticks=start_ticks + 999
         )
         assert proctable._fence_ok_sync(recycled, None) is False
+
+    # -- kill_marked: the sweep that follows a session's leftovers --------
+
+    @staticmethod
+    def _marked_env(token: str) -> dict[str, str]:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("AQ_")}
+        env["AQ_INSTANCE_TOKEN"] = token
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        return env
+
+    @staticmethod
+    def _sleeper(env: dict[str, str]) -> subprocess.Popen:
+        return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], env=env)
+
+    async def test_kill_marked_reaches_a_detached_child_whose_parent_exited(self):
+        """The 2026-09-24 shape: a setsid'd shell outlives its harness.
+
+        Once the parent is gone the child is parented to init, so the ppid
+        walk ``kill_tree`` does from the (dead) root reaches nothing; the
+        inherited token still names it.
+        """
+        token = f"tok-{uuid.uuid4().hex}"
+        script = (
+            "import subprocess, sys;"
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],"
+            " start_new_session=True);"
+            "print(c.pid, flush=True)"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=subprocess.PIPE, env=self._marked_env(token)
+        )
+        orphan_pid = int(parent.stdout.readline())
+        parent.wait(timeout=10)
+        orphan = proctable.read_entry_sync(orphan_pid)
+        assert orphan is not None
+        try:
+            await proctable.kill_tree(parent.pid, instance_token=token, grace=0.2)
+            assert proctable.is_alive_sync(orphan)  # the gap this sweep closes
+
+            killed = await proctable.kill_marked(token, grace=1.0)
+
+            assert orphan_pid in {e.pid for e in killed}
+            assert not proctable.is_alive_sync(orphan)
+        finally:
+            try:
+                os.kill(orphan_pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+    async def test_kill_marked_spares_other_tokens(self):
+        mine, other = f"tok-{uuid.uuid4().hex}", f"tok-{uuid.uuid4().hex}"
+        target = self._sleeper(self._marked_env(mine))
+        bystander = self._sleeper(self._marked_env(other))
+        try:
+            await asyncio.sleep(0.2)
+            await proctable.kill_marked(mine, grace=1.0)
+            assert target.wait(timeout=5) is not None
+            assert bystander.poll() is None
+        finally:
+            for proc in (target, bystander):
+                proc.kill()
+                proc.wait()
+
+    async def test_kill_marked_with_no_token_is_a_no_op(self):
+        assert await proctable.kill_marked("", grace=0.1) == []
+
+    def test_kill_marked_never_signals_its_caller_or_its_ancestry(self):
+        """A process carrying the swept token survives its own sweep.
+
+        A daemon that inherited a session's token (before ``aq start``
+        stripped it) must not kill itself — or the tmux server — when it
+        stops that session.
+        """
+        token = f"tok-{uuid.uuid4().hex}"
+        script = (
+            "import subprocess, sys;"
+            "from src.sessions import proctable;"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+            "import time; time.sleep(0.2);"
+            "killed = proctable.kill_marked_sync('AQ_INSTANCE_TOKEN', sys.argv[1], grace=1.0);"
+            "g.wait(timeout=5);"
+            "print(sorted(e.pid for e in killed), g.pid, flush=True)"
+        )
+        caller = subprocess.run(
+            [sys.executable, "-c", script, token],
+            env=self._marked_env(token),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        killed, grandchild = caller.stdout.strip().rsplit(" ", 1)
+        assert killed == f"[{grandchild}]"
+
+    def test_marked_root_is_the_topmost_process_carrying_the_token(self):
+        token = f"tok-{uuid.uuid4().hex}"
+        script = (
+            "import subprocess, sys, time;"
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+            "print(c.pid, flush=True); time.sleep(60)"
+        )
+        harness = subprocess.Popen(
+            [sys.executable, "-c", script], stdout=subprocess.PIPE, env=self._marked_env(token)
+        )
+        child_pid = int(harness.stdout.readline())
+        try:
+            root = proctable.marked_root_sync(child_pid, "AQ_INSTANCE_TOKEN", token)
+            assert root is not None and root.pid == harness.pid
+            assert proctable.marked_root_sync(child_pid, "AQ_INSTANCE_TOKEN", "other") is None
+        finally:
+            proctable.kill_marked_sync("AQ_INSTANCE_TOKEN", token, grace=0.5)
+            harness.wait()
+
+    def test_file_holders_names_every_process_with_the_file_open(self, tmp_path):
+        path = tmp_path / "slot-0.lock"
+        path.write_text("")
+        holder = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import sys, time; f = open(sys.argv[1]); print('ok', flush=True); time.sleep(60)",
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+        )
+        try:
+            assert holder.stdout.readline().strip() == b"ok"
+            assert holder.pid in {e.pid for e in proctable.file_holders_sync(path)}
+        finally:
+            holder.kill()
+            holder.wait()
+        assert holder.pid not in {e.pid for e in proctable.file_holders_sync(path)}

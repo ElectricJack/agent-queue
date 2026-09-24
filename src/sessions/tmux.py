@@ -490,18 +490,25 @@ class TmuxProvider(SessionProvider):
             ready_deadline = max(ready_deadline, time.monotonic() + dialog_budget.remaining())
 
     async def stop(self, h: SessionHandle, *, grace: float = 2.0) -> None:
-        if not await self._fenced(h):
-            return  # idempotent, and never a same-named successor
-        pid = await self._pane_pid(h.name)
-        if pid is not None:
-            # Pitfall §9 (PID recycling): every signal inside is fenced by
-            # start-time and, where readable, the instance token.
-            await proctable.kill_tree(pid, instance_token=h.instance_token or None, grace=grace)
-        with contextlib.suppress(TmuxCommandError):
-            await self._tmux("kill-session", "-t", f"={h.name}")
-        self._token_cache.pop(h.name, None)
-        self._poke.pop(h.name, None)
-        self._cache.forget(h.name)
+        if await self._fenced(h):
+            pid = await self._pane_pid(h.name)
+            if pid is not None:
+                # Pitfall §9 (PID recycling): every signal inside is fenced by
+                # start-time and, where readable, the instance token.
+                await proctable.kill_tree(pid, instance_token=h.instance_token or None, grace=grace)
+            with contextlib.suppress(TmuxCommandError):
+                await self._tmux("kill-session", "-t", f"={h.name}")
+            self._token_cache.pop(h.name, None)
+            self._poke.pop(h.name, None)
+            self._cache.forget(h.name)
+        # Whatever the session left behind outside the pane's tree: a
+        # detached Bash-tool shell whose harness already exited (a drained
+        # pool worker) is parented to init, so neither kill_tree nor the
+        # kill-session above reaches its ``aq test`` run.  Swept even when
+        # the fence missed — the session may be gone while its leftovers
+        # are not — and a same-named successor carries a different token.
+        if h.instance_token:
+            await proctable.kill_marked(h.instance_token, grace=grace)
 
     async def interrupt(self, h: SessionHandle) -> None:
         if not await self._fenced(h):

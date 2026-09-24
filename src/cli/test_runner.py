@@ -328,30 +328,120 @@ def _run_forwarding_signals(argv: list[str], *, env: dict[str, str] | None = Non
                 pass
 
 
-def _render_status(snapshot: dict) -> None:
+_VERDICT_STYLE = {"live": "green", "orphaned": "red", "unattributed": "yellow"}
+
+
+def _holder_verdicts(lock_dir) -> dict[int, str]:
+    """``{slot: live|orphaned|unattributed}``; empty when attribution fails.
+
+    Status is a read a human runs while the box is in trouble, so a
+    ``/proc`` surprise here degrades to the plain table, never a traceback.
+    """
+    try:
+        from src.resources.test_runs import held_slots
+
+        return {held.slot: held.state for held in held_slots(lock_dir)}
+    except Exception:  # noqa: BLE001 - status must render even when /proc surprises us
+        return {}
+
+
+def _render_status(snapshot: dict, verdicts: Mapping[int, str] | None = None) -> None:
     from rich.table import Table
 
+    verdicts = verdicts or {}
     table = Table(title=f"Test slots — {snapshot['free']}/{snapshot['total']} free")
     table.add_column("Slot", justify="right")
     table.add_column("State")
     table.add_column("Holder")
+    table.add_column("Session")
     table.add_column("Held for", justify="right")
     now = time.time()
     for row in snapshot["slots"]:
         holder = row.get("holder") or {}
         if not row["held"]:
-            table.add_row(str(row["slot"]), "[green]free[/]", "-", "-")
+            table.add_row(str(row["slot"]), "[green]free[/]", "-", "-", "-")
             continue
         since = holder.get("since")
         held_for = f"{now - since:.0f}s" if isinstance(since, (int, float)) else "?"
         who = holder.get("task_id") or holder.get("cwd") or f"pid {holder.get('pid', '?')}"
-        table.add_row(str(row["slot"]), "[yellow]busy[/]", str(who), held_for)
+        verdict = verdicts.get(row["slot"])
+        session = f"[{_VERDICT_STYLE.get(verdict, 'dim')}]{verdict}[/]" if verdict else "?"
+        table.add_row(str(row["slot"]), "[yellow]busy[/]", str(who), session, held_for)
     console.print(table)
+    if "orphaned" in verdicts.values():
+        console.print(
+            "[red]A slot is held by a run whose session is gone.[/] "
+            "[dim]Preview with `aq test --aq-reap-orphans`; add --aq-apply to free it.[/]"
+        )
     for waiter in snapshot["waiting"]:
         since = waiter.get("since")
         waited = f"{now - since:.0f}s" if isinstance(since, (int, float)) else "?"
         who = waiter.get("task_id") or f"pid {waiter.get('pid', '?')}"
         console.print(f"[dim]waiting:[/] {who} ({waited})")
+
+
+def _holder_meta(test_run_id: str) -> dict:
+    """The slot record: who holds it, attributable to a session and task.
+
+    A pool worker's environment carries no ``AQ_TASK_ID``, so a record of
+    the environment alone named nobody — the 2026-09-24 orphans showed up
+    as bare worktree paths.  Attribution must never cost a test run, so any
+    failure falls back to the plain record.
+    """
+    try:
+        from src.resources.test_runs import holder_identity
+
+        return holder_identity(test_run_id=test_run_id)
+    except Exception:  # noqa: BLE001 - attribution must never cost a test run
+        return {
+            "pid": os.getpid(),
+            "task_id": os.environ.get("AQ_TASK_ID"),
+            "session": os.environ.get("AQ_SESSION_NAME"),
+            "session_id": os.environ.get("AQ_SESSION_ID"),
+            "test_run_id": test_run_id,
+            "cwd": os.getcwd(),
+        }
+
+
+def _reap_orphans(lock_dir, *, apply: bool) -> int:
+    """``--aq-reap-orphans``: report, and with *apply* terminate, orphaned runs.
+
+    Exit 0 when nothing is orphaned or every orphan was freed, 1 when a
+    reap did not free its slot.  A live session's run is never touched —
+    stop the session instead.
+    """
+    from src.resources.test_runs import reap_orphans
+
+    report = reap_orphans(lock_dir, apply=apply)
+    for row in report["held"]:
+        if row["state"] == "orphaned":
+            continue
+        console.print(
+            f"[dim]slot {row['slot']}: {row['owner']} — {row['state']} ({row['reason']})[/]"
+        )
+    if not report["orphaned"]:
+        console.print("[green]aq test:[/] no orphaned test runs.")
+        return 0
+    if not apply:
+        for row in report["orphaned"]:
+            console.print(
+                f"[red]slot {row['slot']}[/]: {row['owner']} — orphaned ({row['reason']}), "
+                f"pid {row['pid']}, held {row['held_for_s']}s"
+            )
+        console.print(
+            "[dim]Dry run. Re-run with --aq-apply to terminate these and free the slots.[/]"
+        )
+        return 0
+    failed = 0
+    for row in report["results"]:
+        pids = ", ".join(str(pid) for pid in row["pids"]) or "none"
+        style = "green" if row["freed"] else "red"
+        failed += 0 if row["freed"] else 1
+        console.print(
+            f"[{style}]slot {row['slot']}[/]: {row['owner']} — {row['action']} "
+            f"(signalled: {pids}; {row['reason']})"
+        )
+    return 1 if failed else 0
 
 
 @cli.command(
@@ -372,6 +462,12 @@ def _render_status(snapshot: dict) -> None:
     help="Override the default marker deselects (perf/migration/slow/tmux/integration).",
 )
 @click.option("--aq-dry-run", is_flag=True, help="Print the pytest command and exit.")
+@click.option(
+    "--aq-reap-orphans",
+    is_flag=True,
+    help="List test runs whose session is gone (dry run); add --aq-apply to terminate them.",
+)
+@click.option("--aq-apply", is_flag=True, help="With --aq-reap-orphans: terminate the orphans.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def test_command(
@@ -382,6 +478,8 @@ def test_command(
     aq_timeout: int | None,
     aq_all_markers: bool,
     aq_dry_run: bool,
+    aq_reap_orphans: bool,
+    aq_apply: bool,
     pytest_args: tuple[str, ...],
 ) -> None:
     """Run pytest under the box-wide test semaphore.
@@ -391,6 +489,7 @@ def test_command(
     aq test tests/ -k claim                a slice of the suite
     aq test --aq-status                    who is holding the slots
     aq test --aq-no-wait tests/            fail instead of queueing
+    aq test --aq-reap-orphans [--aq-apply] free slots held by dead sessions
 
     Everything that is not an ``--aq-*`` option is passed to pytest
     untouched.  ``-n`` and ``-m`` are added only when you did not supply
@@ -417,11 +516,18 @@ def test_command(
             console.print(f"[yellow]aq test:[/] --aq-workers clamped to {cores} (cores)")
     timeout = _slot_wait_timeout(timeout, aq_timeout)
 
-    sem = SlotSemaphore(default_lock_dir(config), slots)
+    lock_dir = default_lock_dir(config)
+    sem = SlotSemaphore(lock_dir, slots)
 
     if aq_status:
-        _render_status(sem.snapshot())
+        _render_status(sem.snapshot(), _holder_verdicts(lock_dir))
         return
+
+    if aq_apply and not aq_reap_orphans:
+        console.print("[red]aq test:[/] --aq-apply only applies to --aq-reap-orphans")
+        ctx.exit(2)
+    if aq_reap_orphans:
+        ctx.exit(_reap_orphans(lock_dir, apply=aq_apply))
 
     if not pytest_args:
         console.print("[yellow]No pytest arguments given.[/] Try: aq test tests/test_config.py")
@@ -456,13 +562,8 @@ def test_command(
         console.print(f"[red]aq test:[/] {dsn_error}")
         ctx.exit(4)
 
-    meta = {
-        "pid": os.getpid(),
-        "task_id": os.environ.get("AQ_TASK_ID"),
-        "session": os.environ.get("AQ_SESSION_NAME"),
-        "cwd": os.getcwd(),
-        "command": shlex.join(argv),
-    }
+    test_run_id = _new_test_run_id()
+    meta = {**_holder_meta(test_run_id), "command": shlex.join(argv)}
 
     # A supervising caller (the development publisher) asks, through the
     # env, to be told how long this run queued, so it can charge its run
@@ -505,8 +606,9 @@ def test_command(
             child_env = os.environ.copy()
             # Always replace an inherited token. Nested or concurrent `aq test`
             # invocations are separate owners and must never derive the same
-            # PostgreSQL database names.
-            child_env["AQ_TEST_RUN_ID"] = _new_test_run_id()
+            # PostgreSQL database names. The slot record names it too, so a
+            # reaper can find pytest processes that outlive this wrapper.
+            child_env["AQ_TEST_RUN_ID"] = test_run_id
             try:
                 returncode = _run_forwarding_signals(argv, env=child_env)
             finally:
