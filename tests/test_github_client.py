@@ -653,6 +653,7 @@ async def test_ci_observation_uses_shared_repository_client(credential_identity)
         "head_sha": head,
         "status": "completed",
         "conclusion": "success",
+        "event": "push",
         "repository": {"id": 303, "full_name": "acme/widgets"},
         "head_repository": {"id": 303, "full_name": "acme/widgets"},
     }
@@ -669,8 +670,10 @@ async def test_ci_observation_uses_shared_repository_client(credential_identity)
     runner = FakeRunner(
         credential_identity,
         [
-            _response(200, {"check_runs": [check]}),
+            # Workflow runs are read first: they decide which check suites
+            # belong to the required push event before any check is selected.
             _response(200, {"workflow_runs": [workflow]}),
+            _response(200, {"check_runs": [check]}),
             _response(200, {"jobs": [job]}),
         ],
     )
@@ -683,7 +686,9 @@ async def test_ci_observation_uses_shared_repository_client(credential_identity)
         required_checks={"version": "checks-v1", "names": ["Tests"]},
     )
 
-    observation = await AuthenticatedGitHubObserver(client).observe(trust, head)
+    observation = await AuthenticatedGitHubObserver(client, expected_event="push").observe(
+        trust, head
+    )
 
     assert isinstance(observation, TrustedCIObservation)
     assert observation.payload.head_sha == head
