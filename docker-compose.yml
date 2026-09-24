@@ -21,7 +21,10 @@ services:
     ports:
       - "5533:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18 stores PGDATA under /var/lib/postgresql/18/docker.
+      # Migrate any existing anonymous parent volume before recreating the container:
+      # docs/guides/postgres18-volume-migration.md
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agent_queue"]
       interval: 5s
