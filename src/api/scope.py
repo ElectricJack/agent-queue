@@ -143,9 +143,15 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     }
 )
 LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
+#: ``edit_project`` fields that bind or change a project's integration
+#: configuration.  An elevated supervisor session reaches the handler, which
+#: admits only a live named supervisor whose profile grants
+#: :data:`INTEGRATION_CONFIGURE_CAPABILITY`; everyone else is refused here.
 INTEGRATION_ROLLOUT_FIELDS = frozenset(
     {
+        "integration_repository",
         "integration_repository_id",
+        "integration_mode",
         "hierarchical_integration_policy",
         "hierarchical_integration_mode",
         "hierarchical_integration_desired_mode",
@@ -154,6 +160,12 @@ INTEGRATION_ROLLOUT_FIELDS = frozenset(
         "expected_integration_generation",
     }
 )
+#: The profile capability (``aq_commands`` namespace) that lets a supervisor
+#: session bind a project's integration repository, review mode and policy.
+#: It names no command of its own: ``edit_project`` checks it for exactly the
+#: integration configuration fields, as the playbook engine checks
+#: ``playbook_admin``.
+INTEGRATION_CONFIGURE_CAPABILITY = "integration_configure"
 
 
 def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | None:
@@ -175,8 +187,12 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: integration control requires local operator or supervisor"
     if command in LOCAL_REVIEW_CONTROLS:
         return "out of scope: review control requires local operator"
-    if command == "edit_project" and INTEGRATION_ROLLOUT_FIELDS.intersection(args):
-        return "out of scope: integration configuration requires local operator"
+    if (
+        command == "edit_project"
+        and INTEGRATION_ROLLOUT_FIELDS.intersection(args)
+        and not scope.elevated
+    ):
+        return "out of scope: integration configuration requires local operator or supervisor"
     if command in {"edit_intelligence_class", "delete_intelligence_class"} and not (
         scope.elevated and scope.project_id is None and scope.task_id is None
     ):

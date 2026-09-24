@@ -82,8 +82,13 @@ class TestCheckCommandScope:
         for command in OPERATOR_INTEGRATION_CONTROLS:
             assert check_command_scope(command, {}, elevated) is None
             assert "local operator or supervisor" in check_command_scope(command, {}, SESSION)
-        assert "local operator" in check_command_scope(
+        # Elevation reaches the handler, which requires a live supervisor
+        # holding ``integration_configure``; a plain session never does.
+        assert check_command_scope(
             "edit_project", {"integration_repository_id": "repo"}, elevated
+        ) is None
+        assert "local operator or supervisor" in check_command_scope(
+            "edit_project", {"integration_repository_id": "repo"}, SESSION
         )
         for command in ("review_delegate", "review_import_edits"):
             assert "local operator" in check_command_scope(command, {}, elevated)

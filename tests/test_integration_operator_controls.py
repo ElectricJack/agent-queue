@@ -10,15 +10,20 @@ import pytest
 from sqlalchemy import insert
 
 from src.api.auth import RequestScope
-from src.api.scope import OPERATOR_INTEGRATION_CONTROLS, check_command_scope
+from src.api.scope import (
+    INTEGRATION_CONFIGURE_CAPABILITY,
+    OPERATOR_INTEGRATION_CONTROLS,
+    check_command_scope,
+)
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.supervisor_authority import integration_operator
 from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.integration.owner_recovery import RecoveryOutcome
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
-from src.profiles.capabilities import DENY_ALL
+from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
 from tests.db_fixtures import lease_dsn
 
 
@@ -81,10 +86,16 @@ async def db():
     await database.close()
 
 
-def _session(session_id: str, project_id: str | None, *, elevated: bool = True) -> ExecutionPrincipal:
+def _session(
+    session_id: str,
+    project_id: str | None,
+    *,
+    elevated: bool = True,
+    policy: CapabilityPolicy = DENY_ALL,
+) -> ExecutionPrincipal:
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
-        policy=DENY_ALL,
+        policy=policy,
         session_id=session_id,
         project_id=project_id,
         elevated=elevated,
@@ -345,3 +356,102 @@ def test_global_supervisor_scope_admits_status_and_enable_and_worker_scope_does_
         assert check_command_scope(command, {"project_id": "p"}, projectless_worker), command
     assert check_command_scope("integration_enable", {"project_id": "p"}, worker)
     assert check_command_scope("integration_status", {"project_id": "other"}, worker)
+
+
+_CONFIGURE = CapabilityPolicy.from_namespaces(
+    aq_commands=["edit_project", INTEGRATION_CONFIGURE_CAPABILITY]
+)
+_CONFIGURE_ARGS = {
+    "project_id": "p",
+    "integration_repository_id": "r",
+    "expected_integration_generation": 3,
+    "reason": "bind exact existing repository",
+}
+
+
+class _ConfigureHandler(ProjectCommandsMixin, IntegrationCommandsMixin):
+    pass
+
+
+def _configure_handler(db) -> tuple[_ConfigureHandler, AsyncMock]:
+    controls = AsyncMock()
+    controls.configure.return_value = {"outcome": "configured", "generation": 4}
+    handler = _ConfigureHandler()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(integration_control_service=controls)
+    return handler, controls
+
+
+@pytest.mark.parametrize(
+    ("principal", "expected_label"),
+    [
+        (None, "local:-"),
+        (_session("super-p", "p", policy=_CONFIGURE), "supervisor session:super-p"),
+        (_session("super-global", None, policy=_CONFIGURE), "supervisor session:super-global"),
+    ],
+)
+async def test_supervisor_with_capability_binds_integration_configuration(
+    db, principal, expected_label
+):
+    """The train cutover binds repository, review mode and policy from the supervisor."""
+    handler, controls = _configure_handler(db)
+    if principal is None:
+        result = await handler._cmd_edit_project(dict(_CONFIGURE_ARGS))
+    else:
+        with principal_context(principal):
+            result = await handler._cmd_edit_project(dict(_CONFIGURE_ARGS))
+    assert result["outcome"] == "configured"
+    controls.configure.assert_awaited_once_with(
+        "p",
+        updates={"integration_repository_id": "r"},
+        expected_generation=3,
+        reason="bind exact existing repository",
+        operator_id=expected_label,
+    )
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        # A live supervisor whose profile does not grant the capability.
+        _session("super-p", "p"),
+        # The capability without a live, named, same-project supervisor row.
+        _session("worker", "p", policy=_CONFIGURE),
+        _session("worker", "p", elevated=False, policy=_CONFIGURE),
+        _session("super-stopped", "p", policy=_CONFIGURE),
+        _session("super-other", "other", policy=_CONFIGURE),
+        _session("super-global-stopped", None, policy=_CONFIGURE),
+    ],
+)
+async def test_workers_and_uncapable_sessions_cannot_bind_integration_configuration(
+    db, principal
+):
+    handler, controls = _configure_handler(db)
+    for update in (
+        {"integration_repository_id": "r"},
+        {"integration_mode": "pull_request"},
+        {"hierarchical_integration_policy": {"parent": {}}},
+    ):
+        args = {"project_id": "p", "expected_integration_generation": 3, **update}
+        with principal_context(principal):
+            result = await handler._cmd_edit_project(args)
+        assert "Integration configuration" in result["error"], update
+    controls.configure.assert_not_awaited()
+
+
+def test_integration_configuration_scope_admits_supervisors_and_refuses_workers():
+    """Scope lets an elevated supervisor reach the handler's capability check."""
+    elevated = RequestScope(kind="session", session_id="super-p", project_id="p", elevated=True)
+    worker = RequestScope(kind="session", session_id="worker", task_id="t", project_id="p")
+    for field in (
+        "integration_repository",
+        "integration_repository_id",
+        "integration_mode",
+        "hierarchical_integration_policy",
+    ):
+        args = {"project_id": "p", field: "x", "expected_integration_generation": 1}
+        assert check_command_scope("edit_project", args, elevated) is None, field
+        refusal = check_command_scope("edit_project", dict(args), worker)
+        assert refusal == (
+            "out of scope: integration configuration requires local operator or supervisor"
+        ), field

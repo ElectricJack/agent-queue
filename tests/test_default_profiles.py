@@ -207,11 +207,12 @@ def test_seeded_supervisor_can_run_integration_status_and_enable_and_workers_can
         return CapabilityPolicy.from_namespaces(**parsed.capabilities)
 
     supervisor = policy_for("supervisor")
-    for command in ("integration_status", "integration_enable"):
+    commands = ("integration_status", "integration_enable", "integration_configure")
+    for command in commands:
         assert supervisor.allows_aq_command(command), command
     for profile_id in WORKER_PROFILE_IDS:
         worker = policy_for(profile_id)
-        for command in ("integration_status", "integration_enable"):
+        for command in commands:
             assert not worker.allows_aq_command(command), (profile_id, command)
 
 

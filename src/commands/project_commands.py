@@ -349,11 +349,31 @@ class ProjectCommandsMixin:
             if key in args
         }
         if sensitive:
+            from src.api.scope import INTEGRATION_CONFIGURE_CAPABILITY
             from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+            from src.commands.supervisor_authority import integration_operator
 
             principal = current_principal() or TRUSTED_LOCAL
-            if principal.kind is not PrincipalKind.LOCAL:
-                return {"error": "Integration configuration requires LOCAL operator authority"}
+            if principal.kind is PrincipalKind.LOCAL:
+                operator_id = principal.describe()
+            elif principal.kind is PrincipalKind.SESSION and principal.policy.allows(
+                "aq_commands", INTEGRATION_CONFIGURE_CAPABILITY
+            ):
+                # The supervisor drives the train cutover end to end: it may
+                # bind the repository, review mode and policy, but only as a
+                # live named supervisor of this project whose profile grants
+                # the capability.  The disabled-and-drained state and the
+                # generation CAS below still apply to it exactly as to LOCAL.
+                operator_id, refusal = await integration_operator(self.db, pid)
+                if refusal is not None:
+                    return {"error": f"Integration configuration refused: {refusal}"}
+            else:
+                return {
+                    "error": (
+                        "Integration configuration requires LOCAL operator or supervisor "
+                        "authority"
+                    )
+                }
             if "expected_integration_generation" not in args:
                 return {"error": "expected_integration_generation is required"}
             return await self._integration_control_service().configure(
@@ -361,7 +381,7 @@ class ProjectCommandsMixin:
                 updates=sensitive,
                 expected_generation=int(args["expected_integration_generation"]),
                 reason=str(args.get("reason") or "configure hierarchical integration"),
-                operator_id=principal.describe(),
+                operator_id=operator_id,
             )
         updates = {}
         if "name" in args:
