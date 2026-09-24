@@ -437,8 +437,10 @@ def test_command(
         console.print(f"[red]aq test:[/] {dsn_error}")
         ctx.exit(4)
 
+    run_id = _new_test_run_id()
     meta = {
         "pid": os.getpid(),
+        "test_run_id": run_id,
         "task_id": os.environ.get("AQ_TASK_ID"),
         "session": os.environ.get("AQ_SESSION_NAME"),
         "cwd": os.getcwd(),
@@ -472,7 +474,7 @@ def test_command(
             # Always replace an inherited token. Nested or concurrent `aq test`
             # invocations are separate owners and must never derive the same
             # PostgreSQL database names.
-            child_env["AQ_TEST_RUN_ID"] = _new_test_run_id()
+            child_env["AQ_TEST_RUN_ID"] = run_id
             returncode = _run_forwarding_signals(argv, env=child_env)
         if returncode == 5:
             # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
