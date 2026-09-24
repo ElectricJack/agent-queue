@@ -224,7 +224,11 @@ def integration_abort(ctx: click.Context, operation_id: str, reason: str) -> Non
 @click.pass_context
 @_handle_errors
 def integration_retry_cleanup(ctx: click.Context, batch_id: str) -> None:
-    """Requeue the exact safe cleanup items for BATCH_ID."""
+    """Requeue the exact safe cleanup items for BATCH_ID.
+
+    A promoted batch whose cleanup never materialized has no item to requeue;
+    for it, this materializes the cleanup, which the daemon then runs.
+    """
     _execute(ctx, "integration_retry_cleanup", {"batch_id": batch_id})
 
 
@@ -246,6 +250,34 @@ def integration_release_owner(
     else:
         args["owner_row_id"] = owner_row_id
     _execute(ctx, "integration_release_owner", args)
+
+
+@integration.command("release-stale-owners")
+@click.option("--project-id", required=True)
+@click.option("--dry-run", is_flag=True, help="Report what would be released; change nothing.")
+@click.option(
+    "--older-than",
+    help="Only rows unchanged for at least this long, e.g. 30m, 4h, 2d.",
+)
+@click.pass_context
+@_handle_errors
+def integration_release_stale_owners(
+    ctx: click.Context, project_id: str, dry_run: bool, older_than: str | None
+) -> None:
+    """Release a project's stale reserved branch owners that are provably safe.
+
+    A row is released only when it is reserved (names no writer), its owner
+    finished and nothing still relies on its fence, and origin proves its work
+    safe: the branch tip is on the default branch, or the branch is gone and
+    its owner is terminal.  An expired lease of a finished batch is released
+    too.  Every other row is listed with the reason it was kept; an attached
+    or handoff_pending row belongs to `aq integration release-owner`.  Safe to
+    repeat.
+    """
+    args: dict[str, Any] = {"project_id": project_id, "dry_run": dry_run}
+    if older_than is not None:
+        args["older_than"] = older_than
+    _execute(ctx, "integration_release_stale_owners", args)
 
 
 @integration.command("release-delegates")

@@ -118,8 +118,13 @@ class IntegrationStatusService:
                 pending = [r["id"] for r in rows if r["state"] == "publishing"]
                 blockers = [_blocker("publication_pending", "Remote write awaits reconciliation", ref=i)
                             for i in pending]
+                # A drain requested from development keeps development
+                # effective until the drain completes; the desired mode and
+                # the drain flag are what the operator asked for.
                 return {"project_id": project_id, "effective_mode": "development",
-                        "desired_mode": "development", "generation": project["hierarchical_integration_generation"],
+                        "desired_mode": project["hierarchical_integration_desired_mode"],
+                        "draining": bool(project["hierarchical_integration_draining"]),
+                        "generation": project["hierarchical_integration_generation"],
                         "policy": project["hierarchical_integration_policy"], "deliveries": rows,
                         "ownership": owners, "live_operations": live_operations,
                         "blockers": blockers, "ready": not pending, "rollout_ready": True,

@@ -1886,6 +1886,118 @@ def test_pushed_candidate_resolution_refusal_names_the_required_invariant():
     ]
 
 
+async def _promoted_batch(db, batch_id: str, *, cleanup_state: str = "pending") -> None:
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches).values(
+                id=batch_id,
+                project_id="p",
+                repository_id="repo",
+                request_id=f"{batch_id}-request",
+                trigger="manual",
+                source_manifest_digest="sha256:" + "d" * 64,
+                base_sha="a" * 40,
+                lifecycle="promoted",
+                integration_branch=f"refs/heads/aq/integration/{batch_id}",
+                final_main_sha="b" * 40,
+                policy_snapshot=_policy(),
+                artifact_snapshot=_artifact().model_dump(mode="json"),
+                cleanup_state=cleanup_state,
+                created_at=70.0,
+                updated_at=70.0,
+            )
+        )
+
+
+async def _cleanup_item(db, batch_id: str, identity: str, state: str) -> None:
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_cleanup_items).values(
+                batch_id=batch_id,
+                kind="remote_ref",
+                identity=identity,
+                domain_key=f"cleanup:{batch_id}:{identity}",
+                project_id="p",
+                repository_id="repo",
+                repository_numeric_id=1234,
+                repository_full_name="acme/widgets",
+                revision=0,
+                target_ref=f"refs/heads/aq/{identity}",
+                expected_sha="b" * 40,
+                state=state,
+                attempts=5,
+                next_attempt_at=999.0,
+                terminal_at=None if state in {"pending", "retryable"} else 75.0,
+                created_at=70.0,
+                updated_at=70.0,
+            )
+        )
+
+
+async def test_cleanup_retry_materializes_a_promoted_batch_that_has_no_items(db):
+    """Nothing to requeue is not nothing to do when cleanup never materialized."""
+    from src.integration.cleanup import CleanupMaterializationResult
+
+    await _promoted_batch(db, "never-materialized")
+    cleanup = SimpleNamespace(
+        materialize=AsyncMock(
+            return_value=CleanupMaterializationResult(
+                outcome="materialized", batch_id="never-materialized", item_count=5
+            )
+        )
+    )
+    service = IntegrationControlService(db, cleanup_service=cleanup, clock=lambda: 80.0)
+
+    result = await service.retry_cleanup("never-materialized")
+
+    assert result == {
+        "outcome": "materialized",
+        "batch_id": "never-materialized",
+        "project_id": "p",
+        "count": 5,
+    }
+    cleanup.materialize.assert_awaited_once_with("never-materialized")
+
+
+async def test_cleanup_retry_names_why_materialization_was_refused(db):
+    from src.integration.cleanup import CleanupMaterializationResult
+
+    await _promoted_batch(db, "inconsistent")
+    cleanup = SimpleNamespace(
+        materialize=AsyncMock(
+            return_value=CleanupMaterializationResult(
+                outcome="invariant_error", batch_id="inconsistent"
+            )
+        )
+    )
+    result = await IntegrationControlService(db, cleanup_service=cleanup).retry_cleanup(
+        "inconsistent"
+    )
+    assert result["outcome"] == "not_materializable"
+    assert result["blockers"] == [
+        {
+            "code": "cleanup_invariant_error",
+            "detail": "promoted batch cleanup could not be materialized",
+            "ref": "inconsistent",
+        }
+    ]
+
+
+async def test_cleanup_retry_never_rematerializes_a_batch_that_has_items(db):
+    await _promoted_batch(db, "settled")
+    await _cleanup_item(db, "settled", "done", "complete")
+    cleanup = SimpleNamespace(materialize=AsyncMock())
+    service = IntegrationControlService(db, cleanup_service=cleanup)
+
+    assert (await service.retry_cleanup("settled"))["outcome"] == "nothing_to_retry"
+    cleanup.materialize.assert_not_awaited()
+    # Without a cleanup service the retry stays a pure requeue.
+    await _promoted_batch(db, "bare")
+    assert (await IntegrationControlService(db).retry_cleanup("bare"))[
+        "outcome"
+    ] == "nothing_to_retry"
+
+
 async def test_cleanup_retry_requeues_exact_safe_work_and_preserves_prewrite(db):
     async with db.immediate() as conn:
         await conn.execute(

@@ -215,6 +215,29 @@ def test_seeded_supervisor_can_run_integration_status_and_enable_and_workers_can
             assert not worker.allows_aq_command(command), (profile_id, command)
 
 
+def test_seeded_supervisor_holds_every_operator_integration_control(tmp_path):
+    """Scope admits an elevated supervisor to every operator control; so must its grants.
+
+    ``integration_retry_cleanup`` and ``integration_eject`` were admitted by
+    ``OPERATOR_INTEGRATION_CONTROLS`` yet missing from the shipped grants, so a
+    supervisor finishing a drain got ``capability denied``.  Abort,
+    cancel-preserving and waive-history stay granted: they are gated by the
+    profile's confirm-first rule, not by capability.
+    """
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+
+    ensure_default_profiles(str(tmp_path))
+    parsed = parse_profile(_vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8"))
+    assert parsed.capabilities is not None
+    supervisor = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    denied = sorted(
+        command
+        for command in OPERATOR_INTEGRATION_CONTROLS
+        if not supervisor.allows_aq_command(command)
+    )
+    assert denied == []
+
+
 def test_seeded_planner_profile_is_task_lifecycle(tmp_path):
     """Planner ships as a task-lifecycle profile."""
     ensure_default_profiles(str(tmp_path))

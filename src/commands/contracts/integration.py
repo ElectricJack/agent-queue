@@ -72,6 +72,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_release_owner",
+        "integration_release_stale_owners",
         "integration_resolve_candidate_member",
     }
 )
@@ -136,6 +137,23 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
         if (self.task_id is None) == (self.owner_row_id is None):
             raise ValueError("exactly one of task_id or owner_row_id is required")
         return self
+
+
+class IntegrationReleaseStaleOwnersArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = False
+    #: Only rows unchanged for at least this long (``90s``, ``30m``, ``4h``, ``2d``).
+    older_than: str | None = Field(default=None, min_length=1)
+
+    @field_validator("older_than")
+    @classmethod
+    def older_than_is_a_duration(cls, value: str | None) -> str | None:
+        if value is not None:
+            # Imported here: the provider command module is not a contract leaf.
+            from src.commands.provider_commands import parse_duration
+
+            parse_duration(value)
+        return value
 
 
 class IntegrationRecoverCandidateMemberArgs(CommandArgs):
@@ -223,6 +241,8 @@ class IntegrationOperationalValue(CommandValue):
     reason: str | None = None
     count: int | None = None
     outcomes: tuple[dict[str, Any], ...] = ()
+    dry_run: bool | None = None
+    leases: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationScheduleDueValue(CommandValue):
@@ -650,6 +670,16 @@ def _operational_contract(
     )
 
 
+RETRY_CLEANUP_OUTCOMES = (
+    "requeued",
+    "materialized",
+    "ambiguous",
+    "nothing_to_retry",
+    "not_materializable",
+    "not_found",
+)
+
+
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
     IntegrationStatusArgs,
@@ -717,8 +747,8 @@ INTEGRATION_ABORT = _operational_contract(
 INTEGRATION_RETRY_CLEANUP = _operational_contract(
     "integration_retry_cleanup",
     IntegrationRetryCleanupArgs,
-    ("requeued", "ambiguous", "nothing_to_retry", "not_found"),
-    successes=frozenset({"requeued", "nothing_to_retry"}),
+    RETRY_CLEANUP_OUTCOMES,
+    successes=frozenset({"requeued", "materialized", "nothing_to_retry"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -735,6 +765,16 @@ INTEGRATION_RELEASE_OWNER = _operational_contract(
     IntegrationReleaseOwnerArgs,
     ("released", "preserved_and_released", "not_eligible", "not_found"),
     successes=frozenset({"released", "preserved_and_released"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+RELEASE_STALE_OWNERS_OUTCOMES = ("released", "nothing_to_release", "invalid", "not_found")
+
+INTEGRATION_RELEASE_STALE_OWNERS = _operational_contract(
+    "integration_release_stale_owners",
+    IntegrationReleaseStaleOwnersArgs,
+    RELEASE_STALE_OWNERS_OUTCOMES,
+    successes=frozenset({"released", "nothing_to_release"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -2082,7 +2122,7 @@ async def _retry_cleanup_adapter(
         args,
         ctx,
         IntegrationOperationalValue,
-        {"requeued", "ambiguous", "nothing_to_retry", "not_found"},
+        set(RETRY_CLEANUP_OUTCOMES),
     )
 
 
@@ -2105,6 +2145,18 @@ async def _release_owner_adapter(args: IntegrationReleaseOwnerArgs, ctx: Command
         ctx,
         IntegrationOperationalValue,
         {"released", "preserved_and_released", "not_eligible", "not_found"},
+    )
+
+
+async def _release_stale_owners_adapter(
+    args: IntegrationReleaseStaleOwnersArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_release_stale_owners",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        set(RELEASE_STALE_OWNERS_OUTCOMES),
     )
 
 
@@ -2170,6 +2222,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
+        (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),

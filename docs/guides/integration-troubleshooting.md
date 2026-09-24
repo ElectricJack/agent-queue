@@ -53,6 +53,7 @@ aq doctor --check git.stale_branches
 | Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
+| `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
 | Stale `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
 | `hierarchy.delivery_pending` when archiving | The work has not reached `main` | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
@@ -461,6 +462,60 @@ FROM   integration_owner_recoveries
 WHERE  owner_row_id = 'o-a3f7…'
 ORDER  BY created_at DESC;
 ```
+
+## A drain never completes
+
+`aq integration enable <project> --mode disabled` on a project with integration
+work still in flight records `desired_mode: disabled` and `draining: true` and
+leaves the current mode effective. The daemon finishes the drain on its own as
+soon as nothing is left: no active batch, no promoted batch with unfinished
+cleanup, no running repair operation, no `integration_branch_owners` row that is
+not `released`, no project integration lease, no unsettled promotion intent and
+no pending cleanup item. `aq integration status <project>` shows `desired_mode`
+and `draining` in every mode, `development` included.
+
+A train run that ended long ago can leave all of these behind. Clear them in
+this order, as a local operator or the project's supervisor:
+
+```bash
+aq integration release-stale-owners --project-id <project> --dry-run  # read the verdicts
+aq integration release-stale-owners --project-id <project>            # release the safe rows
+aq integration retry-cleanup <batch-id>    # each promoted batch whose cleanup is pending
+# ...once that cleanup completes:
+aq integration release-stale-owners --project-id <project>            # its integration-branch owner
+```
+
+**`release-stale-owners`** releases a `reserved` owner row only when it can
+prove the release safe. The row must name no session or workspace. Its owner
+must be finished: a task that is `COMPLETED` or `FAILED`, archived or deleted,
+or an operation that ended, with no live session, workspace lock or running
+operation, and in no hierarchy/train project. Nothing may still rely on its
+fence. And after a pruned `git fetch`, its branch tip must be on the default
+branch, or the branch must be gone and its owner terminal. A `FAILED` task can
+be retried, so a gone branch proves nothing for it. The release is the one
+`release-owner` makes, with a fresh fence, an `integration_owner_recoveries` row
+and an `integration.owner_recovered` event. The command also drops the project's
+lease once it has expired and its batch is finished. It reports every other row
+with its reason, and it is safe to repeat. `--older-than 2d` limits it to rows
+unchanged for that long.
+
+| Reason kept | Meaning | Next step |
+|---|---|---|
+| `not_reserved` | The row names a writer. | `aq integration release-owner --owner-row-id <id>` |
+| `owner_active` | The owning task or operation is still running. | Let it finish. |
+| `owner_blocked` | A live session, workspace lock, ref mutation or operation still acts for the owner, or a hierarchy/train project owns the row. | Resolve what the detail names. |
+| `batch_cleanup_pending` | The row owns the integration branch of a promoted batch whose cleanup is not complete. | `aq integration retry-cleanup <batch>`, then re-run. |
+| `batch_active` / `promotion_unsettled` | A batch or promotion intent still uses the branch. | Let it finish. |
+| `branch_not_on_default` | origin has commits on the branch that `main` does not. | Deliver the work, or have a human confirm it is abandoned. `aq doctor --check integration.finished_branch_owners --fix` then releases the row without a branch proof. |
+| `failed_owner_ref_gone` | The branch is gone, but its owner `FAILED` and may be retried. | Decide the task's fate first. |
+| `local_work_unpublished` / `checkout_in_use` | A worktree or local branch holds work origin does not have, or a live session has the branch checked out. | Publish or discard that work. |
+| `origin_unreachable` / `inspection_failed` | The fetch or a Git inspection failed. | Fix access and re-run. |
+
+**`retry-cleanup`** requeues a batch's cleanup items that are waiting to retry.
+A promoted batch whose cleanup never produced any items has nothing to requeue:
+for it, `retry-cleanup` materializes the cleanup (outcome `materialized`) and
+the daemon runs it. Cleanup refuses to delete a source branch whose owner row is
+not released, which is why `release-stale-owners` runs first.
 
 ## A task will not delete, archive, resume or restart
 

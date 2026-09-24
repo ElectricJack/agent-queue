@@ -732,11 +732,19 @@ class IntegrationCleanupService:
                 .mappings()
                 .all()
             )
+            # A batch repaired after a root intent was reserved keeps that
+            # superseded intent's member rows beside the committed one's.
+            # Only the current revision's reservations describe what landed,
+            # exactly as only its receipts do below.
             reservations = (
                 (
                     await conn.execute(
                         select(integration_root_intent_members)
-                        .where(integration_root_intent_members.c.batch_id == batch_id)
+                        .where(
+                            integration_root_intent_members.c.batch_id == batch_id,
+                            integration_root_intent_members.c.candidate_revision
+                            == batch["current_revision"],
+                        )
                         .order_by(integration_root_intent_members.c.member_ordinal)
                     )
                 )

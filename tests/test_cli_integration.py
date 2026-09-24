@@ -117,6 +117,16 @@ def _client(result):
             {"task_id": "task-1", "dry_run": True},
         ),
         (
+            ["release-stale-owners", "--project-id", "p"],
+            "integration_release_stale_owners",
+            {"project_id": "p", "dry_run": False},
+        ),
+        (
+            ["release-stale-owners", "--project-id", "p", "--dry-run", "--older-than", "2d"],
+            "integration_release_stale_owners",
+            {"project_id": "p", "dry_run": True, "older_than": "2d"},
+        ),
+        (
             ["recover-candidate-member", "frozen-resolution"],
             "integration_recover_candidate_member",
             {"reservation_id": "frozen-resolution"},

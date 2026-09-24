@@ -190,6 +190,57 @@ async def test_release_owner_passes_derived_operator_label_and_dry_run(db, monke
     }
 
 
+async def test_release_stale_owners_runs_under_the_derived_operator_label(db, monkeypatch):
+    run = AsyncMock(
+        return_value={
+            "outcome": "released",
+            "project_id": "p",
+            "dry_run": True,
+            "count": 1,
+            "outcomes": [],
+            "leases": [],
+        }
+    )
+    monkeypatch.setattr(
+        "src.integration.stale_owners.stale_owner_release_for",
+        lambda _orchestrator: SimpleNamespace(run=run),
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace()
+
+    local = await handler._cmd_integration_release_stale_owners(
+        {"project_id": "p", "dry_run": True}
+    )
+    assert (local["success"], local["outcome"]) == (True, "released")
+    assert run.await_args.args == ("p",)
+    assert run.await_args.kwargs == {
+        "principal": "human:local-operator",
+        "dry_run": True,
+        "older_than_seconds": None,
+    }
+
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_release_stale_owners(
+            {"project_id": "p", "older_than": "2h"}
+        )
+    assert run.await_args.kwargs == {
+        "principal": "supervisor session:super-p",
+        "dry_run": False,
+        "older_than_seconds": 7200.0,
+    }
+
+    run.reset_mock()
+    invalid = await handler._cmd_integration_release_stale_owners(
+        {"project_id": "p", "older_than": "soon"}
+    )
+    assert invalid["outcome"] == "invalid"
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_release_stale_owners({"project_id": "p"})
+    assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 def test_operator_control_scope_defers_live_session_validation_to_the_handler():
     elevated = RequestScope(kind="session", session_id="supervisor", project_id="p", elevated=True)
     worker = RequestScope(kind="session", session_id="worker", project_id="p", elevated=False)
