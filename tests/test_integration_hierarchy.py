@@ -1491,6 +1491,59 @@ async def test_file_root_persists_canonical_branch_before_container_collection(d
     assert result["outcome"] == "checkpointed"
 
 
+async def test_file_root_never_inherits_a_deleted_predecessors_identity(db, monkeypatch):
+    """A drawn name that still keys a deleted task's identity is skipped.
+
+    steady-willow: sharp-willow was deleted with its checkpoint, origin and a
+    (later released) worker fence in place.  Re-minting the name let the new
+    task reuse the old checkpoint (``_ensure_origin_chain`` keeps an existing
+    one) and fail its close on the predecessor's released fence.
+    """
+    from src import task_names
+    from src.integration.ownership import BranchOwnership
+
+    now = time.time()
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="sharp-willow", repository_id="repo", branch="aq/sharp-willow",
+            checkpoint_sha=BASE, branch_owner_id="sharp-willow", updated_at=now,
+        ))
+        await conn.execute(insert(task_branch_origins).values(
+            id="predecessor-origin", task_id="sharp-willow", repository_id="repo",
+            branch_name="aq/sharp-willow", parent_ref="main", base_sha=BASE,
+            creation_generation=0, reserved=True, materialized=True,
+            created_at=now, materialized_at=now,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="predecessor-owner", repository_id="repo", ref="aq/sharp-willow",
+            owner_id="sharp-willow", owner_role="worker", fence_token=3,
+            handoff_state="released", created_at=now, updated_at=now,
+        ))
+    words = iter(["sharp", "willow", "calm", "flare"])
+    monkeypatch.setattr(task_names.random, "choice", lambda _pool: next(words))
+    service = HierarchyIntegration(db, default_head_resolver=lambda _repo, _branch: NEXT)
+
+    async with db.immediate() as conn:
+        filed = await service.file_root_on(
+            conn, Task(id="", project_id="p", title="plan", description="plan")
+        )
+
+    assert filed["task_id"] == "calm-flare"
+    task = await db.get_task("calm-flare")
+    checkpoint = await db.get_integration_checkpoint("calm-flare")
+    assert (checkpoint["branch"], checkpoint["checkpoint_sha"]) == (task.branch_name, NEXT)
+    assert (await _origin_row(db, "calm-flare"))["base_sha"] == NEXT
+    owner = await BranchOwnership(db).get_owner(
+        BranchKey(repository_id="repo", branch=task.branch_name)
+    )
+    # The owner predicate ``_phase_verify_hierarchy_producer`` checks at close.
+    assert (owner["owner_id"], owner["owner_role"], owner["handoff_state"]) == (
+        "calm-flare", "worker", "reserved"
+    )
+    predecessor = await db.get_integration_checkpoint("sharp-willow")
+    assert predecessor["checkpoint_sha"] == BASE
+
+
 async def test_file_root_materializes_its_reserved_epic_branch(db):
     materialized = []
 
