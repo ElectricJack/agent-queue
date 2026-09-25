@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-87 commands are registered.
+88 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -118,6 +118,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
+| [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) | Resolve candidate member | Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session. |
 | [`integration_resolve_conflict`](integration_resolve_conflict.md) | Reserve conflict resolution | Freeze an active repair session's exact conflict resolution before push. |
 | [`integration_resume`](integration_resume.md) | Integration Resume | Authenticated hierarchical integration operational control. |
