@@ -28,6 +28,9 @@ from src.database.tables import (
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    conversation_backfill_cursors,
+    conversation_inputs,
+    conversation_intake_gaps,
     dashboard_state_documents,
     development_deliveries,
     digest_windows,
@@ -108,6 +111,7 @@ from src.database.tables import (
     repos,
     sessions,
     subagent_events,
+    supervisor_conversations,
     system_config,
     task_assignment_routes,
     task_branch_origins,
@@ -171,6 +175,8 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    conversation_backfill_cursors,
+    conversation_intake_gaps,
     # No FK to tasks: checklist rows survive archive like task_comments.
     task_subtasks,
     # Soft-referenced audit of retired integration delegates; no FKs.
@@ -223,6 +229,9 @@ _ORDERED_TABLES = [
     escalation_actions,
     # FK -> escalations, escalation_messages
     escalation_deliveries,
+    # FK -> messages (conversation_inputs also -> supervisor_conversations)
+    supervisor_conversations,
+    conversation_inputs,
     # FK → repos (current_task_id deferred)
     agents,
     # FK → projects, repos, agents, agent_profiles, workflows
