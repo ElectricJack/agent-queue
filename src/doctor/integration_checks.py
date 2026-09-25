@@ -1389,6 +1389,83 @@ async def _fix_finished_branch_owners(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_reused_task_identity(ctx: DoctorContext) -> CheckResult:
+    """Report live origins that predate the task now using their identity.
+
+    Owner timestamps cannot establish this: transferring a released branch
+    preserves its created_at even when it changes owner_id. An origin's
+    creation time and task identity, by contrast, are immutable together.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import task_branch_origins, task_integration_checkpoints, tasks
+
+    check_id = "integration.reused_task_identity"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — integration identity state unknown",
+        )
+    origin = task_branch_origins
+    checkpoint = task_integration_checkpoints
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(
+                    tasks.c.id.label("task_id"),
+                    tasks.c.project_id,
+                    tasks.c.status.label("task_status"),
+                    tasks.c.created_at.label("task_created_at"),
+                    tasks.c.repo_id.label("task_repository_id"),
+                    tasks.c.branch_name.label("task_branch"),
+                    origin.c.id.label("origin_id"),
+                    origin.c.repository_id,
+                    origin.c.branch_name.label("origin_branch"),
+                    origin.c.base_sha,
+                    origin.c.materialized,
+                    origin.c.created_at.label("origin_created_at"),
+                    checkpoint.c.repository_id.label("checkpoint_repository_id"),
+                    checkpoint.c.branch.label("checkpoint_branch"),
+                    checkpoint.c.checkpoint_sha,
+                )
+                .select_from(
+                    tasks.join(origin, origin.c.task_id == tasks.c.id).outerjoin(
+                        checkpoint, checkpoint.c.task_id == tasks.c.id
+                    )
+                )
+                .where(
+                    origin.c.retired_at.is_(None),
+                    origin.c.created_at < tasks.c.created_at,
+                )
+                .order_by(tasks.c.project_id, tasks.c.id, origin.c.id)
+            )
+        ).mappings().all()
+    findings = [dict(row) for row in rows]
+    task_count = len({row["task_id"] for row in findings})
+    data = {"count": len(findings), "task_count": task_count, "origins": findings[:50]}
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="no live branch origin predates its current task",
+            data=data,
+        )
+    first = findings[0]
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} live origin(s) predate {task_count} current task(s) — "
+            f"e.g. {first['origin_id']} for {first['task_id']} ({first['task_status']}). "
+            "Suspected reused task identity; operator review of the exact branch and "
+            "integration history is required before rebinding. Releasing a fence alone "
+            "does not repair the origin or checkpoint."
+        ),
+        data=data,
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -1401,6 +1478,13 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.orphaned_operations",
             run=_check_orphaned_operations,
+            owner=OWNER,
+        ),
+        # Report-only: a timestamp anomaly cannot authorize replacing an
+        # immutable origin, clearing a checkpoint, or resetting a branch.
+        DoctorCheck(
+            id="integration.reused_task_identity",
+            run=_check_reused_task_identity,
             owner=OWNER,
         ),
         # Report-only: no ``fix``.  Back-filling review tasks by hand would

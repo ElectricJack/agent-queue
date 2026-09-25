@@ -31,6 +31,7 @@ aq doctor --check integration.stranded_fences
 aq doctor --check integration.stranded_delegates
 aq doctor --check integration.stale_schedule
 aq doctor --check integration.finished_branch_owners
+aq doctor --check integration.reused_task_identity
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
@@ -252,6 +253,29 @@ unauthorized: manual sweep requires LOCAL operator authority
 
 `aq integration status` is readable by a worker session for its own project,
 which is why a worker can diagnose but not act.
+
+## A task inherited an older branch origin
+
+An older install could reuse a deleted task ID even though its integration
+origin, checkpoint or ownership row survived. The new task could then start
+from the predecessor's base or fail at close with a released delivery fence.
+
+```bash
+aq doctor --check integration.reused_task_identity --json
+```
+
+This report lists unretired origins created before their current task, including
+completed tasks, with the exact origin ID, branch, base, timestamps and checkpoint.
+It runs in every integration mode. Retired origins and orphan origins without a
+live task are not included. Timestamp anomalies warrant review; they are not
+proof that branch contents can be discarded.
+
+The check has no `--fix`. Have the operator review the exact branch tip, delivery
+evidence, live writers and dependent history before choosing a rebind. Releasing
+an owner leaves the old origin and checkpoint in place. Retain the predecessor's
+audit history; a new origin also needs an explicit disposition for any existing
+branch at a different tip. The [diagnostic contract](../specs/design/integration-identity-diagnostics.md)
+describes the comparison and its limits.
 
 ## A branch is held by a writer that is gone
 
