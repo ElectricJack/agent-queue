@@ -1,0 +1,759 @@
+# Smart test selection: the reviewed areas (spec §4.1).
+#
+# One entry per area; ids are kebab-case, <= 40 characters, and become Jev
+# question routing keys.  `description` is what Jev reads: one sentence naming
+# the behaviours the area's tests check (concepts, not files).  `match` globs
+# are anchored posix paths ("*" stays within one segment, "**" crosses them).
+#
+# Every runnable test module under pytest's testpaths must match at least one
+# area, and every area at least one module.  After adding, moving or deleting
+# a test module run `python scripts/generate-selection-catalogue.py` and commit
+# tests/selection_catalogue.json.
+version: 1
+areas:
+  # ---------------------------------------------------------------- tasks
+  - id: task-lifecycle
+    description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization."
+    match:
+      - tests/test_state_machine.py
+      - tests/test_ensure_task.py
+      - tests/test_task_context.py
+      - tests/test_task_controls.py
+      - tests/test_task_controls_api.py
+      - tests/test_task_command_authorization.py
+      - tests/test_task_close_summary_enforcement.py
+      - tests/test_reopen_with_feedback.py
+      - tests/test_task_failed_event.py
+      - tests/test_task_ready_event.py
+      - tests/test_deliverables.py
+      - tests/test_cli_task_create_output.py
+      - tests/test_task_progress_stats.py
+      - tests/test_task_doctor.py
+      - tests/test_dv2_phase1_models.py
+      - tests/test_models.py
+  - id: task-archive
+    description: "Task archiving: moving finished tasks and subtrees to the archive, archive sweeps, reads that span live and archived tasks, and refusals for undelivered work."
+    match: [tests/test_archive.py, tests/test_hierarchy_archive_delete.py]
+  - id: task-dependencies
+    description: "Task dependencies: idempotent dependency edges, downstream and stuck-task queries, and batch propose/commit/discard of task graphs with cycle detection."
+    match:
+      - tests/test_task_deps_command.py
+      - tests/test_dependency_queries.py
+      - tests/test_get_downstream_tasks.py
+      - tests/test_get_stuck_tasks_command.py
+      - tests/test_task_batch_commands.py
+  - id: work-graph
+    description: "Work graph: typed edges and labels, the persisted is_blocked projection, gates, the promotion cascade, the ready frontier and explain, outcomes, hierarchical ids and event replay."
+    match:
+      - tests/test_work_graph_*.py
+      - tests/test_blocked_state.py
+      - tests/test_gate_queries.py
+      - tests/test_events_replay.py
+      - tests/test_explain.py
+      - tests/test_task_ready_event.py
+  - id: task-hierarchy
+    description: "Task hierarchy: dotted child ids, set-parent and children reads, container settlement and close, subtree delete/archive, phases, standing parents and hierarchy doctor checks and statement budgets."
+    match:
+      - tests/test_hierarchy_*.py
+      - tests/test_phases.py
+      - tests/perf/test_hierarchy_statements.py
+      - tests/test_worker_filing.py
+  - id: task-subtasks
+    description: "Task subtasks: durable per-task checklist rows, the subtask commands and CLI verbs, the open-subtask close gate and subtask counts."
+    match: [tests/test_task_subtasks.py, tests/test_task_subtask_commands.py, tests/test_cli_task_subtasks.py]
+  - id: task-comments
+    description: "Task comments and findings: authored comments with ownership fences, description writes, the comment CLI and fresh-session context."
+    match: [tests/test_task_comments.py, tests/test_task_comments_api.py, tests/test_cli_task_comments.py]
+  - id: task-graph-creation
+    description: "Task-graph documents: the aq-graph parser, validator and creator, create_task_graph, dotted ids and parents in the creator, and live graph events after commands."
+    match:
+      - tests/test_task_graph.py
+      - tests/test_create_task_graph_command.py
+      - tests/test_hierarchy_graph_creator.py
+      - tests/test_task_graph_live_events.py
+  - id: formulas
+    description: "Formulas: vault formula parsing, extends/var resolution and chain hashes, provenance in the creation transaction, formula list/show/cook commands, doctor checks and statement budgets."
+    match:
+      - tests/test_formula_*.py
+      - tests/test_formulas_*.py
+      - tests/perf/test_formula_statements.py
+  - id: task-routing
+    description: "Task routing: routing gates, the task_route command, explicit class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing and the shipped assignment-routing policy."
+    match:
+      - tests/test_assignment_routing.py
+      - tests/test_task_route.py
+      - tests/test_routing_gate_guard.py
+      - tests/test_routing_admission_v2.py
+      - tests/test_task_class_routing.py
+      - tests/test_task_routing_contract.py
+      - tests/test_agent_task_routing.py
+      - tests/test_cross_project_routing.py
+      - tests/test_default_assignment_routing_playbook.py
+      - tests/test_pool_agent_routing.py
+  - id: task-activity
+    description: "Recent work reads: tasks touched in a time window across live and archived tasks, completion records, per-attempt session snapshots and model attribution."
+    match: [tests/test_task_activity.py, tests/test_task_session_attempts.py]
+
+  # ----------------------------------------------------------- claims and pools
+  - id: claims
+    description: "Task claims: claim-file parsing, claim epochs and the stale-claim fence, claim-next on close, restart-tolerant claims and claim statement budgets."
+    match:
+      - tests/test_claim_*.py
+      - tests/test_cli_claim_restart.py
+      - tests/perf/test_claim_statements.py
+      - tests/test_import_cycles.py
+  - id: worker-pools
+    description: "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface."
+    match:
+      - tests/test_pool_*.py
+      - tests/test_swarm_*.py
+      - tests/test_install_pools.py
+      - tests/test_task_session_pool_integration.py
+      - tests/test_stranded_feature_branches.py
+
+  # ------------------------------------------------------------ agents
+  - id: agent-roster
+    description: "The global worker roster: durable agent identity, liveness from session activity, soft deletion and fresh supply, sub-agent counts, the busy-agent reconciler, names and explicit terminal starts."
+    match:
+      - tests/test_agent_flock.py
+      - tests/test_agent_flock_lifecycle.py
+      - tests/test_agent_deletion_supply.py
+      - tests/test_agent_soft_delete.py
+      - tests/test_agent_liveness.py
+      - tests/test_agent_names.py
+      - tests/test_agent_reconciler.py
+      - tests/test_agent_subagents.py
+      - tests/test_agent_terminals.py
+      - tests/test_subagent_events.py
+      - tests/test_task_session_queries.py
+  - id: agent-questions
+    description: "Agent questions: detecting a question in a native transcript, persisting and routing it, scoped answers back to the original worker, the waiting badge and question invalidation events."
+    match:
+      - tests/test_agent_question*.py
+      - tests/test_agent_flock_questions.py
+      - tests/test_cli_questions.py
+  - id: profiles
+    description: "Agent profiles: markdown parsing and the extends inheritance, vault-to-database sync, migrations from the database and project scope, shipped defaults, retired defaults, grants reseed and system-profile drift."
+    match:
+      - tests/test_agent_profiles.py
+      - tests/test_profile_parser.py
+      - tests/test_profile_parser_runtime.py
+      - tests/test_profile_sync.py
+      - tests/test_profile_inheritance.py
+      - tests/test_profile_migration.py
+      - tests/test_profile_vault_write.py
+      - tests/test_profile_functional.py
+      - tests/test_profile_drift.py
+      - tests/test_profile_session_fields.py
+      - tests/test_profile_model_pin_migration.py
+      - tests/test_profile_github.py
+      - tests/test_default_profiles.py
+      - tests/test_retired_defaults.py
+      - tests/test_project_override_migration.py
+      - tests/test_startup_profile_migration.py
+      - tests/test_supervisor_capability_sync.py
+      - tests/test_shipped_profile_capabilities.py
+      - tests/test_review_profile_rules.py
+      - tests/test_workspace_acquisition_read_only.py
+  - id: intelligence-classes
+    description: "Intelligence classes and worker rungs: class parsing and hot reload, editing and retirement, the derived rung catalogue, default class/profile selection and provider/model/effort resolution at launch."
+    match:
+      - tests/test_intelligence_class*.py
+      - tests/test_class_retirement.py
+      - tests/test_profile_catalog.py
+      - tests/test_profile_default_class.py
+      - tests/test_profile_default_selection.py
+      - tests/test_profile_intelligence.py
+      - tests/test_codex_fast_classes.py
+      - tests/test_codex_tier_classes.py
+      - tests/test_tier_provider_defaults.py
+      - tests/test_session_class_effort.py
+      - tests/test_session_intelligence_class.py
+  - id: capabilities
+    description: "Command capabilities: the capability policy, server-derived execution principals, authorization at the dispatch boundary, no widening through delegation or task inheritance, and operator migration surfaces."
+    match:
+      - tests/test_capability_*.py
+      - tests/test_command_capability_authorization.py
+      - tests/test_delegation_no_widening.py
+      - tests/test_execution_principal.py
+      - tests/test_task_capability_inheritance.py
+      - tests/test_shipped_profile_capabilities.py
+      - tests/test_env_scrub.py
+
+  # ------------------------------------------------------------ sessions
+  - id: session-runtime
+    description: "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol."
+    match:
+      - tests/test_session_spec.py
+      - tests/test_session_executable.py
+      - tests/test_session_provider_conformance.py
+      - tests/test_session_reconciler.py
+      - tests/test_session_runtime_units.py
+      - tests/test_session_queries.py
+      - tests/test_session_commands.py
+      - tests/test_session_close_notifications.py
+      - tests/test_session_tool_allowlist.py
+      - tests/test_session_input.py
+      - tests/test_session_doctor.py
+      - tests/test_resume_key_validation.py
+      - tests/test_fake_session_script.py
+      - tests/test_cli_session_history.py
+      - tests/test_runtimes_*.py
+      - tests/test_env_scrub.py
+  - id: session-checkpoints
+    description: "End-to-end checkpoints: a real task in a real tmux session and worktree slot, integrating two slots, on real git."
+    match: [tests/test_checkpoint_c2.py, tests/test_checkpoint_c3.py]
+  - id: harnesses
+    description: "Harness definitions: harness markdown parsing and inheritance, registry precedence, the shipped-harness manifest and resetting a vault harness copy."
+    match: [tests/test_harness_*.py, tests/test_cli_vault_reset_harness.py]
+  - id: tmux-terminals
+    description: "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket."
+    match:
+      - tests/test_tmux_*.py
+      - tests/test_terminal_*.py
+      - tests/test_usage_limit_screen.py
+  - id: transcripts
+    description: "Native agent transcripts: Claude and Codex readers, completion detection, the transcript watcher, durable read checkpoints, identity across reused workspaces and Codex rate-limit capture."
+    match: [tests/test_transcript_*.py]
+  - id: panes-streams
+    description: "Live panes and streams: the pane broadcaster and registry, pane-open messaging, SSE pane and session streams, and the streams registry and API."
+    match:
+      - tests/test_pane_*.py
+      - tests/test_streams_*.py
+      - tests/test_session_stream_api.py
+      - tests/test_message_pane_open_column.py
+      - tests/test_message_send_pane_open.py
+      - tests/test_cli_streams.py
+  - id: prime
+    description: "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, and the prime/handoff/inbox CLI."
+    match: [tests/test_prime_*.py, tests/test_cli_agent_surface.py]
+
+  # ------------------------------------------------------------ messages and humans
+  - id: messages
+    description: "Agent messages: message commands and queries, the delivery engine with per-recipient policy, nudges and parking, the session lens, and message CLI and chat relay API."
+    match:
+      - tests/test_message_commands.py
+      - tests/test_message_delivery.py
+      - tests/test_message_queries.py
+      - tests/test_session_lens.py
+      - tests/test_cli_messages.py
+      - tests/test_api_messages.py
+  - id: messaging-adapters
+    description: "Messaging and notifications abstraction: the messaging port and adapter factory, the Discord adapter, booting with no adapter, event-driven notifications and remote-safe links."
+    match:
+      - tests/test_messaging_*.py
+      - tests/test_null_messaging_boot.py
+      - tests/test_notifications.py
+      - tests/test_discord_adapter.py
+      - tests/test_remote_links.py
+  - id: discord
+    description: "Discord bot: escalation-only inbound routing, the legacy-conversation cutover, housekeeping, retired slash commands, views, the invalid-request rate guard and the simplified lifecycle."
+    match:
+      - tests/test_discord_*.py
+      - tests/test_rate_guard.py
+      - tests/test_slash_commands.py
+      - tests/test_views.py
+  - id: escalations
+    description: "Human escalations: incident delivery as one post and one thread, inbound thread correlation and verified replies, escalation commands and persistence."
+    match: [tests/test_escalation_*.py, tests/test_discord_escalation_transport.py]
+  - id: digest
+    description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, and digest settings."
+    match: [tests/test_digest*.py, tests/test_discord_settings.py]
+  - id: supervisor
+    description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook."
+    match:
+      - tests/test_supervisor_*.py
+      - tests/test_config_supervisor.py
+      - tests/test_blocked_task_escalation.py
+
+  # ------------------------------------------------------------ playbooks
+  - id: playbook-definition
+    description: "Playbook V2 artifacts: the strict definition model, typed expressions and conditions, whole-graph validation, runtime resolution, intent explanation, graph projection, the artifact store and artifact diffs."
+    match:
+      - tests/test_playbook_v2_definition.py
+      - tests/test_playbook_v2_expressions.py
+      - tests/test_playbook_v2_validation.py
+      - tests/test_playbook_v2_resolution.py
+      - tests/test_playbook_explanation.py
+      - tests/test_playbook_graph_projection.py
+      - tests/test_playbook_artifact_*.py
+  - id: playbook-authoring
+    description: "Playbook authoring and activation: the proposal compiler and its command scope, reviewed-bundle import, V2 commands, API DTOs, source updates, listing and deletion, activation and required-playbook health."
+    match:
+      - tests/test_playbook_v2_compiler.py
+      - tests/test_playbook_compiler_scope.py
+      - tests/test_playbook_v2_import.py
+      - tests/test_playbook_v2_commands.py
+      - tests/test_playbook_v2_api_dtos.py
+      - tests/test_api_playbook_v2_commands.py
+      - tests/test_update_playbook_source_v2.py
+      - tests/test_list_playbooks_v2.py
+      - tests/test_playbook_delete.py
+      - tests/test_playbook_activation*.py
+      - tests/test_activation_source_scope.py
+      - tests/test_required_playbooks.py
+      - tests/test_command_contracts_registry.py
+  - id: playbook-engine
+    description: "The Playbook V2 engine: run state and receipts, waits and pending events, restart/resume idempotency, shadow and dry runs, agent-task/command/LLM executors, the child-task reconciler and manual runs."
+    match:
+      - tests/test_v2_*.py
+      - tests/test_playbook_run_*.py
+      - tests/test_playbook_wait_repository.py
+      - tests/test_playbook_receipts.py
+      - tests/test_playbook_pending_events_*.py
+      - tests/test_playbook_services.py
+      - tests/test_agent_task_executor.py
+      - tests/test_command_executor.py
+      - tests/test_llm_executor.py
+      - tests/test_child_task_reconciler.py
+      - tests/test_manual_playbook_runs.py
+      - tests/test_pkg5_scenarios.py
+  - id: shipped-playbooks
+    description: "Shipped and reviewed playbooks: reviewed V2 artifact fixtures and their digests, prose-only playbook sources, the default pipeline intake, agent-type playbooks, the V1 removal ratchet and cron-to-playbook migration."
+    match:
+      - tests/test_default_playbook_v2_artifacts.py
+      - tests/test_playbook_v2_fixtures.py
+      - tests/test_shipped_playbook_sources.py
+      - tests/test_default_agent_type_playbooks.py
+      - tests/test_default_pipeline_intake.py
+      - tests/test_default_assignment_routing_playbook.py
+      - tests/test_plugin_cron_to_playbook_migration.py
+      - tests/test_blocked_task_escalation.py
+      - tests/test_ci_main_sentinel.py
+      - tests/test_supervisor_failure_triage.py
+      - tests/test_hierarchical_delivery_playbook.py
+      - tests/test_root_integration_playbook.py
+      - tests/test_v1_removal.py
+
+  # ------------------------------------------------------------ integration and delivery
+  - id: integration-trains
+    description: "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup."
+    match:
+      - tests/test_integration_state.py
+      - tests/test_integration_service.py
+      - tests/test_integration_schedule.py
+      - tests/test_integration_stale_schedule.py
+      - tests/test_integration_settling.py
+      - tests/test_integration_sealing.py
+      - tests/test_integration_candidates.py
+      - tests/test_integration_outbox.py
+      - tests/test_integration_contracts.py
+      - tests/test_integration_mode.py
+      - tests/test_integration_hierarchy.py
+      - tests/test_integration_resume_metadata.py
+      - tests/test_integration_completion_recovery.py
+      - tests/test_integration_attestation.py
+      - tests/test_integration_ci.py
+      - tests/test_integration_cleanup.py
+      - tests/test_attestation_check_run_id.py
+  - id: integration-ownership
+    description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
+    match:
+      - tests/test_integration_ownership.py
+      - tests/test_integration_owner_*.py
+      - tests/test_integration_stale_owners.py
+      - tests/test_integration_finished_owners.py
+      - tests/test_integration_transfer_commands.py
+      - tests/test_integration_workspace_handoff.py
+      - tests/test_integration_identity_rebind.py
+      - tests/test_integration_delegate_release.py
+      - tests/test_integration_eject.py
+      - tests/test_doctor_stranded_fences_fix.py
+  - id: integration-promotion
+    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries."
+    match:
+      - tests/test_integration_promotion.py
+      - tests/test_integration_main_promotion.py
+      - tests/test_integration_parent_completion.py
+      - tests/test_integration_root_pull_requests.py
+      - tests/test_integration_repair.py
+      - tests/test_integration_review_evidence.py
+      - tests/test_integration_legacy_*.py
+      - tests/test_parent_ci_publication.py
+      - tests/test_repair_checkout_refs.py
+  - id: integration-controls
+    description: "Integration operator controls: rollout and operational controls, supervisor authority over them, the integration CLI, integration doctor alarms and the troubleshooting guide."
+    match:
+      - tests/test_integration_controls.py
+      - tests/test_integration_operational_controls.py
+      - tests/test_integration_operator_controls.py
+      - tests/test_integration_troubleshooting_doc.py
+      - tests/test_cli_integration.py
+      - tests/test_doctor_integration_checks.py
+  - id: epic-trains
+    description: "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, and the reviewed train policies."
+    match:
+      - tests/test_epic_*.py
+      - tests/test_batch_ci_repair_*.py
+      - tests/test_agent_queue_train_policy.py
+      - tests/test_root_integration_playbook.py
+      - tests/test_hierarchical_delivery_playbook.py
+  - id: development-delivery
+    description: "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, branch discard and the push-before-close rule for unpushed work."
+    match:
+      - tests/test_development_*.py
+      - tests/test_delivery_*.py
+      - tests/test_branch_discard.py
+      - tests/test_close_unpushed_work.py
+      - tests/test_stranded_work.py
+      - tests/test_slot_report.py
+  - id: ci-sentinel
+    description: "The CI main sentinel and CI policy: the baseline status observation, repair keys and adoption, the shipped sentinel playbook and which GitHub workflow events run full CI."
+    match: [tests/test_ci_*.py]
+
+  # ------------------------------------------------------------ git and github
+  - id: git-manager
+    description: "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers."
+    match:
+      - tests/test_git_manager.py
+      - tests/test_git_manager_async.py
+      - tests/test_git_events.py
+      - tests/test_git_mutex.py
+      - tests/test_git_command_handlers.py
+      - tests/test_sync_and_merge.py
+      - tests/test_force_with_lease.py
+      - tests/test_rebase_before_merge.py
+      - tests/test_mid_chain_rebase.py
+      - tests/test_merge_and_push.py
+      - tests/test_concurrent_merge_and_push.py
+      - tests/test_merge_conflict_check.py
+      - tests/test_merge_slot.py
+      - tests/test_set_default_branch_command.py
+  - id: github
+    description: "GitHub access: App and token authentication, the startup-owned gh runner, repository creation, API client contracts, pull-request base and merge commands, the CI gate on merge and the PR list."
+    match:
+      - tests/test_github_*.py
+      - tests/test_git_app_auth.py
+      - tests/test_project_github.py
+      - tests/test_profile_github.py
+      - tests/test_pr_*.py
+      - tests/test_api_pull_requests.py
+      - tests/test_worker_git_scope.py
+
+  # ------------------------------------------------------------ workspaces
+  - id: workspaces
+    description: "Workspaces v2: workspace kinds (parser, registry, queries), per-task kind requirements, multi-kind acquisition and attachments, workspace commands, names, sentinels, control-file excludes and base-checkout guards."
+    match:
+      - tests/test_workspace_*.py
+      - tests/test_create_task_requires_kinds.py
+      - tests/test_cli_task_create_requires_kinds.py
+      - tests/test_task_requirements_queries.py
+      - tests/test_base_workspace_guard.py
+      - tests/test_branch_isolated_workspace.py
+      - tests/test_resolve_repo_path.py
+      - tests/test_smart_workspace_assignment.py
+  - id: worktree-slots
+    description: "Worktree slots: the slot manager on real repositories, mode-aware acquisition and capacity, slot preparation, the reaper and boot adoption, orphan doctor checks, slot affinity, branch waits and slot starvation."
+    match:
+      - tests/test_worktree_*.py
+      - tests/test_workspace_slot_affinity.py
+      - tests/test_workspace_branch_wait.py
+      - tests/test_workspace_sentinel_reclaim.py
+
+  # ------------------------------------------------------------ providers
+  - id: provider-failover
+    description: "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks."
+    match:
+      - tests/test_provider_availability*.py
+      - tests/test_provider_commands.py
+      - tests/test_provider_escalation.py
+      - tests/test_provider_evidence.py
+      - tests/test_provider_inflight.py
+      - tests/test_provider_intent.py
+      - tests/test_provider_reroute.py
+      - tests/test_provider_suppression.py
+      - tests/test_fake_session_script.py
+  - id: provider-usage
+    description: "Provider usage and cost: usage probes and queries, Claude /usage parsing, provider usage API and doctor checks, token budgets, cost accounting and direct-path LLM token usage."
+    match:
+      - tests/test_provider_usage_*.py
+      - tests/test_provider_doctor.py
+      - tests/test_api_provider_usage.py
+      - tests/test_claude_usage*.py
+      - tests/test_costs.py
+      - tests/test_budget.py
+      - tests/test_llm_usage.py
+  - id: llm-client
+    description: "The direct LLM path: provider adapters (OpenAI format, Gemini, logged-in CLIs), the llm config block and fallback credentials, request shaping, tool-running loops, call specs and plugin LLM invocation."
+    match: [tests/llm/*.py, tests/test_plugin_invoke_llm.py, tests/test_orchestrator_llm.py]
+
+  # ------------------------------------------------------------ commands, API, CLI
+  - id: command-dispatch
+    description: "Command dispatch: CommandHandler.execute, the placement of every command on the surface, per-call scope isolation, the scope matrix, surface and system commands, prompt path validation and command.invoked events."
+    match:
+      - tests/test_command_dispatch.py
+      - tests/test_command_surface.py
+      - tests/test_command_scope_*.py
+      - tests/test_command_invoked_event.py
+      - tests/test_surface_commands.py
+      - tests/test_system_commands*.py
+  - id: api-scope
+    description: "API authentication and scope: session-scoped tokens, the agent command allowlist, reviewer, triage and worker token limits, and scope checks for global-admin tokens."
+    match:
+      - tests/test_api_auth.py
+      - tests/test_api_scope.py
+      - tests/test_reviewer_api_scope.py
+      - tests/test_triage_api_scope.py
+      - tests/test_worker_git_scope.py
+      - tests/test_supervisor_global_scope.py
+      - tests/test_supervisor_global_token_loopback.py
+  - id: api-contract
+    description: "The generated API contract: the committed OpenAPI spec matching the live app, the generated Python client and its pinned generator, typed request models, the response-model registry and execute/typed error parity."
+    match:
+      - tests/test_api_client_contract.py
+      - tests/test_api_codegen_input_models.py
+      - tests/test_api_execute_contract.py
+      - tests/test_response_model_registry.py
+      - tests/test_cli_client_generated.py
+      - tests/test_regenerate_api_client_script.py
+      - tests/test_api_dashboard_pointer.py
+  - id: file-access
+    description: "File access for tasks and workspaces: browse and read endpoints, task attachments, filesystem command handlers and root-relative path validation."
+    match:
+      - tests/test_api_task_files.py
+      - tests/test_api_workspace_files.py
+      - tests/test_task_attachments_api.py
+      - tests/test_file_command_handlers.py
+      - tests/test_project_paths.py
+  - id: cli-framework
+    description: "The aq CLI framework: command registration and the generated commands, the output envelope and formatters, global options, offline and lazy startup, structured params, exit-code conformance, lost replies and the command inventory."
+    match:
+      - tests/test_cli.py
+      - tests/test_cli_envelope.py
+      - tests/test_cli_formatters.py
+      - tests/test_cli_global_options.py
+      - tests/test_cli_menus.py
+      - tests/test_cli_module_entry.py
+      - tests/test_cli_module_map.py
+      - tests/test_cli_startup_offline.py
+      - tests/test_cli_structured_params.py
+      - tests/test_cli_conformance.py
+      - tests/test_cli_response_failures.py
+      - tests/test_cli_inventory.py
+      - tests/test_cli_logs.py
+      - tests/test_cli_client_generated.py
+  - id: cli-test-runner
+    description: "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit."
+    match: [tests/test_cli_test_runner.py, tests/test_resource_semaphore.py]
+  - id: test-selection
+    description: "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them."
+    match: [tests/test_selection_*.py]
+  - id: resource-gating
+    description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports and resources doctor checks."
+    match:
+      - tests/test_resource_*.py
+      - tests/test_slot_report.py
+  - id: test-substrate
+    description: "The PostgreSQL test substrate: DSN leasing and run ownership, template-clone pool crash recovery, parallel-worker isolation, the reset-for-tests guard and operator test-database reaping."
+    match:
+      - tests/test_pg_dsn.py
+      - tests/test_postgres_test_substrate.py
+      - tests/test_db_pool_reaper.py
+      - tests/test_reset_for_tests_guard.py
+      - tests/test_test_db_reaper.py
+  - id: tools-mcp
+    description: "Agent tools and MCP: the tool registry and semantic tool index, the MCP server and its embedded lifecycle, MCP commands, the MCP server registry, probes, catalog and inline-server migration."
+    match:
+      - tests/test_tool_*.py
+      - tests/test_mcp_*.py
+      - tests/test_embedded_mcp.py
+
+  # ------------------------------------------------------------ events
+  - id: events
+    description: "The event bus and schemas: the schema registry and emit-time validation, field contracts, every emit call providing required fields, event commands, proposal status events and WebSocket forwarding."
+    match:
+      - tests/test_event_*.py
+      - tests/test_emit_schema_compliance.py
+      - tests/test_validate_event.py
+      - tests/test_command_invoked_event.py
+      - tests/test_proposal_status_event.py
+      - tests/test_websocket_forwarding.py
+
+  # ------------------------------------------------------------ database and schema
+  - id: database
+    description: "The PostgreSQL database layer: adapter CRUD and channels, engine startup safeguards, backend selection, immediate transactions, metadata-cast safety, model round trips and the SQLite removal ratchet."
+    match:
+      - tests/test_database*.py
+      - tests/test_db_immediate.py
+      - tests/test_metadata_cast_safety.py
+      - tests/test_sqlite_removal.py
+      - tests/test_models.py
+      - tests/test_migrate_sqlite_to_pg.py
+      - tests/test_migrate_task_records.py
+      - tests/test_onboarding_queries.py
+  - id: migrations
+    description: "Alembic schema: a single head, squashed-baseline parity with table metadata, idempotent upgrades, server-default hygiene, the production migration guard, orphan-revision repair and per-feature schema contracts."
+    match:
+      - tests/test_migration_*.py
+      - tests/test_missing_fk_migration.py
+      - tests/test_dv2_phase1_migration.py
+      - tests/test_task_completion_migration.py
+      - tests/test_task_proposals_migration.py
+      - tests/test_worktree_migration.py
+      - tests/test_hierarchy_migration.py
+      - tests/test_doctor_db_checks.py
+
+  # ------------------------------------------------------------ config
+  - id: config
+    description: "Configuration: dataclass sections reachable from YAML, per-section validation, environment profiles, hot reload, the config editor and secret redaction, the schema inventory, curated default tuning and portable config bundles."
+    match:
+      - tests/test_config.py
+      - tests/test_config_*.py
+      - tests/test_portable_config.py
+      - tests/test_project_roots_config.py
+      - tests/test_terminal_origin_config.py
+      - tests/test_cli_system_config.py
+
+  # ------------------------------------------------------------ orchestrator
+  - id: orchestrator
+    description: "The orchestrator cycle and daemon lifecycle: run_one_cycle, promotion and assignment, pre-assignment constraints, failure events, daemon entry-point lifecycle and the workflow pipeline view."
+    match:
+      - tests/test_orchestrator.py
+      - tests/test_constraint_enforcement.py
+      - tests/test_main_lifecycle.py
+      - tests/test_workflow_pipeline_view.py
+      - tests/test_task_failed_event.py
+      - tests/test_null_messaging_boot.py
+  - id: scheduling
+    description: "Scheduling and timers: the scheduler's fair share, project constraints and their enforcement, schedule matching, and the timer service with interval and wall-clock cron triggers."
+    match:
+      - tests/test_scheduler.py
+      - tests/test_project_constraint*.py
+      - tests/test_schedule.py
+      - tests/test_timer_service*.py
+  - id: metrics
+    description: "Metrics: the per-second fleet sampler with roll-ups and retention, the metrics series API and WebSocket frame, and chat-analyzer suggestion outcome metrics."
+    match: [tests/test_metrics_sampler.py, tests/test_api_metrics.py, tests/test_chat_analyzer_metrics.py]
+  - id: logging
+    description: "Logging: structlog configuration and correlation context, the log access tools, aq logs filters and context windows, and the LLM interaction logger."
+    match: [tests/test_logging_config.py, tests/test_log_access.py, tests/test_cli_logs.py, tests/test_llm_logger.py]
+  - id: level-editor
+    description: "The level editor: voxel grid, page, layer and level models and the brush system."
+    match: [tests/test_editor_*.py]
+
+  # ------------------------------------------------------------ vault, memory, prompts
+  - id: vault
+    description: "The vault: directory initialization, central path resolution, the consolidated migration, the watcher and its service facade, index generation and summaries, glossary, wiki links and aq:// URIs, and vault CLI commands."
+    match:
+      - tests/test_vault*.py
+      - tests/test_wiki_links.py
+      - tests/test_aq_uri.py
+      - tests/test_cli_vault.py
+      - tests/test_file_watcher.py
+      - tests/test_workspace_spec_watcher.py
+      - tests/test_readme_handler.py
+      - tests/test_override_handler.py
+      - tests/test_reference_stub_*.py
+  - id: memory-facts
+    description: "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection."
+    match:
+      - tests/test_facts_*.py
+      - tests/test_mcp_memory_roundtrip.py
+      - tests/test_memory_extension_points.py
+      - tests/test_l0_l1_tier_injection.py
+      - tests/test_override_injection.py
+  - id: prompts
+    description: "Prompt assembly: the prompt builder and template loading, the prompt manager, tier budget warnings, override injection and the LLM interaction logger."
+    match:
+      - tests/test_prompt_*.py
+      - tests/test_tier_budget_warnings.py
+      - tests/test_override_injection.py
+      - tests/test_llm_logger.py
+      - tests/test_l0_l1_tier_injection.py
+
+  # ------------------------------------------------------------ plugins
+  - id: plugins
+    description: "The plugin system: base classes, loader and registry, plugin commands and the plugin CLI, registered services and their boundaries, external service allowlists, and the internal inbox, notes and vibecop plugins."
+    match:
+      - tests/test_plugin*.py
+      - tests/test_inbox_plugin.py
+      - tests/test_notes_plugin.py
+      - tests/test_vibecop_plugin.py
+      - tests/test_cli_plugins.py
+
+  # ------------------------------------------------------------ projects and reviews
+  - id: projects
+    description: "Projects and onboarding: project CLI, onboarding commands, contract and saga, configured project roots and browsing, durable onboarding requests and GitHub identity normalisation."
+    match:
+      - tests/test_project_onboarding_*.py
+      - tests/test_onboarding_queries.py
+      - tests/test_project_roots_config.py
+      - tests/test_project_github.py
+      - tests/test_project_paths.py
+      - tests/test_cli_projects.py
+  - id: document-reviews
+    description: "Document reviews: the review service, schema and queries, revision block diffs, vault review files, review gates on downstream tasks, the reopen cascade, dedup keys, the review notifier, commands, doctor checks and spec approval."
+    match:
+      - tests/test_review_*.py
+      - tests/test_spec_approve_command.py
+      - tests/test_reviewer_api_scope.py
+      - tests/test_proposal_api.py
+
+  # ------------------------------------------------------------ dashboard
+  - id: dashboard-server
+    description: "The dashboard server: routing and identity, fail-closed bundle verification, the reverse proxy, host/origin/peer edge gates, its CLI lifecycle and doctor checks, and the daemon's dashboard pointer."
+    match:
+      - tests/test_dashboard_server_*.py
+      - tests/test_cli_dashboard_server.py
+      - tests/test_doctor_dashboard_server.py
+      - tests/test_api_dashboard_pointer.py
+  - id: dashboard-state
+    description: "Dashboard state and graph reads: the durable dashboard-state contract, the browser-storage ratchet, the aggregate graph payload, pane registry parity with the frontend and live graph events."
+    match:
+      - tests/test_dashboard_state.py
+      - tests/test_dashboard_browser_storage.py
+      - tests/test_api_graph.py
+      - tests/test_pane_registry_parity.py
+  - id: graph-layout
+    description: "Task-graph spatial layout: layering, flow, cost and ordering, derived compaction and active expansion, the incremental and tidy engine, dirty marks, the layout driver and queries, the layout API and statement budgets."
+    match:
+      - tests/task_graph/**/*.py
+      - tests/perf/test_layout_*.py
+      - tests/test_api_graph_layout.py
+
+  # ------------------------------------------------------------ doctor
+  - id: doctor
+    description: "aq doctor: the check registry and runner, exit codes, built-in checks, platform health diagnostics, the operator stall sweep and installed-skill drift."
+    match:
+      - tests/test_doctor.py
+      - tests/test_doctor_stall_checks.py
+      - tests/test_doctor_skill_checks.py
+      - tests/test_health_platform.py
+
+  # ------------------------------------------------------------ install and release
+  - id: install
+    description: "aq install, uninstall and update: the installer engine and resume, platform detection and adapters (WSL, macOS), PostgreSQL, Node toolchain, dashboard build, provider CLIs and logins, onboarding wizard, bootstraps and update rollback."
+    match:
+      - tests/test_install_*.py
+      - tests/test_uninstall_cli.py
+      - tests/test_update.py
+      - tests/test_setup_script.py
+      - tests/test_windows_bootstrap.py
+      - tests/test_known_tools.py
+  - id: packaging
+    description: "Packaging and repository hygiene: release artifacts shipping a verified dashboard bundle, console entry points, the pkg_resources shim, case-insensitive path safety and import-order cycles."
+    match:
+      - tests/test_release_artifact.py
+      - tests/test_packaging_entry_points.py
+      - tests/test_compat.py
+      - tests/test_case_insensitive_paths.py
+      - tests/test_import_cycles.py
+  - id: e2e-kit
+    description: "The swarm end-to-end kit: executable entry-point scripts, stand-in fixtures that close like real agents, the schema-aware health probe and the opt-in stateful CLI acceptance run."
+    match: [tests/test_e2e_*.py, tests/test_script_modes.py]
+  - id: daemon-cli
+    description: "Daemon control from the CLI: start failure reporting, stop ending agent sessions versus restart keeping them, and the daemon start/stop contract."
+    match: [tests/test_cli_daemon.py, tests/test_cli_stop_sessions.py, tests/test_main_lifecycle.py]
+
+  # ------------------------------------------------------------ documentation guards
+  - id: docs-guards
+    description: "Documentation guards: docs/code sync, the dependency-free docs checker and coverage, command reference drift, guidance docs naming commands that parse, Discord docs, factory-policy instructions and the CLI module map."
+    match:
+      - tests/test_docs_sync.py
+      - tests/test_documentation_*.py
+      - tests/test_command_docs.py
+      - tests/test_guidance_docs.py
+      - tests/test_discord_docs.py
+      - tests/test_factory_policy_instructions.py
+      - tests/test_cli_module_map.py
+      - tests/test_integration_troubleshooting_doc.py
