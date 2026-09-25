@@ -28,6 +28,7 @@ from src.database.tables import (
     projects,
     task_completion_records,
     task_integration_checkpoints,
+    tasks,
 )
 from src.git.manager import GitManager
 from src.integration.controls import IntegrationControlService
@@ -48,6 +49,7 @@ from src.integration.legacy_deliveries import (
     UNPROVEN,
     LegacyDeliveryAdoption,
 )
+from src.integration.legacy_repositories import LegacyRepositoryBinding
 from src.integration.parent_completion import ParentCompletion
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -547,6 +549,45 @@ async def test_supersede_records_the_re_delivering_commit_on_the_default_branch(
     assert recorded["again.part"]["delivered_sha"] == shas["redelivered_first"]
     assert recorded["again.part"]["reason"].startswith("second commit reverted")
     assert await env.missing_receipts() == {}
+
+
+async def test_a_superseded_child_and_its_parent_are_then_bound_to_the_repository(env):
+    """``bind-legacy-repositories`` accepts what adoption recorded as delivery proof."""
+    shas = await redelivered_children(env)
+    # The development publisher accepted these tasks without a repository.
+    async with env.db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.project_id == "p").values(repo_id=None)
+        )
+    await env.observe()
+    await env.adoption().run(
+        "p",
+        principal=PRINCIPAL,
+        supersede={"again.part": shas["redelivered_first"]},
+        reason="re-delivered by a cherry-pick",
+    )
+
+    async def unbound() -> set[str]:
+        status = await IntegrationControlService(env.db).status("p")
+        return {
+            blocker["ref"]
+            for blocker in status["blockers"]
+            if blocker["code"] == "repository_not_designated"
+        }
+
+    assert await unbound() == {"again", "again.part", "again.whole"}
+
+    result = await LegacyRepositoryBinding(env.db).run(
+        "p", principal=PRINCIPAL, dry_run=False, reason="bind attested legacy hierarchy"
+    )
+
+    assert result["bound"] == [
+        {"task_id": "again", "proof": "delivered_children"},
+        {"task_id": "again.part", "proof": "legacy_delivery", "legacy_proof": SUPERSEDED},
+        {"task_id": "again.whole", "proof": "legacy_delivery", "legacy_proof": CONTENT_EQUIVALENT},
+    ]
+    assert result["unproven"] == []
+    assert await unbound() == set()
 
 
 @pytest.mark.parametrize("by", ["part", "deadbeefdead", "not-a-sha"])

@@ -316,12 +316,16 @@ aq integration bind-legacy-repositories PROJECT_ID --apply --reason 'bind proven
 aq integration status PROJECT_ID
 ```
 
-This supervisor control binds only terminal hierarchy members whose latest
-completion has a designated-repository development receipt, or whose terminal
-children all have that receipt. The preview lists every
-unproven member; applying leaves those tasks unchanged. Each bound task gets
-an audit comment with its proof and the operator's reason. Repeat the preview
-after adopting any missing legacy child deliveries.
+This supervisor control binds only terminal hierarchy members with proof on the
+designated repository: a development receipt for the latest completion
+(`development_delivery`), an `integration_legacy_deliveries` row that
+`adopt-legacy-deliveries` recorded, whether proven or decided with
+`--supersede`, `--retire` or `--accept` (`legacy_delivery`, with the recorded
+proof in `legacy_proof`), or terminal children that are all proven either way
+(`delivered_children`). The preview lists every unproven member; applying
+leaves those tasks unchanged. Each bound task gets an audit comment with its
+proof and the operator's reason. Repeat the preview after adopting any missing
+legacy child deliveries.
 
 If status reports only `legacy_pr_merge_gate` blockers, an operator may make
 that exact history inapplicable. Copy the current digest once, create the

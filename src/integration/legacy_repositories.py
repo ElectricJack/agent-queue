@@ -1,8 +1,11 @@
 """Bind delivered, terminal legacy tasks to their designated repository.
 
 The development publisher accepted null-repository tasks on the designated
-repository.  Its latest-completion receipt is the evidence for this recovery;
-for a container, delivered children can establish the same repository route.
+repository.  Its latest-completion receipt is the evidence for this recovery.
+So is an ``integration_legacy_deliveries`` row for the designated repository:
+``aq integration adopt-legacy-deliveries`` records one for a child it proved
+on the default branch or that an operator superseded, retired or accepted.
+For a container, children proven either way establish the same repository route.
 """
 
 from __future__ import annotations
@@ -13,7 +16,13 @@ from uuid import uuid4
 from sqlalchemy import insert, select, update
 
 from src.database.queries.blocked_state import development_delivery_receipt
-from src.database.tables import projects, repos, task_comments, tasks
+from src.database.tables import (
+    integration_legacy_deliveries,
+    projects,
+    repos,
+    task_comments,
+    tasks,
+)
 from src.integration.legacy_deliveries import TERMINAL_TASK_STATES
 
 
@@ -71,6 +80,14 @@ class LegacyRepositoryBinding:
                     development_delivery_receipt(tasks, projects, repos),
                 )
             )).scalars())
+            # How adoption proved, or an operator decided, each recorded child.
+            legacy_proofs = dict((await conn.execute(
+                select(integration_legacy_deliveries.c.task_id,
+                       integration_legacy_deliveries.c.proof).where(
+                    integration_legacy_deliveries.c.project_id == project_id,
+                    integration_legacy_deliveries.c.repository_id == repository_id,
+                )
+            )).all())
             proven: dict[str, bool] = {}
 
             def delivered(task_id: str) -> bool:
@@ -85,6 +102,7 @@ class LegacyRepositoryBinding:
                 else:
                     proven[task_id] = (
                         task_id in receipt_ids
+                        or task_id in legacy_proofs
                         or bool(children.get(task_id)) and all(
                             delivered(child_id) for child_id in children[task_id]
                         )
@@ -97,16 +115,22 @@ class LegacyRepositoryBinding:
                 row = by_id[task_id]
                 if row["repo_id"] is not None or row["status"] not in TERMINAL_TASK_STATES:
                     continue
-                if delivered(task_id):
-                    bound.append({"task_id": task_id,
-                                  "proof": "development_delivery" if task_id in receipt_ids
-                                  else "delivered_children"})
-                else:
+                if not delivered(task_id):
                     unproven.append(task_id)
+                elif task_id in receipt_ids:
+                    bound.append({"task_id": task_id, "proof": "development_delivery"})
+                elif task_id in legacy_proofs:
+                    bound.append({"task_id": task_id, "proof": "legacy_delivery",
+                                  "legacy_proof": legacy_proofs[task_id]})
+                else:
+                    bound.append({"task_id": task_id, "proof": "delivered_children"})
             if not dry_run and bound:
                 now = time.time()
                 for item in bound:
                     task_id = item["task_id"]
+                    proof = item["proof"] + (
+                        f" ({item['legacy_proof']})" if "legacy_proof" in item else ""
+                    )
                     await conn.execute(update(tasks).where(
                         tasks.c.id == task_id,
                         tasks.c.project_id == project_id,
@@ -116,7 +140,7 @@ class LegacyRepositoryBinding:
                         id="comment-" + uuid4().hex,
                         task_id=task_id, project_id=project_id,
                         body=(f"Legacy repository binding: {repository_id}; "
-                              f"proof={item['proof']}; reason={reason}"),
+                              f"proof={proof}; reason={reason}"),
                         author_kind=("user" if principal.startswith("human:") else "supervisor"),
                         author_id=principal,
                         kind="note", created_at=now,
