@@ -643,6 +643,39 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_rebind_reused_identity(self, args: dict) -> dict:
+        """Prove a task's inherited integration identity; rebind it once settled."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRebindReusedIdentityArgs
+        from src.integration.identity_rebind import reused_identity_rebind_for
+
+        try:
+            request = IntegrationRebindReusedIdentityArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid identity rebind request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", f"task {request.task_id} not found")
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        service = reused_identity_rebind_for(self)
+        if service is None:
+            return _failure("runtime_error", "identity rebind is unavailable")
+        result = await service.run(
+            request.task_id,
+            principal=principal,
+            dry_run=request.dry_run,
+            expected_origin_ids=request.expected_origin_ids,
+            discard_tips=request.discard_tips,
+            reason=request.reason,
+        )
+        return {
+            "success": result["outcome"] in {"rebound", "would_rebind", "nothing_to_rebind"},
+            **result,
+        }
+
     async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
         """Record provable pre-train deliveries of children no train will collect."""
         from pydantic import ValidationError

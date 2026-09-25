@@ -143,6 +143,24 @@ def test_supervisor_holds_every_operator_integration_control():
     assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
 
 
+def test_supervisor_can_rebind_a_reused_task_identity():
+    """amber-harbor: the supervisor runs the rebind control after deploy.
+
+    The profile tells it to dry-run ``aq integration rebind-reused-identity``
+    for each task the doctor reports and to leave ``--discard-tip`` -- the one
+    decision that abandons an unproven commit -- to the user.
+    """
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+
+    parsed = _parsed("supervisor")
+    text = (DEFAULTS_DIR / "supervisor" / "profile.md").read_text(encoding="utf-8")
+    assert "integration_rebind_reused_identity" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_rebind_reused_identity" in parsed.capabilities["aq_commands"]
+    assert "aq integration rebind-reused-identity --task-id" in text
+    confirm_first = text[text.index("**Explain before acting.**"):]
+    assert "`aq integration rebind-reused-identity --discard-tip`" in confirm_first
+
+
 # ---------------------------------------------------------------------------
 # Emergent-work prime section vs. the profile-owned capability gate
 # ---------------------------------------------------------------------------

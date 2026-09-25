@@ -148,6 +148,23 @@ def _client(result):
             },
         ),
         (
+            ["rebind-reused-identity", "--task-id", "t"],
+            "integration_rebind_reused_identity",
+            {"task_id": "t", "dry_run": True},
+        ),
+        (
+            [
+                "rebind-reused-identity", "--task-id", "t", "--apply",
+                "--origin-id", "o1", "--origin-id", "o2",
+                "--discard-tip", "a" * 40, "--reason", "reused identity",
+            ],
+            "integration_rebind_reused_identity",
+            {
+                "task_id": "t", "dry_run": False, "expected_origin_ids": ["o1", "o2"],
+                "discard_tips": ["a" * 40], "reason": "reused identity",
+            },
+        ),
+        (
             ["bind-legacy-repositories", "p"],
             "integration_bind_legacy_repositories",
             {"project_id": "p", "dry_run": True, "reason": None},
@@ -334,6 +351,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_retry_cleanup",
         "integration_bind_legacy_repositories",
         "integration_clear_stale_request",
+        "integration_rebind_reused_identity",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -350,6 +368,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "retry-cleanup",
         "bind-legacy-repositories",
         "clear-stale-request",
+        "rebind-reused-identity",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
@@ -466,4 +485,23 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
 
     assert result.exit_code != 0
     assert "--apply requires --request-id and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["rebind-reused-identity", "--task-id", "t", "--apply", "--reason", "reused"],
+        ["rebind-reused-identity", "--task-id", "t", "--apply", "--origin-id", "o1"],
+    ),
+)
+def test_rebind_reused_identity_apply_needs_the_origins_and_a_reason(argv):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "rebound"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+
+    assert result.exit_code != 0
+    assert "--apply requires --origin-id and --reason" in result.output
     client.execute.assert_not_awaited()

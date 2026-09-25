@@ -1460,7 +1460,9 @@ async def _check_reused_task_identity(ctx: DoctorContext) -> CheckResult:
             f"e.g. {first['origin_id']} for {first['task_id']} ({first['task_status']}). "
             "Suspected reused task identity; operator review of the exact branch and "
             "integration history is required before rebinding. Releasing a fence alone "
-            "does not repair the origin or checkpoint."
+            "does not repair the origin or checkpoint: `aq integration "
+            f"rebind-reused-identity --task-id {first['task_id']}` proves it (a dry run) "
+            "and rebinds it with --apply."
         ),
         data=data,
     )

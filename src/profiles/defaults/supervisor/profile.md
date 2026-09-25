@@ -95,6 +95,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_eject",
     "integration_enable",
     "integration_flush",
+    "integration_rebind_reused_identity",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
@@ -274,11 +275,24 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   own next pass; `--apply --request-id <id> --reason ...` frees it now, and
   also frees `unsealed` (an accepted sweep that sealed no batch). `blocked`
   names unresolved write evidence on the batch: report it, never force it.
+- **A task that inherited a deleted task's identity.** `aq doctor --check
+  integration.reused_task_identity` lists tasks whose branch origin predates
+  them. For each one, run `aq integration rebind-reused-identity --task-id
+  <id>` (a dry run) and report its verdict. `would_rebind` means every
+  predecessor commit is on the default branch or its ref is gone; then run
+  `--apply --origin-id <id> --reason ...` with each origin id it reported.
+  `unproven` lists each cause: a live writer, a held owner, dependent
+  integration history, or a hierarchy/train project. Report those and never
+  force them. A commit that is not on the default branch is abandoned only by
+  naming it with `--discard-tip <sha>`, and only on the user's decision. The
+  control retires the origin and keeps it, moves the checkpoint into an
+  `integration.task_identity_rebound` event, and touches no branch.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,
   `aq integration cancel-preserving`, `aq integration waive-history`,
   `aq integration adopt-legacy-deliveries --accept|--retire|--supersede`,
+  `aq integration rebind-reused-identity --discard-tip`,
   `aq agent delete`, destroying work that cannot be recovered, or publishing
   outside the user's own repositories. Wait for the user's confirmation on
   those actions.
