@@ -420,6 +420,7 @@ class ArchiveQueryMixin:
                 # Carry the blocked-state projection across so archiving
                 # really is lossless (work-graph §2.2).
                 is_blocked=int(task.is_blocked),
+                dedup_key=task.dedup_key,
                 created_by_kind=task.created_by_kind,
                 created_by_id=task.created_by_id,
                 provider_intent=task.provider_intent or "class_only",
@@ -796,6 +797,23 @@ class ArchiveQueryMixin:
                 return None
             return self._row_to_archived_task(row)
 
+    async def list_archived_tasks_by_dedup_prefix(
+        self, project_id: str, prefix: str
+    ) -> list[dict]:
+        """Archived tasks with a matching dedup key, oldest created first."""
+        pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        stmt = (
+            select(archived_tasks)
+            .where(
+                archived_tasks.c.project_id == project_id,
+                archived_tasks.c.dedup_key.like(pattern, escape="\\"),
+            )
+            .order_by(archived_tasks.c.created_at.asc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [self._row_to_archived_task(row) for row in rows]
+
     async def delete_archived_task(self, task_id: str) -> bool:
         """Permanently delete an archived task. Returns *True* if deleted."""
         from src.database.queries.hierarchy_queries import HierarchyError
@@ -898,6 +916,7 @@ class ArchiveQueryMixin:
             "affinity_reason": row.get("affinity_reason"),
             "workspace_mode": row.get("workspace_mode"),
             "is_blocked": bool(row.get("is_blocked", 0)),
+            "dedup_key": row.get("dedup_key"),
             "created_by_kind": row.get("created_by_kind"),
             "created_by_id": row.get("created_by_id"),
             "provider_intent": row.get("provider_intent") or "class_only",

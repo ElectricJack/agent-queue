@@ -139,6 +139,19 @@ describe("review pane", () => {
     }));
   });
 
+  it("requires a note when rejecting and submits a distinct reject decision", async () => {
+    renderPane();
+    const reject = screen.getByRole("button", { name: "Reject" });
+    expect(reject).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Decision note"), {
+      target: { value: "Use the smaller fix approach." },
+    });
+    fireEvent.click(reject);
+    await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, decision: "reject", note: "Use the smaller fix approach.",
+    }));
+  });
+
   it("shows the route saved on a decided revision beside the decision controls", () => {
     hooks.useReview.mockImplementation(() => ({
       data: {

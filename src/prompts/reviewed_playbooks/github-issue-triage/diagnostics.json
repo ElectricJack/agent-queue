@@ -1,0 +1,44 @@
+[
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "close-explicit-rejection",
+    "severity": "info",
+    "step_id": "close-explicit-rejection--command"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "close-explicit-rejection",
+    "severity": "info",
+    "step_id": "close-explicit-rejection--command"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "close-explicit-rejection",
+    "severity": "info",
+    "step_id": "close-explicit-rejection--command"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'project_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "file-approved-fix",
+    "severity": "info",
+    "step_id": "file-approved-fix--command"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'review_id' could not be determined statically, so the check against string was silenced",
+    "rule_id": "file-approved-fix",
+    "severity": "info",
+    "step_id": "file-approved-fix--command"
+  },
+  {
+    "code": "type_unknown",
+    "message": "the type of input 'revision' could not be determined statically, so the check against integer was silenced",
+    "rule_id": "file-approved-fix",
+    "severity": "info",
+    "step_id": "file-approved-fix--command"
+  }
+]

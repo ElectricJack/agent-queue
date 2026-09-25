@@ -5388,6 +5388,194 @@
         }
       }
     },
+    "/api/github_issue/close-rejected": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "Close a rejected investigation issue only when Jack explicitly requested it.",
+        "description": "Close a rejected investigation issue only when Jack explicitly requested it.",
+        "operationId": "github_issue_close_rejected",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueCloseRejectedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueCloseRejectedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/fix-approved": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "File or reuse a fix task for an approved GitHub issue investigation review.",
+        "description": "File or reuse a fix task for an approved GitHub issue investigation review.",
+        "operationId": "github_issue_fix_approved",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueFixApprovedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueFixApprovedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/rejection": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "Apply only an explicit closure request in Jack's rejected issue review.",
+        "description": "Apply only an explicit closure request in Jack's rejected issue review.",
+        "operationId": "github_issue_rejection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueRejectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueRejectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/triage": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+        "description": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+        "operationId": "github_issue_triage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueTriageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueTriageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/graph/layout-rebuild": {
       "post": {
         "tags": [
@@ -10315,8 +10503,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Approve a review or request changes on its current revision.",
-        "description": "Approve a review or request changes on its current revision.",
+        "summary": "Approve, request changes, or reject a current review revision.",
+        "description": "Approve, request changes, or reject a current review revision.",
         "operationId": "review_decide",
         "requestBody": {
           "content": {
@@ -27899,6 +28087,121 @@
         ],
         "title": "GitDiffResponse"
       },
+      "GitHubIssueCloseRejectedResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome",
+          "number"
+        ],
+        "title": "GitHubIssueCloseRejectedResponse"
+      },
+      "GitHubIssueFixApprovedResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "GitHubIssueFixApprovedResponse"
+      },
+      "GitHubIssueRejectionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "GitHubIssueRejectionResponse"
+      },
+      "GitHubIssueTriageResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "filed": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Filed"
+          },
+          "recovered": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Recovered"
+          },
+          "remaining_capacity": {
+            "type": "integer",
+            "title": "Remaining Capacity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filed",
+          "recovered",
+          "remaining_capacity"
+        ],
+        "title": "GitHubIssueTriageResponse"
+      },
       "GitLogRequest": {
         "properties": {
           "project_id": {
@@ -28384,6 +28687,86 @@
         },
         "type": "object",
         "title": "GithubAuthStatusResponse"
+      },
+      "GithubIssueCloseRejectedRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "GithubIssueCloseRejectedRequest"
+      },
+      "GithubIssueFixApprovedRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "review_id",
+          "revision"
+        ],
+        "title": "GithubIssueFixApprovedRequest"
+      },
+      "GithubIssueRejectionRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "review_id",
+          "revision"
+        ],
+        "title": "GithubIssueRejectionRequest"
+      },
+      "GithubIssueTriageRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "GithubIssueTriageRequest"
       },
       "GithubOwner": {
         "properties": {
@@ -42751,7 +43134,7 @@
               }
             ],
             "title": "Responder Class",
-            "description": "Who revises after feedback: intelligence class for the new revision task (request_changes only)."
+            "description": "Who revises after request_changes or reject: intelligence class for the new revision task."
           },
           "responder_profile": {
             "anyOf": [
@@ -42763,7 +43146,7 @@
               }
             ],
             "title": "Responder Profile",
-            "description": "Optional worker profile for that revision class (request_changes only)."
+            "description": "Optional worker profile for that revision class."
           }
         },
         "type": "object",

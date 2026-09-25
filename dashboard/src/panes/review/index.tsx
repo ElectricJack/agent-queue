@@ -153,8 +153,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
     if (!response || viewedRevision == null) return;
     await decide.mutateAsync({
       review_id: response.review.id, revision: viewedRevision, decision, ...(note ? { note } : {}),
-      ...(decision === "request_changes" && responderClass ? { responder_class: responderClass } : {}),
-      ...(decision === "request_changes" && responderProfile ? { responder_profile: responderProfile } : {}),
+      ...(decision !== "approve" && responderClass ? { responder_class: responderClass } : {}),
+      ...(decision !== "approve" && responderProfile ? { responder_profile: responderProfile } : {}),
     });
   }, [decide, response, viewedRevision]);
 

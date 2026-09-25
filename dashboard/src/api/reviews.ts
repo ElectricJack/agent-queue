@@ -66,7 +66,7 @@ export function useWaitingReviewCount(): number {
 type DecideInput = {
   review_id: string;
   revision: number;
-  decision: "approve" | "request_changes";
+  decision: "approve" | "request_changes" | "reject";
   note?: string;
   responder_class?: string;
   responder_profile?: string;

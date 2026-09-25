@@ -624,7 +624,14 @@ class Trigger(V2Base):
     subscription filter must be matchable without a run context.
     """
 
-    event_type: QualifiedName
+    # Daily wall-clock events contain a colon. Keep the rest of the event
+    # namespace's qualified-name bound while admitting only valid HH:MM.
+    event_type: Annotated[
+        str,
+        StringConstraints(
+            pattern=r"^(?:[a-z0-9][a-z0-9._-]{0,127}|cron\.(?:[01][0-9]|2[0-3]):[0-5][0-9])$"
+        ),
+    ]
     filter: dict[str, JsonScalar | list[JsonScalar]] | None = None
 
 

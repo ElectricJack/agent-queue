@@ -46,6 +46,13 @@ from src.playbooks.definition import (
 from src.playbooks.expressions import V2Base
 from tests.playbook_v2_helpers import GOLDEN, GOLDEN_V6, source, twin
 
+
+def test_daily_cron_trigger_accepts_only_valid_local_times():
+    assert D.Trigger(event_type="cron.02:00").event_type == "cron.02:00"
+    for invalid in ("cron.24:00", "cron.02:60", "cron.2:00"):
+        with pytest.raises(ValidationError):
+            D.Trigger(event_type=invalid)
+
 #: §4.7 — pinned so a Pydantic upgrade that reorders dumps fails loudly rather
 #: than silently invalidating every stored artifact hash.
 GOLDEN_DIGEST = "sha256:af15f27c50e369769b42a399ace1131745413f8e8092548fe5fa13a3773303d6"
