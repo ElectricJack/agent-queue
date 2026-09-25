@@ -103,6 +103,32 @@ async def blocks_edges(db, task_id):
     return set(rows)
 
 
+@pytest.mark.parametrize(
+    "mode, expected_repo_id",
+    [("development", "phase-repo"), ("observe", "phase-repo"), ("disabled", None)],
+)
+async def test_standalone_phase_uses_designated_repository(
+    handler, orch, tmp_path, mode, expected_repo_id
+):
+    db = orch.db
+    await db.create_repo(
+        RepoConfig(
+            id="phase-repo",
+            project_id=PROJECT_ID,
+            source_type=RepoSourceType.LINK,
+            source_path=str(tmp_path / "repo"),
+        )
+    )
+    await db.update_project(
+        PROJECT_ID,
+        hierarchical_integration_mode=mode,
+        integration_repository_id="phase-repo",
+    )
+
+    result = await phase(handler, "Phase 1")
+    assert (await db.get_task(result["phase"]["id"])).repo_id == expected_repo_id
+
+
 async def planner_session(db, tmp_path, held_id, sid="planner-1", agent_id="planner-agent"):
     """A live, non-elevated planner session holding *held_id*.
 

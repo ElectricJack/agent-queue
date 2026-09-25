@@ -33,6 +33,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.hierarchy_queries import PHASE_KEY, HierarchyError
+from src.database.queries.task_queries import task_repository_id
 from src.database.tables import (
     projects,
     sessions,
@@ -314,6 +315,14 @@ async def build_plan(
     ``write_plan``'s transaction so concurrent graph creations never race.
     """
     now = time.time()
+    project = await db.get_project(project_id)
+    repo_id = (
+        task_repository_id(
+            project.hierarchical_integration_mode, project.integration_repository_id
+        )
+        if project is not None
+        else None
+    )
     provisional = parent_id is not None
     container_id = parent_id or await generate_task_id(db)
     if graph.phases:
@@ -334,6 +343,7 @@ async def build_plan(
         parent_row = {
             "id": container_id,
             "project_id": project_id,
+            "repo_id": repo_id,
             "parent_task_id": None,
             "title": parent_title,
             "description": (parent.description if parent else "") or parent_title,
@@ -378,6 +388,7 @@ async def build_plan(
             {
                 "id": phase_id,
                 "project_id": project_id,
+                "repo_id": repo_id,
                 "parent_task_id": None,  # set_parent_bulk (in write_plan) writes it
                 "title": title,
                 "description": label,
@@ -418,6 +429,7 @@ async def build_plan(
             {
                 "id": task_id,
                 "project_id": project_id,
+                "repo_id": repo_id,
                 "parent_task_id": None,  # set_parent (in write_plan) writes it
                 "title": node.title,
                 "description": _compose_description(node),

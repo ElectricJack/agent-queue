@@ -1432,6 +1432,46 @@ class TestCreateGraph:
         # every node alongside the ``blocks`` edge the graph declared.
         assert deps == {ids["schema"], report["parent_id"]}
 
+    @pytest.mark.parametrize(
+        "mode, expected_repo_id",
+        [("development", "graph-repo"), ("observe", "graph-repo"), ("disabled", None)],
+    )
+    @pytest.mark.parametrize("phased", [False, True])
+    async def test_graph_rows_use_designated_repository(
+        self, db, tmp_path, mode, expected_repo_id, phased
+    ):
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(
+            RepoConfig(
+                id="graph-repo",
+                project_id="p1",
+                source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path / "repo"),
+            )
+        )
+        await db.update_project(
+            "p1",
+            hierarchical_integration_mode=mode,
+            integration_repository_id="graph-repo",
+        )
+        graph_doc = {
+            "version": 1,
+            "parent": {"title": "Epic"},
+            "nodes": [
+                {"key": "a", "title": "A", "phase": "one" if phased else None},
+                {"key": "b", "title": "B"},
+            ],
+        }
+        if phased:
+            graph_doc["phases"] = [{"key": "one", "title": "Phase 1"}]
+
+        report = await create_graph(_Handler(db), parse_graph(graph_doc), project_id="p1")
+        task_ids = [report["parent_id"], *report["task_ids"]]
+        task_ids.extend(phase["task_id"] for phase in report.get("phases", []))
+        for task_id in task_ids:
+            assert (await db.get_task(task_id)).repo_id == expected_repo_id
+
     async def test_dependency_rows_carry_dep_type(self, db, vault):
         graph = parse_graph(
             {

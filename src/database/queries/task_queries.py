@@ -66,8 +66,9 @@ _INTEGRATION_WAKE_TOKEN = object()
 _UNSET = object()
 
 
-#: Project integration modes whose publisher collects a task by ``repo_id``.
-REPOSITORY_BOUND_MODES = frozenset({"hierarchy", "train", "development"})
+#: Project integration modes whose tasks need the designated repository, including
+#: observe tasks that may later enter the train.
+REPOSITORY_BOUND_MODES = frozenset({"observe", "hierarchy", "train", "development"})
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
