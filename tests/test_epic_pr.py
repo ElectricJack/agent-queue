@@ -8,7 +8,13 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database import Database
-from src.database.tables import epic_dependencies, projects, tasks
+from src.database.tables import (
+    epic_dependencies,
+    projects,
+    task_branch_origins,
+    task_integration_checkpoints,
+    tasks,
+)
 from src.integration.epic_pr import EpicPullRequestService, render_body
 from src.integration.parent_completion import ParentCompletion
 from src.models import Project, RepoConfig, RepoSourceType
@@ -76,6 +82,13 @@ def test_body_lists_children_and_carries_the_epic_trailer():
     assert "## Children" in body
     assert "- `c1` Remove the tick" in body
     assert body.rstrip().endswith("AQ-Epic: e1")
+
+
+def test_body_of_a_childless_root_has_no_children_section():
+    body = render_body(epic_id="r1", epic_title="Fix one thing", children=[], dependencies=[])
+    assert "## Children" not in body
+    assert body.startswith("Fix one thing")
+    assert body.rstrip().endswith("AQ-Epic: r1")
 
 
 def test_body_states_declared_dependencies():
@@ -219,3 +232,122 @@ async def test_parent_completion_retries_pr_after_github_failure(db):
     }
     assert second == third == {"outcome": "already_completed", "task_id": "e1"}
     assert git.acreate_pr.await_count == 2
+
+
+BASE = "b" * 40
+HEAD = "c" * 40
+
+
+async def _leaf_root(db, task_id="r1", *, checkpoint_sha=HEAD, **checkpoint):
+    """A childless train root as ``file_root_on`` files it and a leaf close leaves it."""
+    branch = f"aq/epic/{task_id}"
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(tasks).values(
+                id=task_id, project_id="p", repo_id="repo", title="Fix one thing",
+                description="", status="COMPLETED", branch_name=branch,
+                created_at=1.0, updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id=f"origin-{task_id}", task_id=task_id, repository_id="repo",
+                branch_name=branch, parent_ref="main", base_sha=BASE,
+                creation_generation=0, reserved=True, materialized=True, created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id=task_id, repository_id="repo", branch=branch, generation=0,
+                checkpoint_sha=checkpoint_sha, state="working", version=1,
+                branch_owner_id=task_id, updated_at=1.0, **checkpoint,
+            )
+        )
+    return branch
+
+
+async def test_childless_train_root_opens_its_pr_at_the_leaf_checkpoint(db):
+    """Regression for noble-harbor-74: a leaf root closed with no PR, forever."""
+    branch = await _leaf_root(db)
+    git = AsyncMock()
+    git.acreate_pr.return_value = "https://github.com/o/r/pull/9"
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+
+    assert result == {"outcome": "opened", "epic_id": "r1", "pr_url": "https://github.com/o/r/pull/9"}
+    kwargs = git.acreate_pr.await_args.kwargs
+    assert kwargs["branch"] == branch
+    assert kwargs["base"] == "main"
+    assert "## Children" not in kwargs["body"]
+    async with db.immediate() as conn:
+        stored = (await conn.execute(select(tasks.c.pr_url).where(tasks.c.id == "r1"))).scalar_one()
+    assert stored == "https://github.com/o/r/pull/9"
+
+
+async def test_childless_root_without_a_checkpoint_stays_with_the_legacy_pipeline(db):
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(tasks).values(
+                id="legacy", project_id="p", repo_id="repo", title="Legacy root",
+                description="", status="COMPLETED", branch_name="aq/legacy",
+                created_at=1.0, updated_at=1.0,
+            )
+        )
+    git = AsyncMock()
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("legacy")
+
+    assert result == {"outcome": "not_epic", "epic_id": "legacy"}
+    git.acreate_pr.assert_not_awaited()
+
+
+async def test_childless_root_at_its_origin_base_has_no_changes_to_propose(db):
+    await _leaf_root(db, checkpoint_sha=BASE)
+    git = AsyncMock()
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+
+    assert result == {"outcome": "no_changes", "epic_id": "r1"}
+    git.acreate_pr.assert_not_awaited()
+
+
+async def test_childless_root_checkpoint_on_another_branch_is_not_ready(db):
+    await _leaf_root(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "r1")
+            .values(branch="aq/epic/somewhere-else")
+        )
+    git = AsyncMock()
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+
+    assert result == {"outcome": "checkpoint_not_ready", "epic_id": "r1"}
+    git.acreate_pr.assert_not_awaited()
+
+
+async def test_childless_root_already_on_the_default_branch_opens_nothing(db):
+    """A leaf root whose head was merged by hand (a fix-forward) proposes nothing."""
+    await _leaf_root(db)
+    git = AsyncMock()
+    git.acommits_ahead_of_base.return_value = 0
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+
+    assert result == {"outcome": "already_on_default", "epic_id": "r1", "head_sha": HEAD}
+    git.acommits_ahead_of_base.assert_awaited_once_with(
+        repository=git.bind_github_repository.return_value, base="main", head_sha=HEAD
+    )
+    git.acreate_pr.assert_not_awaited()
+
+
+async def test_unknown_comparison_does_not_block_the_pr(db):
+    await _leaf_root(db)
+    git = AsyncMock()
+    git.acommits_ahead_of_base.return_value = None
+    git.acreate_pr.return_value = "https://github.com/o/r/pull/9"
+
+    result = await EpicPullRequestService(db, git_manager=git).open_for_epic("r1")
+
+    assert result["outcome"] == "opened"

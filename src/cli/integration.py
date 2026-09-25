@@ -407,6 +407,43 @@ def integration_clear_stale_request(
     _execute(ctx, "integration_clear_stale_request", args)
 
 
+@integration.command("redrive-root")
+@click.argument("task_id")
+@click.option("--apply", is_flag=True, help="Open the missing PR; default is a dry run.")
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_redrive_root(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Say why completed train root TASK_ID has no pull request; open it if it should.
+
+    The train seats a root only once it has a PR and an approved review of its
+    exact head.  The dry run reads the root's checkpoint, the remote branch tip
+    and whether that head is already on the default branch, and answers
+    `would_open`, `nothing_to_redrive`, `blocked` or `not_eligible` with the
+    reason and the head.  `--apply` needs that head and a reason, and opens
+    the PR only for it.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_redrive_root", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

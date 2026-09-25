@@ -35,6 +35,7 @@ class IntegrationService:
         development_handler: DrainHandler | None = None,
         owner_recovery_handler: DrainHandler | None = None,
         review_handler: DrainHandler | None = None,
+        root_pull_request_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -59,6 +60,7 @@ class IntegrationService:
         self._collection_handler = collection_handler
         self._owner_recovery_handler = owner_recovery_handler
         self._review_handler = review_handler
+        self._root_pull_request_handler = root_pull_request_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -92,6 +94,10 @@ class IntegrationService:
             if self._branch_materialization_handler is not None:
                 await self._source(
                     "branch materialization", self._branch_materialization_handler, now
+                )
+            if self._root_pull_request_handler is not None:
+                await self._source(
+                    "train root pull requests", self._root_pull_request_handler, now
                 )
             if self._review_handler is not None:
                 await self._source("GitHub PR reviews", self._review_handler, now)

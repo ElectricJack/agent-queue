@@ -4817,6 +4817,34 @@ class GitManager:
         except (GitError, GitHubAccessError, KeyError, TypeError, ValueError):
             return None
 
+    async def aremote_branch_head(
+        self, *, repository: GitHubRepositoryBinding, branch: str,
+    ) -> str | None:
+        """Return the authorized repository's exact tip of ``branch``, or None if absent."""
+        _validate_ref(branch)
+        try:
+            return await self._github_client(repository).exact_head_ref(branch)
+        except (GitHubAccessError, ValueError) as exc:
+            raise GitError(f"could not read remote branch {branch}: {exc}") from exc
+
+    async def acommits_ahead_of_base(
+        self, *, repository: GitHubRepositoryBinding, base: str, head_sha: str,
+    ) -> int | None:
+        """Return how many commits ``head_sha`` has that ``base`` lacks.
+
+        ``0`` means the head is already contained in ``base``: a pull request
+        from it would propose nothing.  ``None`` means the comparison could not
+        be read; callers must treat that as unknown, never as zero.
+        """
+        try:
+            comparison = await self._github_client(repository).compare(base, head_sha)
+        except (GitError, GitHubAccessError, ValueError):
+            return None
+        ahead = comparison.get("ahead_by") if isinstance(comparison, dict) else None
+        if isinstance(ahead, bool) or not isinstance(ahead, int) or ahead < 0:
+            return None
+        return ahead
+
     async def arev_parse(self, checkout_path: str, ref: str) -> str | None:
         """Return the SHA for ``ref`` in ``checkout_path``, or None.
 

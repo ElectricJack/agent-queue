@@ -98,6 +98,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
+    "integration_redrive_root",
     "integration_release_delegates",
     "integration_release_owner",
     "integration_release_stale_owners",
@@ -274,6 +275,15 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   own next pass; `--apply --request-id <id> --reason ...` frees it now, and
   also frees `unsealed` (an accepted sweep that sealed no batch). `blocked`
   names unresolved write evidence on the batch: report it, never force it.
+- **A completed train root with no PR.** The train seats a root only once it
+  has a pull request and an approved review of its exact head; the daemon
+  opens a missing one on its own within minutes. When a COMPLETED root still
+  has none, run `aq integration redrive-root <task>` (a dry run) and report
+  its verdict and `reason`. `would_open` → `--apply --head <head_sha>
+  --reason ...` opens the PR for exactly that head. `nothing_to_redrive`
+  (already open, already on the default branch, or delivered) and `blocked`
+  (unverified epic, head never recorded, remote branch moved) are reported,
+  never forced.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,

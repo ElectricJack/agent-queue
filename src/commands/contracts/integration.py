@@ -75,6 +75,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_clear_stale_request",
+        "integration_redrive_root",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
@@ -173,6 +174,29 @@ class IntegrationClearStaleRequestArgs(CommandArgs):
             self.expected_request_id is None or self.reason is None or not self.reason.strip()
         ):
             raise ValueError("applying requires expected_request_id and reason")
+        return self
+
+
+class IntegrationRedriveRootArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    #: Diagnose only.  Applying needs the head the dry run reported and a reason.
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+    @field_validator("expected_head_sha")
+    @classmethod
+    def expected_head_is_a_commit(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_git_oid(value):
+            raise ValueError("expected_head_sha must be a full commit id")
+        return value
+
+    @model_validator(mode="after")
+    def applying_names_the_head_and_a_reason(self) -> IntegrationRedriveRootArgs:
+        if not self.dry_run and (
+            self.expected_head_sha is None or self.reason is None or not self.reason.strip()
+        ):
+            raise ValueError("applying requires expected_head_sha and reason")
         return self
 
 
@@ -303,6 +327,23 @@ class IntegrationOperationalValue(CommandValue):
     leases: tuple[dict[str, Any], ...] = ()
     bound: tuple[dict[str, Any], ...] = ()
     unproven: tuple[str, ...] = ()
+
+
+class IntegrationRedriveRootValue(CommandValue):
+    """What a completed train root's delivery waits on (``integration_redrive_root``)."""
+
+    task_id: str | None = None
+    project_id: str | None = None
+    kind: str | None = None
+    branch: str | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
+    remote_head_sha: str | None = None
+    ahead_by: int | None = None
+    pr_url: str | None = None
+    checkpoint: dict[str, Any] | None = None
+    owner: dict[str, Any] | None = None
+    reason: str | None = None
 
 
 class IntegrationScheduleDueValue(CommandValue):
@@ -693,6 +734,7 @@ def _operational_contract(
     *,
     successes: frozenset[str],
     side_effect: SideEffectClass,
+    result_model: type[CommandValue] = IntegrationOperationalValue,
 ) -> CommandContract:
     effects = (
         (ReadClause(subject=EffectSubject.INTEGRATION_OPERATION),)
@@ -703,7 +745,7 @@ def _operational_contract(
         execution=ExecutionContract(
             name=name,
             args_model=args_model,
-            result_model=IntegrationOperationalValue,
+            result_model=result_model,
             outcomes=tuple(
                 OutcomeSpec(
                     name=outcome,
@@ -721,7 +763,7 @@ def _operational_contract(
             retry_safe=True,
             effects=effects,
             sensitive_args=frozenset({"reason"}) if "reason" in args_model.model_fields else frozenset(),
-            receipt_projection=tuple(IntegrationOperationalValue.model_fields),
+            receipt_projection=tuple(result_model.model_fields),
         ),
         presentation=CommandPresentation(
             title=name.replace("_", " ").title(),
@@ -854,6 +896,26 @@ INTEGRATION_CLEAR_STALE_REQUEST = _operational_contract(
     CLEAR_STALE_REQUEST_OUTCOMES,
     successes=frozenset({"cleared", "would_clear", "nothing_to_clear"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+REDRIVE_ROOT_OUTCOMES = (
+    "would_open",
+    "opened",
+    "nothing_to_redrive",
+    "blocked",
+    "changed",
+    "not_eligible",
+    "not_found",
+    "invalid",
+)
+
+INTEGRATION_REDRIVE_ROOT = _operational_contract(
+    "integration_redrive_root",
+    IntegrationRedriveRootArgs,
+    REDRIVE_ROOT_OUTCOMES,
+    successes=frozenset({"would_open", "opened", "nothing_to_redrive"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationRedriveRootValue,
 )
 
 ADOPT_LEGACY_DELIVERIES_OUTCOMES = (
@@ -2274,6 +2336,16 @@ async def _clear_stale_request_adapter(
     )
 
 
+async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_redrive_root",
+        args,
+        ctx,
+        IntegrationRedriveRootValue,
+        set(REDRIVE_ROOT_OUTCOMES),
+    )
+
+
 async def _adopt_legacy_deliveries_adapter(
     args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
 ):
@@ -2359,6 +2431,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
+        (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),

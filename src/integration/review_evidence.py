@@ -138,7 +138,7 @@ class ReviewEvidenceProducer:
                 "reviewer_task_id": None,
                 "reviewer_session_attempt_id": None,
                 "reviewer_identity": f"github:{reviewer_login}",
-                "review_kind": "parent",
+                "review_kind": source["review_kind"],
                 "generation": source["generation"],
                 "verdict": verdict,
                 "evidence": {
@@ -181,6 +181,7 @@ class ReviewEvidenceProducer:
                         checkpoint.c.generation,
                         checkpoint.c.current_verification_id.label("verification_id"),
                         checkpoint.c.last_completed_verification_id,
+                        checkpoint.c.episode_id,
                         origin.c.base_sha.label("base"),
                     )
                     .select_from(
@@ -216,16 +217,7 @@ class ReviewEvidenceProducer:
             .mappings()
             .one_or_none()
         )
-        if (
-            row is None
-            or not row["pr_url"].strip()
-            or not row["branch"].strip()
-            or row["head"] is None
-            or row["head"] != row["checkpoint_sha"]
-            or row["verified_generation"] != row["generation"]
-            or not row["verification_id"]
-            or row["verification_id"] != row["last_completed_verification_id"]
-        ):
+        if row is None or not row["pr_url"].strip() or not row["branch"].strip():
             return None
         active_child = (
             await conn.execute(
@@ -240,16 +232,37 @@ class ReviewEvidenceProducer:
             )
         ).first()
         if active_child is None and archived_child is None:
-            return None
+            # A childless root filed straight onto its own branch: its leaf
+            # checkpoint is the finished head, exactly as the train seats it
+            # (``eligible_root_page_on``'s leaf identity).
+            if (
+                not row["checkpoint_sha"]
+                or row["episode_id"] is not None
+                or row["verification_id"] is not None
+                or row["checkpoint_sha"] == row["base"]
+            ):
+                return None
+            head, verification_id, review_kind = row["checkpoint_sha"], None, "leaf"
+        else:
+            if (
+                row["head"] is None
+                or row["head"] != row["checkpoint_sha"]
+                or row["verified_generation"] != row["generation"]
+                or not row["verification_id"]
+                or row["verification_id"] != row["last_completed_verification_id"]
+            ):
+                return None
+            head, verification_id, review_kind = row["head"], row["verification_id"], "parent"
         return {
             "project_id": row["project_id"],
             "repository_id": row["repository_id"],
             "branch": row["branch"],
             "pr_url": row["pr_url"],
             "base": row["base"],
-            "head": row["head"],
+            "head": head,
             "generation": int(row["generation"]),
-            "verification_id": row["verification_id"],
+            "verification_id": verification_id,
+            "review_kind": review_kind,
         }
 
     async def snapshot(

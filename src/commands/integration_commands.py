@@ -643,6 +643,36 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_redrive_root(self, args: dict) -> dict:
+        """Diagnose a completed train root's missing PR; open it for the reported head."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRedriveRootArgs
+        from src.integration.root_pull_requests import RootDeliveryRedrive
+
+        try:
+            request = IntegrationRedriveRootArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid root redrive request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await RootDeliveryRedrive(self.db, self.orchestrator.git).run(
+            request.task_id,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_open", "opened", "nothing_to_redrive"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
     async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
         """Record provable pre-train deliveries of children no train will collect."""
         from pydantic import ValidationError

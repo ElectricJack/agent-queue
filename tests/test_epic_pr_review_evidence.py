@@ -347,6 +347,65 @@ async def test_approval_writes_exact_trusted_evidence_and_is_eligible(case):
     assert members[0]["review"] == evidence
 
 
+async def _childless_root(case, *, checkpoint_sha=None):
+    """A childless train root on its own published branch (noble-harbor-74's shape)."""
+    head = checkpoint_sha or case["first"]
+    branch = "aq/epic/fix-one-thing"
+    _git("push", "origin", f"{case['first']}:refs/heads/{branch}", cwd=case["work"])
+    async with case["db"].immediate() as conn:
+        await conn.execute(
+            insert(tasks).values(
+                id="r1", project_id="p", repo_id="repo", title="Fix one thing",
+                description="", status="COMPLETED", branch_name=branch,
+                pr_url="https://github.com/o/r/pull/9", created_at=1.0, updated_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id="origin-r1", task_id="r1", repository_id="repo", branch_name=branch,
+                parent_ref="main", base_sha=case["base"], creation_generation=0,
+                reserved=True, materialized=True, created_at=1.0,
+            )
+        )
+        await conn.execute(
+            insert(task_integration_checkpoints).values(
+                task_id="r1", repository_id="repo", branch=branch, checkpoint_sha=head,
+                generation=0, state="working", version=1, updated_at=1.0,
+            )
+        )
+
+
+async def test_approval_of_a_childless_root_is_leaf_evidence_the_train_seats(case):
+    """A leaf root's PR approval must reach the train, not stop at ingestion."""
+    await _childless_root(case)
+
+    evidence = await case["producer"].snapshot_from_pull_request(
+        "r1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["first"]
+    )
+
+    assert evidence["review_kind"] == "leaf"
+    assert evidence["reviewed_head_sha"] == case["first"]
+    assert evidence["source_base"] == case["base"]
+    assert evidence["generation"] == 0
+    assert evidence["evidence"]["verification_id"] is None
+    async with case["db"].immediate() as conn:
+        members = await TrainService(case["db"])._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request"
+        )
+    assert [member["task_id"] for member in members] == ["r1"]
+    assert members[0]["source_kind"] == "leaf"
+    assert members[0]["review"] == evidence
+
+
+async def test_childless_root_still_at_its_base_takes_no_verdict(case):
+    await _childless_root(case, checkpoint_sha=case["base"])
+
+    assert await case["producer"].snapshot_from_pull_request(
+        "r1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["base"]
+    ) is None
+    assert await _rows(case["db"]) == []
+
+
 async def test_approval_of_moved_head_is_not_reused(case):
     first = await case["producer"].snapshot_from_pull_request(
         "e1", verdict="approved", reviewer_login="jkern", reviewed_sha=case["first"]

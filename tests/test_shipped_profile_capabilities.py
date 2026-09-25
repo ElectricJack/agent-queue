@@ -140,6 +140,10 @@ def test_supervisor_holds_every_operator_integration_control():
     granted = set(_parsed("supervisor").capabilities["aq_commands"])
     assert "integration_clear_stale_request" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_clear_stale_request" in granted
+    # The dry-run-first handle on a completed train root with no PR
+    # (noble-harbor-74); the profile tells the supervisor when to run it.
+    assert "integration_redrive_root" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_redrive_root" in granted
     assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
 
 
