@@ -481,6 +481,86 @@ _HELD_HANDOFF_STATES = ("attached", "handoff_pending")
 _RUNNING_TASK_STATUSES = (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
 
 
+async def _check_missing_canonical_owners(ctx: DoctorContext) -> CheckResult:
+    """Report train producers that a claim cannot attach to their own branch."""
+    check_id = "integration.missing_canonical_owners"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — branch reservations unknown",
+        )
+    from sqlalchemy import and_, or_, select
+
+    from src.database.tables import (
+        integration_branch_owners,
+        projects,
+        task_integration_checkpoints,
+        tasks,
+    )
+
+    owner = integration_branch_owners
+    checkpoint = task_integration_checkpoints
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        tasks.c.id,
+                        tasks.c.project_id,
+                        tasks.c.status,
+                        tasks.c.branch_name,
+                        owner.c.handoff_state,
+                    )
+                    .join(projects, projects.c.id == tasks.c.project_id)
+                    .join(
+                        checkpoint,
+                        and_(
+                            checkpoint.c.task_id == tasks.c.id,
+                            checkpoint.c.repository_id == tasks.c.repo_id,
+                            checkpoint.c.branch == tasks.c.branch_name,
+                        ),
+                    )
+                    .outerjoin(
+                        owner,
+                        and_(
+                            owner.c.repository_id == tasks.c.repo_id,
+                            owner.c.ref == tasks.c.branch_name,
+                        ),
+                    )
+                    .where(
+                        tasks.c.status.in_(("READY", "BLOCKED")),
+                        tasks.c.repo_id == projects.c.integration_repository_id,
+                        projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        checkpoint.c.state != "verifying",
+                        or_(owner.c.id.is_(None), owner.c.handoff_state == "released"),
+                    )
+                    .order_by(tasks.c.id)
+                    .limit(50)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    findings = [dict(row) for row in rows]
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="no READY/BLOCKED train task lacks its canonical reservation",
+        )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} READY/BLOCKED train task(s) lack a canonical branch "
+            "reservation; run `aq integration reserve-owner --task-id <id>` "
+            "for each task after confirming its old writer stopped."
+        ),
+        data={"count": len(findings), "tasks": findings},
+    )
+
+
 async def _find_stranded_fences(ctx: DoctorContext) -> list[dict]:
     """Ownership rows still held for a task that has no writer left.
 
@@ -1615,6 +1695,11 @@ def integration_checks() -> list[DoctorCheck]:
             fix=_fix_stranded_fences,
             owner=OWNER,
             timeout_s=60.0,
+        ),
+        DoctorCheck(
+            id="integration.missing_canonical_owners",
+            run=_check_missing_canonical_owners,
+            owner=OWNER,
         ),
         # Report-only. A historical publisher skipped completed work when a
         # delivered blocker's branch had already been cleaned up and its close
