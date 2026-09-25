@@ -8,6 +8,7 @@ message is a stand-in with exactly the fields a gateway reports.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -26,6 +27,9 @@ from src.escalations.intake import (
     ACTION_ACCEPT,
     ACTION_CLOSED,
     ACTION_IGNORE,
+    IGNORE_LOG_FORMAT,
+    MAX_REPLY_CHARS,
+    REASON_CODES,
     InboundMessage,
     classify_inbound,
 )
@@ -552,3 +556,197 @@ def test_the_inbound_path_never_calls_a_task_or_worker_command():
     ):
         assert forbidden not in source, f"{forbidden} must not be reachable from Discord intake"
     assert source.count('"escalation_reply"') == 1
+
+
+# ------------------------------------------------ reason codes and ignore log
+
+IGNORE_CODES_IN_GATE_ORDER = [
+    "disabled",
+    "own_message",
+    "bot_author",
+    "not_in_thread",
+    "no_channel",
+    "foreign_channel",
+    "author_not_allowlisted",
+    "thread_unbound",
+    "binding_channel_mismatch",
+    "binding_thread_mismatch",
+    "empty_text",
+    "oversize",
+    "no_message_id",
+]
+
+
+def test_the_reason_code_table_is_stable_and_in_gate_order():
+    # Codes are what operators grep for and what the digest counts by: a
+    # rename is a contract change, not a refactor.
+    assert list(REASON_CODES.values()) == IGNORE_CODES_IN_GATE_ORDER
+
+
+@pytest.mark.parametrize(
+    ("message", "overrides", "code"),
+    [
+        (observed(), {"enabled": False}, "disabled"),
+        (observed(is_own_message=True), {}, "own_message"),
+        (observed(author_is_bot=True), {}, "bot_author"),
+        (observed(thread_id=None), {}, "not_in_thread"),
+        (observed(), {"channel": None}, "no_channel"),
+        (observed(channel_id="303030303030303030"), {}, "foreign_channel"),
+        (observed(author_id=STRANGER), {}, "author_not_allowlisted"),
+        (observed(), {"binding": None}, "thread_unbound"),
+        (
+            observed(),
+            {"binding": binding_row(delivery_channel_id="6" * 18)},
+            "binding_channel_mismatch",
+        ),
+        (
+            observed(),
+            {"binding": binding_row(delivery_thread_id="6" * 18)},
+            "binding_thread_mismatch",
+        ),
+        (observed(text="   "), {}, "empty_text"),
+        (observed(text="x" * (MAX_REPLY_CHARS + 1)), {}, "oversize"),
+        (observed(external_message_id=""), {}, "no_message_id"),
+    ],
+)
+def test_every_ignore_carries_a_stable_code(message, overrides, code):
+    kwargs = {"binding": binding_row(), **overrides}
+    decision = classify(message, **kwargs)
+    assert decision.action == ACTION_IGNORE
+    assert decision.code == code
+    assert REASON_CODES[decision.reason] == code
+
+
+def test_accepted_and_closed_decisions_carry_codes():
+    assert classify(observed(), binding=binding_row()).code == "accepted"
+    assert classify(observed(), binding=binding_row(state="resolved")).code == "closed"
+
+
+def test_every_ignore_reason_string_has_a_code():
+    # The table is the contract: a new _ignore(...) without a code is a bug.
+    import ast
+    import inspect
+
+    from src.escalations import intake
+
+    tree = ast.parse(inspect.getsource(intake))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_ignore" and node.args
+    ]
+    reasons = {call.args[0].value for call in calls if isinstance(call.args[0], ast.Constant)}
+    assert reasons <= set(REASON_CODES)
+    assert len(calls) == len(REASON_CODES)
+
+
+def test_observe_records_the_guild_the_gateway_reported():
+    intake = DiscordEscalationIntake(SimpleNamespace(), make_app_config())
+    message = discord_message()
+    message.guild = SimpleNamespace(id=1)
+    assert intake.observe(message, bot_user_id=BOT_USER_ID).guild_id == "1"
+    direct = discord_message()
+    assert intake.observe(direct, bot_user_id=BOT_USER_ID).guild_id is None
+
+
+def ignore_line(code, *, guild="1", channel=CHANNEL, message="m-1", author=HUMAN) -> str:
+    return (
+        f"discord intake ignored reason={code} guild={guild} channel={channel} "
+        f"message={message} author={author}"
+    )
+
+
+def _ignore_lines(caplog) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.discord.escalation_intake"
+        and record.levelno == logging.INFO
+        and record.getMessage().startswith("discord intake ignored ")
+    ]
+
+
+async def test_an_ignored_message_logs_ids_and_code_but_never_content(caplog):
+    def forbidden(**kwargs):  # pragma: no cover - must not run
+        raise AssertionError("uncorrelatable chatter reached the database")
+
+    handler = SimpleNamespace(db=SimpleNamespace(find_escalation_by_thread=forbidden))
+    intake = DiscordEscalationIntake(handler, make_app_config())
+    secret = "the launch codes are 1234"
+    message = discord_message(parent_id=None, thread_id=CHANNEL, text=secret)
+    message.guild = SimpleNamespace(id=1)
+    with caplog.at_level(logging.INFO, logger="src.discord.escalation_intake"):
+        assert not await intake.handle(message, bot_user_id=BOT_USER_ID)
+    assert _ignore_lines(caplog) == [ignore_line("not_in_thread")]
+    assert secret not in caplog.text
+
+
+async def test_an_unbound_thread_logs_after_the_lookup(caplog):
+    async def unbound(**kwargs):
+        return None
+
+    handler = SimpleNamespace(db=SimpleNamespace(find_escalation_by_thread=unbound))
+    intake = DiscordEscalationIntake(handler, make_app_config())
+    message = discord_message(text="Roll forward, secretly.")
+    message.guild = SimpleNamespace(id=1)
+    with caplog.at_level(logging.INFO, logger="src.discord.escalation_intake"):
+        assert not await intake.handle(message, bot_user_id=BOT_USER_ID)
+    assert _ignore_lines(caplog) == [ignore_line("thread_unbound")]
+    assert "secretly" not in caplog.text
+
+
+async def test_a_consumed_reply_logs_no_ignore_line(caplog):
+    async def bound(**kwargs):
+        return binding_row()
+
+    handler = SimpleNamespace(
+        db=SimpleNamespace(find_escalation_by_thread=bound),
+        calls=[],
+    )
+
+    async def execute(command, args):
+        handler.calls.append(command)
+        return {"success": True, "created": False}
+
+    handler.execute = execute
+    intake = DiscordEscalationIntake(handler, make_app_config())
+    with caplog.at_level(logging.INFO, logger="src.discord.escalation_intake"):
+        assert await intake.handle(discord_message(), bot_user_id=BOT_USER_ID)
+    assert handler.calls == ["escalation_reply"]
+    assert _ignore_lines(caplog) == []
+
+
+async def test_a_classify_failure_logs_classify_error(caplog):
+    intake = DiscordEscalationIntake(SimpleNamespace(), make_app_config())
+    message = discord_message(text="do not log me")
+    message.guild = SimpleNamespace(id=1)
+
+    async def broken(observed):
+        raise RuntimeError("db down")
+
+    intake.classify = broken
+    with caplog.at_level(logging.INFO, logger="src.discord.escalation_intake"):
+        assert not await intake.handle(message, bot_user_id=BOT_USER_ID)
+    assert _ignore_lines(caplog) == [ignore_line("classify_error")]
+    assert "do not log me" not in caplog.text
+
+
+async def test_a_message_the_adapter_cannot_observe_still_logs_its_ids(caplog):
+    intake = DiscordEscalationIntake(SimpleNamespace(), make_app_config())
+    # No channel at all: observe() itself fails, before any decision exists.
+    message = SimpleNamespace(
+        id="m-7",
+        guild=SimpleNamespace(id=1),
+        author=SimpleNamespace(id=HUMAN, bot=False),
+        content="unobservable",
+    )
+    with caplog.at_level(logging.INFO, logger="src.discord.escalation_intake"):
+        assert not await intake.handle(message, bot_user_id=BOT_USER_ID)
+    assert _ignore_lines(caplog) == [ignore_line("classify_error", channel=None, message="m-7")]
+    assert "unobservable" not in caplog.text
+
+
+def test_the_ignore_log_format_names_ids_and_the_code_only():
+    assert IGNORE_LOG_FORMAT == (
+        "discord intake ignored reason=%s guild=%s channel=%s message=%s author=%s"
+    )
