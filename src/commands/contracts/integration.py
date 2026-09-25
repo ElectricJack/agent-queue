@@ -75,6 +75,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_clear_stale_request",
+        "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
@@ -173,6 +174,33 @@ class IntegrationClearStaleRequestArgs(CommandArgs):
             self.expected_request_id is None or self.reason is None or not self.reason.strip()
         ):
             raise ValueError("applying requires expected_request_id and reason")
+        return self
+
+
+class IntegrationRebindReusedIdentityArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    #: Prove only.  Applying needs every inherited origin the dry run reported
+    #: and a reason.
+    dry_run: bool = True
+    expected_origin_ids: tuple[str, ...] = ()
+    #: Unproven predecessor commits the operator explicitly abandons, exactly.
+    discard_tips: tuple[str, ...] = ()
+    reason: str | None = Field(default=None, min_length=1)
+
+    @field_validator("discard_tips")
+    @classmethod
+    def discard_tips_are_exact_commits(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for sha in value:
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                raise ValueError("a discarded tip is a full 40-character commit id")
+        return value
+
+    @model_validator(mode="after")
+    def applying_names_the_origins_and_a_reason(self) -> IntegrationRebindReusedIdentityArgs:
+        if not self.dry_run and (
+            not self.expected_origin_ids or self.reason is None or not self.reason.strip()
+        ):
+            raise ValueError("applying requires expected_origin_ids and reason")
         return self
 
 
@@ -853,6 +881,25 @@ INTEGRATION_CLEAR_STALE_REQUEST = _operational_contract(
     IntegrationClearStaleRequestArgs,
     CLEAR_STALE_REQUEST_OUTCOMES,
     successes=frozenset({"cleared", "would_clear", "nothing_to_clear"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+REBIND_REUSED_IDENTITY_OUTCOMES = (
+    "rebound",
+    "would_rebind",
+    "nothing_to_rebind",
+    "unproven",
+    "blocked",
+    "changed",
+    "invalid",
+    "not_found",
+)
+
+INTEGRATION_REBIND_REUSED_IDENTITY = _operational_contract(
+    "integration_rebind_reused_identity",
+    IntegrationRebindReusedIdentityArgs,
+    REBIND_REUSED_IDENTITY_OUTCOMES,
+    successes=frozenset({"rebound", "would_rebind", "nothing_to_rebind"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -2274,6 +2321,18 @@ async def _clear_stale_request_adapter(
     )
 
 
+async def _rebind_reused_identity_adapter(
+    args: IntegrationRebindReusedIdentityArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_rebind_reused_identity",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        set(REBIND_REUSED_IDENTITY_OUTCOMES),
+    )
+
+
 async def _adopt_legacy_deliveries_adapter(
     args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
 ):
@@ -2359,6 +2418,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
+        (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),

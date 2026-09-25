@@ -407,6 +407,56 @@ def integration_clear_stale_request(
     _execute(ctx, "integration_clear_stale_request", args)
 
 
+@integration.command("rebind-reused-identity")
+@click.option("--task-id", required=True)
+@click.option("--apply", is_flag=True, help="Rebind the identity; default is a dry run.")
+@click.option(
+    "--origin-id",
+    "origin_ids",
+    multiple=True,
+    help="An inherited origin the dry run reported; --apply needs every one.",
+)
+@click.option(
+    "--discard-tip",
+    "discard_tips",
+    multiple=True,
+    help="An unproven predecessor commit the dry run reported, explicitly abandoned.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_rebind_reused_identity(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    origin_ids: tuple[str, ...],
+    discard_tips: tuple[str, ...],
+    reason: str | None,
+) -> None:
+    """Prove a task's inherited branch origin was delivered; retire it if so.
+
+    A task minted onto a deleted task's name inherited its branch origin and
+    checkpoint (`aq doctor --check integration.reused_task_identity`).  The dry
+    run checks every predecessor commit (origin base, checkpoint, the ref's
+    tip) against the default branch and lists what it cannot prove: a live
+    writer, a held owner, dependent integration history, a hierarchy/train
+    project, or a commit not on the default branch.  `--apply` needs every
+    `--origin-id` the dry run reported and a reason; it retires the origins
+    (kept for audit), moves the checkpoint into an audit event and touches no
+    branch.  `--discard-tip SHA` abandons one exact unproven commit.
+    """
+    if apply and not (origin_ids and reason):
+        raise click.UsageError("--apply requires --origin-id and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if origin_ids:
+        args["expected_origin_ids"] = list(origin_ids)
+    if discard_tips:
+        args["discard_tips"] = list(discard_tips)
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_rebind_reused_identity", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context
