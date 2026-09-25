@@ -28,6 +28,7 @@ aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
 aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
 aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
+aq integration redrive-child CHILD_TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
@@ -240,9 +241,13 @@ only under `aq integration enable`.
 
 ## 4. Roll out one mode at a time
 
-Keep `default-pipeline` enabled: its per-task reviews supply the exact approval
-evidence trains need, and its spec/proposal rules remain in use. Hierarchy/train
-mode suppresses only its legacy per-branch final-review/merge route. Retire the
+Keep `default-pipeline` enabled: its spec/proposal rules remain in use.
+Hierarchy/train mode suppresses only its legacy per-branch final-review/merge
+route. It no longer files per-task reviewers (automatic reviews were retired on
+2026-09-09), so a completed child's approval evidence comes from the collector:
+it proves the child's published head from Git and records `leaf` completion
+evidence for exactly that head and tree. A reviewer's verdict, when one exists,
+still wins: a rejected head or an open reviewer task holds the child. Retire the
 project's `pr-merge-sweep` activation after cutover; keep the template available
 for projects using legacy delivery. `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
@@ -480,6 +485,14 @@ close records the finished head. The daemon retries a PR either path missed.
 root has no PR, and `--apply --head HEAD_SHA --reason REASON` opens it for
 that head. See [A completed root has no pull
 request](integration-troubleshooting.md#a-completed-root-has-no-pull-request).
+
+A collecting parent assembles a COMPLETED child only once approved evidence
+pins the child's exact head; until then its siblings' `needs` keep them out of
+the claim frontier. `aq doctor --check integration.stuck_children` lists
+children still waiting after five minutes, and `aq integration redrive-child
+CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
+records evidence for that head and queues the parent's collection. See [A
+completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
 
 ### Stopped pool-writer handoff recovery
 

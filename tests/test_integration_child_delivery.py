@@ -1,0 +1,564 @@
+"""A completed child of a collecting parent is assembled, or says why not.
+
+Regression for vivid-ridge: after automatic per-task reviews were retired
+(cf0002b9c), nothing wrote the approved review evidence the collector requires
+of a completed child, so train epics stalled with every sibling that needed a
+finished child held out of the claim frontier (sharp-impact).  The collector now
+proves the child's published head from Git and records completion evidence;
+``aq integration redrive-child`` is the supervisor's dry-run-first handle, and
+``integration.stuck_children`` reports what is still waiting.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import insert, select, update
+
+from src.database import Database
+from src.database.queries.hierarchy_queries import (
+    delivered_same_parent_prerequisites_when_hierarchical,
+)
+from src.database.tables import (
+    events,
+    integration_outbox,
+    integration_review_evidence,
+    playbook_artifacts,
+    task_branch_origins,
+    task_delivery_receipts,
+    task_dependencies,
+    task_integration_checkpoints,
+    tasks,
+)
+from src.doctor.integration_checks import run_check
+from src.git.manager import GitManager
+from src.integration.child_delivery import (
+    COMPLETION_IDENTITY_PREFIX,
+    REDRIVE_EVENT,
+    ChildDelivery,
+)
+from src.integration.collection import CollectionService
+from src.integration.hierarchy import HierarchyIntegration
+from src.integration.models import (
+    ArtifactSnapshot,
+    Fence,
+    HierarchicalIntegrationPolicy,
+    IntegrationBoundaryPolicy,
+    PlaybookRoute,
+    PromotionInput,
+    RepairPolicy,
+    RequiredCheckSet,
+)
+from src.integration.promotion import PromotionService
+from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
+from tests.db_fixtures import lease_dsn
+
+_AMBIENT_IDENTITY_KEYS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_DATE",
+)
+
+
+def _git(args: list[str], cwd: Path | None = None) -> str:
+    env = {key: value for key, value in os.environ.items() if key not in _AMBIENT_IDENTITY_KEYS}
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=env
+    ).stdout.strip()
+
+
+def _policy_and_artifact() -> tuple[dict, ArtifactSnapshot]:
+    artifact = ArtifactSnapshot(
+        playbook_id="hierarchical-delivery",
+        artifact_sha256="sha256:" + "a" * 64,
+        schema_generation=2,
+        contract_fingerprint="sha256:" + "b" * 64,
+        source_digest="sha256:" + "c" * 64,
+        compiler_build="test",
+        version=1,
+    )
+    boundary = IntegrationBoundaryPolicy(
+        required_checks=RequiredCheckSet(version="test", names=("unit",), producer_id="forge"),
+        repair=RepairPolicy(debug_intelligence_class="high"),
+        route=PlaybookRoute(
+            playbook_id="hierarchical-delivery",
+            scope="project",
+            scope_identifier="p",
+            artifact=artifact,
+        ),
+    )
+    policy = HierarchicalIntegrationPolicy(
+        parent=boundary, root=boundary, branchless_parent="verifier", on_failed_child="block"
+    )
+    return policy.model_dump(mode="json"), artifact
+
+
+@pytest.fixture
+async def case(tmp_path):
+    """Train epic ``epic`` collecting its COMPLETED child ``epic.1``.
+
+    The child's branch is published at ``head``, one commit past the origin
+    base both branches were cut from; no reviewer ever looked at it.  Its
+    sibling ``epic.2`` needs it, exactly as sharp-impact.2 needed .1.
+    """
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    _git(["init", "--bare", "--initial-branch=main", str(origin)])
+    _git(["clone", str(origin), str(work)])
+    _git(["config", "user.name", "Seed"], work)
+    _git(["config", "user.email", "seed@example.test"], work)
+    (work / "shared.txt").write_text("base\n")
+    _git(["add", "shared.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    base = _git(["rev-parse", "HEAD"], work)
+    _git(["push", "origin", "main"], work)
+    _git(["push", "origin", f"{base}:refs/heads/aq/epic"], work)
+    _git(["switch", "-c", "aq/epic.1"], work)
+    (work / "child.txt").write_text("child work\n")
+    _git(["add", "child.txt"], work)
+    _git(["commit", "-m", "child work"], work)
+    head = _git(["rev-parse", "HEAD"], work)
+    tree = _git(["rev-parse", "HEAD^{tree}"], work)
+    _git(["push", "origin", "aq/epic.1"], work)
+
+    db = Database(lease_dsn("child-delivery.db"))
+    await db.initialize()
+    await db.create_project(Project(id="p", name="train project"))
+    await db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id="p",
+            source_type=RepoSourceType.CLONE,
+            url=str(origin),
+            default_branch="main",
+        )
+    )
+    policy, artifact = _policy_and_artifact()
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(playbook_artifacts).values(
+                **artifact.model_dump(),
+                scope="project",
+                scope_identifier="p",
+                profile_fingerprint="",
+                path="/tmp/hierarchy-artifact",
+                size_bytes=1,
+                validation="{}",
+                created_at=1.0,
+            )
+        )
+    await db.update_project(
+        "p",
+        hierarchical_integration_mode="train",
+        integration_repository_id="repo",
+        hierarchical_integration_policy=policy,
+    )
+    hierarchy = HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: base,
+        checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+    )
+    await db.create_task(
+        Task(
+            id="epic", project_id="p", repo_id="repo", title="epic", description="epic",
+            status=TaskStatus.IN_PROGRESS,
+        )
+    )
+    await hierarchy.file_children("epic", [{"title": "child"}, {"title": "sibling"}], 0)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_dependencies).values(
+                task_id="epic.2", depends_on_task_id="epic.1", dep_type="blocks"
+            )
+        )
+        await conn.execute(
+            update(task_branch_origins).values(materialized=True, materialized_at=2.0)
+        )
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "epic.1").values(status="COMPLETED", updated_at=3.0)
+        )
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "epic.1")
+            .values(checkpoint_sha=head, updated_at=3.0)
+        )
+    bootstrapped = await hierarchy.bootstrap_container_collection("epic")
+    assert bootstrapped["outcome"] == "checkpointed"
+    promotion = PromotionService(db, data_dir=tmp_path / "data", git_manager=GitManager())
+    yield SimpleNamespace(
+        db=db, hierarchy=hierarchy, promotion=promotion, base=base, head=head, tree=tree,
+        work=work,
+    )
+    await db.close()
+
+
+def _collector(case, delivery=None):
+    return CollectionService(
+        case.db,
+        hierarchy_service_factory=lambda: case.hierarchy,
+        child_delivery=delivery or ChildDelivery(case.db, case.promotion),
+    )
+
+
+async def _evidence(db, task_id="epic.1") -> list[dict]:
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(integration_review_evidence).where(
+                    integration_review_evidence.c.source_task_id == task_id
+                )
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def _delivery_ready(db) -> list[dict]:
+    async with db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(integration_outbox).where(
+                    integration_outbox.c.event_type == "delivery.ready"
+                )
+            )
+        ).mappings().all()
+    return [dict(row) for row in rows]
+
+
+async def _open_reviewer(db) -> None:
+    await db.create_profile(AgentProfile(id="reviewer", name="Reviewer", harness="claude"))
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(tasks).values(
+                id="review-1", project_id="p", title="Review epic.1", description="",
+                status="READY", profile_id="reviewer", created_at=4.0, updated_at=4.0,
+            )
+        )
+        await conn.execute(
+            insert(task_dependencies).values(
+                task_id="review-1", depends_on_task_id="epic.1", dep_type="discovered-from"
+            )
+        )
+
+
+async def _reject_head(case) -> None:
+    await case.db.append_integration_review_evidence(
+        {
+            "id": "rejection", "source_task_id": "epic.1", "repository_id": "repo",
+            "source_base": case.base, "reviewed_head_sha": case.head,
+            "reviewed_tree_sha": case.tree, "reviewer_task_id": "review-1",
+            "reviewer_session_attempt_id": None, "review_kind": "leaf", "generation": 0,
+            "verdict": "rejected", "evidence": {}, "created_at": 4.0,
+        }
+    )
+
+
+async def _sibling_admitted(db) -> bool:
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(
+                select(tasks.c.id).where(
+                    tasks.c.id == "epic.2",
+                    delivered_same_parent_prerequisites_when_hierarchical(),
+                )
+            )
+        ).scalar_one_or_none() == "epic.2"
+
+
+# ---------------------------------------------------------------------------
+# Collector: the durable path
+# ---------------------------------------------------------------------------
+
+
+async def test_unreviewed_completed_child_is_receipted_after_one_collector_tick(case):
+    """vivid-ridge: the child is assembled and its sibling enters the frontier."""
+    assert await _evidence(case.db) == []
+    assert not await _sibling_admitted(case.db)
+
+    await _collector(case).tick(10.0)
+
+    [ready] = await _delivery_ready(case.db)
+    payload = ready["payload"]
+    request = PromotionInput(
+        operation_key=payload["operation_key"],
+        source_task_id=payload["source_task_id"],
+        source_head=payload["source_head"],
+        source_base=payload["source_base"],
+        expected_target=payload["expected_target"],
+        fence=Fence.model_validate(payload["fence"]),
+    )
+    prepared = await case.promotion.prepare(request)
+    await case.promotion.push(prepared.intent_id, request.fence)
+    await case.promotion.reconcile(prepared.intent_id)
+
+    async with case.db._engine.connect() as conn:
+        [receipt] = (
+            await conn.execute(select(task_delivery_receipts))
+        ).mappings().all()
+    assert (receipt["source_task_id"], receipt["target_task_id"]) == ("epic.1", "epic")
+    assert receipt["target_branch"] == "aq/epic"
+    assert receipt["reviewed_head_sha"] == case.head
+    assert await _sibling_admitted(case.db)
+
+
+async def test_collector_proves_an_unreviewed_child_and_queues_its_delivery(case):
+    await _collector(case).tick(10.0)
+
+    [evidence] = await _evidence(case.db)
+    assert evidence["verdict"] == "approved"
+    assert evidence["review_kind"] == "leaf"
+    assert evidence["reviewer_task_id"] is None
+    assert evidence["reviewer_identity"] == f"{COMPLETION_IDENTITY_PREFIX}epic.1"
+    assert (evidence["source_base"], evidence["reviewed_head_sha"]) == (case.base, case.head)
+    # The exact tree promotion recomputes before it pushes.
+    assert evidence["reviewed_tree_sha"] == case.tree
+    assert evidence["evidence"]["decision_path"] == "completion_proof"
+    [event] = await _delivery_ready(case.db)
+    assert event["payload"]["source_task_id"] == "epic.1"
+    assert event["payload"]["source_head"] == case.head
+    assert event["payload"]["source_base"] == case.base
+
+    # Idempotent: the next pass finds the evidence and records nothing new.
+    await _collector(case).tick(11.0)
+    assert len(await _evidence(case.db)) == 1
+
+
+async def test_collector_without_child_delivery_still_waits_for_a_reviewer(case):
+    collector = CollectionService(case.db, hierarchy_service_factory=lambda: case.hierarchy)
+
+    await collector.tick(10.0)
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_never_overrides_a_reviewer_rejection(case):
+    await _reject_head(case)
+
+    await _collector(case).tick(10.0)
+
+    assert [row["verdict"] for row in await _evidence(case.db)] == ["rejected"]
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_waits_for_an_open_reviewer(case):
+    await _open_reviewer(case.db)
+
+    await _collector(case).tick(10.0)
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+async def test_collector_backs_off_a_child_whose_branch_moved(case):
+    (case.work / "child.txt").write_text("unreviewed follow-up\n")
+    _git(["commit", "-am", "pushed after close"], case.work)
+    _git(["push", "origin", "aq/epic.1"], case.work)
+    fetches = []
+    original = case.promotion._fetch_all_heads
+
+    async def counting_fetch(*args, **kwargs):
+        fetches.append(args)
+        return await original(*args, **kwargs)
+
+    case.promotion._fetch_all_heads = counting_fetch
+    delivery = ChildDelivery(case.db, case.promotion, retry_seconds=60.0)
+    collector = _collector(case, delivery)
+
+    await collector.tick(100.0)
+    await collector.tick(130.0)  # inside the 60s backoff: no second fetch
+    assert len(fetches) == 1
+    await collector.tick(161.0)
+    assert len(fetches) == 2
+
+    assert await _evidence(case.db) == []
+    assert await _delivery_ready(case.db) == []
+
+
+# ---------------------------------------------------------------------------
+# Redrive: the supervisor's control
+# ---------------------------------------------------------------------------
+
+
+async def test_redrive_dry_run_reports_the_proven_head_and_writes_nothing(case):
+    result = await ChildDelivery(case.db, case.promotion).run("epic.1")
+
+    assert result["outcome"] == "would_advance"
+    assert result["parent_task_id"] == "epic"
+    assert result["branch"] == "aq/epic.1"
+    assert result["parent_branch"] == "aq/epic"
+    assert result["head_sha"] == result["remote_head_sha"] == case.head
+    assert result["base_sha"] == case.base
+    assert result["tree_sha"] == case.tree
+    assert result["checkpoint"]["state"] == "working"
+    assert await _evidence(case.db) == []
+
+
+async def test_redrive_apply_records_evidence_and_queues_the_parent(case):
+    collector = _collector(case)
+    delivery = ChildDelivery(
+        case.db,
+        case.promotion,
+        collect=lambda parent_id: collector.collect_parent(parent_id, 20.0),
+        clock=lambda: 20.0,
+    )
+
+    result = await delivery.run(
+        "epic.1", dry_run=False, expected_head_sha=case.head,
+        reason="sharp-impact stalled", operator_id="supervisor session:s1",
+    )
+
+    assert result["outcome"] == "advanced"
+    assert result["collection"] == "queued"
+    [evidence] = await _evidence(case.db)
+    assert evidence["id"] == result["evidence_id"]
+    assert evidence["reviewer_identity"] == "supervisor session:s1"
+    assert evidence["evidence"]["decision_path"] == "operator_redrive"
+    assert evidence["evidence"]["reason"] == "sharp-impact stalled"
+    [ready] = await _delivery_ready(case.db)
+    assert ready["payload"]["source_head"] == case.head
+    async with case.db._engine.connect() as conn:
+        row = (
+            await conn.execute(select(events).where(events.c.event_type == REDRIVE_EVENT))
+        ).mappings().one()
+    payload = json.loads(row["payload"])
+    assert row["task_id"] == "epic.1"
+    assert payload["operator_id"] == "supervisor session:s1"
+    assert payload["head_sha"] == case.head
+    assert payload["evidence_created"] is True
+
+    # Re-applying reuses the evidence rather than writing a second verdict.
+    again = await delivery.run(
+        "epic.1", dry_run=False, expected_head_sha=case.head, reason="again",
+        operator_id="supervisor session:s1",
+    )
+    assert again["outcome"] == "advanced"
+    assert again["evidence_id"] == evidence["id"]
+    assert len(await _evidence(case.db)) == 1
+
+
+async def test_redrive_apply_refuses_a_head_the_dry_run_did_not_report(case):
+    result = await ChildDelivery(case.db, case.promotion).run(
+        "epic.1", dry_run=False, expected_head_sha="d" * 40, reason="stuck"
+    )
+
+    assert result["outcome"] == "changed"
+    assert await _evidence(case.db) == []
+
+
+async def test_redrive_blocks_a_moved_branch_a_rejection_and_an_open_reviewer(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+    await _open_reviewer(case.db)
+    reviewer = await delivery.run("epic.1")
+    assert reviewer["outcome"] == "blocked"
+    assert "review-1" in reviewer["reason"]
+
+    await _reject_head(case)
+    rejected = await delivery.run("epic.1")
+    assert rejected["outcome"] == "blocked"
+    assert "rejected" in rejected["reason"]
+
+
+async def test_redrive_blocks_a_branch_that_moved_after_the_close(case):
+    (case.work / "child.txt").write_text("moved\n")
+    _git(["commit", "-am", "moved"], case.work)
+    moved = _git(["rev-parse", "HEAD"], case.work)
+    _git(["push", "origin", "aq/epic.1"], case.work)
+
+    result = await ChildDelivery(case.db, case.promotion).run("epic.1")
+
+    assert result["outcome"] == "blocked"
+    assert result["remote_head_sha"] == moved
+    assert "moved" in result["reason"]
+
+
+async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="receipt", domain_key="receipt", source_task_id="epic.1",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=case.head, disposition="code", created_at=5.0,
+            )
+        )
+    delivered = await delivery.run("epic.1")
+    assert delivered["outcome"] == "nothing_to_redrive"
+    assert "receipt" in delivered["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            update(task_integration_checkpoints)
+            .where(task_integration_checkpoints.c.task_id == "epic.1")
+            .values(checkpoint_sha=case.base)
+        )
+    no_code = await delivery.run("epic.1")
+    assert no_code["outcome"] == "blocked"
+    assert "record-noop" in no_code["reason"]
+
+
+async def test_redrive_classifies_tasks_it_cannot_advance(case):
+    delivery = ChildDelivery(case.db, case.promotion)
+
+    assert (await delivery.run("missing"))["outcome"] == "not_found"
+    root = await delivery.run("epic")
+    assert root["outcome"] == "not_eligible"
+    assert "redrive-root" in root["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="READY"))
+    parent_moved_on = await delivery.run("epic.1")
+    assert parent_moved_on["outcome"] == "blocked"
+    assert "not PAUSED" in parent_moved_on["reason"]
+
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(status="READY"))
+    reopened = await delivery.run("epic.1")
+    assert reopened["outcome"] == "not_eligible"
+
+
+# ---------------------------------------------------------------------------
+# Doctor
+# ---------------------------------------------------------------------------
+
+
+async def test_doctor_flags_a_child_its_parent_never_assembled(case):
+    result = await run_check(case.db, "integration.stuck_children")
+
+    assert result.severity.value == "warn"
+    [child] = result.data["children"]
+    assert child["task_id"] == "epic.1"
+    assert child["parent_task_id"] == "epic"
+    assert child["head_sha"] == case.head
+    assert child["evidence"] == "none"
+    assert "redrive-child" in result.detail
+
+
+async def test_doctor_ignores_fresh_and_delivered_children(case):
+    import time
+
+    async with case.db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "epic.1").values(updated_at=time.time())
+        )
+    fresh = await run_check(case.db, "integration.stuck_children")
+    assert fresh.severity.value == "ok"
+
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.1").values(updated_at=3.0))
+        await conn.execute(
+            insert(task_delivery_receipts).values(
+                id="receipt", domain_key="receipt", source_task_id="epic.1",
+                target_task_id="epic", repository_id="repo", target_branch="aq/epic",
+                reviewed_head_sha=case.head, disposition="code", created_at=5.0,
+            )
+        )
+    delivered = await run_check(case.db, "integration.stuck_children")
+    assert delivered.severity.value == "ok"

@@ -57,6 +57,7 @@ aq doctor --check git.stale_branches
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
+| A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
@@ -650,6 +651,48 @@ aq integration redrive-root <task>        # dry run
 Applying needs the head the dry run printed; a head that changed since is
 refused (`changed`). It opens the PR for that head, stores it on the task and
 records an `integration.root_redriven` event.
+
+## A completed child is never assembled
+
+A parent collecting its children (`PAUSED`, checkpoint `awaiting_children`)
+assembles a COMPLETED child only once an approved review-evidence row pins the
+child's exact checkpoint head (`CollectionService.queue_next`), and
+`delivery_promote` re-checks that row before it pushes. Until the child is
+assembled no receipt reaches the parent, so every sibling whose `needs` names
+it stays out of the claim frontier: the pool counts `ready=0` while the
+siblings show `READY`. The child's own checkpoint `state` stays `working`; that
+is the finished-leaf shape, not the stall.
+
+Before 2026-09-25 nothing wrote that evidence. Automatic per-task reviews were
+retired on 2026-09-09, and GitHub review ingestion covers roots only, so every
+child of a train epic stalled after its close (vivid-ridge; sharp-impact). The
+collector now proves each completed child without a verdict from Git -- the
+remote branch tip is the recorded head, which descends from the child's
+origin base -- and records `leaf` completion evidence for that head and tree
+(`reviewer_identity` `completion:<task>`). It leaves a head a reviewer
+rejected, and a child with an open reviewer task, alone, and backs off a child
+whose proof fails.
+
+`aq doctor --check integration.stuck_children` lists children still waiting
+five minutes after their close, with the verdict on their head. To see where
+one stands:
+
+```bash
+aq integration redrive-child <task>        # dry run
+```
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `would_advance` | Complete, head published and proven, not yet assembled. | `--apply --head <head_sha> --reason '<why>'`. |
+| `nothing_to_redrive` | Already delivered into the parent, or a promotion of this head is being written or repaired. | Nothing; `reason` says which. |
+| `blocked` | A reviewer rejected the head or is still open, the remote branch moved or is unpublished, the checkpoint is still the origin base (a no-code child), or the parent is not collecting. | Settle what `reason` names; a no-code child takes `aq integration record-noop`. Never force it. |
+| `not_eligible` | Not a hierarchy/train child, not `COMPLETED`, a nested parent, or no checkpoint. A root takes `redrive-root`. | Nothing to redrive here. |
+
+Applying needs the head the dry run printed; a head that changed since is
+refused (`changed`). It records approved evidence for that head (the operator
+as reviewer, the reason in the evidence), queues the parent's collection, and
+logs an `integration.child_redriven` event. Promotion, the receipt and the
+parent's readiness then follow the normal path.
 
 ## Legacy children block observe readiness
 

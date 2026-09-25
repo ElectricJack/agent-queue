@@ -58,6 +58,11 @@ _SKIP_STALL_TICKS = 3
 #: publisher which has stopped collecting is caught the same working session.
 _UNCOLLECTED_AFTER_SECONDS = 60 * 60
 
+#: A completed child is assembled within a few collector ticks of its close
+#: (the collector runs every few seconds).  Five minutes covers a busy or
+#: briefly restarted daemon; past that its siblings are being held back.
+_STUCK_CHILD_AFTER_SECONDS = 5 * 60
+
 #: Cap on ``gh pr view`` calls per run.  Doctor is meant to be fast and to work
 #: offline; a backlog of 200 stranded PRs is already diagnosed by the first
 #: handful, and the count in ``data`` stays accurate regardless.
@@ -1295,6 +1300,94 @@ async def _fix_stale_schedule(ctx: DoctorContext) -> CheckResult:
     )
 
 
+_STUCK_CHILD_CAUSES = {
+    "none": (
+        "no approved evidence pins its head; the collector records completion evidence "
+        "once the published branch proves out, so a child still here has a head that "
+        "does not (moved or unpublished branch, or an open reviewer)"
+    ),
+    "rejected": "a reviewer rejected its head; the child must be reworked",
+    "approved": (
+        "approved but not queued; the parent's collector fence or a sibling's promotion "
+        "is holding it"
+    ),
+}
+
+
+async def _find_stuck_children(ctx: DoctorContext) -> list[dict]:
+    """COMPLETED children of collecting parents that were never assembled.
+
+    Each one keeps every sibling whose ``needs`` names it out of the claim
+    frontier (``delivered_same_parent_prerequisites_when_hierarchical``), so a
+    parent can show READY children that no pool will ever claim.
+    """
+    from src.integration.child_delivery import latest_evidence_on, stuck_children_statement
+
+    now = time.time()
+    findings = []
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                stuck_children_statement(updated_before=now - _STUCK_CHILD_AFTER_SECONDS)
+            )
+        ).mappings().all()
+        for row in rows:
+            latest = await latest_evidence_on(
+                conn,
+                task_id=row["task_id"],
+                repository_id=row["repository_id"],
+                base_sha=row["base_sha"],
+                head_sha=row["head_sha"],
+                generation=int(row["generation"]),
+            )
+            evidence = latest["verdict"] if latest is not None else "none"
+            findings.append(
+                {
+                    "task_id": row["task_id"],
+                    "project_id": row["project_id"],
+                    "parent_task_id": row["parent_task_id"],
+                    "branch": row["branch"],
+                    "head_sha": row["head_sha"],
+                    "evidence": evidence,
+                    "cause": _STUCK_CHILD_CAUSES[evidence],
+                    "waiting_seconds": round(
+                        now - max(row["updated_at"], row["checkpoint_updated_at"])
+                    ),
+                }
+            )
+    return findings
+
+
+async def _check_stuck_children(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stuck_children",
+            severity=Severity.INFO,
+            detail="database not initialised — child collection state unknown",
+        )
+    findings = await _find_stuck_children(ctx)
+    if not findings:
+        return CheckResult(
+            id="integration.stuck_children",
+            severity=Severity.OK,
+            detail="every completed child of a collecting parent has been assembled",
+        )
+    first = findings[0]
+    return CheckResult(
+        id="integration.stuck_children",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} completed child task(s) have waited more than "
+            f"{_STUCK_CHILD_AFTER_SECONDS // 60} minutes for their parent to assemble them "
+            f"— e.g. {first['task_id']} (parent {first['parent_task_id']}, head "
+            f"{first['head_sha'][:9]}): {first['cause']}. Siblings that need them stay "
+            "out of the claim frontier. `aq integration redrive-child <task>` says why one "
+            "is stuck; `--apply --head <sha> --reason ...` advances it"
+        ),
+        data={"count": len(findings), "children": findings},
+    )
+
+
 def _stop_confirmer(ctx: DoctorContext):
     from src.integration.finished_owners import stop_confirmer_for
 
@@ -1563,6 +1656,15 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.stale_schedule",
             run=_check_stale_schedule,
             fix=_fix_stale_schedule,
+            owner=OWNER,
+        ),
+        # Report-only.  The collector already records completion evidence
+        # for a child whose published head proves out, so a child listed here
+        # failed that proof or was held by a reviewer's verdict; advancing it
+        # anyway is the supervisor's call (``aq integration redrive-child``).
+        DoctorCheck(
+            id="integration.stuck_children",
+            run=_check_stuck_children,
             owner=OWNER,
         ),
         # Fixable, unlike ``integration.stranded_fences``, because it only

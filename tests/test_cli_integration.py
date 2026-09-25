@@ -153,6 +153,22 @@ def _client(result):
             },
         ),
         (
+            ["redrive-child", "sharp-impact.1"],
+            "integration_redrive_child",
+            {"task_id": "sharp-impact.1", "dry_run": True},
+        ),
+        (
+            [
+                "redrive-child", "sharp-impact.1", "--apply",
+                "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--reason", "child never assembled",
+            ],
+            "integration_redrive_child",
+            {
+                "task_id": "sharp-impact.1", "dry_run": False,
+                "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "child never assembled",
+            },
+        ),
+        (
             [
                 "clear-stale-request", "p", "--apply",
                 "--request-id", "integration-sweep:p:53", "--reason", "aborted batch",
@@ -368,6 +384,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_bind_legacy_repositories",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_resolve_candidate_member",
     }
@@ -386,6 +403,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "bind-legacy-repositories",
         "clear-stale-request",
         "redrive-root",
+        "redrive-child",
         "rebind-reused-identity",
         "release-owner",
         "resolve-candidate-member",
@@ -511,6 +529,8 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
     (
         ["redrive-root", "r1", "--apply", "--reason", "stuck"],
         ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["redrive-child", "c1", "--apply", "--reason", "stuck"],
+        ["redrive-child", "c1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ),
 )
 def test_redrive_root_apply_needs_the_head_and_a_reason(argv):
