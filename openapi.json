@@ -21044,6 +21044,15 @@
               }
             ]
           },
+          "intake": {
+            "$ref": "#/components/schemas/DiscordIntakeDiagnostics",
+            "default": {
+              "available": false,
+              "window_seconds": 3600,
+              "total": 0,
+              "ignored": {}
+            }
+          },
           "settings_errors": {
             "items": {
               "type": "string"
@@ -21203,6 +21212,36 @@
           "status"
         ],
         "title": "DiscordCutoverStatus"
+      },
+      "DiscordIntakeDiagnostics": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": false
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds",
+            "default": 3600
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "ignored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Ignored",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "DiscordIntakeDiagnostics",
+        "description": "Inbound Discord messages the gateway ignored, counted by reason code.\n\nIn-memory and sliding: it covers the last ``window_seconds`` and is empty\nafter a restart.  ``available`` is false when no gateway is connected."
       },
       "DiscordPurgeChannelRequest": {
         "properties": {
