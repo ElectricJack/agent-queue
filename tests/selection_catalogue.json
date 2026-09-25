@@ -1020,7 +1020,9 @@
     "test-selection": {
       "description": "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them.",
       "modules": [
-        "tests/test_selection_catalogue.py"
+        "tests/test_selection_catalogue.py",
+        "tests/test_selection_mandatory.py",
+        "tests/test_selection_snapshot.py"
       ]
     },
     "test-substrate": {
@@ -1169,7 +1171,7 @@
       ]
     }
   },
-  "digest": "sha256:9a316df0376099136501d1a17c83d3a3eaca1af54b973f4e78e55808398f4b59",
+  "digest": "sha256:a96c310d44fe2b4c23d3509adac3a6ccd7c7cd93e114025b1a685720c1cd6d04",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10054,6 +10056,33 @@
         "parametrize"
       ],
       "summary": "The smart-test-selection artifacts: areas, generated catalogue, rules and policy."
+    },
+    "tests/test_selection_mandatory.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.test_selection",
+        "src.test_selection.catalogue",
+        "src.test_selection.mandatory",
+        "src.test_selection.reasons",
+        "src.test_selection.snapshot"
+      ],
+      "markers": [],
+      "summary": "The mandatory set ``M`` and the reason codes selection records carry."
+    },
+    "tests/test_selection_snapshot.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.test_selection.snapshot"
+      ],
+      "markers": [],
+      "summary": ""
     },
     "tests/test_session_class_effort.py": {
       "areas": [
