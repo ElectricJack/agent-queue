@@ -2961,6 +2961,13 @@ class TaskCommandsMixin:
                             labels=labels,
                             routing_policy=routing_policy,
                         )
+                    # Every other creation path runs the internal post-create
+                    # writer in its own transaction; a hierarchy/train filing
+                    # must too, or its row commits without the metadata the
+                    # writer owns (a review revision task's
+                    # ``review_response``, a review dispatch record).
+                    if after_create_on is not None:
+                        await after_create_on(conn, created["task_id"], task.parent_task_id)
                 task_id = created["task_id"]
                 gate_id = created.get("gate_id")
                 hierarchy_created = True

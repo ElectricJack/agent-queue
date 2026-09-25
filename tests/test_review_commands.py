@@ -10,7 +10,15 @@ import pytest
 from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
 from src.event_bus import EventBus
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    AgentProfile,
+    Project,
+    RepoConfig,
+    RepoSourceType,
+    SessionRecord,
+    Task,
+    TaskStatus,
+)
 from src.api.websocket import _FORWARDED_PREFIXES
 from src.vault import ensure_default_intelligence_classes
 from src.intelligence_classes import load_intelligence_classes
@@ -821,6 +829,94 @@ async def test_revision_task_uses_authors_parent(env):
     revision = next(task for task in await db.list_tasks(project_id="p")
                     if task.title == f"Revise Grouped plan (review {submitted['review_id']})")
     assert revision.parent_task_id == "container"
+
+
+async def _enable_train_mode(handler, db) -> None:
+    """Put project ``p`` in train mode, resolving its default branch without git."""
+    from src.integration.hierarchy import HierarchyIntegration
+
+    await db.create_repo(RepoConfig(
+        id="repo", project_id="p", source_type=RepoSourceType.LINK,
+        source_path="/tmp/review-train-repo",
+    ))
+    await db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="repo",
+    )
+    handler.orchestrator.hierarchy_integration = HierarchyIntegration(
+        db,
+        default_head_resolver=lambda _repo, _branch: "a" * 40,
+        checkpoint_verifier=lambda _task, _repo, head_sha: head_sha,
+    )
+
+
+async def _reclaim_after_restart(db, tmp_path, session_id: str, task_id: str) -> None:
+    """A restarted daemon's fresh session re-claims *task_id*; older sessions let go."""
+    for stale in ("worker", "reclaimed-1"):
+        if await db.get_session(stale) is not None:
+            await db.update_session(stale, task_id=None, state="stopped")
+    await db.create_session(SessionRecord(
+        id=session_id, task_id=task_id, project_id="p", profile_id="worker", harness="codex",
+        provider="fake", name=session_id, lifecycle="pool", work_dir=str(tmp_path),
+        epoch="restarted", instance_token=f"{session_id}-token", started_at=time.time(),
+        state="running",
+    ))
+
+
+async def test_train_mode_revision_task_answers_after_restart_reclaim(env, tmp_path):
+    """Regression (azure-falcon, 2026-09-25): train-mode revision tasks were refused.
+
+    A train/hierarchy project files the revision task through the hierarchy
+    root path, which skipped the internal post-create writer, so the task
+    never got ``review_response``.  Every session that later held it, re-claimed
+    after a restart or not, was refused ``not_your_task`` whether it named the
+    task or not.
+    """
+    handler, db = env
+    await _enable_train_mode(handler, db)
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Train draft", "content": "# Draft\n",
+    })
+    review_id = submitted["review_id"]
+
+    for revision, reclaimer, explicit in ((1, "reclaimed-1", False), (2, "reclaimed-2", True)):
+        assert (await handler.execute("review_decide", {
+            "review_id": review_id, "revision": revision, "decision": "request_changes",
+        }))["success"]
+        task = next(task for task in await db.list_tasks(project_id="p")
+                    if task.dedup_key == f"review-revision:{review_id}:{revision}")
+        # Filed as a train root, not through the plain-root path.
+        assert task.branch_name.startswith("aq/epic/")
+        assert (await db.get_task_meta(task.id, "review_response")) == {
+            "review_id": review_id, "revision": revision, "profile_source": "project_default",
+        }
+        await _reclaim_after_restart(db, tmp_path, reclaimer, task.id)
+        args = {"review_id": review_id, "content": f"# Revision {revision + 1}\n"}
+        if explicit:
+            args["task_id"] = task.id
+        revised = await _scoped(
+            handler, "review_submit", args, session_id=reclaimer, task_id=task.id,
+        )
+        assert revised["success"], revised
+        assert revised["revision"] == revision + 1
+        assert (await db.get_review_revision(review_id, revision + 1))["submitted_task_id"] == task.id
+
+
+async def test_train_mode_dispatch_records_its_task(env):
+    """The same post-create hole dropped dispatch records for train-mode reviewer tasks."""
+    handler, db = env
+    await _enable_train_mode(handler, db)
+    submitted = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Train rollout", "content": "# Rollout\n",
+    })
+    dispatched = await handler.execute("review_dispatch", {
+        "review_id": submitted["review_id"], "to": ["worker"], "revision": 1,
+    })
+    assert dispatched["success"], dispatched
+    task_id = dispatched["dispatches"][0]["task_id"]
+    assert (await db.get_task(task_id)).branch_name.startswith("aq/epic/")
+    assert (await db.get_task_meta(task_id, "review_dispatch"))["revision"] == 1
+    shown = await handler.execute("review_show", {"review_id": submitted["review_id"]})
+    assert [row["task_id"] for row in shown["dispatches"]] == [task_id]
 
 
 async def test_approval_notifies_only_supervisor_once_for_each_author_state(env):
