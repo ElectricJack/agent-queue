@@ -2741,6 +2741,20 @@ class DevelopmentIntegration:
             await self.owner_recovery.recover_many(
                 recovery_owner_ids, principal="cancel_preserving"
             )
+        if operation["batch_id"]:
+            # The aborted train's request would otherwise hold the project's
+            # schedule until someone noticed; preserved writes keep it held.
+            from src.integration.stale_schedule import release_ended_batch_request
+
+            schedule_release = await release_ended_batch_request(
+                self.db,
+                operation["batch_id"],
+                now=now,
+                released_by="integration_cancel_preserving",
+                reason=reason,
+            )
+            if schedule_release is not None:
+                result["release"] = schedule_release
         return result
 
     async def preserve_stopped_owners(self, project_id):

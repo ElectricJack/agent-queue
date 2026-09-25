@@ -618,6 +618,31 @@ class IntegrationCommandsMixin:
         )
         return {"success": result["outcome"] != "not_found", **result}
 
+    async def _cmd_integration_clear_stale_request(self, args: dict) -> dict:
+        """Classify a project's outstanding sweep request; release it if it can never end."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationClearStaleRequestArgs
+
+        try:
+            request = IntegrationClearStaleRequestArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid stale request release: {exc}")
+        operator_id, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await self._integration_control_service().clear_stale_request(
+            request.project_id,
+            dry_run=request.dry_run,
+            expected_request_id=request.expected_request_id,
+            reason=request.reason,
+            operator_id=operator_id,
+        )
+        return {
+            "success": result["outcome"] in {"cleared", "would_clear", "nothing_to_clear"},
+            **result,
+        }
+
     async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
         """Record provable pre-train deliveries of children no train will collect."""
         from pydantic import ValidationError

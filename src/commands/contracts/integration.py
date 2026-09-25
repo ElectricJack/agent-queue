@@ -74,6 +74,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_delegates",
         "integration_release_owner",
         "integration_release_stale_owners",
+        "integration_clear_stale_request",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
@@ -157,6 +158,22 @@ class IntegrationReleaseStaleOwnersArgs(CommandArgs):
 
             parse_duration(value)
         return value
+
+
+class IntegrationClearStaleRequestArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: Classify only.  Applying needs the request the dry run reported and a reason.
+    dry_run: bool = True
+    expected_request_id: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def applying_names_the_request_and_a_reason(self) -> IntegrationClearStaleRequestArgs:
+        if not self.dry_run and (
+            self.expected_request_id is None or self.reason is None or not self.reason.strip()
+        ):
+            raise ValueError("applying requires expected_request_id and reason")
+        return self
 
 
 class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
@@ -818,6 +835,24 @@ INTEGRATION_RELEASE_STALE_OWNERS = _operational_contract(
     IntegrationReleaseStaleOwnersArgs,
     RELEASE_STALE_OWNERS_OUTCOMES,
     successes=frozenset({"released", "nothing_to_release"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+CLEAR_STALE_REQUEST_OUTCOMES = (
+    "cleared",
+    "would_clear",
+    "nothing_to_clear",
+    "blocked",
+    "changed",
+    "invalid",
+    "not_found",
+)
+
+INTEGRATION_CLEAR_STALE_REQUEST = _operational_contract(
+    "integration_clear_stale_request",
+    IntegrationClearStaleRequestArgs,
+    CLEAR_STALE_REQUEST_OUTCOMES,
+    successes=frozenset({"cleared", "would_clear", "nothing_to_clear"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -2227,6 +2262,18 @@ async def _release_stale_owners_adapter(
     )
 
 
+async def _clear_stale_request_adapter(
+    args: IntegrationClearStaleRequestArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_clear_stale_request",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        set(CLEAR_STALE_REQUEST_OUTCOMES),
+    )
+
+
 async def _adopt_legacy_deliveries_adapter(
     args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
 ):
@@ -2311,6 +2358,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
+        (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),

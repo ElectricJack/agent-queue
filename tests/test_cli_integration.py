@@ -132,6 +132,22 @@ def _client(result):
             {"project_id": "p", "dry_run": True},
         ),
         (
+            ["clear-stale-request", "p"],
+            "integration_clear_stale_request",
+            {"project_id": "p", "dry_run": True},
+        ),
+        (
+            [
+                "clear-stale-request", "p", "--apply",
+                "--request-id", "integration-sweep:p:53", "--reason", "aborted batch",
+            ],
+            "integration_clear_stale_request",
+            {
+                "project_id": "p", "dry_run": False,
+                "expected_request_id": "integration-sweep:p:53", "reason": "aborted batch",
+            },
+        ),
+        (
             ["bind-legacy-repositories", "p"],
             "integration_bind_legacy_repositories",
             {"project_id": "p", "dry_run": True, "reason": None},
@@ -317,6 +333,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_abort",
         "integration_retry_cleanup",
         "integration_bind_legacy_repositories",
+        "integration_clear_stale_request",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -332,6 +349,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "abort",
         "retry-cleanup",
         "bind-legacy-repositories",
+        "clear-stale-request",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
@@ -430,3 +448,22 @@ def test_operator_guide_uses_only_real_operational_commands_and_options():
     ):
         result = CliRunner().invoke(cli, ["integration", leaf, "--help"])
         assert result.exit_code == 0, (leaf, result.output)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["clear-stale-request", "p", "--apply", "--reason", "aborted batch"],
+        ["clear-stale-request", "p", "--apply", "--request-id", "integration-sweep:p:53"],
+    ),
+)
+def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "cleared"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+
+    assert result.exit_code != 0
+    assert "--apply requires --request-id and --reason" in result.output
+    client.execute.assert_not_awaited()

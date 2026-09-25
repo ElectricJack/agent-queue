@@ -27,6 +27,10 @@ from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
 from src.integration.settling import clear as clear_settling_window, settled
+from src.integration.stale_schedule import (
+    classify_outstanding_request_on,
+    release_outstanding_request_on,
+)
 from src.models import resolve_integration_mode_with_source
 from src.playbooks.artifact_ref import ArtifactRef
 
@@ -125,6 +129,14 @@ class IntegrationScheduler:
                 default_interval_seconds=self.DEFAULT_INTERVAL_SECONDS,
             )
             await self._maintain_batch_lease_on(conn, project_id, schedule, now)
+            # Before the enabled and settling gates: a request that nothing will
+            # ever release must not keep coalescing every later trigger, and a
+            # periodic tick is what notices it without an operator.
+            schedule, catchup_due = await self._release_stale_request_on(
+                conn, project_id, schedule, now, trigger
+            )
+            if catchup_due:
+                return self._result("due", project_id, schedule)
             if trigger == "periodic" and not schedule["enabled"]:
                 return self._result("disabled", project_id, schedule)
             if trigger == "periodic" and not await settled(
@@ -211,6 +223,36 @@ class IntegrationScheduler:
                 available_at=now,
             )
             return self._result("due", project_id, schedule)
+
+    async def _release_stale_request_on(self, conn, project_id, schedule, now, trigger):
+        """Release an outstanding request nothing will end; see ``stale_schedule``.
+
+        Returns the schedule to continue with, and whether a recorded catch-up
+        became the next request (which is then already due).
+        """
+        if schedule["outstanding_request_id"] is None:
+            return schedule, False
+        state = await classify_outstanding_request_on(
+            conn, project_id, schedule, now=now, lock=True
+        )
+        if state.verdict != "stale":
+            return schedule, False
+        released = await release_outstanding_request_on(
+            self.db,
+            conn,
+            state,
+            schedule=schedule,
+            now=now,
+            released_by=f"integration_scheduler:{trigger}",
+            reason=state.reason,
+        )
+        logger.warning(
+            "integration: released stale sweep request %s for %s: %s",
+            state.request_id,
+            project_id,
+            state.reason,
+        )
+        return released.schedule, released.catchup_request_id is not None
 
     async def _maintain_batch_lease_on(self, conn, project_id, schedule, now):
         """Keep the active request fenced independently of its next sweep interval."""

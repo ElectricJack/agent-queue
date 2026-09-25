@@ -2421,7 +2421,7 @@ outstanding, and a catch-up request queued behind it.
 | `next_due_at` | REAL | NOT NULL | Next periodic sweep |
 | `last_observed_window` | REAL | nullable | Last window the scheduler observed |
 | `request_sequence` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Monotone request counter |
-| `outstanding_request_id` | TEXT | nullable | Set together with `outstanding_trigger` and `outstanding_requested_at` (`ck_project_integration_schedules_outstanding_request`) |
+| `outstanding_request_id` | TEXT | nullable | Set together with `outstanding_trigger` and `outstanding_requested_at` (`ck_project_integration_schedules_outstanding_request`). Cleared by an empty seal or the promoted batch's release; a request whose batch ended any other way is freed by `src/integration/stale_schedule.py` |
 | `outstanding_trigger` | TEXT | nullable | periodic / manual |
 | `outstanding_requested_at` | REAL | nullable | Unix timestamp |
 | `catchup_trigger` | TEXT | nullable | `periodic` or `manual`, set together with `catchup_requested_at` and `catchup_after_sequence` (`ck_project_integration_schedules_catchup`) |

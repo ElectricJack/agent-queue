@@ -372,6 +372,41 @@ def integration_bind_legacy_repositories(
     })
 
 
+@integration.command("clear-stale-request")
+@click.argument("project_id")
+@click.option("--apply", is_flag=True, help="Release the request; default is a dry run.")
+@click.option(
+    "--request-id",
+    help="The outstanding request the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_clear_stale_request(
+    ctx: click.Context,
+    project_id: str,
+    apply: bool,
+    request_id: str | None,
+    reason: str | None,
+) -> None:
+    """Say whether PROJECT_ID's outstanding sweep request can still end; free it if not.
+
+    A train request is freed only by releasing its promoted batch.  When its
+    batch was aborted, is gone, or promoted without its lease, every flush
+    answers `coalesced` and no sweep runs.  The dry run prints the verdict
+    (`stale`, `unsealed`, `blocked`, `active`, `in_flight`, `none`) and the
+    request id; `--apply` needs that id and a reason, and refuses `blocked`.
+    """
+    if apply and not (request_id and reason):
+        raise click.UsageError("--apply requires --request-id and --reason")
+    args: dict[str, Any] = {"project_id": project_id, "dry_run": not apply}
+    if request_id is not None:
+        args["expected_request_id"] = request_id
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_clear_stale_request", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

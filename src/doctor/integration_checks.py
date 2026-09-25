@@ -1154,6 +1154,147 @@ async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+#: ``integration.sweep_due`` retries this many times before an undelivered
+#: sweep counts as stuck rather than merely queued.
+_UNDELIVERED_SWEEP_ATTEMPTS = 3
+
+
+async def _find_stale_schedules(ctx: DoctorContext) -> list[dict]:
+    """Train schedules whose outstanding request nothing will end on its own.
+
+    ``stale`` and ``unsealed`` requests coalesce every later flush and tick into
+    a sweep that never runs; ``blocked`` ones would too, but their batch still
+    carries unresolved write evidence.  A request whose ``integration.sweep_due``
+    no playbook accepts after repeated attempts is listed as well: it is not
+    stale, yet no sweep will run until the route accepts it.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import project_integration_schedules, projects
+    from src.integration.stale_schedule import classify_outstanding_request_on
+
+    now = time.time()
+    findings = []
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                select(
+                    project_integration_schedules,
+                    projects.c.hierarchical_integration_mode.label("mode"),
+                )
+                .join(projects, projects.c.id == project_integration_schedules.c.project_id)
+                .where(project_integration_schedules.c.outstanding_request_id.is_not(None))
+                .order_by(project_integration_schedules.c.project_id)
+                .limit(200)
+            )
+        ).mappings().all()
+        for row in rows:
+            state = await classify_outstanding_request_on(
+                conn, row["project_id"], row, now=now
+            )
+            undelivered = (
+                state.verdict == "in_flight"
+                and state.event is not None
+                and state.event["attempts"] >= _UNDELIVERED_SWEEP_ATTEMPTS
+                and state.event["last_error"]
+            )
+            if state.verdict in {"stale", "unsealed", "blocked"} or undelivered:
+                findings.append(
+                    {
+                        **state.as_dict(),
+                        "mode": row["mode"],
+                        "requested_at": row["outstanding_requested_at"],
+                        "next_due_at": row["next_due_at"],
+                        "last_completed_sweep_at": row["last_completed_sweep_at"],
+                    }
+                )
+    return findings
+
+
+def _stale_schedule_ok() -> CheckResult:
+    return CheckResult(
+        id="integration.stale_schedule",
+        severity=Severity.OK,
+        detail="every outstanding train sweep request can still end on its own",
+    )
+
+
+async def _check_stale_schedule(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stale_schedule",
+            severity=Severity.INFO,
+            detail="database not initialised — integration schedule state unknown",
+        )
+    findings = await _find_stale_schedules(ctx)
+    if not findings:
+        return _stale_schedule_ok()
+    first = findings[0]
+    subject = (
+        f"batch {first['batch_id']} ({first['lifecycle']})"
+        if first["batch_id"]
+        else "no batch"
+    )
+    return CheckResult(
+        id="integration.stale_schedule",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} train schedule(s) hold a sweep request that will not end on "
+            f"its own — e.g. {first['project_id']}: {first['request_id']} is "
+            f"{first['verdict']} ({subject}): {first['reason']}. Every flush answers "
+            "`coalesced` and no sweep runs meanwhile. `stale` requests are freed by the "
+            "scheduler's next due tick, or now by `aq doctor --check "
+            "integration.stale_schedule --fix`; `aq integration clear-stale-request "
+            "<project>` also frees `unsealed` ones. `blocked` names unresolved write "
+            "evidence to settle first"
+        ),
+        fixable=any(item["verdict"] == "stale" for item in findings),
+        data={"count": len(findings), "schedules": findings},
+    )
+
+
+async def _fix_stale_schedule(ctx: DoctorContext) -> CheckResult:
+    """Free each ``stale`` request exactly as the scheduler's next pass would.
+
+    Leaves ``unsealed`` (the seal may still be queued), ``blocked`` and
+    undelivered requests alone: those are the operator's judgement.
+    """
+    from src.integration.stale_schedule import release_stale_request
+
+    findings = await _find_stale_schedules(ctx)
+    cleared = []
+    for item in findings:
+        if item["verdict"] != "stale":
+            continue
+        result = await release_stale_request(
+            ctx.db,
+            item["project_id"],
+            now=time.time(),
+            released_by="doctor",
+            reason=f"aq doctor --check integration.stale_schedule --fix: {item['reason']}",
+            expected_request_id=item["request_id"],
+        )
+        if result["outcome"] == "cleared":
+            cleared.append({"project_id": item["project_id"], **result["release"]})
+    if not findings:
+        return _stale_schedule_ok()
+    remaining = len(findings) - len(cleared)
+    detail = f"freed {len(cleared)} stale train sweep request(s)"
+    if remaining:
+        detail += (
+            f"; {remaining} left for an operator (unsealed, blocked or undelivered) — see "
+            "`aq integration clear-stale-request <project>`"
+        )
+    return CheckResult(
+        id="integration.stale_schedule",
+        severity=Severity.WARN if remaining else Severity.OK,
+        detail=detail,
+        fixable=True,
+        fix_applied=bool(cleared),
+        data={"count": len(cleared), "cleared": cleared},
+    )
+
+
 def _stop_confirmer(ctx: DoctorContext):
     from src.integration.finished_owners import stop_confirmer_for
 
@@ -1325,6 +1466,17 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.stranded_delegates",
             run=_check_stranded_delegates,
             fix=_fix_stranded_delegates,
+            owner=OWNER,
+        ),
+        # Fixable, and the fix is the scheduler's own release: it frees only a
+        # ``stale`` request -- one whose batch ended, is gone, or promoted
+        # without its lease, with no unresolved write evidence -- and never
+        # touches Git or a batch.  ``unsealed`` and ``blocked`` requests are
+        # reported for ``aq integration clear-stale-request``.
+        DoctorCheck(
+            id="integration.stale_schedule",
+            run=_check_stale_schedule,
+            fix=_fix_stale_schedule,
             owner=OWNER,
         ),
         # Fixable, unlike ``integration.stranded_fences``, because it only

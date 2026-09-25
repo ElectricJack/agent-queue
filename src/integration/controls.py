@@ -116,6 +116,36 @@ class IntegrationControlService:
     async def abort(self, operation_id: str, *, reason: str) -> dict[str, Any]:
         return await self._recovery().abort(operation_id, reason=reason)
 
+    async def clear_stale_request(
+        self,
+        project_id: str,
+        *,
+        dry_run: bool,
+        expected_request_id: str | None,
+        reason: str | None,
+        operator_id: str,
+    ) -> dict[str, Any]:
+        """Report whether the outstanding sweep request can still end; free it if not.
+
+        The dry run classifies only.  Applying needs the request id the dry run
+        reported, so a request that moved in between is never released, and it
+        releases ``unsealed`` requests too -- an accepted sweep with no batch --
+        which the scheduler leaves for an hour in case the seal is still queued.
+        ``blocked`` is refused: its batch still carries unresolved write evidence.
+        """
+        from src.integration.stale_schedule import OPERATOR_RELEASABLE, release_stale_request
+
+        return await release_stale_request(
+            self.db,
+            project_id,
+            now=self.clock(),
+            released_by=operator_id,
+            reason=reason or "",
+            dry_run=dry_run,
+            expected_request_id=expected_request_id,
+            releasable=OPERATOR_RELEASABLE,
+        )
+
     async def retry_cleanup(self, batch_id: str) -> dict[str, Any]:
         """Requeue retryable cleanup, or materialize a promoted batch's missing cleanup.
 
