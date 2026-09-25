@@ -271,12 +271,36 @@ It runs in every integration mode. Retired origins and orphan origins without a
 live task are not included. Timestamp anomalies warrant review; they are not
 proof that branch contents can be discarded.
 
-The check has no `--fix`. Have the operator review the exact branch tip, delivery
-evidence, live writers and dependent history before choosing a rebind. Releasing
-an owner leaves the old origin and checkpoint in place. Retain the predecessor's
-audit history; a new origin also needs an explicit disposition for any existing
-branch at a different tip. The [diagnostic contract](../specs/design/integration-identity-diagnostics.md)
-describes the comparison and its limits.
+The check has no `--fix`. Releasing an owner leaves the old origin and
+checkpoint in place. The guarded repair proves the predecessor's branch first:
+
+```bash
+aq integration rebind-reused-identity --task-id TASK_ID            # dry run
+aq integration rebind-reused-identity --task-id TASK_ID --apply \
+  --origin-id ORIGIN_ID --reason "inherited a deleted task's identity"
+```
+
+The dry run fetches the origin's repository. It answers `would_rebind` when the
+origin's base, the predecessor's checkpoint and the ref's current tip are all on
+the default branch; a ref that is gone is accepted too. Otherwise it answers
+`unproven` and lists each cause:
+
+| Cause | Meaning |
+|---|---|
+| `live_writer` | The task is claimed, has a live session or holds a workspace |
+| `owner_held` | The ref's owner row is not `released`; settle it with `release-owner` or `release-stale-owners` |
+| `dependent_history` | Child origins, episodes, receipts, batches, intents, repairs, dispositions or review evidence use the identity |
+| `checkpoint_rewritten` / `checkpoint_mismatch` | The checkpoint cannot be attributed to the predecessor |
+| `hierarchical_project` | In `hierarchy`/`train` mode the origin is live delivery identity; the control refuses |
+| `not_on_default_branch` / `unavailable` | A predecessor commit is not on the default branch, or is not in the fetched store |
+
+A commit that is not on the default branch is abandoned only on an explicit
+decision, by naming it exactly with `--discard-tip SHA`. `--apply` needs every
+origin id the dry run printed and a reason. It re-proves everything under the
+project hierarchy lock, retires the origin (the row is kept), moves the
+checkpoint into an `integration.task_identity_rebound` event and changes no
+branch or owner row. The [diagnostic contract](../specs/design/integration-identity-diagnostics.md)
+describes the proof and its limits.
 
 ## A branch is held by a writer that is gone
 

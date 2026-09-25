@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-82 commands are registered.
+83 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -101,6 +101,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
+| [`integration_rebind_reused_identity`](integration_rebind_reused_identity.md) | Integration Rebind Reused Identity | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) | Integration Reconcile Unmaterialized | Authenticated hierarchical integration operational control. |
 | [`integration_record_noop`](integration_record_noop.md) | Record verified no-code child disposition | Bind a child's current no-op completion and exact Git head to its parent receipt. |
