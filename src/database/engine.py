@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from typing import Any
 
 from sqlalchemy import event, exc, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.pool import AsyncAdaptedQueuePool
 
 from src.database.migration_guard import VERIFY, migration_decision
 from src.database.schema_key import (
@@ -92,6 +95,54 @@ def _install_local_liveness_check(engine: AsyncEngine) -> None:
             )
 
 
+class ObservedQueuePool(AsyncAdaptedQueuePool):
+    """The daemon's pool, reporting how long each checkout waited.
+
+    ``_do_get`` is where ``QueuePool`` blocks when every connection is out
+    (the greenlet yields to the loop, so the wall clock here is the wait the
+    caller experienced, spec 2026-09-24 dashboard performance §4.1); opening a
+    new connection under ``pool_size + max_overflow`` happens here too and is
+    part of that wait.  It is a private SQLAlchemy hook;
+    ``tests/test_engine_perf_observer.py`` pins that it still exists on the
+    installed version.
+
+    ``QueuePool._do_get`` calls itself again only when another *thread* moves
+    the overflow counter between two reads; the asyncio adapter runs every
+    checkout on the loop thread, so each checkout is observed exactly once.
+    """
+
+    def _do_get(self):
+        from src.metrics.perf import perf_registry
+
+        started = time.perf_counter()
+        try:
+            return super()._do_get()
+        except exc.TimeoutError:
+            perf_registry().observe_pool_timeout()
+            raise
+        finally:
+            perf_registry().observe_pool_wait((time.perf_counter() - started) * 1000.0)
+
+
+def _install_query_observer(engine: AsyncEngine) -> None:
+    """Time every cursor execution.  The statement and parameters are never read.
+
+    A statement that raises never reaches ``after_cursor_execute``; its start
+    time is simply overwritten by the next statement on that connection.
+    """
+    from src.metrics.perf import perf_registry
+
+    @event.listens_for(engine.sync_engine, "before_cursor_execute")
+    def _started(conn, cursor, statement, parameters, context, executemany):
+        conn.info["aq_perf_started"] = time.perf_counter()
+
+    @event.listens_for(engine.sync_engine, "after_cursor_execute")
+    def _finished(conn, cursor, statement, parameters, context, executemany):
+        started = conn.info.pop("aq_perf_started", None)
+        if started is not None:
+            perf_registry().observe_query((time.perf_counter() - started) * 1000.0)
+
+
 def create_postgres_engine(
     dsn: str,
     pool_min: int = 2,
@@ -99,6 +150,8 @@ def create_postgres_engine(
     *,
     pre_ping: str = "local",
     pool_recycle: int = 1800,
+    pool_timeout: float = 30.0,
+    observe: bool = True,
 ) -> AsyncEngine:
     """Create an async PostgreSQL engine with connection pooling.
 
@@ -118,20 +171,36 @@ def create_postgres_engine(
     next checkout (``0`` disables it).  The comparison is local, so unlike
     ``wire`` it is free, and it is what keeps a server-side idle timeout from
     being raced in the first place.
+
+    *pool_timeout* is how many seconds a checkout waits for a connection
+    before raising :class:`~sqlalchemy.exc.TimeoutError`; it used to be a
+    hard-coded 30.
+
+    *observe* builds the pool as :class:`ObservedQueuePool` and times every
+    cursor execution: they are the perf registry's pool-wait, pool-timeout and
+    query-duration sources (:mod:`src.metrics.perf`).  Neither hook reads the
+    statement or its parameters, and ``metrics.perf_enabled: false`` stops
+    them recording without rebuilding the engine.
     """
     import re
 
     url = re.sub(r"^postgres(ql)?://", "postgresql+asyncpg://", dsn)
+    kwargs: dict[str, Any] = {}
+    if observe:
+        kwargs["poolclass"] = ObservedQueuePool
     engine = create_async_engine(
         url,
         pool_size=pool_max,
         max_overflow=pool_max,
         pool_pre_ping=pre_ping == "wire",
         pool_recycle=pool_recycle if pool_recycle > 0 else -1,
-        pool_timeout=30,
+        pool_timeout=pool_timeout,
+        **kwargs,
     )
     if pre_ping not in ("wire", "off"):
         _install_local_liveness_check(engine)
+    if observe:
+        _install_query_observer(engine)
     return engine
 
 
