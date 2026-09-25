@@ -2040,6 +2040,154 @@ class TestEndToEndOnFakeProvider:
             wd, "refs/remotes/origin/main", "refs/heads/aq/t1"
         )
 
+    async def test_train_leaf_root_close_opens_its_pull_request(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """Regression for noble-harbor-74: a childless train root closed with no PR.
+
+        The leaf checkpoint advanced, but nothing opened the PR the train
+        seats a root by (``eligible_root_page_on`` requires ``pr_url``).
+        """
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+
+        async def git_run(args, *, cwd):
+            assert cwd == wd
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        pr_url = "https://github.com/o/r/pull/9"
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(return_value=pr_url),
+            _arun=git_run,
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "leaf root complete",
+            },
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
+        real_orch.git.acreate_pr.assert_awaited_once()
+        assert real_orch.git.acreate_pr.await_args.kwargs["branch"] == "aq/t1"
+        assert real_orch.git.acreate_pr.await_args.kwargs["base"] == "main"
+        assert (await db.get_task("t1")).pr_url == pr_url
+        real_orch._phase_integrate.assert_not_awaited()
+
+    async def test_train_leaf_root_close_survives_a_pull_request_failure(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """A GitHub failure leaves the root COMPLETED for the reconciler to retry."""
+        from unittest.mock import AsyncMock
+
+        from sqlalchemy import update
+
+        from src.database.tables import repos
+        from src.git.manager import RemoteRefState
+
+        wd = await self._setup(db, tmp_path)
+        await self._enable_hierarchy_launch(db, tmp_path)
+        await db.update_project("p1", hierarchical_integration_mode="train")
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(repos).where(repos.c.id == "repo").values(
+                    url="https://github.com/o/r.git", default_branch="main"
+                )
+            )
+        task = await db.get_task("t1")
+        await real_orch._launch_session_for_task(
+            AssignAction("a1", "t1", "p1"),
+            task,
+            await db.get_profile("claude-opus"),
+            wd,
+        )
+        session = await db.get_session_for_task("t1")
+        head = "b" * 40
+        monkeypatch.setattr(real_orch, "_phase_integrate", AsyncMock(), raising=False)
+
+        async def git_run(args, *, cwd):
+            if args == ["status", "--porcelain"]:
+                return ""
+            if args == ["rev-parse", "HEAD"]:
+                return head
+            raise AssertionError(f"unexpected producer Git command: {args!r}")
+
+        real_orch.git = SimpleNamespace(
+            avalidate_checkout=AsyncMock(return_value=True),
+            ahas_remote=AsyncMock(return_value=True),
+            aget_current_branch=AsyncMock(return_value="aq/t1"),
+            als_remote_ref=AsyncMock(
+                return_value=SimpleNamespace(state=RemoteRefState.PRESENT, oid=head)
+            ),
+            areserved_paths_in_diff=AsyncMock(return_value=[]),
+            afind_open_pr=AsyncMock(),
+            arev_parse=AsyncMock(return_value=head),
+            bind_github_repository=AsyncMock(return_value="binding"),
+            acommits_ahead_of_base=AsyncMock(return_value=1),
+            acreate_pr=AsyncMock(side_effect=RuntimeError("GitHub is down")),
+            _arun=git_run,
+        )
+        close = await real_handler.execute(
+            "task_close",
+            {
+                "task_id": "t1",
+                "session_id": session.id,
+                "outcome": "pass",
+                "work_outcome": "shipped",
+                "summary": "leaf root complete",
+            },
+        )
+
+        assert close["success"] is True
+        assert close["status"] == "COMPLETED"
+        assert (await db.get_integration_checkpoint("t1"))["checkpoint_sha"] == head
+        assert (await db.get_task("t1")).pr_url is None
+
     async def test_managed_parent_close_suspends_owned_branch_without_legacy_integrate(
         self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
     ):

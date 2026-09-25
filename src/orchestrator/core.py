@@ -1845,6 +1845,7 @@ class Orchestrator(
         from src.integration.github_review_poll import GitHubReviewPoller
         from src.integration.owner_recovery import owner_recovery_for
         from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.root_pull_requests import RootPullRequestReconciler
         async def development_confirm_stopped(session):
             from src.sessions.provider import SessionHandle
             provider = self.session_providers.create(session["provider"], self.config)
@@ -1885,6 +1886,7 @@ class Orchestrator(
             review_handler=GitHubReviewPoller(
                 self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git
             ).tick,
+            root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
         )
         self.integration_service.start()
 

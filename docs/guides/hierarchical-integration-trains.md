@@ -27,6 +27,7 @@ aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
 aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
+aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
@@ -470,6 +471,15 @@ will ever end. `aq integration clear-stale-request PROJECT_ID` reports, as a dry
 run, whether the outstanding request can still end, and `--apply --request-id
 ID --reason REASON` frees a stale one. See [A train never
 sweeps](integration-troubleshooting.md#a-train-never-sweeps).
+
+A root enters the train only with a pull request and an approved GitHub review
+of its exact head. An epic's PR opens when its parent verification completes;
+a childless root filed onto its own `aq/epic/...` branch gets its PR when its
+close records the finished head. The daemon retries a PR either path missed.
+`aq integration redrive-root TASK_ID` reports, as a dry run, why a COMPLETED
+root has no PR, and `--apply --head HEAD_SHA --reason REASON` opens it for
+that head. See [A completed root has no pull
+request](integration-troubleshooting.md#a-completed-root-has-no-pull-request).
 
 ### Stopped pool-writer handoff recovery
 

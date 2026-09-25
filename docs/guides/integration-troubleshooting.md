@@ -56,6 +56,7 @@ aq doctor --check git.stale_branches
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
+| A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
@@ -612,6 +613,43 @@ The latched `next_due_at` in the past is not part of the fault. A periodic
 sweep also waits for the approval-armed settling window, so with no new
 approval `next_due_at` stays at the missed boundary, and the sweep runs as soon
 as an approval arms the window. `aq integration flush` bypasses that window.
+
+## A completed root has no pull request
+
+A train seals a root only when it is `COMPLETED`, has a pull request, and has
+an approved GitHub review of its exact head (`eligible_root_page_on`). Nothing
+else seats it, so a root with no PR never delivers, and `integration flush`
+cannot help: it only links a PR that already exists.
+
+Two paths open the PR. An epic's opens when its aggregate verification
+completes (`ParentCompletion.complete_parent`). A childless root, which
+`task create` files onto its own `aq/epic/...` branch in a train project,
+closes through the leaf checkpoint: the close advances `checkpoint_sha` to
+the pushed head and opens the PR. Its checkpoint `state` stays `working` —
+that is the leaf's finished shape, not a stall — and its `reserved` worker
+owner row is the normal post-close state until the train delivers it. Before
+2026-09-25 the leaf close opened no PR (noble-harbor-74).
+
+Both are best-effort, so the daemon retries: `RootPullRequestReconciler`
+(`src/integration/root_pull_requests.py`) opens the PR of any COMPLETED train
+root whose checkpoint names a finished head, backing off per root. It skips
+unverified epics, roots already delivered, and heads already on the default
+branch. To see where one root stands:
+
+```bash
+aq integration redrive-root <task>        # dry run
+```
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `would_open` | Complete, head published, no PR. | `--apply --head <head_sha> --reason '<why>'`. |
+| `nothing_to_redrive` | Already has a PR, delivered, or its head is already on the default branch (a fix-forward merged by hand). | Nothing; `reason` says which. |
+| `blocked` | An epic whose aggregate verification has not completed, a leaf whose close recorded no head, an unpublished branch, or a remote branch that moved from the recorded head. | Settle what `reason` names; never force it. |
+| `not_eligible` | Not a train root, not `COMPLETED`, or no integration checkpoint (the legacy completion pipeline owns that PR). | Nothing to redrive here. |
+
+Applying needs the head the dry run printed; a head that changed since is
+refused (`changed`). It opens the PR for that head, stores it on the task and
+records an `integration.root_redriven` event.
 
 ## Legacy children block observe readiness
 

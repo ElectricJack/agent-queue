@@ -1437,6 +1437,7 @@ class ExecutionMixin:
         completed_ok = True
         managed_parent_suspended = False
         managed_parent_completed = False
+        train_leaf_root = False
         repair_writer_closed = False
         repair_writer_head = None
         repair_commit_proof = None
@@ -1625,6 +1626,11 @@ class ExecutionMixin:
                             pr_url = None
                         else:
                             await hierarchy.checkpoint_leaf_completion(task.id, head)
+                            train_leaf_root = bool(
+                                task.parent_task_id is None
+                                and getattr(project, "hierarchical_integration_mode", None)
+                                == "train"
+                            )
                 else:
                     pr_url, completed_ok = await self._run_completion_pipeline(ctx)
             except Exception:
@@ -1794,6 +1800,30 @@ class ExecutionMixin:
             refreshed = await self.db.get_task(task.id)
             if refreshed:
                 new_status = refreshed.status
+
+        # A childless train root closes through the leaf checkpoint above, and
+        # no parent completion follows to open its PR -- yet the train seats
+        # only roots that have one (``eligible_root_page_on``).  Open it now,
+        # before ``task.completed`` hydrates the row.  Best-effort: a GitHub
+        # failure must not undo a committed COMPLETED, and the root PR
+        # reconciler (``src/integration/root_pull_requests.py``) retries it.
+        if train_leaf_root and new_status == TaskStatus.COMPLETED:
+            from src.integration.epic_pr import EpicPullRequestService
+
+            try:
+                opened = await EpicPullRequestService(
+                    self.db, git_manager=self.git
+                ).open_for_epic(task.id)
+                logger.info("Task %s: train root pull request outcome: %s",
+                            task.id, opened["outcome"])
+                pr_url = opened.get("pr_url") or pr_url
+            except Exception:
+                logger.warning(
+                    "Task %s: could not open the train root pull request; "
+                    "the root PR reconciler will retry",
+                    task.id,
+                    exc_info=True,
+                )
 
         # ``task.failed`` is the trigger for the reflection playbook
         # (``vault/templates/reflection-playbook.md`` -> deep tier) and for

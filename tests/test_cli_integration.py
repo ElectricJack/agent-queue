@@ -137,6 +137,22 @@ def _client(result):
             {"project_id": "p", "dry_run": True},
         ),
         (
+            ["redrive-root", "noble-harbor-74"],
+            "integration_redrive_root",
+            {"task_id": "noble-harbor-74", "dry_run": True},
+        ),
+        (
+            [
+                "redrive-root", "noble-harbor-74", "--apply",
+                "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--reason", "leaf root closed with no PR",
+            ],
+            "integration_redrive_root",
+            {
+                "task_id": "noble-harbor-74", "dry_run": False,
+                "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "leaf root closed with no PR",
+            },
+        ),
+        (
             [
                 "clear-stale-request", "p", "--apply",
                 "--request-id", "integration-sweep:p:53", "--reason", "aborted batch",
@@ -351,6 +367,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_retry_cleanup",
         "integration_bind_legacy_repositories",
         "integration_clear_stale_request",
+        "integration_redrive_root",
         "integration_rebind_reused_identity",
         "integration_resolve_candidate_member",
     }
@@ -368,6 +385,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "retry-cleanup",
         "bind-legacy-repositories",
         "clear-stale-request",
+        "redrive-root",
         "rebind-reused-identity",
         "release-owner",
         "resolve-candidate-member",
@@ -485,6 +503,25 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
 
     assert result.exit_code != 0
     assert "--apply requires --request-id and --reason" in result.output
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["redrive-root", "r1", "--apply", "--reason", "stuck"],
+        ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    ),
+)
+def test_redrive_root_apply_needs_the_head_and_a_reason(argv):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "opened"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(cli, ["integration", *argv])
+
+    assert result.exit_code != 0
+    assert "--apply requires --head and --reason" in result.output
     client.execute.assert_not_awaited()
 
 
