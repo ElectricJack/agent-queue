@@ -1020,7 +1020,8 @@
     "test-selection": {
       "description": "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them.",
       "modules": [
-        "tests/test_selection_catalogue.py"
+        "tests/test_selection_catalogue.py",
+        "tests/test_selection_testmon_experiment.py"
       ]
     },
     "test-substrate": {
@@ -1169,7 +1170,7 @@
       ]
     }
   },
-  "digest": "sha256:9a316df0376099136501d1a17c83d3a3eaca1af54b973f4e78e55808398f4b59",
+  "digest": "sha256:cf4c17485760072e273a1f898ff0a6d89f3ffb9d367f0d07548603c2e0210e50",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10054,6 +10055,17 @@
         "parametrize"
       ],
       "summary": "The smart-test-selection artifacts: areas, generated catalogue, rules and policy."
+    },
+    "tests/test_selection_testmon_experiment.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "slow"
+      ],
+      "summary": "pytest-testmon fixture experiment: recorded evidence for spec §5.2, never a selector."
     },
     "tests/test_session_class_effort.py": {
       "areas": [
