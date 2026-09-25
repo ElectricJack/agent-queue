@@ -299,6 +299,74 @@ async def test_redrive_root_runs_under_the_derived_operator_label(db, monkeypatc
     run.assert_not_awaited()
 
 
+async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypatch):
+    from src.models import Task
+
+    await db.create_task(Task(id="c1", project_id="p", title="child", description=""))
+    run = AsyncMock(
+        return_value={"outcome": "would_advance", "task_id": "c1", "head_sha": "a" * 40}
+    )
+    constructed = []
+
+    class _Delivery:
+        def __init__(self, database, promotion, *, collect=None):
+            constructed.append((database, promotion, collect))
+            self.run = run
+
+    collected = []
+
+    class _Collection:
+        async def collect_parent(self, parent_id, now):
+            collected.append(parent_id)
+            return "queued"
+
+    monkeypatch.setattr("src.integration.child_delivery.ChildDelivery", _Delivery)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(
+        promotion_service="promotion", integration_collection=_Collection()
+    )
+
+    local = await handler._cmd_integration_redrive_child({"task_id": "c1"})
+    assert (local["success"], local["outcome"], local["dry_run"]) == (
+        True, "would_advance", True,
+    )
+    [(database, promotion, collect)] = constructed
+    assert (database, promotion) == (db, "promotion")
+    # The control queues the parent's collection through the daemon's collector.
+    assert await collect("epic") == "queued"
+    assert collected == ["epic"]
+    assert run.await_args.args == ("c1",)
+    assert run.await_args.kwargs == {
+        "dry_run": True,
+        "expected_head_sha": None,
+        "reason": None,
+        "operator_id": "human:local-operator",
+    }
+
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_redrive_child(
+            {"task_id": "c1", "dry_run": False, "expected_head_sha": "a" * 40, "reason": "stuck"}
+        )
+    assert run.await_args.kwargs == {
+        "dry_run": False,
+        "expected_head_sha": "a" * 40,
+        "reason": "stuck",
+        "operator_id": "supervisor session:super-p",
+    }
+
+    run.reset_mock()
+    invalid = await handler._cmd_integration_redrive_child({"task_id": "c1", "dry_run": False})
+    assert invalid["outcome"] == "invalid"
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_redrive_child({"task_id": "c1"})
+    assert refused["outcome"] == "unauthorized"
+    with principal_context(_session("super-other", "other")):
+        foreign = await handler._cmd_integration_redrive_child({"task_id": "c1"})
+    assert foreign["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 async def test_adopt_legacy_deliveries_runs_under_the_derived_operator_label(db, monkeypatch):
     run = AsyncMock(
         return_value={

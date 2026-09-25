@@ -144,6 +144,9 @@ def test_supervisor_holds_every_operator_integration_control():
     # (noble-harbor-74); the profile tells the supervisor when to run it.
     assert "integration_redrive_root" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_redrive_root" in granted
+    # Its twin for a completed child its parent never assembled (vivid-ridge).
+    assert "integration_redrive_child" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_redrive_child" in granted
     assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
 
 

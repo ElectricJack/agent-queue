@@ -99,6 +99,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
+    "integration_redrive_child",
     "integration_redrive_root",
     "integration_release_delegates",
     "integration_release_owner",
@@ -285,6 +286,19 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   (already open, already on the default branch, or delivered) and `blocked`
   (unverified epic, head never recorded, remote branch moved) are reported,
   never forced.
+- **A completed child its parent never assembled.** A collecting parent
+  assembles a COMPLETED child only once approved evidence pins the child's
+  exact head; the collector records that evidence on its own once the child's
+  published branch proves out. `aq doctor --check integration.stuck_children`
+  lists children still waiting after a few minutes (their siblings' `needs`
+  keep them out of the claim frontier meanwhile). Run `aq integration
+  redrive-child <task>` (a dry run) and report its verdict and `reason`.
+  `would_advance` → `--apply --head <head_sha> --reason ...` records the
+  evidence for exactly that head and queues the parent's collection.
+  `nothing_to_redrive` (already delivered, or its promotion is in flight) and
+  `blocked` (a reviewer rejected the head or is still open, the remote branch
+  moved, a no-code child, a parent not collecting) are reported, never forced;
+  a no-code child takes `aq integration record-noop`.
 - **A task that inherited a deleted task's identity.** `aq doctor --check
   integration.reused_task_identity` lists tasks whose branch origin predates
   them. For each one, run `aq integration rebind-reused-identity --task-id

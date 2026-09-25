@@ -673,6 +673,44 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_redrive_child(self, args: dict) -> dict:
+        """Diagnose a completed child its parent never assembled; advance it for the head."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRedriveChildArgs
+        from src.integration.child_delivery import ChildDelivery
+
+        try:
+            request = IntegrationRedriveChildArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid child redrive request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        collection = getattr(self.orchestrator, "integration_collection", None)
+        collect = None
+        if collection is not None:
+            async def collect(parent_id: str) -> str | None:
+                return await collection.collect_parent(parent_id, time.time())
+
+        result = await ChildDelivery(
+            self.db, self._integration_promotion_service(), collect=collect
+        ).run(
+            request.task_id,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
     async def _cmd_integration_rebind_reused_identity(self, args: dict) -> dict:
         """Prove a task's inherited integration identity; rebind it once settled."""
         from pydantic import ValidationError

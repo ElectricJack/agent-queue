@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 385,
+    "leaf_commands": 386,
     "registration": {
       "generated": 265,
-      "handwritten": 120
+      "handwritten": 121
     },
     "ownership": {
-      "core": 346,
+      "core": 347,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 384
+      "supported": 385
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 265,
-      "registration": 106
+      "registration": 107
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 325
+      "untested": 326
     }
   },
   "commands": [
@@ -3565,6 +3565,39 @@
           "reservation_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration redrive-child",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_redrive_child",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "task_id"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"

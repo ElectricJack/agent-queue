@@ -76,6 +76,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
@@ -194,6 +195,29 @@ class IntegrationRedriveRootArgs(CommandArgs):
 
     @model_validator(mode="after")
     def applying_names_the_head_and_a_reason(self) -> IntegrationRedriveRootArgs:
+        if not self.dry_run and (
+            self.expected_head_sha is None or self.reason is None or not self.reason.strip()
+        ):
+            raise ValueError("applying requires expected_head_sha and reason")
+        return self
+
+
+class IntegrationRedriveChildArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    #: Diagnose only.  Applying needs the head the dry run reported and a reason.
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+    @field_validator("expected_head_sha")
+    @classmethod
+    def expected_head_is_a_commit(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_git_oid(value):
+            raise ValueError("expected_head_sha must be a full commit id")
+        return value
+
+    @model_validator(mode="after")
+    def applying_names_the_head_and_a_reason(self) -> IntegrationRedriveChildArgs:
         if not self.dry_run and (
             self.expected_head_sha is None or self.reason is None or not self.reason.strip()
         ):
@@ -371,6 +395,24 @@ class IntegrationRedriveRootValue(CommandValue):
     pr_url: str | None = None
     checkpoint: dict[str, Any] | None = None
     owner: dict[str, Any] | None = None
+    reason: str | None = None
+
+
+class IntegrationRedriveChildValue(CommandValue):
+    """What a completed child's assembly waits on (``integration_redrive_child``)."""
+
+    task_id: str | None = None
+    project_id: str | None = None
+    parent_task_id: str | None = None
+    branch: str | None = None
+    parent_branch: str | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
+    remote_head_sha: str | None = None
+    tree_sha: str | None = None
+    evidence_id: str | None = None
+    collection: str | None = None
+    checkpoint: dict[str, Any] | None = None
     reason: str | None = None
 
 
@@ -944,6 +986,26 @@ INTEGRATION_REDRIVE_ROOT = _operational_contract(
     successes=frozenset({"would_open", "opened", "nothing_to_redrive"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRedriveRootValue,
+)
+
+REDRIVE_CHILD_OUTCOMES = (
+    "would_advance",
+    "advanced",
+    "nothing_to_redrive",
+    "blocked",
+    "changed",
+    "not_eligible",
+    "not_found",
+    "invalid",
+)
+
+INTEGRATION_REDRIVE_CHILD = _operational_contract(
+    "integration_redrive_child",
+    IntegrationRedriveChildArgs,
+    REDRIVE_CHILD_OUTCOMES,
+    successes=frozenset({"would_advance", "advanced", "nothing_to_redrive"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationRedriveChildValue,
 )
 
 REBIND_REUSED_IDENTITY_OUTCOMES = (
@@ -2393,6 +2455,16 @@ async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandCo
     )
 
 
+async def _redrive_child_adapter(args: IntegrationRedriveChildArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_redrive_child",
+        args,
+        ctx,
+        IntegrationRedriveChildValue,
+        set(REDRIVE_CHILD_OUTCOMES),
+    )
+
+
 async def _rebind_reused_identity_adapter(
     args: IntegrationRebindReusedIdentityArgs, ctx: CommandContext | None
 ):
@@ -2491,6 +2563,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
+        (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),

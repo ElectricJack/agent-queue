@@ -444,6 +444,46 @@ def integration_redrive_root(
     _execute(ctx, "integration_redrive_root", args)
 
 
+@integration.command("redrive-child")
+@click.argument("task_id")
+@click.option(
+    "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
+)
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_redrive_child(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Say why completed child TASK_ID was never assembled into its parent; advance it.
+
+    A collecting parent assembles a COMPLETED child only once approved evidence
+    pins the child's exact checkpoint head.  The dry run reads the child and its
+    parent, proves the head from Git (the remote branch tip, descended from the
+    child's origin base) and answers `would_advance`, `nothing_to_redrive`,
+    `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
+    that head and a reason: it records approved evidence for exactly that head
+    and queues the parent's collection.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_redrive_child", args)
+
+
 @integration.command("rebind-reused-identity")
 @click.option("--task-id", required=True)
 @click.option("--apply", is_flag=True, help="Rebind the identity; default is a dry run.")

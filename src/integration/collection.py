@@ -22,12 +22,20 @@ logger = logging.getLogger(__name__)
 
 
 class CollectionService:
-    """Submit one child per parent; promotion remains the mutation authority."""
+    """Submit one child per parent; promotion remains the mutation authority.
 
-    def __init__(self, db, *, hierarchy_service_factory, page_size=10):
+    *child_delivery* (``src.integration.child_delivery.ChildDelivery``) supplies
+    the approval a completed child needs when no reviewer gave one: it proves
+    the child's published head from Git and records completion evidence for it.
+    Without it a child waits for a reviewer's verdict, which nothing files
+    automatically since per-task reviews were retired (vivid-ridge).
+    """
+
+    def __init__(self, db, *, hierarchy_service_factory, page_size=10, child_delivery=None):
         self.db = db
         self.hierarchy_service_factory = hierarchy_service_factory
         self.page_size = page_size
+        self.child_delivery = child_delivery
         self.after = ""
 
     async def tick(self, now):
@@ -69,6 +77,13 @@ class CollectionService:
             except Exception:
                 logger.warning("Child collection failed for %s", task_id, exc_info=True)
 
+    async def collect_parent(self, task_id, now):
+        """Queue *task_id*'s next approved child now instead of on the next tick."""
+        hierarchy = self.hierarchy_service_factory()
+        if hierarchy is None:
+            return None
+        return await self.queue_next(hierarchy, task_id, now)
+
     async def queue_next(self, hierarchy, task_id, now):
         parent = await self.db.get_task(task_id)
         checkpoint = await self.db.get_integration_checkpoint(task_id)
@@ -109,6 +124,13 @@ class CollectionService:
             ):
                 continue
             source_head = source["checkpoint_sha"]
+            receipts = await self.db.list_integration_delivery_receipts(
+                source_task_id=child.id,
+                repository_id=parent.repo_id,
+                target_branch=parent.branch_name,
+            )
+            if any(receipt["reviewed_head_sha"] == source_head for receipt in receipts):
+                continue
             review = await self.db.get_applicable_integration_review_evidence(
                 source_task_id=child.id,
                 repository_id=parent.repo_id,
@@ -116,14 +138,22 @@ class CollectionService:
                 reviewed_head_sha=source_head,
                 current_generation=int(source["generation"]),
             )
+            # No reviewer approved this head.  Prove it from Git and record
+            # completion evidence; a rejected head or an open reviewer is left
+            # alone, and a failed proof backs off.
+            if (
+                review is None
+                and self.child_delivery is not None
+                and await self.child_delivery.ensure_evidence(child.id, now) is not None
+            ):
+                review = await self.db.get_applicable_integration_review_evidence(
+                    source_task_id=child.id,
+                    repository_id=parent.repo_id,
+                    source_base=origin["base_sha"],
+                    reviewed_head_sha=source_head,
+                    current_generation=int(source["generation"]),
+                )
             if review is None:
-                continue
-            receipts = await self.db.list_integration_delivery_receipts(
-                source_task_id=child.id,
-                repository_id=parent.repo_id,
-                target_branch=parent.branch_name,
-            )
-            if any(receipt["reviewed_head_sha"] == source_head for receipt in receipts):
                 continue
             # Observe Git only when an approved child needs delivery. Promotion
             # rechecks this exact lease and source evidence before any push.

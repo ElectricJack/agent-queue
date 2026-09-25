@@ -573,6 +573,7 @@ class Orchestrator(
         self.integration_cleanup_service = None
         self.integration_control_service = None
         self.root_promotion_service = None
+        self.integration_collection = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1823,6 +1824,7 @@ class Orchestrator(
             return await self.root_promotion_service.reconcile(row["id"])
 
         from src.integration.candidate_ci import CandidateCIService
+        from src.integration.child_delivery import ChildDelivery
         from src.integration.collection import CollectionService
         from src.integration.parent_ci import ParentCIService
 
@@ -1830,8 +1832,12 @@ class Orchestrator(
             self.integration_attestation_service, self.github_repository_binding_resolver
         )
         collection = CollectionService(
-            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+            self.db,
+            hierarchy_service_factory=self._branch_materialization_hierarchy,
+            child_delivery=ChildDelivery(self.db, self.promotion_service),
         )
+        # ``aq integration redrive-child`` queues a parent's collection now.
+        self.integration_collection = collection
         async def candidate_service_for_row(row):
             if self._command_handler is None:
                 return None
