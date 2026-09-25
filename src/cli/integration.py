@@ -355,6 +355,23 @@ def integration_adopt_legacy_deliveries(
     _execute(ctx, "integration_adopt_legacy_deliveries", args)
 
 
+@integration.command("bind-legacy-repositories")
+@click.argument("project_id")
+@click.option("--apply", is_flag=True, help="Bind proven tasks; default is a dry run.")
+@click.option("--reason", help="Required audit reason when applying bindings.")
+@click.pass_context
+@_handle_errors
+def integration_bind_legacy_repositories(
+    ctx: click.Context, project_id: str, apply: bool, reason: str | None
+) -> None:
+    """List terminal hierarchy members with repository delivery proof, then bind them."""
+    if apply and not reason:
+        raise click.UsageError("--apply requires --reason")
+    _execute(ctx, "integration_bind_legacy_repositories", {
+        "project_id": project_id, "dry_run": not apply, "reason": reason,
+    })
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

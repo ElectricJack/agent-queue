@@ -112,6 +112,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_release_owner",
     "integration_release_stale_owners",
     "integration_adopt_legacy_deliveries",
+    "integration_bind_legacy_repositories",
     "integration_release_delegates",
     "integration_resolve_candidate_member",
     "integration_recover_candidate_member",

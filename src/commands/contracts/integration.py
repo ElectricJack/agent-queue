@@ -75,6 +75,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_adopt_legacy_deliveries",
+        "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
     }
 )
@@ -184,6 +185,18 @@ class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
         return self
 
 
+class IntegrationBindLegacyRepositoriesArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    dry_run: bool = True
+    reason: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def apply_needs_reason(self):
+        if not self.dry_run and self.reason is None:
+            raise ValueError("apply requires a reason")
+        return self
+
+
 class IntegrationRecoverCandidateMemberArgs(CommandArgs):
     reservation_id: str = Field(min_length=1)
 
@@ -271,6 +284,8 @@ class IntegrationOperationalValue(CommandValue):
     outcomes: tuple[dict[str, Any], ...] = ()
     dry_run: bool | None = None
     leases: tuple[dict[str, Any], ...] = ()
+    bound: tuple[dict[str, Any], ...] = ()
+    unproven: tuple[str, ...] = ()
 
 
 class IntegrationScheduleDueValue(CommandValue):
@@ -820,6 +835,14 @@ INTEGRATION_ADOPT_LEGACY_DELIVERIES = _operational_contract(
     ADOPT_LEGACY_DELIVERIES_OUTCOMES,
     successes=frozenset({"adopted", "nothing_to_adopt"}),
     side_effect=SideEffectClass.CREATE,
+)
+
+INTEGRATION_BIND_LEGACY_REPOSITORIES = _operational_contract(
+    "integration_bind_legacy_repositories",
+    IntegrationBindLegacyRepositoriesArgs,
+    ("bound", "nothing_to_bind", "invalid", "not_found"),
+    successes=frozenset({"bound", "nothing_to_bind"}),
+    side_effect=SideEffectClass.COMPOSITE,
 )
 
 INTEGRATION_RECOVER_CANDIDATE_MEMBER = CommandContract(
@@ -2216,6 +2239,15 @@ async def _adopt_legacy_deliveries_adapter(
     )
 
 
+async def _bind_legacy_repositories_adapter(
+    args: IntegrationBindLegacyRepositoriesArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_bind_legacy_repositories", args, ctx,
+        IntegrationOperationalValue, {"bound", "nothing_to_bind", "invalid", "not_found"},
+    )
+
+
 async def _recover_candidate_member_adapter(
     args: IntegrationRecoverCandidateMemberArgs, ctx: CommandContext | None
 ):
@@ -2280,6 +2312,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
+        (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),

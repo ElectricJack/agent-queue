@@ -21,6 +21,7 @@ aq integration flush PROJECT_ID
 aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
 aq integration reconcile-unmaterialized PROJECT_ID --expected-generation GENERATION --reason REASON
+aq integration bind-legacy-repositories PROJECT_ID [--apply --reason REASON]
 aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER_DIGEST
 aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
@@ -303,6 +304,24 @@ time, each with `--reason '...'`:
 - `--retire TASK_ID` when the work was abandoned; the task and its branch are
   left as they are (`abandoned`);
 - `--accept TASK_ID` when nothing is owed (`operator_accepted`).
+
+Terminal hierarchy tasks delivered by the development publisher can still
+carry a null repository ID. After leaving development mode, status reports
+`repository_not_designated` for them. Preview bindings, then apply with an
+audit reason:
+
+```bash
+aq integration bind-legacy-repositories PROJECT_ID
+aq integration bind-legacy-repositories PROJECT_ID --apply --reason 'bind proven development deliveries'
+aq integration status PROJECT_ID
+```
+
+This supervisor control binds only terminal hierarchy members whose latest
+completion has a designated-repository development receipt, or whose terminal
+children all have that receipt. The preview lists every
+unproven member; applying leaves those tasks unchanged. Each bound task gets
+an audit comment with its proof and the operator's reason. Repeat the preview
+after adopting any missing legacy child deliveries.
 
 If status reports only `legacy_pr_merge_gate` blockers, an operator may make
 that exact history inapplicable. Copy the current digest once, create the

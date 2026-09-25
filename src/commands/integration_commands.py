@@ -646,6 +646,26 @@ class IntegrationCommandsMixin:
         )
         return {"success": result["outcome"] in {"adopted", "nothing_to_adopt"}, **result}
 
+    async def _cmd_integration_bind_legacy_repositories(self, args: dict) -> dict:
+        """Bind terminal hierarchy members with designated-repository delivery proof."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationBindLegacyRepositoriesArgs
+        from src.integration.legacy_repositories import LegacyRepositoryBinding
+
+        try:
+            request = IntegrationBindLegacyRepositoriesArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid legacy repository binding request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await LegacyRepositoryBinding(self.db).run(
+            request.project_id, principal=principal, dry_run=request.dry_run,
+            reason=request.reason,
+        )
+        return {"success": result["outcome"] in {"bound", "nothing_to_bind"}, **result}
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

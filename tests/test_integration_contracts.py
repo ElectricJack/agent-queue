@@ -270,9 +270,9 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_status",
         "integration_flush",
         "integration_eject",
-            "integration_enable",
-            "integration_reconcile_unmaterialized",
-            "integration_waive_history",
+        "integration_enable",
+        "integration_reconcile_unmaterialized",
+        "integration_waive_history",
         "integration_resume",
         "integration_abort",
         "integration_develop",
@@ -284,11 +284,39 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_release_owner",
         "integration_release_stale_owners",
         "integration_adopt_legacy_deliveries",
+        "integration_bind_legacy_repositories",
         "integration_recover_candidate_member",
         "integration_recover_unwritten_resolution",
     }
     assert registry.names() & DESIGN_INTEGRATION_COMMANDS == implemented
     assert not (registry.names() & (DESIGN_INTEGRATION_COMMANDS - implemented))
+
+
+@pytest.mark.asyncio
+async def test_legacy_binding_contract_preserves_preview_and_unproven_tasks():
+    class StubHandler:
+        async def execute(self, command, payload):
+            assert command == "integration_bind_legacy_repositories"
+            assert payload["dry_run"] is True
+            return {
+                "outcome": "bound", "project_id": "p", "repository_id": "repo",
+                "dry_run": True,
+                "bound": [{"task_id": "child", "proof": "development_delivery"}],
+                "unproven": ["other"],
+            }
+
+    registry = ContractRegistry()
+    register_integration_contracts(registry)
+    registration = registry.require("integration_bind_legacy_repositories")
+    args = registration.contract.execution.args_model(project_id="p")
+    set_handler_provider(StubHandler)
+    try:
+        result = await registration.invoke(args, None)
+    finally:
+        set_handler_provider(None)
+    assert result.outcome == "bound"
+    assert result.value.bound == ({"task_id": "child", "proof": "development_delivery"},)
+    assert result.value.unproven == ("other",)
 
 
 def test_schedule_contract_is_typed_and_retry_safe():

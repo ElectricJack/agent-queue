@@ -132,6 +132,16 @@ def _client(result):
             {"project_id": "p", "dry_run": True},
         ),
         (
+            ["bind-legacy-repositories", "p"],
+            "integration_bind_legacy_repositories",
+            {"project_id": "p", "dry_run": True, "reason": None},
+        ),
+        (
+            ["bind-legacy-repositories", "p", "--apply", "--reason", "delivered"],
+            "integration_bind_legacy_repositories",
+            {"project_id": "p", "dry_run": False, "reason": "delivered"},
+        ),
+        (
             [
                 "adopt-legacy-deliveries", "--project-id", "p",
                 "--accept", "c1", "--accept", "c2", "--reason", "no-code task",
@@ -306,6 +316,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_resume",
         "integration_abort",
         "integration_retry_cleanup",
+        "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -320,6 +331,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "resume",
         "abort",
         "retry-cleanup",
+        "bind-legacy-repositories",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
