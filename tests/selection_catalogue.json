@@ -1020,7 +1020,9 @@
     "test-selection": {
       "description": "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them.",
       "modules": [
-        "tests/test_selection_catalogue.py"
+        "tests/test_selection_catalogue.py",
+        "tests/test_selection_snapshot.py",
+        "tests/test_selection_static_impact.py"
       ]
     },
     "test-substrate": {
@@ -1169,7 +1171,7 @@
       ]
     }
   },
-  "digest": "sha256:9a316df0376099136501d1a17c83d3a3eaca1af54b973f4e78e55808398f4b59",
+  "digest": "sha256:b5a7d6783431e7b2e44baa30894b7e2125d555d2256eda6c8aa09e48d86a6cbe",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10054,6 +10056,37 @@
         "parametrize"
       ],
       "summary": "The smart-test-selection artifacts: areas, generated catalogue, rules and policy."
+    },
+    "tests/test_selection_snapshot.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.test_selection.snapshot"
+      ],
+      "markers": [],
+      "summary": ""
+    },
+    "tests/test_selection_static_impact.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.test_selection",
+        "src.test_selection.catalogue",
+        "src.test_selection.load_closure",
+        "src.test_selection.snapshot",
+        "src.test_selection.static_impact"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "The static impact adapter over pytest-impacted, and the fixture evaluation of its engine."
     },
     "tests/test_session_class_effort.py": {
       "areas": [
