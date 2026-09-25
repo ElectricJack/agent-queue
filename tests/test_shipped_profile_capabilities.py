@@ -128,6 +128,21 @@ class TestShippedProfile:
         assert unreachable == EXPECTED_UNREACHABLE[profile_id]
 
 
+def test_supervisor_holds_every_operator_integration_control():
+    """An operator control the supervisor lacks is one it is told to run but cannot.
+
+    ``integration_clear_stale_request`` is the fleet-apex control for a train
+    whose schedule still names a request nothing will end; the supervisor
+    profile tells it to run that control when a flush keeps coalescing.
+    """
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert "integration_clear_stale_request" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_clear_stale_request" in granted
+    assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
+
+
 # ---------------------------------------------------------------------------
 # Emergent-work prime section vs. the profile-owned capability gate
 # ---------------------------------------------------------------------------

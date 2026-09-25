@@ -26,6 +26,7 @@ aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER
 aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
+aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
@@ -462,6 +463,13 @@ aq integration resume integration-operation-id
 aq integration abort integration-operation-id --reason 'operator chose forensic stop'
 aq integration retry-cleanup integration-batch-id
 ```
+
+Abort also frees the train's sweep request once nothing can still write for
+the batch; otherwise every later flush would coalesce into a request no release
+will ever end. `aq integration clear-stale-request PROJECT_ID` reports, as a dry
+run, whether the outstanding request can still end, and `--apply --request-id
+ID --reason REASON` frees a stale one. See [A train never
+sweeps](integration-troubleshooting.md#a-train-never-sweeps).
 
 ### Stopped pool-writer handoff recovery
 

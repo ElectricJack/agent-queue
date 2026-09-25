@@ -12,6 +12,7 @@ from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_outbox,
+    project_integration_leases,
     project_integration_schedules,
     projects,
 )
@@ -207,6 +208,19 @@ async def test_promoted_before_release_preserves_first_catchup_for_all_cleanup_s
                 final_main_sha="b" * 40,
                 created_at=10.0,
                 updated_at=10.0,
+            )
+        )
+        # Promoted but not yet released: release consumes this lease, so the
+        # train still owns its request (a promoted batch without it is stale).
+        await conn.execute(
+            insert(project_integration_leases).values(
+                project_id="p",
+                repository_id="repo",
+                batch_id="promoted-batch",
+                owner_id="sealer-promoted-batch",
+                fence_token=1,
+                heartbeat_at=10.0,
+                expires_at=310.0,
             )
         )
 

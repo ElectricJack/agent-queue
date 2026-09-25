@@ -29,6 +29,7 @@ Then, for the fleet-wide view:
 aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
 aq doctor --check integration.stranded_delegates
+aq doctor --check integration.stale_schedule
 aq doctor --check integration.finished_branch_owners
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
@@ -53,6 +54,7 @@ aq doctor --check git.stale_branches
 | Every claim of one task fails "canonical branch is not reserved by this task" | A stranded ownership fence | [A branch is held by a writer that is gone](#a-branch-is-held-by-a-writer-that-is-gone) |
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
+| A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
@@ -517,6 +519,51 @@ A promoted batch whose cleanup never produced any items has nothing to requeue:
 for it, `retry-cleanup` materializes the cleanup (outcome `materialized`) and
 the daemon runs it. Cleanup refuses to delete a source branch whose owner row is
 not released, which is why `release-stale-owners` runs first.
+
+## A train never sweeps
+
+A train project has at most one sweep request in flight, in
+`project_integration_schedules.outstanding_request_id`. Every later flush and
+periodic tick coalesces into it, and only releasing its *promoted* batch frees it.
+A batch that ended any other way used to keep it forever: an operator
+`integration abort`, a development `cancel_preserving`, a seal that never
+produced a batch, or a promoted batch whose lease `release-stale-owners` already
+dropped. `aq integration flush` then answers `coalesced` indefinitely, and
+`last_completed_sweep_at` stops moving.
+
+The scheduler now frees such a request itself on the next tick or flush that
+reaches the project, and both abort paths free it as they end the batch. To
+see where a project stands:
+
+```bash
+aq doctor --check integration.stale_schedule        # every train project
+aq integration clear-stale-request <project>        # one project, dry run
+```
+
+| Verdict | Meaning | Next step |
+|---|---|---|
+| `none` / `active` | No request, or the train still owns it (a live batch, or a promoted one holding the lease that release consumes). | Nothing. |
+| `in_flight` | No batch yet; `integration.sweep_due` is waiting for a playbook to accept it. With repeated attempts and a `last_error`, doctor lists it. | Fix the route the error names; clearing it would not help. |
+| `unsealed` | The event was accepted less than an hour ago, but no batch is sealed. | Wait, or clear it now with `--apply`. |
+| `stale` | Nothing will ever end it. | The scheduler frees it; `aq doctor --check integration.stale_schedule --fix` or `--apply` frees it now. |
+| `blocked` | Nothing will end it, but the batch still has unresolved write evidence (a running repair operation, a reserved ref mutation or attestation, a reserved or pushed resolution, an unsettled promotion intent), or another batch holds the project lease. | Settle what `blockers` names; never force it. |
+
+Apply with the request id the dry run printed and a reason:
+
+```bash
+aq integration clear-stale-request <project> --apply \
+  --request-id integration-sweep:<project>:<n> --reason '<why>'
+```
+
+A request that changed since the dry run is refused (`changed`). Freeing the
+request never touches Git or the batch row. It deletes the ended batch's own
+fenced lease, turns a catch-up recorded against the old request into the next
+request, and records an `integration.schedule_request_released` event.
+
+The latched `next_due_at` in the past is not part of the fault. A periodic
+sweep also waits for the approval-armed settling window, so with no new
+approval `next_due_at` stays at the missed boundary, and the sweep runs as soon
+as an approval arms the window. `aq integration flush` bypasses that window.
 
 ## Legacy children block observe readiness
 

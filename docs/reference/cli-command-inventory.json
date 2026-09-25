@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 382,
+    "leaf_commands": 383,
     "registration": {
       "generated": 265,
-      "handwritten": 117
+      "handwritten": 118
     },
     "ownership": {
-      "core": 343,
+      "core": 344,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 381
+      "supported": 382
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 265,
-      "registration": 103
+      "registration": 104
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 322
+      "untested": 323
     }
   },
   "commands": [
@@ -3272,6 +3272,39 @@
           "--reason"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration clear-stale-request",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_clear_stale_request",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--apply",
+          "--request-id",
+          "--reason",
           "--json",
           "--brief",
           "--api-url"

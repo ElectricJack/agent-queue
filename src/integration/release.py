@@ -28,6 +28,13 @@ from src.database.tables import (
     task_delivery_receipts,
 )
 from src.integration.outbox import enqueue_integration_event
+from src.integration.stale_schedule import (
+    ENDED_LIFECYCLES,
+    RequestChanged,
+    RequestRelease,
+    classify_outstanding_request_on,
+    release_outstanding_request_on,
+)
 
 
 class IntegrationReleaseResult(BaseModel):
@@ -98,13 +105,8 @@ class IntegrationReleaseService:
             )
             if release_result is not None:
                 return self._persisted_result(batch, release_result)
-            if batch["lifecycle"] == "empty":
-                return IntegrationReleaseResult(
-                    outcome="empty",
-                    project_id=project_id,
-                    batch_id=batch_id,
-                    request_id=batch["request_id"],
-                )
+            if batch["lifecycle"] in ENDED_LIFECYCLES:
+                return await self._release_ended_on(conn, project_id, dict(batch), now)
 
             revision = int(batch["current_revision"])
             candidate = await self._one_for_update(
@@ -199,7 +201,16 @@ class IntegrationReleaseService:
             operation_id = operation["id"] if operation is not None else None
             if lease is None:
                 if schedule["outstanding_request_id"] == batch["request_id"]:
-                    return self._result("invariant_error", batch, operation_id)
+                    # Only this release could have freed the request, and the lease
+                    # it consumes is gone: free it now unless a write is unresolved.
+                    released = await self._release_stale_request_on(
+                        conn, project_id, schedule, now
+                    )
+                    if released is None:
+                        return self._result("invariant_error", batch, operation_id)
+                    return self._result(
+                        "released", batch, operation_id, released.catchup_request_id
+                    )
                 return self._result(
                     "already_released",
                     batch,
@@ -312,6 +323,60 @@ class IntegrationReleaseService:
                 "released", batch, operation_id, catchup_request_id
             )
 
+    async def _release_ended_on(
+        self, conn: Any, project_id: str, batch: dict[str, Any], now: float
+    ) -> IntegrationReleaseResult:
+        """Free the request of a batch that stopped without shipping.
+
+        An empty seal consumes its own request; an aborted one never did, and
+        with no promotion to release it the schedule kept it forever.  Free it
+        here when nothing can still write for the batch (``wait`` otherwise).
+        The outcome still describes the batch: an aborted train is ``stale``,
+        not released -- ``integration.schedule_request_released`` records that
+        its request was freed.
+        """
+        outcome = "empty" if batch["lifecycle"] == "empty" else "stale"
+        operation_id = (
+            await conn.execute(
+                select(integration_repair_operations.c.id).where(
+                    integration_repair_operations.c.batch_id == batch["id"]
+                )
+            )
+        ).scalar_one_or_none()
+        schedule = await self.db.lock_integration_schedule_on(
+            conn,
+            project_id=project_id,
+            now=now,
+            default_interval_seconds=300,
+        )
+        if schedule["outstanding_request_id"] != batch["request_id"]:
+            return self._result(outcome, batch, operation_id)
+        released = await self._release_stale_request_on(conn, project_id, schedule, now)
+        if released is None:
+            return self._result("wait", batch, operation_id)
+        return self._result(outcome, batch, operation_id, released.catchup_request_id)
+
+    async def _release_stale_request_on(
+        self, conn: Any, project_id: str, schedule: dict[str, Any], now: float
+    ) -> RequestRelease | None:
+        state = await classify_outstanding_request_on(
+            conn, project_id, schedule, now=now, lock=True
+        )
+        if state.verdict != "stale":
+            return None
+        try:
+            return await release_outstanding_request_on(
+                self.db,
+                conn,
+                state,
+                schedule=schedule,
+                now=now,
+                released_by="integration_release",
+                reason=state.reason,
+            )
+        except RequestChanged as exc:
+            raise _CASLost from exc
+
     async def _canonical_replay(
         self, project_id: str, batch_id: str
     ) -> IntegrationReleaseResult:
@@ -344,8 +409,12 @@ class IntegrationReleaseService:
             ).mappings().one_or_none()
         if batch is None:
             return IntegrationReleaseResult(outcome="stale", batch_id=batch_id)
-        if batch["lifecycle"] == "empty":
-            return self._result("empty", batch, None)
+        if batch["lifecycle"] in ENDED_LIFECYCLES:
+            if schedule is not None and schedule["outstanding_request_id"] == batch["request_id"]:
+                return self._result("wait", batch, operation_id)
+            return self._result(
+                "empty" if batch["lifecycle"] == "empty" else "stale", batch, operation_id
+            )
         if release_result is not None:
             return self._persisted_result(batch, release_result)
         if schedule is None or schedule["outstanding_request_id"] == batch["request_id"]:

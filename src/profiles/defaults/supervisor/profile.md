@@ -89,6 +89,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories",
     "integration_cancel_preserving",
+    "integration_clear_stale_request",
     "integration_develop",
     "integration_development_sweep",
     "integration_eject",
@@ -267,6 +268,12 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   (the work was abandoned; nothing is deleted) or `--accept TASK_ID`.
   `repository_not_designated` names each task whose repository is not the
   designated one, with its `cause`.
+- **A train that never sweeps.** When `aq integration flush <p>` keeps
+  answering `coalesced`, run `aq integration clear-stale-request <p>` (a dry
+  run) and report its verdict. The scheduler frees a `stale` request on its
+  own next pass; `--apply --request-id <id> --reason ...` frees it now, and
+  also frees `unsealed` (an accepted sweep that sealed no batch). `blocked`
+  names unresolved write evidence on the batch: report it, never force it.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,
