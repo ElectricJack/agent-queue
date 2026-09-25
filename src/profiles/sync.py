@@ -473,6 +473,40 @@ async def _emit_sync_failed(
         logger.debug("Failed to emit profile sync notification", exc_info=True)
 
 
+async def _sync_shipped_capabilities_on_reload(
+    change: VaultChange,
+    path_id: str,
+    data_dir: str,
+    event_bus: EventBus | None,
+) -> None:
+    """Merge missing shipped grants into a reloaded system profile's vault copy.
+
+    Only the vault copy of a shipped system profile
+    (``<data_dir>/vault/agent-types/<id>/profile.md``) is considered, and
+    :func:`~src.profiles.capability_sync.sync_profile_capabilities` decides
+    whether that profile is synced at all.  The merge's own write triggers
+    one more watcher pass, which finds nothing missing.  Never raises: a
+    failed merge must not stop the reload it precedes.
+    """
+    import asyncio
+
+    from src.profiles.capability_sync import publish_sync_result, sync_profile_capabilities
+    from src.profiles.drift import system_profile_ids, vault_profile_path
+
+    try:
+        if path_id not in system_profile_ids():
+            return
+        vault_path = vault_profile_path(data_dir, path_id)
+        if os.path.realpath(change.path) != os.path.realpath(vault_path):
+            return
+        result = await asyncio.to_thread(sync_profile_capabilities, data_dir, path_id)
+        await publish_sync_result(result, event_bus=event_bus, trigger="reload")
+    except Exception:
+        logger.warning(
+            "capability sync on reload of %s failed", change.rel_path, exc_info=True
+        )
+
+
 async def on_profile_changed(
     changes: list[VaultChange],
     *,
@@ -494,6 +528,11 @@ async def on_profile_changed(
     For ``deleted`` operations, the handler logs the deletion but does
     **not** remove the profile from the database.  Per spec, the DB
     retains the last-known config until explicitly removed via command.
+
+    When *data_dir* is given, a created or modified vault copy of a synced
+    system profile (the supervisor by default) first receives any shipped
+    ``## Capabilities`` grant it lacks
+    (:mod:`src.profiles.capability_sync`), before the DB sync.
 
     The retired-``runtime`` strip (:func:`strip_retired_runtime_key`) is
     deliberately **not** applied here: it is a one-shot startup migration, so
@@ -546,6 +585,12 @@ async def on_profile_changed(
                 path_id or "unknown",
             )
             continue
+
+        # A synced system profile (the supervisor, unless it opts out) first
+        # gains any shipped grant its vault copy lacks, so the DB sync below
+        # reads the merged text.
+        if data_dir and path_id:
+            await _sync_shipped_capabilities_on_reload(change, path_id, data_dir, event_bus)
 
         # created or modified — read, parse, and sync
         try:

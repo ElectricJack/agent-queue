@@ -338,6 +338,9 @@ None of that is a fork. Profiles and classes are markdown in the operator's
 vault, and seeding is write-if-absent precisely so local edits survive
 upgrades. The cost is that a vault silently keeps old semantics, which is what
 `aq agent profile-drift` and `aq doctor --check profiles.system_drift` are for.
+The one exception is the supervisor's `## Capabilities`: the daemon merges the
+shipped grants its vault copy lacks on every start and profile reload
+(additive only; `capability_sync: false` in its frontmatter opts out).
 
 Because a vault is not in this repository, no page here can tell you what
 *yours* contains. Look:

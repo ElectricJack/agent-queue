@@ -53,7 +53,9 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   a shipped profile or skill changes nothing on an existing install. `aq doctor --check
   profiles.system_drift` / `skills.installed_drift` name the gap; `aq agent
   profile-reseed --profile-id <id> --grants-only` merges new grants without clobbering
-  operator edits.
+  operator edits. The exception is the supervisor's `## Capabilities`: the daemon merges
+  shipped grants its vault copy lacks on every start and profile reload, additively
+  (`src/profiles/capability_sync.py`; frontmatter `capability_sync: false` opts out).
 - **Reviewed playbook bundles** (`tests/fixtures/playbooks/v2/<id>/`): after editing, run
   `scripts/rebuild-reviewed-playbook-artifacts.py`, update the `manifest.md` digests, and
   copy the bundle to `src/prompts/reviewed_playbooks/<id>/` — the only path an install

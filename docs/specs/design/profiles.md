@@ -315,6 +315,8 @@ command to a shipped profile's `aq_commands` (or `harness_tools` /
 **Detection** is `src/profiles/drift.py`, surfaced two ways:
 
 - `profiles.system_drift` — a report-only doctor check (trust-and-ops §5.2).
+- `profiles.supervisor_capability_drift` — the supervisor's missing shipped
+  grants only, with a `--fix` (see *Supervisor capability sync* below).
 - `aq agent profile-drift [--profile-id <id>] [--drifted-only]` — the same
   comparison as a command, one row per system profile with its status
   (`ok` / `not_seeded` / `drifted` / `unreadable`), the diverging semantic
@@ -349,7 +351,49 @@ wholesale with the shipped default, then syncs the new text straight to the
 DB. There is deliberately no `aq doctor --fix` for either shape: overwriting
 or merging into an operator-owned vault file automatically would violate the
 `--fix` safety rules (trust-and-ops §5.4) — the operator always invokes the
-repair explicitly.
+repair explicitly. The supervisor's grants are the one exception, below.
+
+#### Supervisor capability sync
+
+The supervisor is the operator's own control plane, and the operator's
+policy (2026-09-24) is that it may do basically anything. Under
+write-if-absent seeding, though, each control a release granted the shipped
+supervisor (`integration_eject`, `review_dispatch`,
+`integration_release_stale_owners`, …) stayed `capability denied` on an
+existing install until the vault copy was hand-edited. So its grants are kept
+in step automatically (`src/profiles/capability_sync.py`):
+
+- **When.** On daemon start (before the startup profile→DB scan) and every
+  time the vault watcher reloads `vault/agent-types/supervisor/profile.md`
+  (before that reload's DB sync).
+- **What.** The same additive merge as `--grants-only`
+  (`merge_profile_grants`): each shipped `## Capabilities` name the vault copy
+  lacks is appended to its namespace list. Nothing is removed, a grant only
+  the vault lists is kept, `## Config`, prose and every other section stay
+  byte-for-byte, the write is atomic and a `profile.md.bak-<epoch>` is kept.
+  Grants remain explicit names: wildcards stay prohibited
+  (`src/profiles/capabilities.py`), and the shipped lists are held to that by
+  `tests/test_shipped_profile_capabilities.py`.
+- **Reporting.** A log line and a `profile.capabilities_synced` event
+  (`profile_id`, `added` per namespace, `backup_path`, `trigger` =
+  `startup` / `reload` / `doctor`) name every grant added. A vault copy the
+  merge cannot touch (no `## Capabilities` block, unparseable) is logged as a
+  warning and left alone.
+- **Opt-out.** `capability_sync: false` in the vault copy's frontmatter, for
+  an operator who curates the supervisor's grants by hand; the daemon and the
+  doctor fix then never merge. The key also generalises the other way:
+  `capability_sync: true` opts any other shipped profile in to the same
+  merge. Only `supervisor` is synced by default.
+- **Doctor.** `profiles.supervisor_capability_drift` reports the shipped
+  grants the vault copy still lacks — `warn` while any are missing (`info`
+  when the profile opted out), `ok` when none are — and `--fix` runs the
+  merge and syncs the DB row. It is a
+  permitted fix under trust-and-ops §5.4 because it is idempotent, removes
+  nothing, keeps a backup, and enforces policy the operator set.
+
+Because the operator can no longer remove a *shipped* supervisor grant by
+deleting it from the vault copy (the next reload puts it back), narrowing the
+supervisor is done with the opt-out.
 
 ---
 

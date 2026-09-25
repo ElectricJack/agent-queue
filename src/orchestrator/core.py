@@ -2167,6 +2167,21 @@ class Orchestrator(
         except Exception:
             logger.warning("Worker rung derivation failed", exc_info=True)
 
+        # Seeding never overwrites a vault profile, so a control a release
+        # grants the supervisor would stay denied.  Merge the shipped grants
+        # its vault copy lacks (additive, ``.bak`` kept; ``capability_sync:
+        # false`` in its frontmatter opts out) before the DB sync below.
+        from src.profiles.capability_sync import (
+            publish_sync_result,
+            sync_shipped_capabilities,
+        )
+
+        try:
+            for sync_result in sync_shipped_capabilities(self.config.data_dir):
+                await publish_sync_result(sync_result, event_bus=self.bus, trigger="startup")
+        except Exception:
+            logger.warning("Shipped capability sync failed", exc_info=True)
+
         # Startup scan: sync any existing profile.md files from the vault
         # to the database.  The VaultWatcher's initial check() only takes
         # a snapshot (no dispatch), so pre-existing profile files would

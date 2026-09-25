@@ -23,6 +23,18 @@ divergence is missing grants, ``aq agent profile-reseed --profile-id <id>
 merges just the missing names into the vault copy's own ``## Capabilities``
 block, preserving operator edits such as ``harness: codex``.
 
+``profiles.supervisor_capability_drift``
+
+The supervisor is the one profile whose shipped grants are merged into its
+vault copy automatically (:mod:`src.profiles.capability_sync`, on daemon
+start and on every vault reload), because each control a release added for
+it used to stay denied until someone hand-edited the file.  This check names
+the shipped capabilities the vault copy still lacks — between an upgrade and
+the next start, or while the operator has opted out with ``capability_sync:
+false`` in its frontmatter — and ``--fix`` runs the same additive merge
+(nothing removed, other sections untouched, ``.bak-<epoch>`` kept).  An
+opted-out profile reports ``info`` and is never merged by ``--fix``.
+
 ``profiles.project_overrides``
 Project-scoped profiles were retired: agents are shared between projects, so
 pool lifecycle and sizing belong on the system profile.  This check finds
@@ -34,8 +46,25 @@ one into its system profile before deleting it
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from pathlib import Path
+
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
-from src.profiles.drift import STATUS_UNREADABLE, scan_profile_drift
+from src.profiles.capability_sync import (
+    STATUS_FAILED,
+    capability_sync_enabled,
+    publish_sync_result,
+    sync_profile_capabilities,
+)
+from src.profiles.drift import (
+    STATUS_NOT_SEEDED,
+    STATUS_RETIRED,
+    STATUS_UNREADABLE,
+    diff_profile,
+    scan_profile_drift,
+    vault_profile_path,
+)
 from src.profiles.project_override_migration import (
     find_project_override_paths,
     project_override_profile_id,
@@ -47,6 +76,12 @@ OWNER = "profiles"
 CHECK_ID = "profiles.system_drift"
 
 OVERRIDES_CHECK_ID = "profiles.project_overrides"
+
+SUPERVISOR_DRIFT_CHECK_ID = "profiles.supervisor_capability_drift"
+
+SUPERVISOR_PROFILE_ID = "supervisor"
+
+logger = logging.getLogger(__name__)
 
 #: How many per-profile summaries the one-line ``detail`` names before it
 #: defers to ``data["profiles"]``.
@@ -106,6 +141,133 @@ async def _check_system_profile_drift(ctx: DoctorContext) -> CheckResult:
             "drifted": len(diverged),
             "profiles": [d.to_dict() for d in diverged],
         },
+    )
+
+
+def _missing_summary(missing: dict[str, list[str]]) -> tuple[int, str]:
+    names = [name for names in missing.values() for name in names]
+    return len(names), ", ".join(names)
+
+
+async def _check_supervisor_capability_drift(ctx: DoctorContext) -> CheckResult:
+    """Report shipped supervisor capabilities its vault copy does not grant."""
+    check_id = SUPERVISOR_DRIFT_CHECK_ID
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    if not data_dir:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="no data_dir configured")
+
+    drift = diff_profile(SUPERVISOR_PROFILE_ID, data_dir)
+    if drift.status in (STATUS_NOT_SEEDED, STATUS_RETIRED):
+        return CheckResult(id=check_id, severity=Severity.INFO, detail=drift.summary())
+    if drift.status == STATUS_UNREADABLE:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.WARN,
+            detail=(
+                f"cannot compare the supervisor's capabilities: {'; '.join(drift.errors)}. "
+                "Fix the vault file by hand (see `aq doctor --check profiles.system_drift`)."
+            ),
+            data={"profile_id": SUPERVISOR_PROFILE_ID, "errors": list(drift.errors)},
+        )
+    if "capabilities" in drift.missing_sections:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.WARN,
+            detail=(
+                "the supervisor's vault profile has no '## Capabilities' block to merge "
+                "shipped grants into; restore it with `aq agent profile-reseed "
+                "--profile-id supervisor` (writes a .bak first)"
+            ),
+            data={"profile_id": SUPERVISOR_PROFILE_ID, "missing_sections": ["capabilities"]},
+        )
+
+    vault_path = vault_profile_path(data_dir, SUPERVISOR_PROFILE_ID)
+    try:
+        vault_text = Path(vault_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        return CheckResult(
+            id=check_id, severity=Severity.WARN, detail=f"cannot read {vault_path}: {exc}"
+        )
+    enabled = capability_sync_enabled(SUPERVISOR_PROFILE_ID, vault_text)
+    missing = drift.missing_grants
+    data = {
+        "profile_id": SUPERVISOR_PROFILE_ID,
+        "vault_path": vault_path,
+        "capability_sync": enabled,
+        "missing": {ns: list(names) for ns, names in missing.items()},
+    }
+
+    if not missing:
+        detail = "the supervisor's vault profile grants every shipped capability"
+        if not enabled:
+            detail += " (capability_sync: false — shipped additions are not merged)"
+        return CheckResult(id=check_id, severity=Severity.OK, detail=detail, data=data)
+
+    count, names = _missing_summary(missing)
+    if not enabled:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail=(
+                f"{count} shipped capability grant(s) are not in the supervisor's vault "
+                f"profile: {names}. Its frontmatter says capability_sync: false, so they "
+                "are not merged; add them by hand or run `aq agent profile-reseed "
+                "--profile-id supervisor --grants-only`."
+            ),
+            data=data,
+        )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=(
+            f"{count} shipped capability grant(s) missing from the supervisor's vault "
+            f"profile: {names}. The daemon merges them on its next start or profile "
+            "reload; `aq doctor --check profiles.supervisor_capability_drift --fix` "
+            "merges them now (additive, writes a .bak first)."
+        ),
+        data=data,
+    )
+
+
+async def _fix_supervisor_capability_drift(ctx: DoctorContext) -> CheckResult:
+    """Run the additive capability sync for the supervisor, then sync the DB."""
+    from src.profiles.sync import sync_profile_text_to_db
+
+    check_id = SUPERVISOR_DRIFT_CHECK_ID
+    data_dir = getattr(ctx.config, "data_dir", "") or ""
+    if not data_dir:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="no data_dir configured")
+
+    result = await asyncio.to_thread(sync_profile_capabilities, data_dir, SUPERVISOR_PROFILE_ID)
+    if result.status == STATUS_FAILED:
+        raise RuntimeError(result.error)
+
+    if result.changed:
+        if ctx.db is not None:
+            vault_path = vault_profile_path(data_dir, SUPERVISOR_PROFILE_ID)
+            markdown = Path(vault_path).read_text(encoding="utf-8")
+            sync = await sync_profile_text_to_db(
+                markdown, ctx.db, source_path=vault_path, fallback_id=SUPERVISOR_PROFILE_ID
+            )
+            if not sync.success:
+                logger.warning(
+                    "supervisor capability fix: DB sync failed: %s", "; ".join(sync.errors)
+                )
+        orchestrator = getattr(ctx.handler, "orchestrator", None)
+        await publish_sync_result(
+            result, event_bus=getattr(orchestrator, "bus", None), trigger="doctor"
+        )
+        count, names = _missing_summary(result.added)
+        detail = f"added {count} shipped capability grant(s) to the supervisor: {names}"
+    else:
+        detail = f"nothing merged ({result.status})"
+    return CheckResult(
+        id=check_id,
+        severity=Severity.OK,
+        detail=detail,
+        fixable=True,
+        fix_applied=result.changed,
+        data=result.to_dict(),
     )
 
 
@@ -205,6 +367,12 @@ async def _fix_project_overrides(ctx: DoctorContext) -> CheckResult:
 def profile_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_system_profile_drift, fix=None, owner=OWNER),
+        DoctorCheck(
+            id=SUPERVISOR_DRIFT_CHECK_ID,
+            run=_check_supervisor_capability_drift,
+            fix=_fix_supervisor_capability_drift,
+            owner=OWNER,
+        ),
         DoctorCheck(
             id=OVERRIDES_CHECK_ID,
             run=_check_project_overrides,
