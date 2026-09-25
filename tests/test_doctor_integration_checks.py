@@ -45,6 +45,142 @@ async def _age(db, task_id: str, age_s: float) -> None:
         )
 
 
+async def _identity_task(db, task_id, *, status=TaskStatus.DEFINED, branch=None):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await db.create_task(Task(
+        id=task_id, project_id="p", title=task_id, description="", status=status,
+        branch_name=branch,
+    ))
+    # create_task stamps its own time. Set up the historical snapshot explicitly.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(created_at=200.0))
+
+
+async def _identity_origin(db, task_id, *, created_at=100.0, retired_at=None, branch=None):
+    from sqlalchemy import insert
+
+    from src.database.tables import task_branch_origins
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(task_branch_origins).values(
+                id=f"origin-{task_id}", task_id=task_id, repository_id="old-repo",
+                branch_name=branch, base_sha="a" * 40, creation_generation=0,
+                reserved=True, materialized=True, created_at=created_at,
+                materialized_at=created_at, retired_at=retired_at,
+            )
+        )
+
+
+@pytest.mark.parametrize("mode", ["disabled", "development", "hierarchy", "train"])
+@pytest.mark.parametrize("status", [TaskStatus.BLOCKED, TaskStatus.COMPLETED])
+async def test_reused_task_identity_reports_predecessor_origin_in_every_mode(db, mode, status):
+    from sqlalchemy import insert, update
+
+    from src.database.tables import projects, task_integration_checkpoints
+
+    # Integration evidence survived the old task; the current task has the
+    # same name but a later creation time and a different repository/branch.
+    await _identity_origin(db, "reused", branch="aq/reused")
+    await _identity_task(db, "reused", status=status, branch="aq/new-task")
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            hierarchical_integration_mode=mode,
+            hierarchical_integration_desired_mode=mode,
+        ))
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="reused", repository_id="old-repo", branch="aq/reused",
+            checkpoint_sha="b" * 40, updated_at=100.0,
+        ))
+
+    result = await run_check(db, "integration.reused_task_identity")
+
+    assert result.severity is Severity.WARN
+    assert result.data == {
+        "count": 1, "task_count": 1,
+        "origins": [{
+            "task_id": "reused", "project_id": "p", "task_status": status.value,
+            "task_created_at": 200.0, "task_repository_id": None,
+            "task_branch": "aq/new-task", "origin_id": "origin-reused",
+            "repository_id": "old-repo", "origin_branch": "aq/reused",
+            "base_sha": "a" * 40, "materialized": True, "origin_created_at": 100.0,
+            "checkpoint_repository_id": "old-repo", "checkpoint_branch": "aq/reused",
+            "checkpoint_sha": "b" * 40,
+        }],
+    }
+    assert "Releasing a fence alone" in result.detail
+
+
+async def test_reused_task_identity_ignores_normal_retired_and_orphan_origins(db):
+    for task_id, created_at, retired_at in [
+        ("later", 201.0, None), ("equal", 200.0, None), ("retired", 100.0, 150.0),
+    ]:
+        await _identity_task(db, task_id)
+        await _identity_origin(db, task_id, created_at=created_at, retired_at=retired_at)
+    await _identity_origin(db, "orphan")
+    # A transferred ownership row may legitimately predate its current owner.
+    await _held_owner(db, task_id="later")
+
+    result = await run_check(db, "integration.reused_task_identity")
+
+    assert result.severity is Severity.OK
+    assert result.data == {"count": 0, "task_count": 0, "origins": []}
+
+
+async def test_reused_task_identity_fix_leaves_all_evidence_unchanged(db):
+    from sqlalchemy import select
+
+    from src.database.tables import integration_branch_owners, task_branch_origins, tasks
+
+    await _identity_origin(db, "reused")  # Legacy NULL branch and no checkpoint.
+    await _identity_task(db, "reused")
+    await _held_owner(db, task_id="reused")
+
+    async def snapshot():
+        async with db._engine.connect() as conn:
+            return [
+                (await conn.execute(select(table))).mappings().all()
+                for table in (tasks, task_branch_origins, integration_branch_owners)
+            ]
+
+    before = await snapshot()
+    report = await run_doctor(
+        default_registry(), DoctorContext(config=None, db=db),
+        only=["integration.reused_task_identity"], fix=True,
+    )
+
+    assert report["exit_code"] == 1
+    finding = report["checks"][0]
+    assert finding["fixable"] is False
+    assert finding["fix_applied"] is False
+    assert finding["data"]["origins"][0]["checkpoint_sha"] is None
+    assert finding["data"]["origins"][0]["origin_branch"] is None
+    assert await snapshot() == before
+
+
+async def test_reused_task_identity_caps_details_without_hiding_total(db):
+    for number in reversed(range(51)):
+        task_id = f"reused-{number:02}"
+        await _identity_origin(db, task_id)
+        await _identity_task(db, task_id)
+
+    result = await run_check(db, "integration.reused_task_identity")
+
+    assert result.data["count"] == result.data["task_count"] == 51
+    assert len(result.data["origins"]) == 50
+    assert result.data["origins"][0]["task_id"] == "reused-00"
+    assert result.data["origins"][-1]["task_id"] == "reused-49"
+
+
+async def test_reused_task_identity_without_database_is_unknown():
+    result = await run_check(None, "integration.reused_task_identity")
+    assert result.severity is Severity.INFO
+    assert not result.fixable
+
+
 async def _completed(db, task_id: str) -> None:
     await db.create_task(
         Task(id=task_id, project_id="p", title=f"T {task_id}", description="")
