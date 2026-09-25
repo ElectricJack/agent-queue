@@ -901,6 +901,73 @@ class GitHubClient:
             items.extend(page)
         return items
 
+    async def list_open_issues_without_label(self, label: str) -> list[dict[str, Any]]:
+        """Oldest first, excluding pull requests and issues with *label*.
+
+        GitHub's issues endpoint includes pull requests. Its labels query is
+        inclusive, so exclusion happens after bounded repository pagination.
+        """
+        path = (
+            f"repos/{self.repository.full_name}/issues"
+            "?state=open&sort=created&direction=asc&per_page=100"
+        )
+        rows = await self.paged_list(path, max_pages=50)
+        issues = [
+            row for row in rows
+            if row.get("state") == "open"
+            and "pull_request" not in row
+            and not any(
+                isinstance(item, dict) and item.get("name") == label
+                for item in (row.get("labels") or [])
+            )
+        ]
+        return sorted(issues, key=lambda row: (str(row.get("created_at", "")), row.get("number", 0)))
+
+    async def issue(self, number: int) -> dict[str, Any]:
+        """Read one issue in the bound repository, refusing a PR payload."""
+        number = _validated_pull_request_number(number)
+        row = await self.request_json("GET", f"repos/{self.repository.full_name}/issues/{number}")
+        if row.get("number") != number or "pull_request" in row:
+            raise GitHubAccessError("conflict_or_invalid", "GitHub issue identity did not match")
+        return row
+
+    async def add_issue_label(self, number: int, label: str) -> None:
+        """Apply one label; reconcile an uncertain write by reading the issue."""
+        number = _validated_pull_request_number(number)
+        path = f"repos/{self.repository.full_name}/issues/{number}/labels"
+        try:
+            await self.request_json("POST", path, json_body={"labels": [label]})
+        except GitHubAccessError:
+            row = await self.issue(number)
+            if not any(
+                isinstance(item, dict) and item.get("name") == label
+                for item in (row.get("labels") or [])
+            ):
+                raise
+
+    async def close_issue_with_reason(self, number: int, reason: str, marker: str) -> None:
+        """Post a marked closing reason once, then close the bound issue."""
+        number = _validated_pull_request_number(number)
+        row = await self.issue(number)
+        if row.get("state") == "closed":
+            return
+        path = f"repos/{self.repository.full_name}/issues/{number}"
+        comments = await self.paged_list(f"{path}/comments?per_page=100", max_pages=50)
+        body = f"{reason.strip()}\n\n<!-- {marker} -->"
+        if not any(marker in str(comment.get("body") or "") for comment in comments):
+            try:
+                await self.request_json("POST", f"{path}/comments", json_body={"body": body},
+                                        expected_statuses={201})
+            except GitHubAccessError:
+                comments = await self.paged_list(f"{path}/comments?per_page=100", max_pages=50)
+                if not any(marker in str(comment.get("body") or "") for comment in comments):
+                    raise
+        try:
+            await self.request_json("PATCH", path, json_body={"state": "closed"})
+        except GitHubAccessError:
+            if (await self.issue(number)).get("state") != "closed":
+                raise
+
     async def _paged_json(self, path: str, *, max_pages: int) -> list[Any]:
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages <= 0:
             raise ValueError("max_pages must be a positive integer")

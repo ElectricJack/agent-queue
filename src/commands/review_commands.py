@@ -170,7 +170,7 @@ class ReviewCommandsMixin:
                         isinstance(response, dict)
                         and response.get("review_id") == review["id"]
                         and response.get("revision") == review["current_revision"]
-                        and review["state"] == "changes_requested"
+                        and review["state"] in {"changes_requested", "rejected"}
                     )
                     author_draft = (
                         review["state"] == "in_review" and review["author_task_id"] == held.id
@@ -357,17 +357,23 @@ class ReviewCommandsMixin:
         if error:
             return error
         decision = args.get("decision")
-        if decision not in {"approve", "request_changes"}:
-            return _error("not_in_review", "decision must be approve or request_changes")
+        if decision not in {"approve", "request_changes", "reject"}:
+            return _error("not_in_review", "decision must be approve, request_changes or reject")
         responder_class = args.get("responder_class")
         responder_profile = args.get("responder_profile")
+        if decision in {"request_changes", "reject"} and responder_class is None:
+            from src.commands.github_issue_commands import INVESTIGATION_KEY
+
+            author = await self.db.get_task(review.get("author_task_id")) if review.get("author_task_id") else None
+            if author is not None and (author.dedup_key or "").startswith(INVESTIGATION_KEY):
+                responder_class = "standard-high"
         if decision == "approve" and (responder_class is not None or responder_profile is not None):
-            return _error("invalid_responder", "responder routing applies only to request_changes")
+            return _error("invalid_responder", "responder routing applies only to feedback decisions")
         if responder_profile is not None and responder_class is None:
             return _error("invalid_responder", "responder_profile requires responder_class")
         profile_source = "project_default"
         implicit = None
-        if decision == "request_changes" and responder_profile is None:
+        if decision in {"request_changes", "reject"} and responder_profile is None:
             project = await self.db.get_project(review["project_id"])
             implicit, route_error = await self._supervisor_default_worker_profile(project)
             if route_error:
@@ -409,7 +415,7 @@ class ReviewCommandsMixin:
                 if route_error:
                     return _error("invalid_responder_class", route_error)
                 profile_source = "explicit"
-        elif decision == "request_changes" and (
+        elif decision in {"request_changes", "reject"} and (
             implicit is None or not implicit.default_class
             or (class_error := self._validate_routing_class(implicit.default_class, implicit))
         ):
@@ -422,7 +428,7 @@ class ReviewCommandsMixin:
             result = await self._review_service().decide(
                     review_id=review["id"],
                     revision=args.get("revision"),
-                    approve=decision == "approve",
+                    decision=decision,
                     note=str(args.get("note") or ""),
                     decided_by=label,
                     responder_class=responder_class,
@@ -750,6 +756,20 @@ class ReviewCommandsMixin:
             "", f"Revise the document and resubmit with `aq review submit --review-id {review['id']} --file <draft.md>`.",
             "Pass `--resolves cmt-...` for each comment you addressed.",
         ])
+        if review["state"] == "rejected":
+            from src.commands.github_issue_commands import INVESTIGATION_KEY
+
+            author_key = author.dedup_key if author else archived.get("dedup_key") if archived else ""
+            if (author_key or "").startswith(INVESTIGATION_KEY):
+                lines.extend([
+                    "", "This issue report was rejected. Read Jack's decision note and every comment.",
+                    "Close the GitHub issue only if Jack explicitly asked to close it; then use",
+                    f"`aq github-issue close-rejected --review-id {review['id']}` to post his reason.",
+                    "Otherwise revise to his proposed approach and resubmit. If his intent is",
+                    "ambiguous, resubmit with one clarifying question. Do not close by default.",
+                    "If the playbook already closed the issue on Jack's explicit request,",
+                    "close this response task with a no-op work outcome.",
+                ])
 
         async def record(conn, task_id, _parent_id):
             await self.db._upsert_meta(task_id, "review_response", {

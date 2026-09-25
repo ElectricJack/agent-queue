@@ -40,7 +40,7 @@ CHECK_ID = "reviews.consistency"
 OWNER = "reviews"
 
 #: States whose gate is *meant* to stay open — a human is still to decide.
-_OPENING_STATES = ("in_review", "changes_requested")
+_OPENING_STATES = ("in_review", "changes_requested", "rejected")
 
 _RESOLVED_BY = "doctor:reviews.consistency"
 

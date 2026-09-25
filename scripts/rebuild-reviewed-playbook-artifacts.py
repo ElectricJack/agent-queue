@@ -71,6 +71,7 @@ SHIPPED = {
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
+    "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
 }
 SOURCES = SHIPPED
 
@@ -281,7 +282,55 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _provider_failover_body(source)
     if playbook_id == "provider-usage-probe":
         return _provider_usage_probe_body(source)
+    if playbook_id == "github-issue-triage":
+        return _github_issue_triage_body(source)
     return {}
+
+
+def _github_issue_triage_body(source: PlaybookSource) -> dict[str, Any]:
+    """Two one-command rules, one daily and one approved-review response."""
+    index = ProseIndex(source, source.vault_path)
+    rules: list[dict[str, Any]] = []
+    steps: dict[str, Any] = {}
+
+    def lit(value: Any) -> dict[str, Any]:
+        return {"type": "literal", "value": value}
+
+    def event(path: str) -> dict[str, Any]:
+        return {"type": "event_ref", "path": path}
+
+    def add(rule: str, trigger: dict[str, Any], command: str,
+            inputs: dict[str, Any], successes: tuple[str, ...]) -> None:
+        entry = f"{rule}--command"
+        done = f"{rule}--done"
+        failed = f"{rule}--failed"
+        rules.append({"id": rule, "name": rule, "trigger": trigger,
+                      "entry_step": entry, "source": index.rule_ref(rule)})
+        transitions = {outcome: done for outcome in successes}
+        transitions.update({"rejected": failed, "runtime_error": failed})
+        steps[entry] = {
+            "type": "command", "rule": rule, "title": command,
+            "source": index.step_ref(rule, 1), "command": command,
+            "inputs": inputs, "transitions": transitions,
+        }
+        steps[done] = _terminal(rule, "completed", index.step_ref(rule, None))
+        steps[failed] = _terminal(rule, "failed", index.step_ref(rule, None))
+
+    add("investigate-nightly", {"event_type": "cron.02:00"},
+        "github_issue_triage", {"project_id": lit("agent-queue")}, ("swept",))
+    add("file-approved-fix", {"event_type": "review.decided",
+                              "filter": {"decision": "approve"}},
+        "github_issue_fix_approved",
+        {"project_id": event("project_id"), "review_id": event("review_id"),
+         "revision": event("revision")},
+        ("created", "reused", "ignored"))
+    add("close-explicit-rejection", {"event_type": "review.decided",
+                                     "filter": {"decision": "reject"}},
+        "github_issue_rejection",
+        {"project_id": event("project_id"), "review_id": event("review_id"),
+         "revision": event("revision")},
+        ("closed", "ignored"))
+    return {"rules": rules, "steps": steps}
 
 
 def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:

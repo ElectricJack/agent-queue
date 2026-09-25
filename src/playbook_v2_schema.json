@@ -2082,7 +2082,7 @@
       "description": "Subscription-level match.\n\n``filter`` is a conjunction of literal equality (scalar) or membership\n(list) tests against the event schema — not an expression tree, because a\nsubscription filter must be matchable without a run context.",
       "properties": {
         "event_type": {
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "pattern": "^(?:[a-z0-9][a-z0-9._-]{0,127}|cron\\.(?:[01][0-9]|2[0-3]):[0-5][0-9])$",
           "title": "Event Type",
           "type": "string"
         },

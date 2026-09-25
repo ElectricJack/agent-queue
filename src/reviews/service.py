@@ -53,7 +53,7 @@ MAX_COMMENT_CHARS = 16000
 #: Titles are one line: they become the vault slug and a frontmatter value.
 MAX_TITLE_CHARS = 200
 
-OPEN_STATES = frozenset({"in_review", "changes_requested"})
+OPEN_STATES = frozenset({"in_review", "changes_requested", "rejected"})
 CLOSED_STATES = frozenset({"approved", "withdrawn"})
 
 IMPORT_NOTE = "Imported edits made directly in the vault"
@@ -332,11 +332,14 @@ class ReviewService:
     # -- decide ------------------------------------------------------------
 
     async def decide(
-        self, *, review_id: str, revision: int, approve: bool, note: str, decided_by: str,
+        self, *, review_id: str, revision: int, decision: str, note: str, decided_by: str,
         responder_class: str | None = None, responder_profile: str | None = None,
         responder_profile_source: str | None = None,
     ) -> dict:
-        """Approve (resolving the gate) or request changes on the current revision."""
+        """Approve or send feedback on the current revision."""
+        if decision not in {"approve", "request_changes", "reject"}:
+            raise ReviewError("not_in_review", "invalid review decision")
+        approve = decision == "approve"
         review = await self._get(review_id)
         if review["state"] in CLOSED_STATES:
             raise self._closed(review)
@@ -360,7 +363,7 @@ class ReviewService:
             )
 
         note = (note or "").strip()
-        state = "approved" if approve else "changes_requested"
+        state = {"approve": "approved", "request_changes": "changes_requested", "reject": "rejected"}[decision]
         now = self._clock()
         async with self.db.immediate() as conn:
             moved = await self.db.transition_review(
@@ -424,7 +427,7 @@ class ReviewService:
             "review.decided",
             {
                 **_base_payload(review),
-                "decision": "approve" if approve else "request_changes",
+                "decision": decision,
                 "decided_by": decided_by,
                 "note": note,
                 "responder_class": current["responder_class"] if not approve else None,

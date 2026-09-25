@@ -423,6 +423,10 @@ from .git_create_pr_response_422 import GitCreatePrResponse422
 from .git_diff_request import GitDiffRequest
 from .git_diff_response import GitDiffResponse
 from .git_diff_response_422 import GitDiffResponse422
+from .git_hub_issue_close_rejected_response import GitHubIssueCloseRejectedResponse
+from .git_hub_issue_fix_approved_response import GitHubIssueFixApprovedResponse
+from .git_hub_issue_rejection_response import GitHubIssueRejectionResponse
+from .git_hub_issue_triage_response import GitHubIssueTriageResponse
 from .git_log_request import GitLogRequest
 from .git_log_response import GitLogResponse
 from .git_log_response_422 import GitLogResponse422
@@ -440,6 +444,14 @@ from .git_remote_url_response import GitRemoteUrlResponse
 from .git_remote_url_response_422 import GitRemoteUrlResponse422
 from .github_auth_status_response import GithubAuthStatusResponse
 from .github_auth_status_response_credential_mode import GithubAuthStatusResponseCredentialMode
+from .github_issue_close_rejected_request import GithubIssueCloseRejectedRequest
+from .github_issue_close_rejected_response_422 import GithubIssueCloseRejectedResponse422
+from .github_issue_fix_approved_request import GithubIssueFixApprovedRequest
+from .github_issue_fix_approved_response_422 import GithubIssueFixApprovedResponse422
+from .github_issue_rejection_request import GithubIssueRejectionRequest
+from .github_issue_rejection_response_422 import GithubIssueRejectionResponse422
+from .github_issue_triage_request import GithubIssueTriageRequest
+from .github_issue_triage_response_422 import GithubIssueTriageResponse422
 from .github_owner import GithubOwner
 from .github_owner_kind import GithubOwnerKind
 from .github_repository import GithubRepository
@@ -1731,6 +1743,18 @@ __all__ = (
     "GitDiffResponse422",
     "GithubAuthStatusResponse",
     "GithubAuthStatusResponseCredentialMode",
+    "GithubIssueCloseRejectedRequest",
+    "GitHubIssueCloseRejectedResponse",
+    "GithubIssueCloseRejectedResponse422",
+    "GithubIssueFixApprovedRequest",
+    "GitHubIssueFixApprovedResponse",
+    "GithubIssueFixApprovedResponse422",
+    "GithubIssueRejectionRequest",
+    "GitHubIssueRejectionResponse",
+    "GithubIssueRejectionResponse422",
+    "GithubIssueTriageRequest",
+    "GitHubIssueTriageResponse",
+    "GithubIssueTriageResponse422",
     "GithubOwner",
     "GithubOwnerKind",
     "GithubRepository",
