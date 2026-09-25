@@ -172,6 +172,13 @@ dev = [
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
 ]
+# Smart test selection's dynamic-impact experiment (spec 2026-09-24 §5.2):
+# tests/test_selection_testmon_experiment.py records what testmon would select
+# and skips without it.  Evidence only -- never in `dev`, and `aq test` never
+# passes a --testmon flag.
+test-selection-dynamic = [
+    "pytest-testmon==2.2.0",
+]
 
 [project.scripts]
 # Every console script must name a module that exists in this tree --

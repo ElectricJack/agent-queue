@@ -1022,7 +1022,8 @@
       "modules": [
         "tests/test_selection_catalogue.py",
         "tests/test_selection_mandatory.py",
-        "tests/test_selection_snapshot.py"
+        "tests/test_selection_snapshot.py",
+        "tests/test_selection_testmon_experiment.py"
       ]
     },
     "test-substrate": {
@@ -1171,7 +1172,7 @@
       ]
     }
   },
-  "digest": "sha256:a96c310d44fe2b4c23d3509adac3a6ccd7c7cd93e114025b1a685720c1cd6d04",
+  "digest": "sha256:65639a120fe11dd19acad7c661dd9e7c1f6efa2ce74cfdb93634b3b48d5ab385",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10083,6 +10084,17 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_selection_testmon_experiment.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "slow"
+      ],
+      "summary": "pytest-testmon fixture experiment: recorded evidence for spec §5.2, never a selector."
     },
     "tests/test_session_class_effort.py": {
       "areas": [
