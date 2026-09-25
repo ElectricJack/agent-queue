@@ -1057,6 +1057,22 @@ remains for that legacy-`## Tools` case, or for any other divergence you'd
 rather just take the shipped version of — it overwrites the whole file (also
 behind a `.bak-<epoch>`), so reconcile edits from the backup afterwards.
 
+**The supervisor is merged automatically.** Every control a release adds for
+the supervisor (`integration_eject`, `review_dispatch`, …) used to stay
+`capability denied` until someone hand-edited its vault copy. The daemon now
+runs the same additive merge as `--grants-only` on the supervisor's vault
+profile at every start and every time the vault watcher reloads that file
+(`src/profiles/capability_sync.py`). It adds only the missing shipped names:
+nothing is removed, no other section changes, the write is atomic, a
+`.bak-<epoch>` is kept, and the log line and a `profile.capabilities_synced`
+event name each grant added. `aq doctor --check
+profiles.supervisor_capability_drift` shows what is still missing (between an
+upgrade and the next start); `--fix` merges it now. To curate the
+supervisor's grants by hand, put `capability_sync: false` in its vault
+frontmatter: the daemon and `--fix` then leave it alone, and the check reports
+the gap as `info`. Any other shipped profile can opt in to the same merge with
+`capability_sync: true`.
+
 When a release also changes profile prose, merge that prose separately after
 the grants-only repair. For example, the scoped planner-graph release adds
 `create_task_graph` to the planner grant list and narrows the shipped planner

@@ -303,6 +303,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
     "config.restart_needed": {
         "changed_sections": ["database"],
     },
+    # Profile capability sync (src/profiles/capability_sync.py)
+    "profile.capabilities_synced": {
+        "profile_id": "supervisor",
+        "added": {"aq_commands": ["integration_eject"]},
+        "trigger": "startup",
+        "backup_path": "/data/vault/agent-types/supervisor/profile.md.bak-1",
+    },
     # Dashboard state (src/commands/dashboard_state_commands.py)
     "dashboard_state.changed.v1": {
         "version": 1,
@@ -1634,6 +1641,9 @@ class TestAllEventTypesHaveSchemas:
     def test_all_config_events_registered(self):
         assert "config.reloaded" in EVENT_SCHEMAS
         assert "config.restart_needed" in EVENT_SCHEMAS
+
+    def test_profile_events_registered(self):
+        assert "profile.capabilities_synced" in EVENT_SCHEMAS
 
     def test_all_notify_events_registered(self):
         expected = [

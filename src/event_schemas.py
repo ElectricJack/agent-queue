@@ -470,6 +470,27 @@ _CONFIG_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Profile events  (emitted by src/profiles/capability_sync.py)
+# ---------------------------------------------------------------------------
+
+_PROFILE_SCHEMAS: dict[str, EventSchema] = {
+    # A synced profile's vault copy (the supervisor by default) gained the
+    # shipped ``## Capabilities`` grants it lacked.  ``added`` maps each
+    # capability namespace to the appended names; ``trigger`` is ``startup``,
+    # ``reload`` or ``doctor``.
+    "profile.capabilities_synced": {
+        "required": ["profile_id", "added", "trigger"],
+        "optional": ["backup_path"],
+        "types": {
+            "profile_id": str,
+            "added": dict,
+            "trigger": str,
+            "backup_path": (str, type(None)),
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Notification events  (notify.*)
 #
 # All notify.* events share the NotifyEvent base fields (event_type,
@@ -1726,6 +1747,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_FILE_SCHEMAS,
     **_PLUGIN_SCHEMAS,
     **_CONFIG_SCHEMAS,
+    **_PROFILE_SCHEMAS,
     **_NOTIFY_SCHEMAS,
     **_CHAT_SCHEMAS,
     **_ESCALATION_SCHEMAS,
