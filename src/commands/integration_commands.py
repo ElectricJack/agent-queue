@@ -640,6 +640,8 @@ class IntegrationCommandsMixin:
             principal=principal,
             dry_run=request.dry_run,
             accept=request.accept,
+            retire=request.retire,
+            supersede=request.supersede,
             reason=request.reason,
         )
         return {"success": result["outcome"] in {"adopted", "nothing_to_adopt"}, **result}

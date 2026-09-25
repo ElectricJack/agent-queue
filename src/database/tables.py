@@ -4325,8 +4325,10 @@ integration_legacy_deliveries = Table(
     Column("target_ref", Text, nullable=False),
     # The default-branch tip the proof was made against.
     Column("target_sha", Text, nullable=False),
-    # The commit proven to be an ancestor of ``target_sha``; null only for an
-    # operator acceptance.
+    # The commit whose work is proven on ``target_sha``: an ancestor of it, a
+    # commit whose merge into it changes nothing (``content_equivalent``), or
+    # the operator-named re-delivery (``superseded``).  Null only for an
+    # operator acceptance or a retired (``abandoned``) child.
     Column("delivered_sha", Text, nullable=True),
     Column("proof", Text, nullable=False),
     Column("development_delivery_id", Text, nullable=True),
@@ -4334,11 +4336,12 @@ integration_legacy_deliveries = Table(
     Column("reason", Text, nullable=False),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
-        "proof IN ('development_delivery', 'branch_tip', 'operator_accepted')",
+        "proof IN ('development_delivery', 'branch_tip', 'content_equivalent', "
+        "'superseded', 'operator_accepted', 'abandoned')",
         name="ck_integration_legacy_deliveries_proof",
     ),
     CheckConstraint(
-        "proof = 'operator_accepted' OR delivered_sha IS NOT NULL",
+        "proof IN ('operator_accepted', 'abandoned') OR delivered_sha IS NOT NULL",
         name="ck_integration_legacy_deliveries_delivered_sha",
     ),
     Index("idx_integration_legacy_deliveries_parent", "project_id", "parent_task_id"),

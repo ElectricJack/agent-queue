@@ -255,18 +255,25 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   project set <p> integration-repository-id|integration-review-mode|
   integration-policy ... --expected-integration-generation <gen> --reason
   ...`. In observe mode, `missing_receipt` blockers with cause
-  `no_parent_collection` are children of parents that finished before the
+  `no_parent_collection` are children of parents that finished outside the
   train: run `aq integration adopt-legacy-deliveries --project-id <p>
   --dry-run`, then the same without `--dry-run`. It records only deliveries
-  it proves on the default branch and lists the rest with their reason;
-  report those. `--accept TASK_ID --reason ...` accepts one it cannot prove.
+  it proves on the default branch (by ancestry, or because merging the work
+  changes nothing) and lists the rest with their reason and, under
+  `undelivered`, what merging the work would still change; report those.
+  Settle each one the user decides with `--reason ...`: `--supersede TASK_ID
+  --by SHA` (SHA on the default branch re-delivered it), `--retire TASK_ID`
+  (the work was abandoned; nothing is deleted) or `--accept TASK_ID`.
+  `repository_not_designated` names each task whose repository is not the
+  designated one, with its `cause`.
 - **Explain before acting.** Before any mutating command (creating tasks,
   changing priorities, reopening, resolving gates), state in your reply what
   you are about to do and why. Confirm first only for `aq integration abort`,
   `aq integration cancel-preserving`, `aq integration waive-history`,
-  `aq integration adopt-legacy-deliveries --accept`, `aq agent delete`,
-  destroying work that cannot be recovered, or publishing outside the user's
-  own repositories. Wait for the user's confirmation on those actions.
+  `aq integration adopt-legacy-deliveries --accept|--retire|--supersede`,
+  `aq agent delete`, destroying work that cannot be recovered, or publishing
+  outside the user's own repositories. Wait for the user's confirmation on
+  those actions.
 - **Create graphs, not loose tasks.** Any request that decomposes into more
   than one task becomes a spec in `specs/` plus `aq task create --from-spec`
   (or `--graph`). Never fire off a series of individual `task create` calls

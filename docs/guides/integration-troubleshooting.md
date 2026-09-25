@@ -527,8 +527,9 @@ not released, which is why `release-stale-owners` runs first.
 A parent completes under the train only after each child has a delivery
 receipt bound to the parent's collection. A parent that finished before the
 project entered observe, hierarchy or train mode was never collected and never
-will be. Its terminal children therefore stay flagged unless their delivery is
-proven another way.
+will be; neither will a finished parent whose collection was cancelled when the
+project switched to development. Its terminal children therefore stay flagged
+unless their delivery is proven another way.
 
 Status already accepts a child that the development publisher delivered to the
 default branch. That `delivered` or `adopted` development delivery, bound to
@@ -542,17 +543,27 @@ aq integration adopt-legacy-deliveries --project-id <project>
 
 It fetches the designated repository once. It adopts a child when a
 development delivery lists it and the child's source commit or the delivery's
-published commit is on the default branch (`development_delivery`), or when
-the child's branch tip is (`branch_tip`). It writes one
-`integration_legacy_deliveries` row per adopted child, and it is safe to
-repeat.
+published commit is on the default branch (`development_delivery`), when the
+child's branch tip is (`branch_tip`), or when merging a delivery commit, the
+branch tip or the latest completion commit into the default branch changes
+nothing, because the work landed under other commits (`content_equivalent`).
+It writes one `integration_legacy_deliveries` row per adopted child, and it is
+safe to repeat.
 
 | Reason listed | Meaning | Next step |
 |---|---|---|
-| `not_on_default_branch` | No delivered commit of the child is an ancestor of the default branch. | Find where the work went. If a human confirms nothing is owed, run `--accept <task> --reason '...'`. |
-| `child_not_completed` | The child failed, so it has nothing to deliver. | Have a human decide, then `--accept` it, or leave it. |
+| `not_on_default_branch` | No commit of the child is on the default branch, and merging its work would still change it. `undelivered` names the commit examined, the diffstat and the paths (or a conflict); it is `null` when no commit could be examined, for example because the branch is gone. | Find where the work went. If SHA on the default branch re-delivered it: `--supersede <task> --by <sha> --reason '...'`. If it was abandoned: `--retire <task> --reason '...'` (deletes nothing). If nothing is owed: `--accept <task> --reason '...'`. Otherwise deliver the work. |
+| `child_not_completed` | The child failed, so it has nothing to deliver. | Have a human decide, then `--retire` or `--accept` it, or leave it. |
 | `parent_not_terminal` | The parent is still open. | Nothing to adopt: its completion needs real train receipts. |
 | `state_changed` | The child or parent was reopened while the command ran. | Re-run. |
+
+`--supersede` refuses a commit that is not on the default branch. Each child
+takes one decision per run, and every decision needs `--reason`.
+
+`repository_not_designated` names the task in `ref`, with `cause`:
+`task_repository_unset` (the task has no repository; tasks created by `aq task
+create --graph`, or while the project was in observe mode, are not bound to
+it), `task_repository_mismatch`, or `project_repository_unset`.
 
 ## A task will not delete, archive, resume or restart
 

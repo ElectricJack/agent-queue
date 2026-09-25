@@ -140,6 +140,21 @@ def _client(result):
             {"project_id": "p", "dry_run": False, "accept": ["c1", "c2"], "reason": "no-code task"},
         ),
         (
+            [
+                "adopt-legacy-deliveries", "--project-id", "p",
+                "--supersede", "c1", "--by", "abcdef1234", "--retire", "c2",
+                "--reason", "re-delivered; abandoned",
+            ],
+            "integration_adopt_legacy_deliveries",
+            {
+                "project_id": "p",
+                "dry_run": False,
+                "supersede": {"c1": "abcdef1234"},
+                "retire": ["c2"],
+                "reason": "re-delivered; abandoned",
+            },
+        ),
+        (
             ["recover-candidate-member", "frozen-resolution"],
             "integration_recover_candidate_member",
             {"reservation_id": "frozen-resolution"},
@@ -342,6 +357,28 @@ def test_integration_enable_rejects_invalid_interval_before_transport(argv):
 
     assert result.exit_code == 2, result.output
     assert "interval" in result.output.lower()
+    client.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--supersede", "c1", "--reason", "r"], "--supersede and --by go together"),
+        (["--by", "abcdef1234", "--reason", "r"], "--supersede and --by go together"),
+        (["--retire", "c1"], "require --reason"),
+    ],
+)
+def test_adopt_legacy_deliveries_rejects_incomplete_decisions_before_transport(argv, message):
+    from src.cli.app import cli
+
+    client = _client({"outcome": "adopted"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "adopt-legacy-deliveries", "--project-id", "p", *argv]
+        )
+
+    assert result.exit_code == 2, result.output
+    assert message in result.output
     client.execute.assert_not_awaited()
 
 

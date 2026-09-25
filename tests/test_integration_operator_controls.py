@@ -275,25 +275,41 @@ async def test_adopt_legacy_deliveries_runs_under_the_derived_operator_label(db,
         "principal": "human:local-operator",
         "dry_run": True,
         "accept": (),
+        "retire": (),
+        "supersede": {},
         "reason": None,
     }
 
     with principal_context(_session("super-p", "p")):
         await handler._cmd_integration_adopt_legacy_deliveries(
-            {"project_id": "p", "accept": ["c1"], "reason": "no-code task"}
+            {
+                "project_id": "p",
+                "accept": ["c1"],
+                "retire": ["c2"],
+                "supersede": {"c3": "abcdef1234"},
+                "reason": "no-code task",
+            }
         )
     assert run.await_args.kwargs == {
         "principal": "supervisor session:super-p",
         "dry_run": False,
         "accept": ("c1",),
+        "retire": ("c2",),
+        "supersede": {"c3": "abcdef1234"},
         "reason": "no-code task",
     }
 
     run.reset_mock()
-    invalid = await handler._cmd_integration_adopt_legacy_deliveries(
-        {"project_id": "p", "accept": ["c1"]}
-    )
-    assert invalid["outcome"] == "invalid"
+    for decision in (
+        {"accept": ["c1"]},
+        {"retire": ["c1"]},
+        {"supersede": {"c1": "abcdef1234"}},
+        {"supersede": {"c1": "HEAD~1"}, "reason": "not a commit id"},
+    ):
+        invalid = await handler._cmd_integration_adopt_legacy_deliveries(
+            {"project_id": "p", **decision}
+        )
+        assert invalid["outcome"] == "invalid", decision
     for principal in (_session("worker", "p"), _session("super-stopped", "p")):
         with principal_context(principal):
             refused = await handler._cmd_integration_adopt_legacy_deliveries({"project_id": "p"})

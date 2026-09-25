@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:bd7e73571f3b7a26fd12c1f879b738018c6d71b508622dfcd3690ad7dfdd1ac4` |
+| Contract fingerprint | `sha256:33b72a27ab53c37afae2322377e4ab906b738d068fe656f2f8aa0c430bed2b4c` |
 
 ## Parameters
 
@@ -23,6 +23,8 @@
 | `project_id` | `string` | yes | — | — |
 | `dry_run` | `boolean` | no | `false` | — |
 | `accept` | `string[]` | no | `[]` | — |
+| `retire` | `string[]` | no | `[]` | — |
+| `supersede` | `object` | no | — | — |
 | `reason` | `string \| null` | no | `null` | — |
 
 Redacted in receipts and explanations: `reason`.

@@ -66,33 +66,57 @@ aq integration status agent-queue
 ```
 
 Parents that finished before the train have no parent collection and never
-will, so their children can never get train receipts. Status already accepts a
-child the development publisher delivered to `main` (its delivery row is the
-receipt). Every other terminal child of a finished parent is reported as
-`missing_receipt` with cause `no_parent_collection` until
-`adopt-legacy-deliveries` proves it: a development delivery's commit, or the
-child's branch tip, must be an ancestor of `origin/main`. Review the dry run
-first; the real run records one audited row per proven child and is safe to
-repeat. It lists every child it cannot prove with the reason:
+will, so their children can never get train receipts. The same holds for a
+finished parent whose collection was cancelled when the project switched to
+development (`noble-ridge` and `sound-current` keep such checkpoints). Status
+already accepts a child the development publisher delivered to `main` (its
+delivery row is the receipt). Every other terminal child of a finished parent
+is reported as `missing_receipt` with cause `no_parent_collection` until
+`adopt-legacy-deliveries` proves it: a development delivery's commit or the
+child's branch tip is an ancestor of `origin/main`, or merging a delivery
+commit, the branch tip or the latest completion commit into `main` changes
+nothing (the work landed under other commits: `content_equivalent`). Review the
+dry run first; the real run records one audited row per proven child and is
+safe to repeat. It lists every child it cannot prove with the reason:
 
-- `not_on_default_branch`: no delivered commit is on `main`. Find out whether
-  the work landed another way before accepting it.
+- `not_on_default_branch`: no delivered commit is on `main`, and merging the
+  work would still change it. `undelivered` shows the commit examined and what
+  it would still add (diffstat and paths, or a conflict); it is `null` when no
+  commit could be examined.
 - `child_not_completed`: a failed child has nothing to deliver.
 - `parent_not_terminal`: the parent is still open, so its completion needs
   real train receipts. Nothing can adopt these children.
 
-Only after the human confirms, record a named child with
-`--accept TASK_ID --reason '...'` (repeatable). A read-only diagnosis on
-2026-09-24 found 146 of the 150 legacy children already covered by development
-deliveries to `main`. It expects four to be listed as `not_on_default_branch`
-for a human decision:
+Only after the human decides, settle a named child with a reason:
+`--supersede TASK_ID --by SHA --reason '...'` when SHA on `main` re-delivered
+the work, `--retire TASK_ID --reason '...'` when the work was abandoned
+(nothing is deleted), or `--accept TASK_ID --reason '...'`. A read-only
+diagnosis on 2026-09-24 (tasks `fair-horizon`, `noble-stone`) found every
+other legacy child covered by a development delivery to `main`, including the
+17 `noble-ridge.*` and `sound-current.*` children once their cancelled
+collections are recognised. It expects four children to be listed as
+`not_on_default_branch` for a human decision:
 
-- the repairs `development-repair-1f49a87816f28bf5ae4c` (under `sharp-crest`)
-  and `development-repair-ac45f2a85d942d50cf37` (under `sharp-journey`): only
-  their parent-collection deliveries were published, and their `main`
-  deliveries stayed parked;
-- `clear-meadow.5`, which has no branch on origin and no delivery;
-- `smart-stone.3`, whose branch tip is not on `main`.
+- the repairs `development-repair-1f49a87816f28bf5ae4c` (under `sharp-crest`,
+  tip `58d162c2`, still adds 5 files, +143 lines) and
+  `development-repair-ac45f2a85d942d50cf37` (under `sharp-journey`, tip
+  `a67d8fae`, 4 files, +292/-24): only their parent-collection deliveries were
+  published, and their `main` deliveries stayed parked. Their work is not on
+  `main`: deliver it, or retire it;
+- `clear-meadow.5`: no branch on origin and no delivery; its completion commit
+  `d42e7a43` would still add 7 files (+76). Retire it if abandoned;
+- `smart-stone.3`: re-delivered by `fresh-quest` (`ac89ac04e`) except 3 files
+  (+26 lines: a gate note and two test additions). Supersede it by that merge
+  if the remainder is not owed.
+
+In observe mode `repository_not_designated` names each task in `ref`, with a
+`cause`. On 2026-09-24 it named 96 terminal hierarchy tasks with
+`task_repository_unset` (graphs created with `aq task create --graph` in
+development mode are not bound to `agent-queue2`) and any task created while
+the project was in observe mode, which binds no repository either. A live task
+must be bound or finished before cutover. Nothing can yet settle the terminal
+ones: task `swift-pinnacle` asks for that decision, and `bold-cascade` fixes the
+creation paths that leave the repository unset.
 
 The status response in observe mode must report zero functional blockers and
 `ready: true`; activation health above confirms the exact active route hashes.

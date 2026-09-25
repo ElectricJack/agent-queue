@@ -444,11 +444,34 @@ class IntegrationStatusService:
         if effective_repo is None and row["hierarchical_integration_mode"] == "development":
             effective_repo = designated
         if integration_active and (designated is None or effective_repo != designated):
+            # Name the task: its repository is usually unset, and a ref of
+            # ``None`` collapsed every such task into one anonymous blocker.
+            if designated is None:
+                cause, detail = (
+                    "project_repository_unset",
+                    "project has no designated integration repository",
+                )
+            elif effective_repo is None:
+                cause, detail = (
+                    "task_repository_unset",
+                    (
+                        "task has no repository; it is not bound to the project's "
+                        "designated integration repository"
+                    ),
+                )
+            else:
+                cause, detail = (
+                    "task_repository_mismatch",
+                    "task repository is not the project's designated integration repository",
+                )
             blockers.append(
                 _blocker(
                     "repository_not_designated",
-                    "task repository is not the project's designated integration repository",
-                    row["repo_id"],
+                    detail,
+                    task_id,
+                    cause=cause,
+                    repository_id=row["repo_id"],
+                    designated_repository_id=designated,
                 )
             )
         checkpoint = await self._one(
@@ -538,7 +561,15 @@ class IntegrationStatusService:
         )
         child_status = {child["id"]: child["status"] for child in child_rows}
         parent_readiness = None
-        if checkpoint is not None and readiness_operation is not None:
+        # A terminal parent whose collection was cancelled (switching to
+        # development cancels the parent operation and keeps its checkpoint)
+        # finished outside the train and will never be collected again.
+        collection_abandoned = (
+            readiness_operation is not None
+            and readiness_operation["state"] == "cancelled"
+            and row["status"] in TERMINAL_TASK_STATES
+        )
+        if checkpoint is not None and readiness_operation is not None and not collection_abandoned:
             parent_readiness = await ParentCompletion(self.db).readiness_on(
                 conn,
                 parent=dict(row),
@@ -579,9 +610,9 @@ class IntegrationStatusService:
                         )
                     )
         else:
-            # No collection: a terminal parent is never collected, so a child
-            # it delivered outside the train (development publisher, adopted
-            # legacy delivery) is settled rather than missing a receipt.
+            # No current collection: a terminal parent is never collected, so
+            # a child it delivered outside the train (development publisher,
+            # adopted legacy delivery) is settled rather than missing a receipt.
             legacy = await legacy_delivered_children_on(
                 conn, row, [child["id"] for child in child_rows]
             )

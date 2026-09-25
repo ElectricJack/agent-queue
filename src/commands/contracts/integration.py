@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -162,12 +163,24 @@ class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
     dry_run: bool = False
     #: Children to record as operator-accepted when no proof reaches them.
     accept: tuple[str, ...] = ()
+    #: Children whose work was abandoned: recorded as retired, nothing deleted.
+    retire: tuple[str, ...] = ()
+    #: Child -> the commit on the default branch that re-delivered its work.
+    supersede: dict[str, str] = Field(default_factory=dict)
     reason: str | None = Field(default=None, min_length=1)
 
+    @field_validator("supersede")
+    @classmethod
+    def supersede_names_commits(cls, value: dict[str, str]) -> dict[str, str]:
+        for task_id, sha in value.items():
+            if not task_id or not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+                raise ValueError("supersede maps a task id to a hexadecimal commit id")
+        return value
+
     @model_validator(mode="after")
-    def accept_needs_reason(self):
-        if self.accept and self.reason is None:
-            raise ValueError("accept requires a reason")
+    def decisions_need_reason(self):
+        if (self.accept or self.retire or self.supersede) and self.reason is None:
+            raise ValueError("accept, retire and supersede require a reason")
         return self
 
 

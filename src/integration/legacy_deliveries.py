@@ -33,14 +33,25 @@ tip:
   into a development parent collection that later reached the default
   branch);
 * ``branch_tip`` -- the child's branch tip on origin is an ancestor of the
-  tip.
+  tip;
+* ``content_equivalent`` -- the work reached the default branch under other
+  commits (cherry-picked, squashed or re-delivered): merging a development
+  delivery's commit, the branch tip or the latest completion commit into the
+  tip changes nothing (``git merge-tree --write-tree``).
 
 Anything it cannot prove is listed with its cause and left alone: a child of
 a parent that is still open (its completion still needs bound train receipts),
 a child that did not complete, or one whose work is not on the default branch.
-``--accept TASK_ID`` records an explicit operator acceptance
-(``operator_accepted``) for a named terminal child of a terminal parent that
-no proof reaches; it requires a reason and is never applied in bulk.
+For the last it also reports what merging the child's work would still change
+(``undelivered``), so a human can decide between three explicit, reasoned
+decisions for a named terminal child of a terminal parent, never applied in
+bulk:
+
+* ``--supersede TASK_ID --by SHA`` -- the work was re-delivered as *SHA*,
+  which must be on the default branch (``superseded``);
+* ``--retire TASK_ID`` -- the work was abandoned; nothing is deleted
+  (``abandoned``);
+* ``--accept TASK_ID`` -- accepted without proof (``operator_accepted``).
 
 A dry run fetches but writes nothing.  Rows are keyed by task id and inserted
 with ``ON CONFLICT DO NOTHING``, and an adopted child is no longer flagged, so
@@ -49,10 +60,12 @@ the command is idempotent.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -63,9 +76,10 @@ from src.database.tables import (
     integration_legacy_deliveries,
     projects,
     repos,
+    task_completion_records,
     tasks,
 )
-from src.git.manager import GitError
+from src.git.manager import GitError, is_valid_git_oid
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +88,14 @@ TERMINAL_TASK_STATES = ("COMPLETED", "FAILED", "CANCELLED")
 #: How an adopted child's delivery was proven.
 DEVELOPMENT_DELIVERY = "development_delivery"
 BRANCH_TIP = "branch_tip"
+CONTENT_EQUIVALENT = "content_equivalent"
+#: Operator decisions for a child no proof reaches.
+SUPERSEDED = "superseded"
 OPERATOR_ACCEPTED = "operator_accepted"
+ABANDONED = "abandoned"
+
+#: How many undelivered paths a listing names before it only counts them.
+UNDELIVERED_FILE_LIMIT = 20
 
 #: Per-child outcomes.
 ADOPTED = "adopted"
@@ -90,6 +111,15 @@ STATE_CHANGED = "state_changed"
 NO_PARENT_COLLECTION = "no_parent_collection"
 
 OUTCOMES = ("adopted", "nothing_to_adopt", "blocked", "invalid", "not_found")
+
+_ABBREVIATED_OID = re.compile(r"[0-9a-f]{7,40}")
+
+
+class _Target(NamedTuple):
+    """The default-branch tip every proof in one run is made against."""
+
+    sha: str
+    tree: str
 
 
 async def legacy_delivered_children_on(
@@ -160,15 +190,44 @@ class LegacyDeliveryAdoption:
         principal: str,
         dry_run: bool = False,
         accept: Iterable[str] = (),
+        retire: Iterable[str] = (),
+        supersede: Mapping[str, str] | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
-        accepted = sorted(set(accept))
+        """Prove what can be proven; apply the named decisions to the rest.
+
+        *accept*, *retire* and *supersede* (task id -> re-delivering commit)
+        each name terminal children no proof reaches; every one needs
+        *reason*.  A named child that turns out provable is adopted by its
+        proof and the decision is ignored.
+        """
+        superseded = dict(supersede or {})
+        decisions: dict[str, list[str]] = {}
+        for flag, task_ids in (
+            ("--accept", accept),
+            ("--retire", retire),
+            ("--supersede", superseded),
+        ):
+            for task_id in set(task_ids):
+                decisions.setdefault(task_id, []).append(flag)
         project = await self.db.get_project(project_id)
         if project is None:
             return _result("not_found", project_id, dry_run, error="project not found")
-        if accepted and not (reason or "").strip():
+        if decisions and not (reason or "").strip():
             return _result(
-                "invalid", project_id, dry_run, error="--accept requires an audit reason"
+                "invalid",
+                project_id,
+                dry_run,
+                error="a decision (--accept, --retire, --supersede) requires an audit reason",
+            )
+        conflicting = sorted(task_id for task_id, flags in decisions.items() if len(flags) > 1)
+        if conflicting:
+            return _result(
+                "invalid",
+                project_id,
+                dry_run,
+                error="a task takes one decision: "
+                + ", ".join(f"{t} ({' and '.join(decisions[t])})" for t in conflicting),
             )
         repo = (
             await self.db.get_repo(project.integration_repository_id)
@@ -184,14 +243,14 @@ class LegacyDeliveryAdoption:
             )
 
         flagged = await self._flagged_children(project_id)
-        unknown = [task_id for task_id in accepted if task_id not in flagged]
+        unknown = sorted(task_id for task_id in decisions if task_id not in flagged)
         if unknown:
             return _result(
                 "invalid",
                 project_id,
                 dry_run,
                 error=(
-                    "--accept names tasks integration status does not report as a legacy "
+                    "the decision names tasks integration status does not report as a legacy "
                     f"missing receipt: {', '.join(unknown)}"
                 ),
             )
@@ -209,14 +268,31 @@ class LegacyDeliveryAdoption:
                     return _result(
                         "blocked", project_id, dry_run, error=f"{target_ref} is absent on origin"
                     )
+                replacements: dict[str, str] = {}
+                for task_id, sha in sorted(superseded.items()):
+                    commit = await self._commit(store, sha)
+                    if commit is None or not await self._on_target(store, commit, target_sha):
+                        return _result(
+                            "invalid",
+                            project_id,
+                            dry_run,
+                            error=(
+                                f"--supersede {task_id}: {sha} is not a commit on {target_ref} "
+                                f"at {target_sha}"
+                            ),
+                        )
+                    replacements[task_id] = commit
                 deliveries = await self._deliveries_by_task(project_id, set(flagged))
+                completions = await self._completion_commits(set(flagged))
+                target = _Target(target_sha, await self._tree(store, target_sha))
                 results = [
                     await self._prove(
                         store,
-                        target_sha,
+                        target,
                         repo.id,
                         flagged[task_id],
                         deliveries.get(task_id, []),
+                        completions.get(task_id),
                     )
                     for task_id in sorted(flagged)
                 ]
@@ -228,19 +304,28 @@ class LegacyDeliveryAdoption:
             )
 
         for item in results:
-            if item["outcome"] != UNPROVEN or item["task_id"] not in accepted:
+            flags = decisions.get(item["task_id"])
+            if item["outcome"] != UNPROVEN or not flags:
                 continue
             if item["cause"] == PARENT_NOT_TERMINAL:
                 return _result(
                     "invalid",
                     project_id,
                     dry_run,
-                    error=f"{item['task_id']}: its parent is still open; nothing to accept",
+                    error=(
+                        f"{item['task_id']}: its parent is still open; nothing to decide "
+                        f"({flags[0]})"
+                    ),
                 )
+            proof = {
+                "--accept": OPERATOR_ACCEPTED,
+                "--retire": ABANDONED,
+                "--supersede": SUPERSEDED,
+            }[flags[0]]
             item.update(
                 outcome=ADOPTED,
-                proof=OPERATOR_ACCEPTED,
-                delivered_sha=None,
+                proof=proof,
+                delivered_sha=replacements.get(item["task_id"]),
                 development_delivery_id=None,
                 unproven_cause=item.pop("cause"),
             )
@@ -334,15 +419,43 @@ class LegacyDeliveryAdoption:
                     )
         return by_task
 
+    async def _completion_commits(self, task_ids: set[str]) -> dict[str, str]:
+        """The last commit each task's latest completion reported, by task."""
+        latest = (
+            select(
+                task_completion_records.c.task_id,
+                task_completion_records.c.commits,
+            )
+            .where(task_completion_records.c.task_id.in_(sorted(task_ids)))
+            .order_by(
+                task_completion_records.c.task_id,
+                task_completion_records.c.completed_at.desc(),
+                task_completion_records.c.id.desc(),
+            )
+            .distinct(task_completion_records.c.task_id)
+        )
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(latest)).all()
+        commits: dict[str, str] = {}
+        for task_id, value in rows:
+            try:
+                reported = json.loads(value or "[]")
+            except ValueError:
+                continue
+            if isinstance(reported, list) and reported and isinstance(reported[-1], str):
+                commits[task_id] = reported[-1]
+        return commits
+
     async def _prove(
         self,
         store,
-        target_sha: str,
+        target: _Target,
         repository_id: str,
         child: dict[str, Any],
         deliveries: list[dict[str, Any]],
+        completion_sha: str | None = None,
     ) -> dict[str, Any]:
-        """Adopt *child* on the first proof that reaches *target_sha*; else say why not."""
+        """Adopt *child* on the first proof that reaches *target*; else say why not."""
         item = {"task_id": child["task_id"], "parent_task_id": child["parent_task_id"]}
         if child["parent_status"] not in TERMINAL_TASK_STATES:
             return {
@@ -361,11 +474,15 @@ class LegacyDeliveryAdoption:
                 "cause": CHILD_NOT_COMPLETED,
                 "detail": f"child is {child['status']}: no delivered commit to prove",
             }
+        delivered: dict[str, str] = {}
         for delivery in deliveries:
             if delivery["repository_id"] != repository_id:
                 continue
             for sha in (delivery["source_sha"], delivery["prepared_sha"]):
-                if sha and await self._on_target(store, sha, target_sha):
+                if not sha:
+                    continue
+                delivered.setdefault(sha, delivery["id"])
+                if await self._on_target(store, sha, target.sha):
                     return {
                         **item,
                         "outcome": ADOPTED,
@@ -380,7 +497,7 @@ class LegacyDeliveryAdoption:
                 tip = await self.development.remote(store, "refs/heads/" + branch)
             except (GitError, ValueError):
                 tip = None
-            if tip and await self._on_target(store, tip, target_sha):
+            if tip and await self._on_target(store, tip, target.sha):
                 return {
                     **item,
                     "outcome": ADOPTED,
@@ -388,8 +505,30 @@ class LegacyDeliveryAdoption:
                     "delivered_sha": tip,
                     "development_delivery_id": None,
                 }
+        # The work may have reached the default branch under other commits
+        # (cherry-picked, squashed, re-delivered): then merging it changes
+        # nothing.  The first examinable candidate also shows what is left.
+        candidates = list(dict.fromkeys(c for c in (tip, completion_sha, *delivered) if c))
+        undelivered = None
+        for sha in candidates:
+            merge = await self._merge(store, target, sha)
+            if merge is None:
+                continue
+            if merge.get("tree") == target.tree:
+                return {
+                    **item,
+                    "outcome": ADOPTED,
+                    "proof": CONTENT_EQUIVALENT,
+                    "delivered_sha": merge["sha"],
+                    "development_delivery_id": delivered.get(sha),
+                }
+            if undelivered is None:
+                undelivered = await self._undelivered(store, target, merge)
         examined = [f"{len(deliveries)} development deliveries"]
         examined.append(f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent")
+        examined.append(
+            f"completion commit {completion_sha}" if completion_sha else "no completion commit"
+        )
         return {
             **item,
             "outcome": UNPROVEN,
@@ -397,10 +536,64 @@ class LegacyDeliveryAdoption:
             "detail": "no delivered commit is on the default branch (examined "
             + "; ".join(examined)
             + ")",
+            "undelivered": undelivered,
         }
 
     async def _on_target(self, store, sha: str, target_sha: str) -> bool:
         return bool(await self.git.ais_ancestor(str(store), sha, target_sha))
+
+    async def _git(self, store, *args: str):
+        return await self.git.arun_git_result(list(args), cwd=str(store))
+
+    async def _commit(self, store, sha: str) -> str | None:
+        """*sha* resolved to one commit present in *store*, or ``None``."""
+        if not _ABBREVIATED_OID.fullmatch(sha or ""):
+            return None
+        result = await self._git(store, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+        resolved = result.stdout.strip()
+        return resolved if result.returncode == 0 and is_valid_git_oid(resolved) else None
+
+    async def _tree(self, store, sha: str) -> str:
+        result = await self._git(store, "rev-parse", "--verify", f"{sha}^{{tree}}")
+        if result.returncode:
+            raise GitError(result.stderr.strip() or f"{sha} has no tree")
+        return result.stdout.strip()
+
+    async def _merge(self, store, target: _Target, sha: str) -> dict[str, Any] | None:
+        """Merge *sha* into *target* without touching a ref; ``None`` if unexaminable.
+
+        Needs ``git merge-tree --write-tree`` (Git 2.38+).  A commit absent
+        from *store* (its branch deleted and never fetched) cannot be examined.
+        """
+        commit = await self._commit(store, sha)
+        if commit is None:
+            return None
+        result = await self._git(store, "merge-tree", "--write-tree", target.sha, commit)
+        if result.returncode == 1:
+            return {"sha": commit, "tree": None, "conflict": True}
+        tree = (result.stdout.splitlines() or [""])[0].strip()
+        if result.returncode or not is_valid_git_oid(tree):
+            return None
+        return {"sha": commit, "tree": tree, "conflict": False}
+
+    async def _undelivered(self, store, target: _Target, merge: dict[str, Any]) -> dict[str, Any]:
+        """What merging *merge*'s commit into the default branch would still change."""
+        if merge["conflict"]:
+            return {
+                "sha": merge["sha"],
+                "conflict": True,
+                "summary": "merging it into the default branch conflicts",
+            }
+        stat = await self._git(store, "diff", "--shortstat", target.tree, merge["tree"])
+        names = await self._git(store, "diff", "--name-only", target.tree, merge["tree"])
+        files = [line for line in names.stdout.splitlines() if line]
+        return {
+            "sha": merge["sha"],
+            "conflict": False,
+            "summary": stat.stdout.strip(),
+            "file_count": len(files),
+            "files": files[:UNDELIVERED_FILE_LIMIT],
+        }
 
     async def _record(
         self,

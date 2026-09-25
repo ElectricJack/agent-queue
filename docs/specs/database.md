@@ -2609,15 +2609,17 @@ records a preserved workspace whose writer was stopped.  Downgrading the
 
 Legacy delivered children: one row per terminal child of a terminal parent
 that the train never collected and never will.  These are parents that
-finished under the development publisher or before trains existed.  Train
-receipts cannot be backfilled for such children, so
-`aq integration adopt-legacy-deliveries`
+finished under the development publisher or before trains existed, or whose
+collection was cancelled.  Train receipts cannot be backfilled for such
+children, so `aq integration adopt-legacy-deliveries`
 (`src/integration/legacy_deliveries.py`) records this separate, audited fact
-instead.  It writes a row after proving by ancestry that the child's delivered
-commit is on the default branch, or after an explicit, named operator
-acceptance.  Integration status then settles the child instead of reporting
-`missing_receipt`.  The row never feeds parent completion.  Revision
-`a00000000022` creates the table conditionally.
+instead.  It writes a row after proving the child's work is on the default
+branch (by ancestry, or because merging it changes nothing), or after an
+explicit, named, reasoned operator decision.  Integration status then settles
+the child instead of reporting `missing_receipt`.  The row never feeds parent
+completion.  Revision `a00000000022` creates the table conditionally;
+`a00000000023` widens `proof` to the re-delivered, superseded and abandoned
+values.
 
 | Column | Type | Constraints | Notes |
 |---|---|---|---|
@@ -2627,9 +2629,9 @@ acceptance.  Integration status then settles the child instead of reporting
 | `repository_id` | TEXT | NOT NULL | The designated integration repository the proof ran against |
 | `target_ref` | TEXT | NOT NULL | Default-branch ref, e.g. `refs/heads/main` |
 | `target_sha` | TEXT | NOT NULL | Default-branch tip the proof was checked against |
-| `delivered_sha` | TEXT | nullable | Commit proven to be an ancestor of `target_sha`; NULL only for `operator_accepted` (`ck_integration_legacy_deliveries_delivered_sha`) |
-| `proof` | TEXT | NOT NULL | One of: development_delivery, branch_tip, operator_accepted (`ck_integration_legacy_deliveries_proof`) |
-| `development_delivery_id` | TEXT | nullable | The `development_deliveries` row a `development_delivery` proof used |
+| `delivered_sha` | TEXT | nullable | Commit whose work is proven on `target_sha`: an ancestor of it, a commit whose merge into it changes nothing (`content_equivalent`), or the operator-named re-delivering commit on the default branch (`superseded`); NULL only for `operator_accepted` and `abandoned` (`ck_integration_legacy_deliveries_delivered_sha`) |
+| `proof` | TEXT | NOT NULL | One of: development_delivery, branch_tip, content_equivalent, superseded, operator_accepted, abandoned (`ck_integration_legacy_deliveries_proof`) |
+| `development_delivery_id` | TEXT | nullable | The `development_deliveries` row a `development_delivery` (or `content_equivalent`) proof used |
 | `operator_id` | TEXT | NOT NULL | Audit label of the local operator or supervisor session that ran the command |
 | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
 | `created_at` | REAL | NOT NULL | Unix timestamp |

@@ -179,6 +179,59 @@ async def test_current_or_tracked_tasks_keep_repository_blockers(db, kind):
     assert "repository_not_designated" in {b["code"] for b in projection["blockers"]}
 
 
+async def test_repository_blockers_name_each_task_and_its_cause(db):
+    """Unpinned tasks used to collapse into one blocker whose ref was ``None``."""
+    await db.create_repo(RepoConfig(
+        id="other-repo", project_id="p", source_type=RepoSourceType.CLONE,
+        url="https://github.com/acme/other.git",
+    ))
+    for task_id, status, repo_id in (
+        ("container", TaskStatus.COMPLETED, None),
+        ("container.1", TaskStatus.COMPLETED, None),
+        ("live", TaskStatus.READY, None),
+        ("elsewhere", TaskStatus.READY, "other-repo"),
+        ("pinned", TaskStatus.READY, "repo"),
+    ):
+        await db.create_task(Task(
+            id=task_id, project_id="p", title=task_id, description="", status=status,
+            repo_id=repo_id, parent_task_id="container" if task_id == "container.1" else None,
+        ))
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects)
+            .where(projects.c.id == "p")
+            .values(
+                integration_repository_id="repo",
+                hierarchical_integration_mode="observe",
+                hierarchical_integration_desired_mode="observe",
+            )
+        )
+
+    status = await IntegrationStatusService(db).status("p")
+
+    named = {
+        b["ref"]: (b["cause"], b["repository_id"], b["designated_repository_id"])
+        for b in status["blockers"]
+        if b["code"] == "repository_not_designated"
+    }
+    assert named == {
+        "container": ("task_repository_unset", None, "repo"),
+        "container.1": ("task_repository_unset", None, "repo"),
+        "live": ("task_repository_unset", None, "repo"),
+        "elsewhere": ("task_repository_mismatch", "other-repo", "repo"),
+    }
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(projects).where(projects.c.id == "p").values(integration_repository_id=None)
+        )
+    projection = await IntegrationStatusService(db).task_blockers("pinned")
+    assert [
+        (b["ref"], b["cause"]) for b in projection["blockers"]
+        if b["code"] == "repository_not_designated"
+    ] == [("pinned", "project_repository_unset")]
+
+
 async def test_conn_owned_cas_appends_transition_and_reversible_suppression(db):
     before = {
         "merge_sweep_suppressed": False,

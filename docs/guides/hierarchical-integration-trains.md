@@ -265,11 +265,13 @@ aq integration status example
 ```
 
 A parent that finished before the train has no parent collection and never
-will, so its children cannot get train receipts. Status accepts a terminal
-child of such a parent when the development publisher delivered it to the
-default branch: that `delivered`/`adopted` development delivery, bound to the
-child's latest completion, is its receipt. Any other such child is reported as
-`missing_receipt` with cause `no_parent_collection`. Clear these with the
+will, so its children cannot get train receipts. The same holds for a finished
+parent whose collection was cancelled (switching the project to development
+cancels parent operations but keeps their checkpoints). Status accepts a
+terminal child of such a parent when the development publisher delivered it to
+the default branch: that `delivered`/`adopted` development delivery, bound to
+the child's latest completion, is its receipt. Any other such child is reported
+as `missing_receipt` with cause `no_parent_collection`. Clear these with the
 proof-based control. Dry-run it first; it is safe to repeat:
 
 ```bash
@@ -282,13 +284,25 @@ It fetches the designated repository once and records an
 
 - a development delivery lists the child, and the child's source commit or the
   delivery's published commit is an ancestor of the default-branch tip;
-- the child's branch tip is such an ancestor.
+- the child's branch tip is such an ancestor;
+- the work reached the default branch under other commits (cherry-picked,
+  squashed or re-delivered): merging a delivery commit, the branch tip or the
+  child's latest completion commit into the tip changes nothing
+  (`content_equivalent`).
 
 It lists every other child with its reason (`not_on_default_branch`,
-`child_not_completed`, `parent_not_terminal`). A child of a parent that is
-still open is never adopted, because that parent's completion needs real train
-receipts. For a child the human confirms needs nothing delivered,
-`--accept TASK_ID --reason '...'` records an explicit `operator_accepted` row.
+`child_not_completed`, `parent_not_terminal`). For `not_on_default_branch` it
+also reports, under `undelivered`, what merging the child's work would still
+change: the commit examined, a diffstat and the paths, or a conflict. A child
+of a parent that is still open is never adopted, because that parent's
+completion needs real train receipts. A human settles the rest one child at a
+time, each with `--reason '...'`:
+
+- `--supersede TASK_ID --by SHA` when SHA, which must be on the default
+  branch, re-delivered the work (`superseded`);
+- `--retire TASK_ID` when the work was abandoned; the task and its branch are
+  left as they are (`abandoned`);
+- `--accept TASK_ID` when nothing is owed (`operator_accepted`).
 
 If status reports only `legacy_pr_merge_gate` blockers, an operator may make
 that exact history inapplicable. Copy the current digest once, create the

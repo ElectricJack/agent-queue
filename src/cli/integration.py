@@ -284,37 +284,70 @@ def integration_release_stale_owners(
 @click.option("--project-id", required=True)
 @click.option("--dry-run", is_flag=True, help="Report what would be adopted; change nothing.")
 @click.option(
+    "--supersede",
+    metavar="TASK_ID",
+    help="This child's work was re-delivered as the --by commit (needs --by and --reason).",
+)
+@click.option(
+    "--by",
+    "by",
+    metavar="SHA",
+    help="With --supersede: the commit on the default branch that re-delivered the work.",
+)
+@click.option(
+    "--retire",
+    "retire",
+    multiple=True,
+    metavar="TASK_ID",
+    help="Record this child's work as abandoned; deletes nothing (repeatable; needs --reason).",
+)
+@click.option(
     "--accept",
     "accept",
     multiple=True,
     metavar="TASK_ID",
     help="Record this unprovable child as operator-accepted (repeatable; needs --reason).",
 )
-@click.option("--reason", help="Audit reason; required with --accept.")
+@click.option("--reason", help="Audit reason; required with --supersede, --retire or --accept.")
 @click.pass_context
 @_handle_errors
 def integration_adopt_legacy_deliveries(
     ctx: click.Context,
     project_id: str,
     dry_run: bool,
+    supersede: str | None,
+    by: str | None,
+    retire: tuple[str, ...],
     accept: tuple[str, ...],
     reason: str | None,
 ) -> None:
-    """Adopt delivered children of parents that finished before the train.
+    """Adopt delivered children of parents that finished outside the train.
 
     Observe-mode status reports `missing_receipt` for a terminal child of a
-    terminal parent with no parent collection: such a parent is never
-    collected, so no train receipt can ever exist.  Status already accepts a
-    child the development publisher delivered to the default branch.  For
-    every other flagged child this fetches the designated repository and
+    terminal parent with no current parent collection: such a parent is never
+    collected again, so no train receipt can ever exist.  Status already
+    accepts a child the development publisher delivered to the default branch.
+    For every other flagged child this fetches the designated repository and
     records a legacy delivery when a development delivery's commit or the
-    child's branch tip is an ancestor of the default branch; it lists every
-    child it cannot prove with the reason.  `--accept TASK_ID --reason ...`
-    records a named unprovable child as operator-accepted.  Safe to repeat.
+    child's branch tip is an ancestor of the default branch, or when merging
+    the child's work into it changes nothing (re-delivered under other
+    commits).  It lists every child it cannot prove with the reason and, under
+    `undelivered`, what merging its work would still change.
+
+    Decide those one child at a time, with a reason: `--supersede TASK_ID --by
+    SHA` when SHA on the default branch re-delivered the work, `--retire
+    TASK_ID` when the work was abandoned (nothing is deleted), or `--accept
+    TASK_ID` to accept it without proof.  Safe to repeat.
     """
-    if accept and not reason:
-        raise click.UsageError("--accept requires --reason")
+    if (supersede is None) != (by is None):
+        raise click.UsageError("--supersede and --by go together")
+    if (supersede or retire or accept) and not reason:
+        raise click.UsageError("--supersede, --retire and --accept require --reason")
     args: dict[str, Any] = {"project_id": project_id, "dry_run": dry_run}
+    if supersede is not None:
+        args["supersede"] = {supersede: by}
+    if retire:
+        args["retire"] = list(retire)
     if accept:
         args["accept"] = list(accept)
     if reason is not None:

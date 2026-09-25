@@ -3204,6 +3204,9 @@
         ],
         "optional": [
           "--dry-run",
+          "--supersede",
+          "--by",
+          "--retire",
           "--accept",
           "--reason",
           "--json",
