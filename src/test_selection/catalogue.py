@@ -413,21 +413,26 @@ def load_catalogue(path: Path) -> Catalogue:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise CatalogueError([f"{path}: unreadable ({exc.strerror or exc})"]) from exc
+    return load_catalogue_text(text, source=str(path))
+
+
+def load_catalogue_text(text: str, *, source: str) -> Catalogue:
+    """Parse catalogue content from a Git blob with the same checks as a workspace file."""
     try:
         data = json.loads(text)
     except ValueError as exc:
-        raise CatalogueError([f"{path}: not valid JSON ({exc})"]) from exc
+        raise CatalogueError([f"{source}: not valid JSON ({exc})"]) from exc
     if not isinstance(data, dict):
-        raise CatalogueError([f"{path}: expected a JSON object"])
+        raise CatalogueError([f"{source}: expected a JSON object"])
     problems: list[str] = []
     if data.get("schema_version") != CATALOGUE_SCHEMA_VERSION:
         problems.append(
-            f"{path}: schema_version {data.get('schema_version')!r} is not "
+            f"{source}: schema_version {data.get('schema_version')!r} is not "
             f"{CATALOGUE_SCHEMA_VERSION}; {REGENERATE_HINT}"
         )
     if data.get("generator_version") != GENERATOR_VERSION:
         problems.append(
-            f"{path}: generator_version {data.get('generator_version')!r} is not "
+            f"{source}: generator_version {data.get('generator_version')!r} is not "
             f"{GENERATOR_VERSION}; {REGENERATE_HINT}"
         )
     if problems:
@@ -457,19 +462,19 @@ def load_catalogue(path: Path) -> Catalogue:
             digest=str(data["digest"]),
         )
     except (KeyError, TypeError, AttributeError) as exc:
-        raise CatalogueError([f"{path}: malformed catalogue ({exc!r}); {REGENERATE_HINT}"]) from exc
+        raise CatalogueError([f"{source}: malformed catalogue ({exc!r}); {REGENERATE_HINT}"]) from exc
     if catalogue.digest != _digest_of(catalogue):
-        raise CatalogueError([f"{path}: digest mismatch: edited by hand? {REGENERATE_HINT}"])
+        raise CatalogueError([f"{source}: digest mismatch: edited by hand? {REGENERATE_HINT}"])
     for rel, info in modules.items():
         for area_id in info.areas:
             if area_id not in areas or rel not in areas[area_id].modules:
-                problems.append(f"{path}: {rel} names area {area_id!r} that does not list it")
+                problems.append(f"{source}: {rel} names area {area_id!r} that does not list it")
     for area_id, area in areas.items():
         if not area.modules:
-            problems.append(f"{path}: area {area_id!r} has no modules")
+            problems.append(f"{source}: area {area_id!r} has no modules")
         for rel in area.modules:
             if rel not in modules or area_id not in modules[rel].areas:
-                problems.append(f"{path}: area {area_id!r} lists {rel} that does not name it")
+                problems.append(f"{source}: area {area_id!r} lists {rel} that does not name it")
     if problems:
         raise CatalogueError(problems)
     return catalogue

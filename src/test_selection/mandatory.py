@@ -99,8 +99,14 @@ def _full(
     )
 
 
-def mandatory_set(snapshot: ChangeSnapshot, catalogue: Catalogue, rules: Rules) -> MandatoryResult:
-    """Map every changed path through *rules*; see the module docstring for the order."""
+def mandatory_set(
+    snapshot: ChangeSnapshot,
+    catalogue: Catalogue,
+    rules: Rules,
+    *,
+    base_catalogue: Catalogue | None = None,
+) -> MandatoryResult:
+    """Map changed paths; use the base catalogue to find removed tests' old areas."""
     if not snapshot.complete:
         why = snapshot.incomplete_reason
         reason = r.with_detail(r.SNAPSHOT_INCOMPLETE, why) if why else r.SNAPSHOT_INCOMPLETE
@@ -120,9 +126,10 @@ def mandatory_set(snapshot: ChangeSnapshot, catalogue: Catalogue, rules: Rules) 
             invalidated.append(r.with_detail(r.GLOBAL_INVALIDATOR, path))
             continue
         matched = False
-        if path in catalogue.modules:
+        test_catalogue = catalogue if path in live else base_catalogue or catalogue
+        if path in test_catalogue.modules:
             matched = True
-            owners = catalogue.areas_for_module(path)
+            owners = test_catalogue.areas_for_module(path)
             areas.update(owners)
             if path in live:
                 collected.add([path], r.MANDATORY_CHANGED_TEST)

@@ -10,6 +10,7 @@ universe.  Pure functions over the fixture project's committed artifacts.
 from __future__ import annotations
 
 import itertools
+import json
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ from src.test_selection import reasons
 from src.test_selection.catalogue import load_catalogue, load_rules
 from src.test_selection.mandatory import mandatory_set
 from src.test_selection.snapshot import ChangedPath, ChangeSnapshot
-from tests.selection_fixture_repo import FILES, build_fixture_repo
+from tests.selection_fixture_repo import FILES, build_fixture_repo, git
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -210,6 +211,39 @@ def test_a_deleted_test_module_puts_its_areas_surviving_modules_in_m(repo):
     assert "mandatory_changed_test:tests/test_c.py" in result.reasons["tests/test_c2.py"]
     assert "tests/test_c.py" not in result.reasons
     assert result.affected_areas == {"gamma"}
+
+
+def test_a_regenerated_catalogue_uses_base_ownership_for_a_deleted_test(repo):
+    _with_second_gamma_module(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "two-module area at base")
+    base_sha = git(repo, "rev-parse", "HEAD").strip()
+    base_text = git(repo, "show", f"{base_sha}:{cat.CATALOGUE_PATH}")
+    base_catalogue = cat.load_catalogue_text(base_text, source="base:tests/selection_catalogue.json")
+    tampered = json.loads(base_text)
+    tampered["modules"]["tests/test_c.py"]["summary"] = "altered without regenerating"
+    with pytest.raises(cat.CatalogueError, match="digest mismatch"):
+        cat.load_catalogue_text(json.dumps(tampered), source="base:tests/selection_catalogue.json")
+    (repo / "tests/test_c.py").unlink()
+    rebuilt = cat.build_catalogue(repo, cat.load_areas(repo / cat.AREAS_PATH))
+    (repo / cat.CATALOGUE_PATH).write_text(cat.render_catalogue(rebuilt))
+    catalogue = load_catalogue(repo / cat.CATALOGUE_PATH)
+    assert cat.validate_catalogue(repo, catalogue) == []
+    assert "tests/test_c.py" not in catalogue.modules
+    rules = load_rules(repo / cat.RULES_PATH, catalogue)
+
+    result = mandatory_set(
+        snap(ChangedPath("tests/test_c.py", "deleted")),
+        catalogue,
+        rules,
+        base_catalogue=base_catalogue,
+    )
+
+    assert not result.full_required
+    assert result.affected_areas == {"gamma"}
+    assert "tests/test_c.py" not in result.modules
+    assert "tests/test_c2.py" in result.modules
+    assert "mandatory_changed_test:tests/test_c.py" in result.reasons["tests/test_c2.py"]
 
 
 def test_a_renamed_test_module_runs_under_its_new_name_only(repo):
