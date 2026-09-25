@@ -42,6 +42,8 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from src.metrics.histogram import is_hist, is_sum, merge_hists, merge_sums
+
 logger = logging.getLogger(__name__)
 
 #: The bus event carrying one live sample.  Never persisted through
@@ -132,7 +134,9 @@ def aggregate_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     minute or per hour.  Summing them would turn "12 agents for 60 seconds"
     into 720 agents.  Non-numeric leaves (booleans like
     ``subagents.complete``, strings) take the **last** value: for a
-    completeness flag the newest reading is the honest one.
+    completeness flag the newest reading is the honest one.  A ``kind: hist``
+    leaf merges by adding buckets and a ``kind: sum`` leaf by adding counters
+    — a latency percentile cannot be averaged.
 
     Keys absent from some samples are still carried: the average is over the
     samples that actually had the key, so a series that started mid-minute is
@@ -155,7 +159,12 @@ def aggregate_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             out[key] = None
             continue
         if all(isinstance(v, Mapping) for v in values):
-            out[key] = aggregate_samples(values)
+            if all(is_hist(v) for v in values):
+                out[key] = merge_hists(values)
+            elif all(is_sum(v) for v in values):
+                out[key] = merge_sums(values)
+            else:
+                out[key] = aggregate_samples(values)
         elif all(isinstance(v, bool) for v in values):
             out[key] = values[-1]
         elif all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
