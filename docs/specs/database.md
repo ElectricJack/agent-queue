@@ -251,6 +251,82 @@ One installation-wide durable evaluation per destination/configuration generatio
 
 Unique: (`destination`, `config_generation`, `window_start`, `window_end`). Index: `idx_digest_windows_due`.
 
+### Table: `supervisor_conversations`
+
+One operator conversation with the global supervisor, opened by an allowlisted @mention of the bot in the configured channel (Discord mention-routing spec §4.1, opt-in via `discord.conversation.enabled`). The row, its first input and the supervisor notice are written in one transaction before any transport side effect. `thread_id` is the internal `messages.thread_id` both directions share; `external_thread_id` is set, and the state moves `opening` → `open`, only when the thread-open delivery confirms.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `conv-<uuid4>` |
+| `transport` | TEXT | NOT NULL |
+| `guild_id` | TEXT | NOT NULL configured guild |
+| `channel_id` | TEXT | NOT NULL configured channel |
+| `external_root_message_id` | TEXT | NOT NULL, the opening mention |
+| `external_thread_id` | TEXT | nullable until the thread is confirmed |
+| `thread_id` | TEXT | NOT NULL UNIQUE, `conversation:<id>` |
+| `created_by` | TEXT | NOT NULL verified actor, `human:discord:<id>` |
+| `audience` | JSON | NOT NULL allowlist snapshot at open |
+| `state` | TEXT | opening, open, closed or delivery_blocked |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL, bumped by each input and reply |
+| `closed_at` | FLOAT | nullable |
+
+Unique: (`transport`, `external_root_message_id`), `thread_id`, and (`transport`, `external_thread_id`) where the thread is set. Index: `idx_supervisor_conversations_state`.
+
+### Table: `conversation_inputs`
+
+One accepted operator message in a conversation. Transport/external-message uniqueness collapses gateway, backfill and replay duplicates, and the row outlives its text: after 30 days `text` is nulled (`text_expired_at` set, an unanswered input becomes `expired`) and the row stays as the dedup tombstone until it is deleted after 90 days, so expired text cannot replay into fresh work. `supervisor_message_id` is the deterministic `msg-<input id>` notice inserted in the same transaction; `reply_message_id` points at the supervisor's latest recorded answer.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `cinput-<uuid4>` |
+| `conversation_id` | TEXT | NOT NULL, REFERENCES supervisor_conversations(id) ON DELETE CASCADE |
+| `transport` | TEXT | NOT NULL |
+| `external_message_id` | TEXT | NOT NULL |
+| `verified_actor` | TEXT | NOT NULL, `human:discord:<id>` |
+| `author_id` | TEXT | NOT NULL bare author id, for rate limits |
+| `channel_id` | TEXT | NOT NULL, for rate limits |
+| `text` | TEXT | nullable once expired |
+| `text_sha256` | TEXT | NOT NULL |
+| `char_count` | INTEGER | NOT NULL, 1–4000 |
+| `received_at` | FLOAT | NOT NULL |
+| `source` | TEXT | gateway, backfill, replay or test |
+| `state` | TEXT | accepted, answered, expired or revoked |
+| `supervisor_message_id` | TEXT | nullable, REFERENCES messages(id) |
+| `reply_message_id` | TEXT | nullable, REFERENCES messages(id) |
+| `delay_notified_at` | FLOAT | nullable, set once by the delay watchdog |
+| `text_expired_at` | FLOAT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+
+Unique: (`transport`, `external_message_id`). Indexes: `idx_conversation_inputs_history`, `idx_conversation_inputs_author_window`, `idx_conversation_inputs_channel_window`.
+
+### Table: `conversation_backfill_cursors`
+
+Reconnect backfill position for the configured channel and each bound conversation thread. The cursor advances only after the page it covers is persisted.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `transport` | TEXT | PRIMARY KEY (with `channel_id`) |
+| `channel_id` | TEXT | PRIMARY KEY (with `transport`), channel or thread id |
+| `last_external_message_id` | TEXT | NOT NULL |
+| `advanced_at` | FLOAT | NOT NULL |
+
+### Table: `conversation_intake_gaps`
+
+A stretch of channel history the reconnect backfill could not read, recorded so status reports possibly missed messages instead of claiming delivery.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `gap-<uuid4>` |
+| `transport` | TEXT | NOT NULL |
+| `channel_id` | TEXT | NOT NULL |
+| `gap_from` | FLOAT | NOT NULL |
+| `gap_to` | FLOAT | NOT NULL |
+| `reason` | TEXT | cursor_expired, history_forbidden or pass_cap |
+| `recorded_at` | FLOAT | NOT NULL |
+
+Index: `idx_conversation_intake_gaps_channel`.
+
 ### Table: `message_discord_receipts`
 
 Records successful Discord delivery per AQ message. The message ID is the primary key so repeated event processing does not repost an acknowledged reply.
