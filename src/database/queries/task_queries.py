@@ -581,6 +581,22 @@ class TaskQueryMixin:
                         values["repo_id"] = await self._moved_task_repo_id(
                             conn, task_id, values["project_id"]
                         )
+            if "branch_name" in values:
+                # Lock the task before reading the checkpoint. Origin
+                # establishment writes this row too, so the two updates
+                # serialize rather than leaving branch and checkpoint apart.
+                # Project moves take their hierarchy lock above before this row lock.
+                await conn.execute(select(tasks.c.id).where(tasks.c.id == task_id).with_for_update())
+                canonical_branch = await conn.scalar(
+                    select(task_integration_checkpoints.c.branch).where(
+                        task_integration_checkpoints.c.task_id == task_id
+                    )
+                )
+                if canonical_branch is not None and values["branch_name"] != canonical_branch:
+                    raise ValueError(
+                        f"Task '{task_id}' has canonical integration branch '{canonical_branch}'; "
+                        "branch_name cannot rename it"
+                    )
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():

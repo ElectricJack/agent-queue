@@ -933,7 +933,12 @@ async def test_seal_freezes_source_ref_and_retention_from_authoritative_checkpoi
     request = await _request(db)
 
     sealed = await TrainService(db).seal("p", request["request_id"], 20.0)
-    await db.update_task("root", branch_name="mutated-after-seal")
+    # Corrupt the stored task row directly: the public update path refuses a
+    # branch that disagrees with its integration checkpoint.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "root").values(branch_name="mutated-after-seal")
+        )
 
     async with db._engine.connect() as conn:
         batch = (

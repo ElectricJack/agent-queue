@@ -86,6 +86,11 @@ same data as Rich tables/panels.
 | `aq memory search` | `<query> [--scope]` | A | paused: `{paused: true, results: []}` |
 | `aq session drain-ack` | — | A | `{acknowledged: true}` — session may now be reaped |
 
+For a task with an integration checkpoint, `aq task set --branch` accepts only the
+checkpoint's branch. This permits restoring a task row that drifted from its
+canonical branch while refusing a rename that would make the task unclaimable.
+The branch check happens before any other `task set` field is written.
+
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the
 > claim-fenced `AgentQuestionService` from completed native transcript turns
