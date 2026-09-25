@@ -631,6 +631,11 @@ Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 | `retain_seconds_1s` | `int` | `3600` | Retention horizon for per-second samples. Must be `>= 0`. |
 | `retain_seconds_1m` | `int` | `2592000` | Retention horizon for per-minute roll-ups (30 days). Must be `>= 0`. |
 | `retain_seconds_1h` | `int` | `31536000` | Retention horizon for per-hour roll-ups (365 days). Must be `>= 0`. |
+| `perf_enabled` | `bool` | `True` | Whether the performance probes record: the event-loop drift probe, route latency by route template, connection-pool wait and query duration. `false` is the rollback switch — the probes stop recording and each sample's `perf` block drops to `{"enabled": false}`; routing, the dashboard server and stored samples are untouched. Hot-reloadable. Spec: `2026-09-24-dashboard-performance-under-load-and-separation` §4.1. |
+| `perf_loop_probe_ms` | `int` | `100` | Period of the event-loop drift probe: it sleeps this long and records how late each wake-up was. Must be between `10` and `1000`. |
+| `perf_slow_query_ms` | `float` | `100.0` | A query that takes longer than this counts toward `perf.db.counters.slow_queries`. The statement text is never recorded. Must be `> 0`. |
+| `perf_host_budget_ms` | `float` | `20.0` | Wall-clock budget for one host read (pressure-stall information, test-slot occupancy, ungated load). An overrun backs the reader off and marks the host block `stale` with reason `over_budget`. Must be `> 0`. |
+| `perf_relay_poll_seconds` | `float` | `5.0` | How often the sampler polls the dashboard server's relay counters (`GET /__aq/metrics`) and records their deltas. The poll runs on the sampler tick. Must be `>= interval_seconds`. |
 
 ---
 

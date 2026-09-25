@@ -1323,6 +1323,11 @@
         "enabled": true,
         "flush_interval_seconds": 5.0,
         "interval_seconds": 1.0,
+        "perf_enabled": true,
+        "perf_host_budget_ms": 20.0,
+        "perf_loop_probe_ms": 100,
+        "perf_relay_poll_seconds": 5.0,
+        "perf_slow_query_ms": 100.0,
         "retain_seconds_1h": 31536000,
         "retain_seconds_1m": 2592000,
         "retain_seconds_1s": 3600,
@@ -1342,6 +1347,26 @@
         },
         "interval_seconds": {
           "default": 1.0,
+          "type": "number"
+        },
+        "perf_enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "perf_host_budget_ms": {
+          "default": 20.0,
+          "type": "number"
+        },
+        "perf_loop_probe_ms": {
+          "default": 100,
+          "type": "integer"
+        },
+        "perf_relay_poll_seconds": {
+          "default": 5.0,
+          "type": "number"
+        },
+        "perf_slow_query_ms": {
+          "default": 100.0,
           "type": "number"
         },
         "retain_seconds_1h": {
