@@ -270,6 +270,23 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordConversationConfig:
+    """Opt-in @mention conversations with the global supervisor (mention-routing spec §4).
+
+    Off by default.  Enabling means the ``discord.authorized_users`` identities
+    are trusted operator correspondents of the *elevated* global supervisor;
+    there is no sandboxed chatbot.  Every numeric bound is fixed in
+    :mod:`src.conversations.limits`, not configured here, and the runtime
+    preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
+    """
+
+    enabled: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
 class DiscordConfig:
     """Discord bot connection and the one shared destination."""
 
@@ -282,6 +299,7 @@ class DiscordConfig:
     channel_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
+    conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
     rate_guard_warn: int = 1000
@@ -308,6 +326,15 @@ class DiscordConfig:
         """Whether old control/notification settings name multiple channels."""
         return len(self.legacy_destination_names) > 1
 
+    @property
+    def has_allowlist(self) -> bool:
+        """Whether ``authorized_users`` names anyone (blank entries name no one).
+
+        The gateway's legacy check treats an empty list as "everyone"; the
+        conversation route fails closed on it instead.
+        """
+        return any(str(user).strip() for user in self.authorized_users)
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not self.bot_token:
@@ -329,6 +356,18 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.conversation.validate())
+        if self.conversation.enabled and not (
+            self.has_allowlist and self.guild_id and self.channel_id
+        ):
+            errors.append(
+                ConfigError(
+                    "discord",
+                    "conversation.enabled",
+                    "discord.conversation.enabled requires a non-empty "
+                    "discord.authorized_users allowlist, a guild_id and a channel_id",
+                )
+            )
         return errors
 
     def warnings(self) -> list[str]:
@@ -347,6 +386,12 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.conversation.enabled:
+            notes.append(
+                "Discord conversations are enabled: an @mention from an authorized_users "
+                "identity reaches the elevated global supervisor. This is not a sandboxed "
+                "chatbot; keep it off where chat must be read-only."
+            )
         if self.legacy_destination_conflict and not self.channel_id:
             notes.append(
                 "Legacy Discord destinations conflict: choose one explicit channel_id before "
@@ -3201,6 +3246,12 @@ class AppConfig:
                     "requires messages.enabled and sessions.enabled",
                 )
             )
+        # A conversation input is delivered as a message to
+        # ``session:supervisor-global`` (mention-routing spec §4.1).
+        if self.discord.conversation.enabled and not self.messages.enabled:
+            errors.append(
+                ConfigError("discord", "conversation.enabled", "requires messages.enabled")
+            )
         # Agent profiles
         for profile in self.agent_profiles:
             errors.extend(profile.validate())
@@ -3980,6 +4031,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 esc.get("supervisor_delivery_timeout_minutes", 15)
             ),
         )
+        conv = d.get("conversation", {}) or {}
+        conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
@@ -3987,6 +4040,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             channel_id=str(d.get("channel_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
+            conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
             rate_guard_halt=int(d.get("rate_guard_halt", 8000)),

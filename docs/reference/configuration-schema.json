@@ -294,6 +294,9 @@
         "authorized_users": [],
         "bot_token": "",
         "channel_id": "",
+        "conversation": {
+          "enabled": false
+        },
         "digest": {
           "catchup_hours": 24,
           "categories": [
@@ -333,6 +336,19 @@
         "channel_id": {
           "default": "",
           "type": "string"
+        },
+        "conversation": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "type": "object"
         },
         "digest": {
           "additionalProperties": false,
