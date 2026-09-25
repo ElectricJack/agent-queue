@@ -1,0 +1,33 @@
+name: Train candidate gate
+
+# `main` accepts only commits carrying the `aq-train/candidate` status (repo
+# ruleset "Train-only main"). This workflow posts it on an integration-train
+# candidate once the Tests workflow passed on that exact SHA; the train then
+# fast-forwards `main` to it. Pull request commits never get this status, so
+# the GitHub merge button cannot land a PR on `main` behind the train's back.
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches:
+      - 'aq/integration/**'
+
+permissions:
+  statuses: write
+
+jobs:
+  mark:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark the tested candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh api "repos/${{ github.repository }}/statuses/$SHA" \
+            -f state=success \
+            -f context=aq-train/candidate \
+            -f description="Tests passed on this train candidate"
