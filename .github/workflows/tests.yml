@@ -1,179 +1,49 @@
 name: Tests
 
+# The full suite runs before a change reaches `main`, never after:
+#
+# * `pull_request` into `main` tests the PR's merge with its base.
+# * A push to `aq/integration/**` tests the train's assembled candidate, and
+#   the train promotes that exact tested SHA to `main`.
+# * A push to `aq/parent/**` tests an immutable parent snapshot ref that
+#   `src/integration/parent_ci.py` publishes and then reads the run from.
+#
+# `main` itself is not a trigger. Everything that reaches it was validated
+# first, by one of the runs above or by the development publisher's
+# pre-publish validation, so a run per `main` commit only repeated that work.
+# `workflow_dispatch` runs the suite by hand on any branch, `main` included.
 on:
-  push:
+  pull_request:
     branches:
       - main
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
       - 'aq/parent/**'
       - 'aq/integration/**'
-      # Existing parent origin is frozen; retain coverage during rollout.
-      - 'aq/sound-current'
   workflow_dispatch:
 
-# Integration candidates test the assembled feature changes. A main run
-# reuses exact candidate evidence when available; otherwise it tests main.
-# Two PRs green on their own stale bases can still put a red `main` together
-# (#390 + #391, 2026-09-03: one committed a generated file, the other
-# changed how it is generated). That run must therefore never be lost.
-#
-# With a shared group per ref GitHub keeps at most one *pending* run: a
-# burst of merges cancels every queued main run but the newest (#381's and
-# #391's runs were both cancelled that way, so #391's merge commit was never
-# tested on main at all). Keying main's group by commit gives each merge
-# commit its own run, so a red main is reported on the commit that caused
-# it, within one CI cycle, and needs no bisecting. Integration branches keep
-# one group per ref so a newer push supersedes their obsolete checks.
+# One group per ref (`refs/pull/<n>/merge` for a PR), so a newer push
+# supersedes that PR's or integration branch's obsolete run. Parent snapshot
+# refs are named by SHA and never share a group.
 concurrency:
-  group: tests-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'head' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  integration-attestation:
-    name: Integration candidate CI reuse decision
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      checks: read
-    outputs:
-      skip_full_ci: ${{ steps.decision.outputs.skip_full_ci }}
-      suppress_duplicate_pr: ${{ steps.decision.outputs.suppress_duplicate_pr }}
-    steps:
-      - name: Checkout exact event revision
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Verify exact checkout
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Read exact workflow run evidence
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GITHUB_API_URL: ${{ github.api_url }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-        run: |
-          python - <<'PY'
-          import json, os, re, urllib.parse, urllib.request
-
-          maximum = 2 * 1024 * 1024
-          headers = {
-              "Accept": "application/vnd.github+json",
-              "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-              "X-GitHub-Api-Version": "2022-11-28",
-          }
-
-          def read(url):
-              request = urllib.request.Request(url, headers=headers)
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  body = response.read(maximum + 1)
-                  if len(body) > maximum:
-                      raise ValueError("response too large")
-                  return json.loads(body), response.headers.get("Link", "")
-
-          evidence = {"current_run": {}, "workflow_runs": []}
-          try:
-              api = os.environ["GITHUB_API_URL"]
-              repository = os.environ["GITHUB_REPOSITORY"]
-              sha = os.environ["GITHUB_SHA"]
-              current_id = int(os.environ["CURRENT_RUN_ID"])
-              current, _ = read(f"{api}/repos/{repository}/actions/runs/{current_id}")
-              workflow_id = current["workflow_id"]
-              query = urllib.parse.urlencode({
-                  "event": "push",
-                  "head_sha": sha,
-                  "exclude_pull_requests": "true",
-                  "per_page": 100,
-              })
-              url = f"{api}/repos/{repository}/actions/workflows/{workflow_id}/runs?{query}"
-              records = []
-              for _ in range(10):
-                  value, link = read(url)
-                  runs = value.get("workflow_runs") if isinstance(value, dict) else None
-                  if not isinstance(runs, list):
-                      raise ValueError("invalid workflow runs response")
-                  for run in runs:
-                      branch = run.get("head_branch") if isinstance(run, dict) else None
-                      if (
-                          not isinstance(branch, str)
-                          or re.fullmatch(
-                              r"aq/integration/p-[0-9a-f]{32}/r-[0-9a-f]{32}", branch
-                          ) is None
-                          or run.get("head_sha") != sha
-                      ):
-                          continue
-                      run_id = run["id"]
-                      attempt_number = run["run_attempt"]
-                      attempt, _ = read(
-                          f"{api}/repos/{repository}/actions/runs/{run_id}"
-                          f"/attempts/{attempt_number}"
-                      )
-                      latest, _ = read(f"{api}/repos/{repository}/actions/runs/{run_id}")
-                      records.append({"listed": run, "attempt": attempt, "latest": latest})
-                  match = re.search(r'<([^>]+)>;\s*rel="next"', link)
-                  if match is None:
-                      break
-                  url = match.group(1)
-              else:
-                  raise ValueError("too many response pages")
-              evidence = {"current_run": current, "workflow_runs": records}
-          except Exception:
-              evidence = {"current_run": {}, "workflow_runs": []}
-          with open("workflow-runs.json", "w", encoding="utf-8") as output:
-              json.dump(evidence, output)
-          PY
-
-      - name: Use empty evidence outside main
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
-        run: echo '{"current_run":{},"workflow_runs":[]}' > workflow-runs.json
-
-      - name: Decide without daemon credentials
-        id: decision
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          EVENT_REF: ${{ github.ref }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REPOSITORY_FULL_NAME: ${{ github.repository }}
-          CHECKOUT_SHA: ${{ github.sha }}
-          CURRENT_RUN_ID: ${{ github.run_id }}
-          CURRENT_RUN_ATTEMPT: ${{ github.run_attempt }}
-          HEAD_REPOSITORY_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          value=$(python scripts/check-integration-attestation.py \
-            --event-name "$EVENT_NAME" --ref "$EVENT_REF" \
-            --default-branch "$DEFAULT_BRANCH" \
-            --repository-full-name "$REPOSITORY_FULL_NAME" \
-            --checkout-sha "$CHECKOUT_SHA" \
-            --current-run-id "$CURRENT_RUN_ID" \
-            --current-run-attempt "$CURRENT_RUN_ATTEMPT" \
-            --workflow-runs-file workflow-runs.json)
-          echo "skip_full_ci=$value" >> "$GITHUB_OUTPUT"
-          duplicate=$(python scripts/check-integration-attestation.py \
-            --matching-integration-pr --event-name "$EVENT_NAME" \
-            --repository-full-name "$REPOSITORY_FULL_NAME" \
-            --head-repository-full-name "$HEAD_REPOSITORY_FULL_NAME" \
-            --head-ref "$HEAD_REF")
-          echo "suppress_duplicate_pr=$duplicate" >> "$GITHUB_OUTPUT"
-
   test:
     name: Tests (${{ matrix.suite.name }})
-    needs: integration-attestation
+    # A draft PR waits for `ready_for_review`. A same-repository PR from an
+    # `aq/integration/**` branch is skipped because the push trigger above
+    # already tests that head SHA, and its checks appear on the PR.
     if: >-
-      always() &&
-      ((github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/heads/aq/integration/')) ||
-       (needs.integration-attestation.outputs.skip_full_ci != 'true' &&
-        needs.integration-attestation.outputs.suppress_duplicate_pr != 'true'))
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

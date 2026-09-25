@@ -45,8 +45,9 @@ flowchart TD
 ```
 
 The two things that never happen: nobody pushes `main` by hand, and nothing
-merges because a PR check went green — there is no PR check
-([CI](ci.md#the-workflows)).
+merges merely because a PR check went green. A PR into `main` does get a
+`Tests` run ([CI](ci.md#the-workflows)); it is evidence for the reviewer and
+the integration service, not a merge button.
 
 ## Before you push
 
@@ -81,8 +82,8 @@ follow from that:
 
 ## Opening a pull request
 
-A PR is how a human change gets *reviewed*. It is not how it gets *tested*, and
-it is not what merges it.
+A PR is how a human change gets *reviewed*, and a PR into `main` is also where
+GitHub tests it. It is not what merges it.
 
 ```bash
 gh pr create --base main --head "$(git branch --show-current)" \
@@ -91,9 +92,11 @@ gh pr create --base main --head "$(git branch --show-current)" \
 
 What to expect:
 
-* **No `Tests` check appears.** [`tests.yml`](../../.github/workflows/tests.yml)
-  has no `pull_request` trigger. Put the evidence in the PR body: the exact
-  focused commands you ran and their results.
+* **`Tests` runs on the PR.** [`tests.yml`](../../.github/workflows/tests.yml)
+  runs its four arms on every PR into `main` when it is opened, updated,
+  reopened or marked ready for review; a draft waits until it is ready. Still
+  put your evidence in the PR body: the exact focused commands you ran and
+  their results.
 * **Do not merge your own PR.** In AQ's own workflow `pr_merge` is denied to
   workers outright; the same expectation applies to human contributors here.
 * **Merging is not delivery.** Integration observes source branches and
@@ -172,11 +175,11 @@ repository actually contains, and what reviewers expect:
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| Your PR has no checks | Expected — no `pull_request` trigger. | State your local evidence in the PR body. |
+| Your PR has no checks | It is a draft, or it does not target `main`. | Mark it ready for review, or `gh workflow run tests.yml --ref <branch>`. |
 | A merged PR's commits are not on `main` | Merged into an integration or parent branch, not published yet. | `git merge-base --is-ancestor <sha> origin/main`; wait for the sweep. |
 | `prepare_failed: branch not reserved` | A race, or a branch owned by another task. | Check `aq integration status`; retry the claim a few times before reporting. |
 | Work parked after a failed batch | A conflict or a validation failure. | Do not re-push over it. `aq integration sweep <project> --retry` after the cause is fixed. |
-| `main` red right after your change landed | Two individually green changes, jointly broken. | The CI run is attributed to the exact merge commit ([CI](ci.md#why-main-is-keyed-by-commit)); fix forward. |
+| `main` red right after your change landed | Two individually green changes, jointly broken. | `main` has no run of its own ([CI](ci.md#concurrency)): reproduce with `aq test` on the failing files or `gh workflow run tests.yml --ref main`, then fix forward. |
 
 ## Related pages
 

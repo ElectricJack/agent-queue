@@ -36,7 +36,7 @@ The index for every other shard is the [module catalog](README.md).
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) | Runs the integration-attestation reuse decision and then a four-arm test matrix against a `postgres:18` service, on pushes to `main`, `aq/parent/**`, `aq/integration/**` and `aq/sound-current`. | [CI](../../contributing/ci.md#testsyml) | No `pull_request` trigger. `main`'s concurrency group is keyed by commit so no merge commit goes untested. |
+| [`.github/workflows/tests.yml`](../../../.github/workflows/tests.yml) | Runs a four-arm test matrix against a `postgres:18` service on pull requests into `main` and on pushes to `aq/parent/**` and `aq/integration/**`. | [CI](../../contributing/ci.md#testsyml) | No `push` trigger for `main`. Draft PRs and same-repository PRs from `aq/integration/**` skip the job; one concurrency group per ref cancels obsolete runs. |
 | [`.github/agent-queue-integration.example.json`](../../../.github/agent-queue-integration.example.json) | Template for a repository's `aq.integration-trust.v1` configuration: attestation and CI-producer app ids, canonical repository id, and the required check-set names and version. | [CI](../../contributing/ci.md) | Placeholders only; a real configuration is per-installation. |
 
 ## Code-generation scripts
@@ -70,7 +70,6 @@ The index for every other shard is the [module catalog](README.md).
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [`scripts/check-integration-attestation.py`](../../../scripts/check-integration-attestation.py) | Decides, fail-closed and without daemon credentials, whether a `main` run may reuse an integration candidate's exact CI evidence, and whether a duplicate PR run should be suppressed. | [CI](../../contributing/ci.md#the-attestation-job) | Rejects duplicate JSON fields and validates branch and SHA shapes strictly. Covered by `tests/test_integration_attestation.py`. |
 | [`scripts/setup-cgroup-delegation.sh`](../../../scripts/setup-cgroup-delegation.sh) | One-time root step setting `Delegate=yes` on the user's systemd slice, enabling per-session cgroup v2 scopes. | [scripts](../../contributing/scripts.md#supported-ci-and-integration) | Layer 3 of resource gating — the only layer a non-cooperating process cannot ignore. Idempotent. |
 | [`scripts/check-outdated-deps.py`](../../../scripts/check-outdated-deps.py) | Reports outdated pip packages while excluding system packages whose versions are not PEP 440 and would otherwise crash `pip list --outdated`. | [releases](../../contributing/releases.md#dependency-pinning) | Exits 0 even when packages are outdated; 1 only if pip itself fails. |
 | [`scripts/check-merge-conflicts.sh`](../../../scripts/check-merge-conflicts.sh) | Emits JSON describing which task branches no longer merge cleanly into `origin/main`. | [scripts](../../contributing/scripts.md#supported-diagnostics-and-one-off-tooling) | Fetches with `--prune`. Exit 0 clean, 1 conflicts, 2 no `origin/main`. |

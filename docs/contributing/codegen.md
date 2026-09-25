@@ -297,8 +297,8 @@ cadence and gates their freshness separately with `--check-artefacts`. Plain
 Generated artefacts are owned by their generator. The commit that changes an
 input and the commit that regenerates the output should be the same commit —
 two green PRs on stale bases, one committing a generated file and one changing
-how it is generated, is exactly how `main` went red on 2026-09-03 and why CI
-keys `main`'s concurrency group by commit ([CI](ci.md#why-main-is-keyed-by-commit)).
+how it is generated, is exactly how `main` went red on 2026-09-03 and why work
+now reaches `main` only after CI has tested the combination ([CI](ci.md#concurrency)).
 
 ## Common failures and recovery
 

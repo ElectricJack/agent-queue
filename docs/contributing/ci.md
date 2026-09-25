@@ -5,12 +5,12 @@ important — what it does not run.
 
 ## Why this page exists
 
-AQ's CI is unusual in two ways that surprise people. First, the test workflow
-has **no `pull_request` trigger**: it runs on pushes to `main` and to the
-integration branches AQ itself creates, not on every PR. Second, `main`'s
-concurrency group is keyed by *commit* rather than by ref, which is the opposite
-of the usual advice — for a reason described below. Knowing both saves you from
-waiting for a check that is never going to appear.
+AQ's CI runs the full suite **before** a change reaches `main`, never after.
+The test workflow runs on pull requests into `main` and on pushes to the
+integration branches AQ itself creates. A push to `main` does not start it, so
+`main`'s own commits carry only the checks of the candidate or PR run that
+tested them. Knowing that saves you from waiting for a run that is never going
+to appear.
 
 ## Vocabulary
 
@@ -18,54 +18,60 @@ waiting for a check that is never going to appear.
   each with its own pytest command.
 * **Integration branch** — a branch AQ's integration service creates to assemble
   and test candidate work before it reaches `main`; its refs look like
-  `aq/integration/p-<32 hex>/r-<32 hex>`.
-* **Attestation** — the fail-closed decision about whether a `main` run may
-  reuse an integration candidate's existing CI evidence instead of re-running
-  everything.
+  `aq/integration/p-<32 hex>/r-<32 hex>`. The train promotes the exact SHA
+  tested there.
+* **Parent snapshot ref** — an immutable
+  `aq/parent/<task>/<operation hash>/<generation>/<sha>` ref that parent CI
+  ([`src/integration/parent_ci.py`](../../src/integration/parent_ci.py))
+  publishes so the workflow tests one parent generation.
 
 ## The workflows
 
-One, in [`.github/workflows/`](../../.github/workflows/). There was a second,
+Two, in [`.github/workflows/`](../../.github/workflows/). There was a third,
 `docs.yml`, which built a MkDocs site and deployed it to GitHub Pages; it was
 retired — see [there is no documentation
 build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | Push to `main`, `aq/parent/**`, `aq/integration/**`, `aq/sound-current`; `workflow_dispatch` | The attestation decision, then a four-arm test matrix against a real PostgreSQL service. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | A four-arm test matrix against a real PostgreSQL service. |
+| [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
-> **Note.** There is no `pull_request` trigger anywhere. A PR from an ordinary
-> task branch gets no `Tests` check. Work reaches `main` through AQ's own
-> integration path ([pull requests and delivery](pull-requests.md)), and that
-> path pushes the branches the workflow does watch. The duplicate-PR
-> suppression output in the attestation job is a remnant of the era when PRs
-> did trigger it; it evaluates to `false` for every event that fires today.
+> **Note.** No workflow runs on a push to `main`. Everything that reaches
+> `main` was tested first: by its PR's run, as the integration candidate the
+> train promotes by exact SHA, or by the development publisher's pre-publish
+> validation ([pull requests and delivery](pull-requests.md)). The per-commit
+> `main` run this replaced repeated that work: 66 runs in the two days before
+> 2026-09-24.
 
 ## `tests.yml`
 
 ```mermaid
 flowchart TD
-    A[push to main / aq-parent / aq-integration] --> B[integration-attestation<br/>reuse decision]
-    B -->|skip_full_ci = false| C[test matrix]
-    B -->|skip_full_ci = true| D[skipped: candidate evidence reused]
+    A[PR into main] --> S{draft, or a same-repo<br/>aq/integration head?}
+    S -->|yes| D[skipped: waits for ready_for_review,<br/>or the push run already tests the head]
+    S -->|no| C[test matrix]
+    B[push to aq/integration or aq/parent,<br/>or workflow_dispatch] --> C
     C --> E[cli-conformance]
     C --> F[default]
     C --> G[migration-and-slow]
     C --> H[postgres-integration]
 ```
 
-### The attestation job
+### Which pull requests run
 
-`integration-attestation` runs first, on a checkout pinned to the exact event
-SHA (with a `git rev-parse HEAD` assertion that it really is that revision, and
-`persist-credentials: false`). For a push to `main` it reads the workflow-run
-evidence for that SHA from the GitHub API — only runs whose head branch matches
-the strict `aq/integration/p-<32 hex>/r-<32 hex>` pattern and whose head SHA is
-identical — and hands it to
-[`scripts/check-integration-attestation.py`](../../scripts/check-integration-attestation.py),
-which decides, fail-closed, whether the full matrix can be skipped because the
-identical revision has already been tested as an integration candidate. Any API
-failure yields empty evidence, and empty evidence means "run everything".
+Every pull request into `main` runs the matrix, from a fork or a task branch
+alike, with two exceptions decided by the job's `if:`:
+
+* A **draft** runs nothing until it is marked ready for review; the
+  `ready_for_review` event then starts the run.
+* A **same-repository PR whose head is an `aq/integration/**` branch** skips its
+  run, because the push to that branch already tested the same head SHA and
+  those check runs appear on the PR. A fork's branch of the same name gets no
+  push run here, so its PR still runs.
+
+The job checks out the exact event SHA (the PR's merge with its base, for a
+`pull_request` event) and asserts it with `git rev-parse HEAD`.
 
 ### The four suite arms
 
@@ -107,24 +113,27 @@ are deterministic, do run. See [testing](testing.md#latency-budgets).
   check went away with the backend — it was never a proxy for production, since
   SQLite accepted DDL PostgreSQL rejects outright.
 
-### Why `main` is keyed by commit
+### Concurrency
 
 ```yaml
 concurrency:
-  group: tests-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'head' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 ```
 
-With one group per ref, GitHub keeps at most one *pending* run, so a burst of
-merges cancels every queued `main` run but the newest — and a merge commit can
-end up never tested on `main` at all. That is not hypothetical: two PRs, each
-green on its own stale base, put a red `main` together on 2026-09-03 (one
-committed a generated file, the other changed how it is generated).
+One group per ref: `refs/pull/<n>/merge` for a PR, the branch for an
+integration candidate. A newer push to the same PR or integration branch
+cancels its obsolete run. Parent snapshot refs are named by SHA, so no two
+share a group.
 
-Keying `main`'s group by commit gives every merge commit its own run, so a red
-`main` is attributed to the commit that caused it within one CI cycle and needs
-no bisecting. Integration branches keep one group per ref, so a newer push
-supersedes their obsolete checks.
+Until 2026-09-24 `main` was a trigger and its group was keyed by commit, so a
+burst of merges could not cancel the run of the merge commit that broke it (two
+PRs, each green on its own stale base, put a red `main` together on
+2026-09-03). That class is now caught before `main`: in train mode the train
+tests the assembled candidate and promotes that exact SHA, and `pr_merge`
+refuses a PR whose head is behind its base
+(`integration.merge_require_up_to_date`, on by default), so its PR run tested
+the combination that lands.
 
 The same incident is why generated artefacts and the change that causes them
 belong in one commit — see [code generation](codegen.md#state-ownership).
@@ -166,7 +175,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 ## What CI does not do
 
-* It does not run on pull requests.
+* It does not run on a push to `main`, or on a push to a task branch that has
+  no PR. Use `gh workflow run tests.yml --ref <branch>` for either.
 * It does not lint. Ruff runs in [pre-commit](checks.md#lint) if you install
   the hooks, and nowhere else.
 * It does not build or test the dashboard. `npm run lint`, `typecheck` and
@@ -183,27 +193,29 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A push to a watched branch | Four check runs plus the attestation decision |
-| Integration-candidate evidence for the identical SHA | Possibly a skipped matrix, decided fail-closed |
+| A PR into `main` opened, updated, reopened or marked ready | Four check runs on the PR's merge with its base |
+| A push to `aq/integration/**` or `aq/parent/**` | Four check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
 
 ## State ownership
 
 CI owns nothing durable. Every database it creates lives in an ephemeral
-service container, and no job writes back to the repository. The attestation
-job holds only `actions: read`, `contents: read` and `checks: read`; the test
-job's checkout uses the default token and pushes nothing.
+service container, and no job writes back to the repository. The workflow holds
+only `contents: read`; the test job's checkout uses the default token and
+pushes nothing.
 
 ## Common failures and recovery
 
 | Symptom | Likely cause | Do |
 |---|---|---|
-| No `Tests` check on your PR | Expected — there is no `pull_request` trigger. | Use the local checks; delivery to `main` runs CI on the integration branch. |
+| No `Tests` check on your PR | The PR is a draft, or it does not target `main`. | Mark it ready for review, or run `gh workflow run tests.yml --ref <branch>`. |
+| No `Tests` run on a `main` commit | Expected — a push to `main` is not a trigger. A promoted candidate's commit shows its integration run's checks. | `gh workflow run tests.yml --ref main` if you need one. |
 | `default` arm red, others green | An ordinary regression. | Reproduce locally: `aq test <the failing file>`. |
 | `migration-and-slow` red only | You touched schema or a migration. | Reproduce with `-m "migration or slow"` on those files. |
 | `postgres-integration` red only | A statement-count budget moved, or an `integration`-marked test. | `aq test -m "integration or perf" <file>` on a quiet box. |
 | `cli-conformance` red | The CLI inventory is stale. | `python scripts/generate-cli-command-inventory.py` |
-| `main` red immediately after a merge | Two changes that are individually green and jointly broken. | The run is attributed to the exact merge commit; fix forward on `main`. |
+| `main` red after a change landed | Two changes that are individually green and jointly broken, or a change that reached `main` without a run. | Reproduce with `aq test` on the failing files, or dispatch a run on `main`; fix forward. |
 
 ## Related pages
 
@@ -211,14 +223,15 @@ job's checkout uses the default token and pushes nothing.
 * [Testing](testing.md) — the markers the four arms slice by.
 * [Code generation](codegen.md) — the drift guards CI enforces.
 * [Pull requests and delivery](pull-requests.md) — how work actually reaches `main`.
-* [Scripts](scripts.md#supported-ci-and-integration) — the attestation helper.
+* [CI at integration boundaries](../guides/integration-ci-boundaries.md) — the
+  trigger policy and parent snapshot refs.
 
 ## Source and tests
 
 [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml),
-[`scripts/check-integration-attestation.py`](../../scripts/check-integration-attestation.py),
+[`src/integration/parent_ci.py`](../../src/integration/parent_ci.py),
 [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json).
 
 ```bash
-aq test tests/test_integration_attestation.py tests/test_attestation_check_run_id.py tests/test_ci_trigger_policy.py
+aq test tests/test_ci_trigger_policy.py tests/test_agent_queue_train_policy.py tests/test_integration_attestation.py tests/test_attestation_check_run_id.py
 ```

@@ -73,7 +73,6 @@ integration, and a whole provider outage against two fake providers.
 
 | Script | Purpose | Inputs | Side effects |
 |---|---|---|---|
-| [`check-integration-attestation.py`](../../scripts/check-integration-attestation.py) | The fail-closed decision about whether a `main` run may reuse an integration candidate's CI evidence, and whether a duplicate PR run should be suppressed. Called by [`tests.yml`](../../.github/workflows/tests.yml). | Event name, ref, default branch, repository, checkout SHA, run id/attempt, and a JSON evidence file. | Prints `true`/`false`. No state. |
 | [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json) | Not a script — the template for a repository's integration-trust configuration (`aq.integration-trust.v1`): app ids, canonical repository id, required check names and version. | — | — |
 | [`setup-cgroup-delegation.sh`](../../scripts/setup-cgroup-delegation.sh) | One-time **root** step enabling cgroup v2 delegation, so the daemon can put each session in its own scope — layer 3 of [resource gating](../guides/resource-gating.md). | `sudo scripts/setup-cgroup-delegation.sh [user]`, defaulting to `$SUDO_USER` then `$USER`. | Sets `Delegate=yes` on the user's systemd slice. Idempotent. |
 
@@ -142,7 +141,7 @@ script refuses to run without a marker file proving that.
 * [Testing](testing.md) — why `run_tests.sh` is the wrong entry point.
 * [e2e swarm](../guides/e2e-swarm.md) — the full guide to the kit.
 * [Resource gating](../guides/resource-gating.md) — what the cgroup script sets up.
-* [CI](ci.md) — where `check-integration-attestation.py` is called from.
+* [CI](ci.md) — what the workflows run, and when.
 
 ## Source and tests
 
