@@ -21,12 +21,16 @@ so it survives a restart and a reconnect (§7).
 Every message this adapter does not consume is ignored silently in the channel
 and loudly in the log: exactly one INFO line carrying the stable reason code
 and the gateway ids, never the text, so "my message vanished" is answerable by
-grepping for ``discord intake ignored``.
+grepping for ``discord intake ignored``.  The same code also goes to the
+optional ``on_ignore`` hook, which the bot points at its
+:class:`~src.discord.intake_diagnostics.IgnoreCounter` so ``digest_status`` can
+report the last hour's ignores by code.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from src.commands.principal import ExecutionPrincipal, principal_context
@@ -54,10 +58,18 @@ def _raw_id(obj: Any) -> str | None:
 class DiscordEscalationIntake:
     """Correlate inbound Discord thread messages with open incidents."""
 
-    def __init__(self, handler: Any, config: Any, *, reconcile: Any = None) -> None:
+    def __init__(
+        self,
+        handler: Any,
+        config: Any,
+        *,
+        reconcile: Any = None,
+        on_ignore: Callable[[str], None] | None = None,
+    ) -> None:
         self._handler = handler
         self._config = config
         self._reconcile = reconcile
+        self._on_ignore = on_ignore
 
     @property
     def _settings(self) -> Any:
@@ -188,6 +200,12 @@ class DiscordEscalationIntake:
                 _raw_id(getattr(message, "author", None)),
             )
         logger.info(IGNORE_LOG_FORMAT, code, *(value or None for value in ids))
+        if self._on_ignore is not None:
+            try:
+                self._on_ignore(code)
+            except Exception:
+                # Diagnostics must never turn an ignore into a gateway error.
+                logger.debug("intake ignore hook failed", exc_info=True)
 
 
 __all__ = ["CLASSIFY_ERROR_CODE", "DiscordEscalationIntake"]

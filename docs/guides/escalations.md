@@ -87,6 +87,38 @@ recent windows with their `suppression_reason`, `settings_errors` and
 and `delivery_health` — how many digest windows and
 `pending_escalation_deliveries` are pending, retrying or `unknown`.
 
+Its `intake` block counts the inbound Discord messages the gateway ignored
+over the last hour, by reason code: `window_seconds` (3600), `total`, and
+`ignored`, a map of code → count. The counts live in the daemon's memory, so
+a restart empties them, and they hold at most 10,000 events, forgetting the
+oldest first. `available: false` means no gateway is connected to count
+anything. Each ignored message also writes one INFO line to the daemon log,
+`discord intake ignored reason=<code> guild=<id> channel=<id> message=<id> author=<id>`,
+carrying ids and the code but never the message text. The codes, in the order
+the gate checks them:
+
+| Code | The message was ignored because |
+|---|---|
+| `disabled` | `discord.escalation.enabled` is false |
+| `own_message` | this bot posted it |
+| `bot_author` | another bot posted it |
+| `not_in_thread` | it was posted in the channel itself, or anywhere outside a thread. This includes an `@mention` of the bot |
+| `no_channel` | `discord.channel_id` is not set |
+| `foreign_channel` | the thread's parent is not the configured channel |
+| `author_not_allowlisted` | the author is not on `authorized_users` |
+| `thread_unbound` | the thread belongs to no escalation |
+| `binding_channel_mismatch` | the escalation's recorded channel disagrees with the one the gateway saw |
+| `binding_thread_mismatch` | the escalation's recorded thread disagrees with the one the gateway saw |
+| `empty_text` | the reply has no text |
+| `oversize` | the reply is longer than 16,000 characters |
+| `no_message_id` | Discord supplied no message ID |
+| `classify_error` | the gateway could not read or classify the message. The daemon log has a warning with the traceback |
+
+The gateway drops some messages before they reach this gate, and those are
+neither logged nor counted: its own posts, authors missing from a non-empty
+`authorized_users`, and everything that arrives before the cutover pass
+reports `complete`.
+
 To see what the next digest *would* say without sending it:
 
 ```bash
@@ -309,7 +341,8 @@ message until the startup cutover pass reports `complete`, so a pre-cutover
 conversation can never be half-migrated and half-live (see the
 [migration runbook](discord-migration.md)).
 
-Every one of these must hold, and each refusal is silent:
+Every one of these must hold. A refusal is silent in the channel and logged
+once, with its reason code (see [Check that it is working](#check-that-it-is-working)):
 
 * the author is not this bot and not any bot — an acknowledgement must never
   acknowledge itself;
@@ -356,6 +389,7 @@ Two rules, both enforced in the renderer rather than trusted to callers
 | A digest window is `unknown` | `aq digest status` → `delivery_health` | The send was ambiguous and could not be reconciled, or the window aged past `catchup_hours`. AQ deliberately does not repost stale news |
 | An escalation shows a delivery as `unknown` | `aq escalation get --escalation-id <id>` | Check the channel for the post; if it is genuinely missing, resolve or re-raise the incident deliberately rather than expecting a retry |
 | A reply in the thread does nothing | Check `authorized_users`, and that the thread's parent is `channel_id` | Refusals are silent by design; the reason is in the daemon log |
+| My mention vanished | Search the daemon log for `discord intake ignored` and read `reason=`; `aq digest status` → `intake` shows the last hour's counts | `not_in_thread` is the intended result: the channel is not a chat, and only a reply in an escalation's thread reaches a supervisor. Routing a channel `@mention` to the supervisor is planned behind `discord.conversation.enabled`, which does not exist yet |
 | The channel is posting but the supervisor never acts | `aq message list --to-kind session --to-id supervisor-<project>` | The reply was persisted but its supervisor message is undelivered; the watchdog raises an incident about that after `supervisor_delivery_timeout_minutes` |
 | An unanswered incident got a second post | Compare `generation` on the deliveries in `escalation_get` | Someone deleted the original post; a replacement generation is the intended response, and only one may be pending |
 
@@ -381,5 +415,6 @@ of [`src/config.py`](../../src/config.py). The spec is
 ```bash
 aq test tests/test_digest.py tests/test_digest_dispatch.py tests/test_digest_commands.py \
   tests/test_escalation_delivery.py tests/test_escalation_intake.py \
-  tests/test_discord_escalation_transport.py tests/test_discord_docs.py
+  tests/test_discord_escalation_transport.py tests/test_discord_intake_diagnostics.py \
+  tests/test_discord_docs.py
 ```

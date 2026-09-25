@@ -18,6 +18,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.config import AppConfig
+from src.discord.intake_diagnostics import IgnoreCounter
 from src.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,9 @@ class AgentQueueBot(commands.Bot):
         )
         self._guild: discord.Guild | None = None
         self._escalation_intake_impl: tuple[Any, Any] | None = None
+        # Outlives any one intake adapter: a handler swap rebuilds the adapter,
+        # not the counts ``digest_status`` reports as its ``intake`` block.
+        self._intake_diagnostics = IgnoreCounter()
         self._cutover_complete = asyncio.Event()
         self._cutover_report: Any = None
 
@@ -65,6 +69,7 @@ class AgentQueueBot(commands.Bot):
                 handler,
                 self.config,
                 reconcile=self._reconcile_escalation,
+                on_ignore=self._intake_diagnostics.record,
             )
             self._escalation_intake_impl = (handler, intake)
             return intake

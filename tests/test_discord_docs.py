@@ -58,6 +58,7 @@ def test_documented_digest_status_fields_are_produced() -> None:
         "pending_escalation_deliveries",
         "suppression_reason",
         "would_send",
+        "intake",
     ):
         assert f'"{field}"' in source, f"digest commands no longer return {field!r}"
 
@@ -73,6 +74,22 @@ def test_documented_digest_status_fields_are_produced() -> None:
     ):
         assert field in cutover, f"the cutover report no longer carries {field!r}"
     assert "needs_configuration" in cutover, "the documented conflict status is gone"
+
+
+def test_the_intake_block_and_every_ignore_code_are_documented() -> None:
+    """An operator reading ``intake.ignored`` must find every code it can show.
+
+    The codes come from the live table, so a new refusal in
+    ``src/escalations/intake.py`` fails here until the guide explains it.
+    """
+    from src.discord.escalation_intake import CLASSIFY_ERROR_CODE
+    from src.escalations.intake import REASON_CODES
+
+    guide = (DOCS / "guides" / "escalations.md").read_text(encoding="utf-8")
+    assert "`intake`" in guide, "the escalations guide no longer names the intake block"
+    assert "discord intake ignored" in guide, "the guide no longer names the ignore log line"
+    for code in (*REASON_CODES.values(), CLASSIFY_ERROR_CODE):
+        assert f"`{code}`" in guide, f"the escalations guide does not explain ignore code {code!r}"
 
 
 def test_removed_surfaces_are_not_documented_as_current() -> None:
