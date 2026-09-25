@@ -294,6 +294,40 @@ class TestTaskSet:
         assert updated.branch_name == "feat/x"
         assert updated.pr_url == "https://example/pr/1"
 
+    async def test_checkpointed_branch_refuses_rename_before_other_writes(
+        self, handler, db, task
+    ):
+        import time
+
+        from sqlalchemy import insert
+
+        from src.database.tables import task_integration_checkpoints
+
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_integration_checkpoints).values(
+                task_id=task.id, repository_id="repo", branch="aq/task-1",
+                updated_at=time.time(),
+            ))
+
+        refused = await handler.execute("task_set", {
+            "task_id": task.id, "branch": "aq/epic/renamed",
+            "description": "unexpected", "pr_url": "https://example/pr/2",
+        })
+        assert "canonical integration branch" in refused["error"]
+        unchanged = await db.get_task(task.id)
+        assert unchanged.branch_name is None
+        assert unchanged.description == "desc"
+        assert unchanged.pr_url is None
+
+        with pytest.raises(ValueError, match="canonical integration branch"):
+            await db.update_task(task.id, branch_name="aq/epic/renamed")
+
+        restored = await handler.execute("task_set", {
+            "task_id": task.id, "branch": "aq/task-1",
+        })
+        assert "error" not in restored
+        assert (await db.get_task(task.id)).branch_name == "aq/task-1"
+
     async def test_never_touches_status(self, handler, db, task):
         before = await db.get_task(task.id)
         await handler.execute("task_set", {"task_id": task.id, "note": "progress update"})

@@ -187,6 +187,15 @@ class SurfaceCommandsMixin:
         scope_error = self._task_findings_scope_error(task)
         if scope_error:
             return scope_error
+        if "branch" in args:
+            checkpoint = await self.db.get_integration_checkpoint(task_id)
+            if checkpoint is not None and args["branch"] != checkpoint["branch"]:
+                return {
+                    "error": (
+                        f"Task '{task_id}' has a canonical integration branch "
+                        f"'{checkpoint['branch']}'; --branch cannot rename it"
+                    )
+                }
         fields_changed: list[str] = []
         if "description" in args:
             from src.database.queries.task_comment_queries import TaskFindingsConflict
