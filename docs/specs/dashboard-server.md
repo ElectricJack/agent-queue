@@ -337,11 +337,14 @@ address. AQ binds nothing wider and runs no `tailscale serve` for this
 * Verification runs at startup and **fails closed**: a digest mismatch exits
   non-zero with the reason, and no directory (a source checkout) exits `2`
   pointing at `npm -w dashboard run dev` and `aq install --restart-from
-  dashboard.build`. Only manifest-listed files are served. SPA fallback is
-  unchanged — an extensionless path that is not a file gets `index.html`, a path
-  with a suffix gets `404` — and never applies under a proxied prefix, `/__aq`
-  or the `404` prefixes of §2.1, so an unknown API path returns the daemon's
-  JSON, not HTML.
+  dashboard.build`. Only manifest-listed files are served. SPA fallback: an
+  unlisted path whose suffix is a static-asset suffix (`STATIC_SUFFIXES` in
+  `src/dashboard_server/bundle.py`: `.js`, `.css`, `.map`, images, fonts, …)
+  gets `404`; any other unlisted path is a browser route and gets `index.html` —
+  including route ids with a dot, such as child task ids
+  (`/tasks/stark-impact-60.1`). The fallback never applies under a proxied
+  prefix, `/__aq` or the `404` prefixes of §2.1, so an unknown API path returns
+  the daemon's JSON, not HTML.
 * `index.html` is `Cache-Control: no-cache`; content-hashed `assets/*` are
   `public, max-age=31536000, immutable`; every static response carries
   `X-Content-Type-Options: nosniff` and
