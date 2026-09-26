@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.resources.procs import _SLOT_RE, _read_env_keys
+from src.resources.procs import _SLOT_RE, _read_env_keys  # noqa: E402
 
 MARKERS = ("AQ_TASK_ID", "AQ_SESSION_ID", "AQ_SESSION_NAME", "AQ_INSTANCE_TOKEN", "AQ_JOB_ID",
            "AQ_TEST_RUN_ID")

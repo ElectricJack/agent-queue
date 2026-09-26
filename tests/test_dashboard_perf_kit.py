@@ -294,3 +294,264 @@ def test_seed_main_refuses_before_connecting(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("AQPERF_UNSET", raising=False)
     assert seed.main(["--dsn", "postgresql://t:p@db:5534/x", "--operator-config", str(config)]) == 2
     assert "unresolved_placeholder" in capsys.readouterr().err
+
+
+# --- experiment.py ---------------------------------------------------------
+
+
+def complete_manifest():
+    return {
+        "mode": "loaded", "repetitions": 3, "clients": [1, 3],
+        "warmup_ms": 30000, "observe_ms": 120000,
+        "seed": {"tasks_total": 10000, "agents_total": 2}, "chrome": "Chrome/130",
+        "viewport": [1600, 1000],
+        "host": {"kernel": "6.18", "cpu_count": 24, "mem_total_mb": 64000},
+        "load": {"argv": ["load.py"]}, "caps": {"PYTEST_XDIST_AUTO_NUM_WORKERS": "3"},
+        "session_nice": 10, "git_sha": "abc", "pg_identity": {"same_server": False},
+        "surfaces": ["tasks"],
+    }
+
+
+def test_manifest_validation_names_every_missing_factor():
+    exp = load_script("experiment")
+    complete = complete_manifest()
+    assert exp.validate_manifest(complete) == []
+    broken = {**complete, "repetitions": 1}
+    del broken["chrome"]
+    problems = exp.validate_manifest(broken)
+    assert any("chrome" in p for p in problems) and any("repetitions" in p for p in problems)
+    for key in complete:
+        assert any(key in p for p in exp.validate_manifest(
+            {k: v for k, v in complete.items() if k != key})), key
+
+
+def test_spread_and_summary_keep_raw_values_and_medians():
+    from src.metrics.histogram import new_hist, observe
+
+    exp = load_script("experiment")
+    assert exp.spread([100.0, 110.0, 130.0]) == pytest.approx(30 / 110)
+    assert exp.spread([100.0]) is None
+    runs = [
+        {"cold": {"tasks": {"ready_ms": v, "raw": [v]}}, "idle": {},
+         "api": {"POST /api/task/get": {"median_ms": v, "raw_ms": [v]}}}
+        for v in (100, 120, 110)
+    ]
+    loads = [{"throughput_iter_per_s": 1000.0, "timed_out": False}] * 3
+    drift = new_hist()
+    observe(drift, 30)
+    series = [[{"ts": 1.0, "perf": {"enabled": True, "loop": {"drift": drift},
+                                   "db": {}, "api": {}, "host": {}}}]] * 3
+    summary = exp.summarize(runs, loads, series)
+    assert summary["cold"]["tasks"]["ready_ms"] == {
+        "median": 110, "raw": [100, 120, 110], "spread": pytest.approx(20 / 110)}
+    assert summary["api"]["POST /api/task/get"]["median_ms"]["median"] == 110
+    assert summary["load"]["throughput_iter_per_s"]["median"] == 1000.0
+    assert summary["daemon"]["loop_drift_p95_ms"] < 50
+    assert summary["daemon"]["stalls_over_500ms"] == 0
+
+
+def test_queued_mode_is_refused_without_a_workload_command(capsys):
+    exp = load_script("experiment")
+    assert exp.main(["--mode", "queued", "--dashboard-url", "http://127.0.0.1:1",
+                     "--api-url", "http://127.0.0.1:2", "--out", "/nonexistent"]) == 2
+    assert "job submit" in capsys.readouterr().err
+
+
+def test_summary_merges_buckets_and_preserves_unknown_probes():
+    from src.metrics.histogram import new_hist, observe, percentile, merge_hists
+
+    exp = load_script("experiment")
+    fast, slow = new_hist(), new_hist()
+    for _ in range(99):
+        observe(fast, 1)
+    observe(slow, 800)
+    groups = [[{"perf": {"enabled": True, "loop": {"drift": h},
+                          "sampler": {"perf_ms": cost},
+                          "host": {"psi": {"cpu": {"some_avg10": cost}},
+                                   "ungated": {"pytest_processes": cost}}}}]
+              for h, cost in ((fast, 2), (slow, 9))]
+    out = exp.summarize([], [], groups)
+    assert out["daemon"]["loop_drift_p95_ms"] == percentile(merge_hists([fast, slow]), .95)
+    assert out["daemon"]["loop_drift_max_ms"] == 800
+    assert out["daemon"]["stalls_over_500ms"] == 1
+    assert out["daemon"]["pool_wait_p95_ms"] is None
+    assert out["daemon"]["psi_max"]["cpu"]["some_avg10"] == 9
+    assert out["daemon"]["ungated_processes_max"] == 9
+    assert out["daemon"]["sampler_perf_ms_p95"] == 9
+    assert exp.summarize([], [], [[]])["daemon"]["stalls_over_500ms"] is None
+
+
+def test_workload_coverage_flags_a_helper_that_finished_before_observation():
+    exp = load_script("experiment")
+    runs = [{"manifest": {"clients": 3}, "start_ts": 10, "end_ts": 40,
+             "api_start_ts": 30, "api_end_ts": 40,
+             "idle": {"tasks": {"clients": [{"start_ts": 10, "end_ts": 30}]}}}]
+    assert all(row["fraction"] == 0 for row in exp.coverage(runs, 0, 5))
+    rows = exp.coverage(runs, 0, 20)
+    assert next(row for row in rows if row["surface"] == "tasks")["fraction"] == .5
+    assert all(row["fraction"] == 1 for row in exp.coverage(runs, 0, 40))
+
+
+def test_workload_wrapper_deadline_stops_a_process_and_preserves_logs(tmp_path):
+    exp = load_script("experiment")
+    worker = exp.Workload([sys.executable, "-c", "import time; time.sleep(60)"],
+                          dict(os.environ), tmp_path / "load.log", .2)
+    worker.finish()
+    assert worker.timed_out is True
+    assert worker.proc.returncode != 0 and worker.ended >= worker.started
+    assert worker.stdout.closed and worker.stderr.closed
+
+
+def test_experiment_target_refusal_happens_before_any_http(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    exp = load_script("experiment")
+    pg = exp.kit_module("pg_identity")
+    operator = tmp_path / "operator.yaml"
+    target = tmp_path / "target.yaml"
+    operator.write_text("database:\n  url: postgresql://aq:private@localhost:5533/agent_queue\n")
+    target.write_text(operator.read_text())
+    monkeypatch.setattr(pg, "DEFAULT_CONFIG", operator)
+    monkeypatch.setattr(exp, "kit_module", lambda name: pg)
+    monkeypatch.setattr(exp, "fetch_json", lambda url: pytest.fail("HTTP before target refusal"))
+    args = SimpleNamespace(config=target, api_url="http://127.0.0.1:8099",
+                           dashboard_url="http://127.0.0.1:8092")
+    with pytest.raises(ValueError, match="operator's database") as refused:
+        exp.verify_target(args, {"port": 8099})
+    assert "private" not in str(refused.value)
+    target.write_text("database:\n  url: postgresql://aq:private@localhost:5533/isolated\n")
+    with pytest.raises(ValueError, match="mcp_server.port"):
+        exp.verify_target(args, {"port": 8081})
+
+
+def test_experiment_config_never_mutates_worker_environment(tmp_path, monkeypatch):
+    exp = load_script("experiment")
+    config = tmp_path / "config.yaml"
+    config.write_text("resources:\n  session_nice: 7\nmcp_server:\n  port: 8099\n")
+    (tmp_path / ".env").write_text("AQ_DATABASE_URL=do-not-import\nAQ_DB_SCOPE=operator\n")
+    monkeypatch.setenv("AQ_DATABASE_URL", "refusal-sentinel")
+    monkeypatch.setenv("AQ_DB_SCOPE", "worker")
+    parsed, mcp = exp.read_config(config)
+    assert parsed.resources.session_nice == 7 and mcp["port"] == 8099
+    assert os.environ["AQ_DATABASE_URL"] == "refusal-sentinel"
+    assert os.environ["AQ_DB_SCOPE"] == "worker"
+
+
+def test_api_probe_uses_real_contracts_and_reports_http_errors_and_missing_tasks():
+    import shutil
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    if not shutil.which("node"):
+        pytest.skip("node is unavailable")
+    requests = []
+    has_task = True
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.respond({})
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            requests.append((self.path, body))
+            self.respond({"tasks": [{"id": "fixture-1"}] if has_task else []})
+
+        def respond(self, body):
+            payload = json.dumps(body).encode()
+            self.send_response(503 if self.path == "/ready" else 200)
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    script = (
+        f"import {{probeApi}} from {json.dumps((KIT / 'api.mjs').as_uri())};"
+        f"console.log(JSON.stringify(await probeApi('http://127.0.0.1:{server.server_port}',"
+        "{project:'fixture',samples:2})));"
+    )
+    try:
+        result = subprocess.run(["node", "--input-type=module", "-e", script],
+                                capture_output=True, text=True, check=True, timeout=30)
+        out = json.loads(result.stdout)
+        assert out["GET /ready"]["errors"] == 2
+        assert len(out["POST /api/task/get"]["raw_ms"]) == 2
+        assert ("/api/task/get", {"task_id": "fixture-1"}) in requests
+        assert ("/api/task/gate-list", {"project_id": "fixture"}) in requests
+        assert all("limit" not in body for _, body in requests)
+        has_task = False
+        result = subprocess.run(["node", "--input-type=module", "-e", script],
+                                capture_output=True, text=True, check=True, timeout=30)
+        assert json.loads(result.stdout)["POST /api/task/get"]["reason"] == "no_task_id"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_experiment_writes_all_artifacts_and_keeps_client_counts_separate(tmp_path, monkeypatch):
+    exp = load_script("experiment")
+    target = tmp_path / "target.yaml"
+    target.write_text("database:\n  url: postgresql://aq:never-record-this@localhost:5533/isolated\n"
+                      "mcp_server:\n  port: 8099\nresources:\n  session_nice: 7\n")
+    seed = {"ts": 1, "tasks": {"total": 10000}, "agents": {"total": 2}}
+    monkeypatch.setattr(exp, "fetch_series", lambda *args: [seed])
+    monkeypatch.setattr(exp, "verify_target", lambda *args: None)
+    def check_output(cmd, **kwargs):
+        return "Chrome/130" if cmd[-1] == "--version" else "abc123"
+
+    monkeypatch.setattr(exp.subprocess, "check_output", check_output)
+    inv = exp.kit_module("inventory")
+    monkeypatch.setattr(inv, "inventory", lambda: {"processes": [], "totals": {}})
+    wrapped = []
+    load_module = exp.kit_module("load")
+
+    def wrapped_argv(config, argv):
+        wrapped.append((config.resources.session_nice, argv))
+        return [sys.executable, "-c",
+                'print(\'{"throughput_iter_per_s": 200, "timed_out": false}\')'], dict(os.environ)
+
+    monkeypatch.setattr(load_module, "wrapped_argv", wrapped_argv)
+    real_kit_module = exp.kit_module
+    monkeypatch.setattr(exp, "kit_module", lambda name: {
+        "load": load_module, "inventory": inv}.get(name) or real_kit_module(name))
+
+    def harness(cmd, **kwargs):
+        assert "--task-detail-only" in cmd and "--api" in cmd
+        clients = int(cmd[cmd.index("--clients") + 1])
+        now = time.time()
+        Path(cmd[3]).write_text(json.dumps({
+            "manifest": {"clients": clients}, "start_ts": now, "end_ts": now + 1,
+            "cold": {"tasks": {"ready_ms": clients * 10}}, "idle": {}, "api": {},
+        }))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(exp.subprocess, "run", harness)
+    out = tmp_path / "out"
+    assert exp.main(["--mode", "loaded", "--dashboard-url", "http://127.0.0.1:8092",
+                     "--api-url", "http://127.0.0.1:8099", "--config", str(target),
+                     "--out", str(out), "--warmup-ms", "0", "--observe-ms", "1"]) == 0
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["seed"] == {"tasks_total": 10000, "agents_total": 2}
+    assert manifest["session_nice"] == 7 and manifest["load"]["wrapped"] is True
+    assert manifest["chrome"] == "Chrome/130" and manifest["git_sha"]
+    assert "never-record-this" not in (out / "manifest.json").read_text()
+    assert len(wrapped) == 4  # manifest plus each repetition, through the session wrapper
+    for index in (1, 2, 3):
+        for prefix in ("inventory-before", "inventory-after", "load", "series"):
+            assert (out / f"{prefix}-{index}.json").is_file()
+        for clients in (1, 3):
+            assert (out / f"harness-{index}-clients-{clients}.json").is_file()
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["by_clients"]["1"]["cold"]["tasks"]["ready_ms"]["raw"] == [10] * 3
+    assert summary["by_clients"]["3"]["cold"]["tasks"]["ready_ms"]["raw"] == [30] * 3
+    assert summary["load"]["throughput_iter_per_s"]["median"] == 200
+    assert summary["loaded_observations_covered"] is False
+    # A second run cannot overwrite the evidence.
+    assert exp.main(["--mode", "idle", "--dashboard-url", "http://127.0.0.1:8092",
+                     "--api-url", "http://127.0.0.1:8099", "--config", str(target),
+                     "--out", str(out)]) == 2
