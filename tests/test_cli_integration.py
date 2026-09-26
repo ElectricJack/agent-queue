@@ -190,6 +190,16 @@ def _client(result):
             {"task_id": "t", "dry_run": True},
         ),
         (
+            ["rebind-repair", "--task-id", "repair-t", "--dry-run"],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": True},
+        ),
+        (
+            ["rebind-repair", "--task-id", "repair-t", "--apply", "--head", "a" * 40],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": False, "expected_head_sha": "a" * 40},
+        ),
+        (
             [
                 "rebind-reused-identity", "--task-id", "t", "--apply",
                 "--origin-id", "o1", "--origin-id", "o2",
@@ -391,6 +401,7 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_redrive_root",
         "integration_redrive_child",
         "integration_rebind_reused_identity",
+        "integration_rebind_repair",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -410,12 +421,27 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "redrive-root",
         "redrive-child",
         "rebind-reused-identity",
+        "rebind-repair",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
     ):
         assert command in result.output
     assert "probe" not in result.output
+
+
+def test_rebind_repair_apply_requires_previewed_head_before_transport():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "rebound"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "rebind-repair", "--task-id", "repair-t", "--apply"]
+        )
+
+    assert result.exit_code == 2
+    assert "--apply requires --head from dry-run" in result.output
+    client.execute.assert_not_called()
 
 
 @pytest.mark.parametrize(

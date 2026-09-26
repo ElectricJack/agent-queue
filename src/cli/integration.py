@@ -545,6 +545,28 @@ def integration_rebind_reused_identity(
     _execute(ctx, "integration_rebind_reused_identity", args)
 
 
+@integration.command("rebind-repair")
+@click.option("--task-id", required=True)
+@click.option("--dry-run/--apply", default=True, help="Prove only, or reserve the proven candidate.")
+@click.option("--head", "expected_head_sha", help="Exact candidate head reported by dry-run; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_rebind_repair(
+    ctx: click.Context, task_id: str, dry_run: bool, expected_head_sha: str | None
+) -> None:
+    """Prove a live delegate's candidate against its current conflict intent.
+
+    Apply refreshes a stale stage and reserves the exact candidate under the
+    current intent. The attached repair session then performs the fenced push.
+    """
+    if not dry_run and not expected_head_sha:
+        raise click.UsageError("--apply requires --head from dry-run")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": dry_run}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    _execute(ctx, "integration_rebind_repair", args)
+
+
 @integration.command("release-delegates")
 @click.argument("operation_id")
 @click.pass_context

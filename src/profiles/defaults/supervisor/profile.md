@@ -100,6 +100,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_enable",
     "integration_flush",
     "integration_rebind_reused_identity",
+    "integration_rebind_repair",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
