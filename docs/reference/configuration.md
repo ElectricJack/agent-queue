@@ -101,6 +101,15 @@ Choose one credential source; AQ does not require both:
 | No `integration.github_app` | The daemon OS user's existing `gh` credentials: `GH_TOKEN`, then `GITHUB_TOKEN`, then its stored login. AQ leaves that login unchanged. |
 | `integration.github_app` configured | An installation token scoped to the authorized repository, supplied as `GH_TOKEN` for each AQ-owned invocation. The stored login and parent environment are unchanged. App failures never fall back to a PAT or SSH key. |
 
+In App mode, AQ's Git transfers get the installation token only from AQ's
+one-shot credential broker. They run with an isolated Git configuration and
+home directory, and every inherited credential helper is cleared, so the
+operator's `gh` login, other credential helpers and `.netrc` are never
+consulted. Pushes are therefore made as the App. GitHub answers reads of a
+public repository anonymously, so a fetch, clone or `ls-remote` that succeeds
+without Git asking for the token is not an error. A push must always be
+authenticated by the broker.
+
 For App mode, install the App on the repositories AQ will use, make its private
 key readable only by the daemon OS user, and set the existing configuration
 fields (there is no new setting or database migration):

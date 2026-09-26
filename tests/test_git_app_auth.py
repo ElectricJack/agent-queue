@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import signal
@@ -8,6 +9,7 @@ import ssl
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Self
 from unittest.mock import AsyncMock
 
 import pytest
@@ -80,6 +82,159 @@ def _local_tls_context(tmp_path: Path) -> ssl.SSLContext:
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(certificate, private_key)
     return tls
+
+
+class _GitHubStandIn:
+    """Answer ``https://github.com/<owner>/<repo>.git`` from a local bare repository.
+
+    Git keeps the literal github.com URL, and with it the prompt and remote
+    helper arguments the credential broker pins; only an ``http.proxy`` in the
+    test's own Git arguments routes the CONNECT tunnel here.  The tunnel is
+    terminated with a throwaway certificate and served by ``git http-backend``.
+    With ``required_token`` set, every request without that App credential is
+    answered 401, as GitHub answers a private repository.
+    """
+
+    def __init__(self, tmp_path: Path, root: Path, *, required_token: str | None) -> None:
+        self.tmp_path = tmp_path
+        self.root = root
+        self.expected = None if required_token is None else "Basic " + base64.b64encode(
+            f"x-access-token:{required_token}".encode()
+        ).decode()
+        self.tunnels: list[str] = []
+        self.authorizations: list[str | None] = []
+        self.port = 0
+        self._server: asyncio.base_events.Server | None = None
+
+    async def __aenter__(self) -> Self:
+        tls = _local_tls_context(self.tmp_path)
+
+        async def tunnel(reader, writer):
+            try:
+                target = (await reader.readuntil(b"\r\n\r\n")).split(b"\r\n", 1)[0].decode()
+                self.tunnels.append(target)
+                if not target.startswith("CONNECT github.com:443 "):
+                    writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                    return
+                writer.write(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                await writer.start_tls(tls)
+                while await self._answer(reader, writer):
+                    pass
+            except (asyncio.IncompleteReadError, ConnectionError, ssl.SSLError):
+                pass
+            finally:
+                writer.close()
+
+        self._server = await asyncio.start_server(tunnel, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        assert self._server is not None
+        self._server.close()
+        await self._server.wait_closed()
+
+    def git_options(self) -> list[str]:
+        return ["-c", f"http.proxy=http://127.0.0.1:{self.port}", "-c", "http.sslVerify=false"]
+
+    async def _answer(self, reader, writer) -> bool:
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+        except asyncio.IncompleteReadError:
+            return False
+        request, *lines = head.decode("latin-1").split("\r\n")
+        method, target, _version = request.split(" ", 2)
+        headers = {
+            name.strip().lower(): value.strip()
+            for name, _, value in (line.partition(":") for line in lines if line)
+        }
+        body = await reader.readexactly(int(headers.get("content-length", "0")))
+        authorization = headers.get("authorization")
+        self.authorizations.append(authorization)
+        if self.expected is not None and authorization != self.expected:
+            writer.write(
+                b"HTTP/1.1 401 Unauthorized\r\n"
+                b'WWW-Authenticate: Basic realm="GitHub"\r\nContent-Length: 0\r\n\r\n'
+            )
+            await writer.drain()
+            return True
+        path, _, query = target.partition("?")
+        environment = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(self.tmp_path),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_PROJECT_ROOT": str(self.root),
+            "GIT_HTTP_EXPORT_ALL": "1",
+            "REQUEST_METHOD": method,
+            "PATH_INFO": path,
+            "QUERY_STRING": query,
+            "CONTENT_TYPE": headers.get("content-type", ""),
+            "CONTENT_LENGTH": str(len(body)),
+            "REMOTE_ADDR": "127.0.0.1",
+        }
+        if "git-protocol" in headers:
+            environment["GIT_PROTOCOL"] = headers["git-protocol"]
+        if "content-encoding" in headers:
+            environment["HTTP_CONTENT_ENCODING"] = headers["content-encoding"]
+        backend = await asyncio.create_subprocess_exec(
+            "git", "http-backend", env=environment,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        )
+        output, _ = await backend.communicate(body)
+        cgi_head, _, payload = output.partition(b"\r\n\r\n")
+        status = b"200 OK"
+        response_headers = []
+        for line in cgi_head.split(b"\r\n"):
+            name, _, value = line.partition(b":")
+            if name.lower() == b"status":
+                status = value.strip()
+            elif line:
+                response_headers.append(line + b"\r\n")
+        writer.write(
+            b"HTTP/1.1 " + status + b"\r\n" + b"".join(response_headers)
+            + f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload
+        )
+        await writer.drain()
+        return True
+
+
+def _github_stand_in_case(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    """``acme/widgets`` under a stand-in root, and a checkout one branch and tag behind."""
+    work = tmp_path / "work"
+    root = tmp_path / "github"
+    source = root / "acme" / "widgets.git"
+    destination = tmp_path / "destination"
+    work.mkdir()
+    _git(["init", "--initial-branch=main"], work)
+    _git(["config", "user.name", "Test"], work)
+    _git(["config", "user.email", "test@example.com"], work)
+    (work / "file.txt").write_text("base")
+    _git(["add", "file.txt"], work)
+    _git(["commit", "-m", "base"], work)
+    source.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(source)],
+        check=True, capture_output=True,
+    )
+    _git(["push", str(source), "main:refs/heads/main"], work)
+    _git(["clone", str(source), str(destination)], tmp_path)
+    _git(["config", "remote.origin.url", "https://github.com/acme/widgets.git"], destination)
+    (work / "file.txt").write_text("topic")
+    _git(["commit", "-am", "topic"], work)
+    tip = _git(["rev-parse", "HEAD"], work)
+    _git(["push", str(source), "HEAD:refs/heads/topic", "HEAD:refs/tags/archive/topic"], work)
+    return work, source, destination, tip
+
+
+def _route_app_git_through(manager: GitManager, stand_in: _GitHubStandIn, monkeypatch) -> None:
+    """Prefix the stand-in's proxy options to each privileged Git invocation."""
+    original = manager._arun_authenticated_git_once
+
+    async def through_stand_in(args, **kwargs):
+        return await original([*stand_in.git_options(), *args], **kwargs)
+
+    monkeypatch.setattr(manager, "_arun_authenticated_git_once", through_stand_in)
 
 
 class _BoundAppAccess:
@@ -1337,13 +1492,48 @@ async def test_authenticated_git_failure_reports_exit_and_scrubs_stderr_and_publ
 
 
 @pytest.mark.asyncio
-async def test_authenticated_git_failure_reports_broker_not_served(tmp_path):
-    fake_git = tmp_path / "no-prompt-git"
-    fake_git.write_text("#!/bin/sh\nexit 0\n")
+async def test_authenticated_git_success_without_credential_request_is_not_a_failure(tmp_path):
+    """A public repository answers anonymously, so Git never asks for the token."""
+    fake_git = tmp_path / "anonymous-git"
+    fake_git.write_text("#!/bin/sh\necho anonymous-output\nexit 0\n")
     fake_git.chmod(0o700)
     manager = GitManager()
     manager._APP_GIT_EXECUTABLE = str(fake_git)
-    manager._APP_CREDENTIAL_BROKER_TIMEOUT = 0.25
+    home = tmp_path / "home"
+    home.mkdir()
+
+    output = await manager._arun_authenticated_git(
+        ["ls-remote", "https://github.com/acme/widgets.git", "HEAD"],
+        home=home,
+        repository_url="https://github.com/acme/widgets.git",
+        token="private-installation-token",
+        deadline=asyncio.get_running_loop().time() + 5,
+    )
+
+    assert output == b"anonymous-output\n"
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("requests_credential", "exit_code"), [(True, 0), (True, 128), (False, 128)]
+)
+async def test_authenticated_git_failure_reports_broker_not_served(
+    tmp_path, requests_credential, exit_code
+):
+    # The askpass request reaches the broker, which refuses it: the requester
+    # is not the pinned remote helper under Git.
+    prompt = (
+        "\"$GIT_ASKPASS\" \"Password for 'https://x-access-token@github.com': \" >/dev/null\n"
+        if requests_credential else ""
+    )
+    fake_git = tmp_path / "prompting-git"
+    fake_git.write_text(f"#!/bin/sh\n{prompt}exit {exit_code}\n")
+    fake_git.chmod(0o700)
+    manager = GitManager()
+    manager._APP_GIT_EXECUTABLE = str(fake_git)
+    # Settled when Git exits; long enough that a loaded host still sees the request.
+    manager._APP_CREDENTIAL_BROKER_TIMEOUT = 5.0
     home = tmp_path / "home"
     home.mkdir()
 
@@ -1353,14 +1543,107 @@ async def test_authenticated_git_failure_reports_broker_not_served(tmp_path):
             home=home,
             repository_url="https://github.com/acme/widgets.git",
             token="private-installation-token",
-            deadline=asyncio.get_running_loop().time() + 5,
+            deadline=asyncio.get_running_loop().time() + 10,
         )
 
     message = str(caught.value)
     assert "credential broker did not serve token" in message
-    assert "timeout=0.2s" in message or "timeout=0.3s" in message
+    assert f"credential_requested={requests_credential}" in message
+    assert ("returncode 128" in message) is bool(exit_code)
+    assert "timeout=5.0s" in message
     assert "budget_at_start=" in message
     assert "remaining_push_budget=" in message
+    _assert_no_broker_tasks()
+
+
+@pytest.mark.asyncio
+async def test_app_origin_fetch_of_public_repository_succeeds_without_credential_request(
+    tmp_path, monkeypatch
+):
+    _work, _source, destination, tip = _github_stand_in_case(tmp_path)
+    manager = GitManager()
+
+    async with _GitHubStandIn(tmp_path, tmp_path / "github", required_token=None) as stand_in:
+        _route_app_git_through(manager, stand_in, monkeypatch)
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination),
+            source_url="https://github.com/acme/widgets.git",
+            token="app-installation-token",
+        )
+
+    assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    assert _git(["rev-parse", "refs/tags/archive/topic"], destination) == tip
+    assert stand_in.tunnels
+    assert all(tunnel.startswith("CONNECT github.com:443 ") for tunnel in stand_in.tunnels)
+    assert stand_in.authorizations and set(stand_in.authorizations) == {None}
+
+
+@pytest.mark.asyncio
+async def test_app_git_takes_credential_only_from_broker_despite_competing_helpers(
+    tmp_path, monkeypatch
+):
+    _work, _source, destination, tip = _github_stand_in_case(tmp_path)
+    invoked = tmp_path / "competing-credential-invoked"
+    helper = tmp_path / "competing-helper"
+    helper.write_text(
+        "#!/bin/sh\n"
+        f'echo "$0 $*" >> {invoked}\n'
+        "printf 'username=x-access-token\\npassword=operator-login-token\\n'\n"
+    )
+    helper.chmod(0o700)
+    competing = (
+        f"[credential]\n\thelper = {helper}\n"
+        f'[credential "https://github.com"]\n\thelper =\n\thelper = {helper}\n'
+    )
+    operator_home = tmp_path / "operator-home"
+    (operator_home / ".config" / "git").mkdir(parents=True)
+    (operator_home / ".gitconfig").write_text(competing)
+    (operator_home / ".config" / "git" / "config").write_text(competing)
+    netrc = operator_home / ".netrc"
+    netrc.write_text("machine github.com login x-access-token password operator-netrc-token\n")
+    netrc.chmod(0o600)
+    operator_global = tmp_path / "operator-global-config"
+    operator_global.write_text(competing)
+    manager = GitManager()
+    # The daemon's own environment, as the operator's `gh auth setup-git` leaves it.
+    for name, value in {
+        "HOME": str(operator_home),
+        "XDG_CONFIG_HOME": str(operator_home / ".config"),
+        "GIT_CONFIG_GLOBAL": str(operator_global),
+        "GIT_CONFIG_SYSTEM": str(operator_global),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": str(helper),
+        "GIT_CONFIG_PARAMETERS": f"'credential.helper'='{helper}'",
+        "GIT_ASKPASS": str(helper),
+        "SSH_ASKPASS": str(helper),
+        "GH_TOKEN": "operator-gh-token",
+    }.items():
+        monkeypatch.setenv(name, value)
+        monkeypatch.setitem(manager._SUBPROCESS_ENV, name, value)
+
+    async with _GitHubStandIn(
+        tmp_path, tmp_path / "github", required_token="app-installation-token"
+    ) as stand_in:
+        _route_app_git_through(manager, stand_in, monkeypatch)
+        await manager._afetch_origin_with_auth_to_url(
+            str(destination),
+            source_url="https://github.com/acme/widgets.git",
+            token="app-installation-token",
+        )
+
+    assert _git(["rev-parse", "refs/remotes/origin/topic"], destination) == tip
+    presented = {
+        base64.b64decode(authorization.removeprefix("Basic ")).decode()
+        for authorization in stand_in.authorizations
+        if authorization is not None
+    }
+    # Only the broker holds the App token, so presenting it proves the broker
+    # served.  curl's own retry of the challenge carries the URL username with
+    # an empty password; no other secret may ever reach the remote.
+    assert "x-access-token:app-installation-token" in presented
+    assert presented <= {"x-access-token:", "x-access-token:app-installation-token"}
+    assert not invoked.exists()
 
 
 @pytest.mark.asyncio

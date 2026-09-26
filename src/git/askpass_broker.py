@@ -263,8 +263,14 @@ async def serve_one_credential(
     remote_url: str,
     prompt: str,
     timeout: float,
+    requested: asyncio.Event | None = None,
 ) -> bool:
-    """Release ``token`` once; ``remote_url`` is the exact URL passed to Git."""
+    """Release ``token`` once; ``remote_url`` is the exact URL passed to Git.
+
+    ``requested`` is set as soon as any request arrives, served or refused, so
+    a caller can tell an operation that never asked for the credential from
+    one whose request was refused.
+    """
     try:
         expected = request_payload(authority, repository, prompt)
         loop = asyncio.get_running_loop()
@@ -278,6 +284,8 @@ async def serve_one_credential(
                 data, credentials, descriptors, flags = _received_authority(channel)
             except BlockingIOError:
                 continue
+            if requested is not None:
+                requested.set()
             malformed = bool(
                 flags & (getattr(socket, "MSG_TRUNC", 0) | getattr(socket, "MSG_CTRUNC", 0))
                 or len(data) > MAX_REQUEST_BYTES
