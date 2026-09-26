@@ -234,6 +234,21 @@ ours (Codex has no `--session-id`), the reader also reports it via
 daemon can learn a key it did not assign, and without it restart-with-resume is impossible
 for that harness.
 
+Codex rollout date folders and filenames use local time, while `session_meta` timestamps
+use UTC. Keyless discovery searches the UTC launch date and adjacent dates, then accepts
+only a unique match for the exact working directory and launch timestamp (−10/+60 seconds).
+A known conversation key remains authoritative; discovery never follows the newest file
+in a reused workspace. Adoption preserves the original launch time across daemon restarts.
+
+On first adopting a Codex rollout, the watcher backfills its latest valid quota reading
+with the original transcript timestamp, independently of the durable byte checkpoint and
+historical token/output replay guard. This recovers existing rollouts after a discovery
+outage without charging old tokens, replaying messages, or making old quotas look fresh.
+`aq doctor --check providers.usage_activity_gap` warns when the newest provider quota
+confirmation trails that provider's newest live session activity by more than 30 minutes.
+With no snapshot, a live session needs 30 minutes of activity since launch before warning;
+providers without quota feeds are excluded. The check is report-only.
+
 **Peek** is `capture-pane` — for humans (`aq session peek`, dashboard) and
 as the SSE fallback when no transcript is found. **Activity** from the provider is pane
 activity with poke discounting (our own nudges must not look like agent progress).

@@ -108,6 +108,10 @@ class TranscriptReader(ABC):
             return None
         return self.resolve_path(session.work_dir, session.session_key)
 
+    async def read_latest_provider_usage(self, path: Path) -> TranscriptEntry | None:
+        """Recover a quota reading without replaying conversation or token usage."""
+        return None
+
     @abstractmethod
     def resolve_path(self, work_dir: str, session_key: str | None) -> Path | None:
         """Locate the transcript file for a session, or ``None``."""

@@ -108,6 +108,7 @@ from src.database.tables import (
     repos,
     sessions,
     subagent_events,
+    supervisor_report_requests,
     system_config,
     task_assignment_routes,
     task_branch_origins,
@@ -195,6 +196,8 @@ _ORDERED_TABLES = [
     layout_tidy_requests,
     task_layout_cells,
     digest_windows,
+    # Durable report authoring history; owner/session/message references are soft.
+    supervisor_report_requests,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
