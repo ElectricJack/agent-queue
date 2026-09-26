@@ -156,6 +156,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/graph_layout.py", "src/api/models/graph_layout.py"], areas: ["graph-layout"] }
   - { paths: ["src/api/graph.py", "src/api/models/graph.py", "src/api/models/dashboard.py"], areas: ["dashboard-state"] }
   - { paths: ["src/api/metrics.py", "src/api/models/metrics.py"], areas: ["metrics"] }
+  - { paths: ["src/api/perf_middleware.py"], areas: ["metrics"] }
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
@@ -287,6 +288,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/profile_checks.py"], areas: ["profiles"] }
   - { paths: ["src/doctor/project_checks.py"], areas: ["projects"] }
   - { paths: ["src/doctor/provider_*.py"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/doctor/perf_checks.py"], areas: ["metrics"] }
   - { paths: ["src/doctor/resource_checks.py"], areas: ["resource-gating"] }
   - { paths: ["src/doctor/review_checks.py"], areas: ["document-reviews"] }
   - { paths: ["src/doctor/session_checks.py"], areas: ["session-runtime"] }
