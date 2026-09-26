@@ -190,7 +190,7 @@ export default function AgentFlock() {
             );
           })}
           {hiddenCount > 0 && (
-            <Link to="/agents" data-listnav="1" className="block px-3 py-1 text-xs text-gray-500 hover:text-gray-300">
+            <Link to="/agents" data-listnav="1" data-primary-control className="flex items-center px-3 py-1 text-xs text-gray-500 hover:text-gray-300">
               {hiddenCount} idle {hiddenCount === 1 ? "pool" : "pools"}
             </Link>
           )}
