@@ -346,6 +346,38 @@ It also works with the daemon down, which matters because `aq test` runs
 inside worktrees during restarts, and a test wrapper that fails closed when
 the daemon is unavailable would simply be routed around.
 
+### Versioned box admission
+
+Execution entry points now use `BoxLock` (`src/resources/box_lock.py`), with
+protocol version 1 recorded in `protocol.json` under the same test-slot
+directory. Lock inodes remain stable: `turnstile.lock`, then `box.lock`, then
+the existing `slot-N.lock` capacity files. Do not delete or replace these
+lock files while clients may be running. Unknown or corrupt protocol manifests
+refuse admission; daemon availability is irrelevant.
+
+Shared admission takes a shared box lock and the requested number of slots,
+releasing partial claims before retrying. Exclusive admission holds the
+turnstile while existing shared holders drain, blocking later shared work.
+After admission it releases the turnstile and keeps the box and capacity
+descriptors inheritable until execution ends. Closing a wrapper's descriptors
+does not unlock a surviving child that inherited them.
+
+This first rollout preserves today's test policy: both focused and full-suite
+`aq test` runs use shared admission with weight one, and the separate full-suite
+lock still limits full suites to one alongside focused tests. It introduces
+neither managed jobs nor detached execution. The test database cleanup entry
+point uses exclusive admission and reserves all observed slots, including
+those left by a larger capacity override.
+
+`aq test --aq-status` reports box mode and held slots from incompatible
+slot-only clients. Only held locks count; stale JSON left by a dead process
+does not. Exclusive admission refuses when such a holder is present. It also
+reserves the old slot files as a migration fence against old clients racing
+admission. Shared tests remain available during the upgrade. Upgrade every
+local checkout/entry point and drain old runs before enabling managed jobs
+or advertising box exclusion; the fence cannot control a legacy client that
+creates previously unseen slots with an arbitrary capacity override.
+
 ### Orphaned runs
 
 `flock` releases a *dead* holder for free. It cannot release a *live* run
