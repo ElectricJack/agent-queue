@@ -120,7 +120,22 @@ below 0.005 seconds; collected IDs without reported timings are seeded with
 0.015 seconds (three phases at that reporting threshold). The map is filtered
 to the default test IDs collected when it was created.
 
-Refresh from an unsharded default run on the disposable PostgreSQL test service:
+Each default shard uploads a `default-durations-N-ATTEMPT` artifact with measured
+setup, call, and teardown times for its selected tests. Download all eight from
+one completed, passing default matrix run and one run attempt, then refresh:
+
+```bash
+python scripts/merge_test_durations.py /path/to/downloaded-artifacts
+```
+
+The helper accepts extracted artifacts in subdirectories. It rejects missing or
+duplicate shards, overlapping test IDs, and invalid durations before replacing
+the map. Review the test result, collected ID count, and `.test_durations` diff,
+then commit it. Use a complete successful run; interrupted or failing runs may
+record only some phases and are unsuitable for balancing.
+
+Alternatively, refresh from an unsharded default run on the disposable
+PostgreSQL test service:
 
 ```bash
 aq test tests/ --store-durations --clean-durations
@@ -128,8 +143,7 @@ aq test tests/ --store-durations --clean-durations
 
 This uses the normal test slot, full-suite lock, and worker cap, and replaces
 the map with measured setup, call, and teardown times while removing stale IDs.
-Review the run result and the `.test_durations` diff, then commit the updated
-map. Do not add `--splits` or `--group` to this refresh command: a cleaned map
+Do not add `--splits` or `--group` to this refresh command: a cleaned map
 from a single shard would discard the other seven shards' measurements.
 
 Every shard has its own check name. The parent and root required-check lists

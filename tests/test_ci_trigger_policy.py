@@ -163,6 +163,8 @@ def test_default_shards_cover_each_group_once_with_four_workers():
         assert "-m" not in args  # Inherit the same default marker selection on every shard.
         group = int(args[args.index("--group") + 1])
         assert shard["name"] == f"default-{group}/8"
+        assert int(shard["group"]) == group
+        assert "--store-durations" in args and "--clean-durations" in args
         groups.append(group)
     assert sorted(groups) == list(range(1, 9))
     assert len({suite["name"] for suite in suites}) == len(suites)
