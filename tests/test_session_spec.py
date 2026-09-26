@@ -613,6 +613,12 @@ class TestPromptDelivery:
         assert "re-establish it after any restart" in prompt
         assert "Do not run background inbox polls or shell sleep loops" in prompt
         assert "Do not run `aq prime`" in prompt
+        if project_id is None:
+            assert "global supervisor for ALL projects in AQ" in prompt
+            assert "Do not ask the user to select a project" in prompt
+        else:
+            assert f"You supervise project {project_id}" in prompt
+            assert "global supervisor for ALL projects" not in prompt
 
     @pytest.mark.parametrize("profile_id", ["claude-opus", "supervisor-auditor"])
     def test_other_named_bootstrap_has_no_patrol(self, builder, profile_id):

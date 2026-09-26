@@ -114,8 +114,8 @@ export default function AgentFlock() {
                   </span>
                   <AgentEligibility agent={agent} />
                   <AgentWaitingQuestion agent={agent} />
-                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}>
-                    {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
+                  <span className="block truncate text-gray-400" title={agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}>
+                    {agent.current_task_title || agent.current_task_id || (agent.role === "supervisor" ? "Supervises all AQ projects" : "Idle — no assigned task")}
                   </span>
                   {agent.enabled === false && (
                     <span className="block text-amber-300">

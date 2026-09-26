@@ -680,6 +680,23 @@ describe("Deleting a defined worker", () => {
 });
 
 describe("Starting and using agent terminals", () => {
+  it("reconnects Oracle Owl to the same global session without a project picker", async () => {
+    roster[0] = { ...roster[0]!, id: "supervisor-global", name: "Oracle Owl", state: "running",
+      current_task_id: null, current_task_title: null, session_id: "global-session" };
+    renderFlock("/agents?agent=supervisor-global", true);
+    const window = await screen.findByRole("region", { name: "Oracle Owl agent window" });
+    expect(within(window).getByText("Supervises all AQ projects")).toBeInTheDocument();
+    expect(within(window).queryByText("Idle — no assigned task")).not.toBeInTheDocument();
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    act(() => { TerminalSocketMock.instances[0]!.ready(); TerminalSocketMock.instances[0]!.serverClose(); });
+    fireEvent.click(within(window).getByRole("button", { name: "Reconnect terminal" }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(2));
+    expect(TerminalSocketMock.instances.map((socket) => new URL(socket.url).pathname))
+      .toEqual(["/ws/terminal/global-session", "/ws/terminal/global-session"]);
+    expect(within(window).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+  });
+
   it("offers direct terminal input for workers and the supervisor without a Chat tab", async () => {
     renderFlock("/agents?agent=a&agent=b", true);
     await screen.findByRole("region", { name: "Supervisor agent window" });
@@ -728,6 +745,26 @@ describe("Starting and using agent terminals", () => {
       body: { agent_id: "b", project_id: "active" }, throwOnError: true,
     }));
     expect(await within(window).findByText("Attached project: active")).toBeInTheDocument();
+  });
+
+  it.each([null, "sleeping"])("starts or resumes the %s supervisor across all projects without a picker", async (state) => {
+    roster[0] = { ...roster[0]!, id: "supervisor-global", name: "Oracle Owl", state: "idle",
+      current_task_id: null, current_task_title: null, session_state: state,
+      session_id: state ? "sleeping-supervisor" : null };
+    api.listProjects.mockResolvedValue({ data: { projects: [
+      { id: "active", name: "Active project", status: "ACTIVE" },
+    ] } });
+    renderFlock("/agents?agent=supervisor-global", true);
+    const window = await screen.findByRole("region", { name: "Oracle Owl agent window" });
+    expect(within(window).queryByRole("combobox")).not.toBeInTheDocument();
+    expect(within(window).getByText("Supervisor access: all projects.")).toBeInTheDocument();
+    expect(api.startAgentTerminal).not.toHaveBeenCalled();
+    fireEvent.click(within(window).getByRole("button", { name: state ? "Resume terminal" : "Start terminal" }));
+    await waitFor(() => expect(api.startAgentTerminal).toHaveBeenCalledWith({
+      body: { agent_id: "supervisor-global" }, throwOnError: true,
+    }));
+    await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
+    expect(new URL(TerminalSocketMock.instances[0]!.url).pathname).toBe("/ws/terminal/started-supervisor-global");
   });
 
   it.each(["disabled", "busy", "starting", "subprocess"])("does not offer to launch an unavailable %s agent", async (reason) => {

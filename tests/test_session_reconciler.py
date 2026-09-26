@@ -253,8 +253,8 @@ async def _session(
     )
     row = SessionRecord(
         id=sid,
-        project_id="p1",
-        profile_id="claude-opus",
+        project_id=overrides.pop("project_id", "p1"),
+        profile_id=overrides.pop("profile_id", "claude-opus"),
         harness="claude",
         provider="fake",
         name=name,
@@ -1335,6 +1335,86 @@ class TestStallLadder:
 
 
 class TestNamedSessions:
+    async def _quiet_supervisor(self, db, provider, monkeypatch, project_id=None):
+        name = "n-supervisor--" + (project_id or "global")
+        row = await _session(
+            db, provider, sid="supervisor", task_id=None, name=name,
+            project_id=project_id, profile_id="supervisor", lifecycle="named",
+            started_at=NOW - 5000, last_activity=NOW - 5000,
+        )
+        provider.sessions[name].activity = NOW - 5000
+
+        class _P:
+            idle_timeout = 600
+
+        async def _get_profile(_pid):
+            return _P()
+
+        monkeypatch.setattr(db, "get_profile", _get_profile)
+        return row
+
+    @pytest.mark.parametrize("status", [s for s in TaskStatus if s != TaskStatus.COMPLETED])
+    async def test_global_supervisor_stays_awake_for_work_in_another_project(
+        self, db, provider, reconciler, bus, monkeypatch, status
+    ):
+        await self._quiet_supervisor(db, provider, monkeypatch)
+        await db.create_project(Project(id="other", name="Other"))
+        await db.create_task(Task(
+            id="work", project_id="other", title="Outstanding work", description="",
+            status=status,
+        ))
+        # Isolate the idle decision from unrelated task stall/recovery steps.
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW)
+        row = await db.get_session("supervisor")
+        assert row.state == "running" and row.desired_state == "running"
+        assert row.last_activity == NOW - 5000  # no invented activity
+        assert await provider.is_running(SessionHandle(row.name, row.provider, row.instance_token))
+        assert "session.sleeping" not in bus.types()
+
+    async def test_supervisor_can_sleep_after_work_finishes(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        await self._quiet_supervisor(db, provider, monkeypatch)
+        await _task(db, status=TaskStatus.READY)
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW)
+        assert (await db.get_session("supervisor")).state == "running"
+        await db.update_task("t1", status=TaskStatus.COMPLETED)
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW + 1)
+        row = await db.get_session("supervisor")
+        assert row.state == "sleeping" and row.sleep_reason == "idle_timeout"
+
+    @pytest.mark.parametrize("work_project, expected", [("p1", "running"), ("other", "sleeping")])
+    async def test_project_supervisor_only_accounts_for_its_own_work(
+        self, db, provider, reconciler, monkeypatch, work_project, expected
+    ):
+        await self._quiet_supervisor(db, provider, monkeypatch, project_id="p1")
+        await db.create_project(Project(id="other", name="Other"))
+        await db.create_task(Task(
+            id="work", project_id=work_project, title="Work", description="",
+        ))
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW)
+        assert (await db.get_session("supervisor")).state == expected
+
+    async def test_supervision_read_failure_defers_sleep(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        from unittest.mock import AsyncMock
+
+        await self._quiet_supervisor(db, provider, monkeypatch)
+        monkeypatch.setattr(db, "has_supervision_work", AsyncMock(side_effect=RuntimeError("db")))
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW)
+        assert (await db.get_session("supervisor")).state == "running"
+
+    async def test_other_named_agent_still_sleeps_while_aq_has_work(
+        self, db, provider, reconciler, monkeypatch
+    ):
+        row = await self._quiet_supervisor(db, provider, monkeypatch)
+        await db.update_session(row.id, name="n-auditor", profile_id="auditor")
+        provider.sessions["n-auditor"] = provider.sessions.pop(row.name)
+        await _task(db, status=TaskStatus.READY)
+        await reconciler._step_named(await db.list_sessions(live_only=True), NOW)
+        assert (await db.get_session(row.id)).state == "sleeping"
+
     async def test_idle_named_session_drains_to_sleeping(
         self, db, provider, reconciler, bus, monkeypatch
     ):

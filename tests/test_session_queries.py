@@ -9,10 +9,12 @@ import asyncio
 import time
 
 import pytest
+from sqlalchemy import insert, update
 
 from src.database import Database
 from src.database.queries.session_queries import InvalidSessionTransition
-from src.models import Project, SessionRecord
+from src.database.tables import integration_batches, playbook_artifacts, playbook_v2_runs
+from src.models import Project, ProjectStatus, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
 
@@ -43,6 +45,83 @@ def _session(**overrides) -> SessionRecord:
     )
     base.update(overrides)
     return SessionRecord(**base)
+
+
+class TestSupervisionWork:
+    @pytest.mark.parametrize("status", list(TaskStatus))
+    async def test_unfinished_work_includes_waiting_blocked_and_failed_tasks(self, db, status):
+        await db.create_task(Task(
+            id="work", project_id="p1", title="Work", description="", status=status,
+        ))
+        assert await db.has_supervision_work() is (status != TaskStatus.COMPLETED)
+        assert await db.has_supervision_work("p1") is (status != TaskStatus.COMPLETED)
+        assert not await db.has_supervision_work("unrelated")
+
+    @pytest.mark.parametrize("status", [ProjectStatus.PAUSED, ProjectStatus.ARCHIVED])
+    async def test_paused_projects_count_but_archived_projects_do_not(self, db, status):
+        await db.update_project("p1", status=status)
+        await db.create_task(Task(id="work", project_id="p1", title="Work", description=""))
+        assert await db.has_supervision_work() is (status == ProjectStatus.PAUSED)
+
+    async def test_open_gate_counts_without_an_active_task(self, db):
+        gate_id, _ = await db.create_gate("p1", "human", "Decision")
+        assert await db.has_supervision_work()
+        assert await db.has_supervision_work("p1")
+        assert not await db.has_supervision_work("unrelated")
+        await db.resolve_gate(gate_id, resolved_by="test", resolution="approved")
+        assert not await db.has_supervision_work()
+
+    async def test_busy_session_counts_until_drain_even_after_task_completion(self, db):
+        await db.create_task(Task(
+            id="work", project_id="p1", title="Work", description="", status=TaskStatus.COMPLETED,
+        ))
+        await db.update_project("p1", status=ProjectStatus.ARCHIVED)
+        await db.create_session(_session(task_id="work", state="draining"))
+        assert await db.has_supervision_work()
+        assert not await db.has_supervision_work("unrelated")
+        await db.update_session("sess1", state="stopped")
+        assert not await db.has_supervision_work()
+
+    async def test_idle_pool_and_named_sessions_do_not_keep_supervisor_awake(self, db):
+        await db.create_session(_session(lifecycle="pool"))
+        await db.create_session(_session(id="supervisor", name="n-supervisor--global",
+                                        lifecycle="named", project_id=None))
+        assert not await db.has_supervision_work()
+
+    async def test_integration_counts_until_cleanup_finishes(self, db):
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(integration_batches).values(
+                id="batch", project_id="p1", repository_id="repo", request_id="request",
+                source_manifest_digest="digest", base_sha="base", integration_branch="branch",
+                lifecycle="cleanup_pending", policy_snapshot={}, artifact_snapshot={},
+                cleanup_state="pending", created_at=1, updated_at=1,
+            ))
+        assert await db.has_supervision_work()
+        assert await db.has_supervision_work("p1")
+        assert not await db.has_supervision_work("unrelated")
+        async with db._engine.begin() as conn:
+            await conn.execute(update(integration_batches).values(lifecycle="promoted"))
+        assert not await db.has_supervision_work()
+
+    @pytest.mark.parametrize("mode,lifecycle,expected", [
+        ("live", "running", True), ("live", "paused", True),
+        ("live", "cancelling", True), ("live", "completed", False),
+        ("live", "failed", False), ("dry_run", "running", False),
+    ])
+    async def test_global_supervisor_accounts_for_live_playbook_work(
+        self, db, mode, lifecycle, expected
+    ):
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(playbook_artifacts).values(
+                artifact_sha256="artifact", playbook_id="playbook", source_digest="source",
+                contract_fingerprint="contract", compiler_build="test", path="/unused", created_at=1,
+            ))
+            await conn.execute(insert(playbook_v2_runs).values(
+                run_id="run", playbook_id="playbook", artifact_sha256="artifact", rule_id="rule",
+                mode=mode, lifecycle=lifecycle, started_at=1, updated_at=1,
+            ))
+        assert await db.has_supervision_work() is expected
+        assert not await db.has_supervision_work("unrelated")
 
 
 class TestCrud:

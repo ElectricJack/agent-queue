@@ -1762,6 +1762,16 @@ class SessionReconciler:
             last = row.last_activity or row.started_at
             if now - last <= idle_timeout:
                 continue
+            if row.profile_id == "supervisor" or self._named_address(row) is not None:
+                try:
+                    if await self.db.has_supervision_work(project_id=row.project_id):
+                        continue
+                except Exception:
+                    # Uncertain fleet state is not evidence that supervision
+                    # is finished. Keep the session and retry on the next tick.
+                    logger.warning("deferring supervisor idle sleep for %s", row.name,
+                                   exc_info=True)
+                    continue
             provider = self._provider_for(row)
             if provider is None:
                 continue
