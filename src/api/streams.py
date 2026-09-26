@@ -202,6 +202,7 @@ class StreamStartRequest(BaseModel):
     title: str | None = None
     session_id: str
     project_id: str | None = None
+    idempotency_key: str | None = None
 
 
 class StreamStartResponse(BaseModel):
@@ -374,6 +375,7 @@ def _start_retention_sweep(registry: StreamRegistry, retention_seconds: float) -
 
 def build_streams_router(
     *, db, config, workspace_dir: str, registry: StreamRegistry | None = None,
+    handler=None,
 ) -> APIRouter:
     """Router factory so tests can wire a lightweight db without the daemon."""
 
@@ -382,6 +384,8 @@ def build_streams_router(
         buffer_max_lines=getattr(config.streams, "buffer_max_lines", 5000),
         buffer_max_bytes=getattr(config.streams, "buffer_max_bytes", 2 * 1024 * 1024),
     )
+    from src.api.job_streams import JobStreams, is_job_id
+    managed = JobStreams(handler, config) if handler is not None else None
 
     @router.post("/api/streams", response_model=StreamStartResponse)
     async def start(body: StreamStartRequest, request: Request) -> StreamStartResponse:
@@ -397,6 +401,12 @@ def build_streams_router(
             or not all(isinstance(c, str) for c in body.command)
         ):
             raise HTTPException(status_code=400, detail="command must be a non-empty list of strings")
+        jobs_enabled = getattr(getattr(getattr(config, "resources", None), "jobs", None),
+                               "enabled", False)
+        if jobs_enabled and managed is None:
+            raise HTTPException(status_code=503, detail="job command handler unavailable")
+        if managed is not None and jobs_enabled:
+            return await managed.start(request, body)
 
         project_id = body.project_id
         if scope.elevated and scope.project_id is not None:
@@ -440,6 +450,8 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}", response_model=StreamMetadata)
     async def metadata(stream_id: str, request: Request) -> StreamMetadata:
+        if managed is not None and is_job_id(stream_id):
+            return StreamMetadata(**await managed.metadata(request, stream_id))
         handle = reg.get(stream_id)
         if handle is None:
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
@@ -458,6 +470,8 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}/subscribe")
     async def subscribe(stream_id: str, request: Request, after_seq: int = -1) -> StreamingResponse:
+        if managed is not None and is_job_id(stream_id):
+            return await managed.subscribe(request, stream_id, after_seq)
         handle = reg.get(stream_id)
         if handle is None:
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
@@ -508,6 +522,8 @@ def build_streams_router(
 
     @router.get("/api/streams/{stream_id}/tail")
     async def tail(stream_id: str, request: Request, after_seq: int = -1) -> dict:
+        if managed is not None and is_job_id(stream_id):
+            return await managed.tail(request, stream_id, after_seq)
         handle = reg.get(stream_id)
         if handle is None:
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
@@ -523,6 +539,8 @@ def build_streams_router(
 
     @router.post("/api/streams/{stream_id}/kill", response_model=StreamKillResponse)
     async def kill(stream_id: str, request: Request) -> dict:
+        if managed is not None and is_job_id(stream_id):
+            return await managed.kill(request, stream_id)
         handle = reg.get(stream_id)
         if handle is None:
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
@@ -548,6 +566,7 @@ def build_streams_router(
 def _build_default_router() -> APIRouter:
     """Registered in :func:`src.api.app.create_app` — uses the shared db/config."""
     from src.api import dependencies as deps
+    from src.api.job_streams import is_job_id
 
     router = APIRouter()
 
@@ -567,7 +586,7 @@ def _build_default_router() -> APIRouter:
             orch.stream_registry = registry
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
-            registry=registry,
+            registry=registry, handler=deps.get_command_handler(),
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams" and "POST" in route.methods:
@@ -580,11 +599,11 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
-        if registry is None:
+        if registry is None and not is_job_id(stream_id):
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
-            registry=registry,
+            registry=registry, handler=deps.get_command_handler(),
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}" and "GET" in route.methods:
@@ -597,11 +616,11 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
-        if registry is None:
+        if registry is None and not is_job_id(stream_id):
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
-            registry=registry,
+            registry=registry, handler=deps.get_command_handler(),
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/subscribe":
@@ -614,11 +633,11 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
-        if registry is None:
+        if registry is None and not is_job_id(stream_id):
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
-            registry=registry,
+            registry=registry, handler=deps.get_command_handler(),
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/tail":
@@ -631,11 +650,11 @@ def _build_default_router() -> APIRouter:
         if orch is None:
             raise HTTPException(status_code=503, detail="orchestrator not ready")
         registry = getattr(orch, "stream_registry", None)
-        if registry is None:
+        if registry is None and not is_job_id(stream_id):
             raise HTTPException(status_code=404, detail=f"no stream {stream_id}")
         inner = build_streams_router(
             db=orch.db, config=orch.config, workspace_dir=orch.config.workspace_dir,
-            registry=registry,
+            registry=registry, handler=deps.get_command_handler(),
         )
         for route in inner.routes:
             if getattr(route, "path", None) == "/api/streams/{stream_id}/kill":

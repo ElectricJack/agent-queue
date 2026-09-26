@@ -25,16 +25,18 @@ export interface ConsoleStreamState {
 }
 
 interface RawFrame {
-  type: "line" | "exit" | "killed";
+  type: "line" | "exit" | "killed" | "disconnect" | "error";
   seq: number;
   stream?: "stdout" | "stderr";
   text?: string;
   rc?: number;
   ts: number;
   truncated?: boolean;
+  error?: string;
 }
 
 const MAX_LINES = 5000;
+const MAX_TEXT_CHARS = 1024 * 1024;
 // Fallback only. The real budget is server-owned config
 // (`streams.client_reconnect_attempts`), fetched from the stream metadata
 // response below; this is what we use until that lands, or if it fails.
@@ -78,12 +80,18 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
         text: frame.text ?? "",
         ts: frame.ts,
       });
+      let chars = nextLines.reduce((total, line) => total + line.text.length, 0);
+      let removed = false;
+      while (nextLines.length > 1 && chars > MAX_TEXT_CHARS) {
+        chars -= nextLines.shift()!.text.length;
+        removed = true;
+      }
       return {
         ...prev,
         status: "running",
         lines: nextLines,
         startedAt: prev.startedAt ?? frame.ts,
-        truncated: prev.truncated || !!frame.truncated,
+        truncated: prev.truncated || !!frame.truncated || removed,
       };
     });
   }, []);
@@ -142,6 +150,13 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
           es.close();
         } else if (frame.type === "killed") {
           setState((prev) => ({ ...prev, status: "killed", endedAt: frame.ts }));
+          es.close();
+        } else if (frame.type === "disconnect") {
+          // The compatibility adapter uses byte cursors as sequence ids.
+          // Reconnect from the last delivered byte, never from queued data.
+          es.onerror?.(new Event("error"));
+        } else if (frame.type === "error") {
+          setState((prev) => ({ ...prev, status: "error", errorMessage: frame.error ?? "Output unavailable" }));
           es.close();
         }
       };

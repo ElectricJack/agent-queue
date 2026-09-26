@@ -1891,6 +1891,7 @@ class Orchestrator(
         self.development_integration = DevelopmentIntegration(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
+            job_service_factory=lambda: self._command_handler._jobs(),
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery

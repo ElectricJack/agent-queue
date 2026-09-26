@@ -174,6 +174,7 @@ class DevelopmentIntegration:
         git: GitManager,
         confirm_stopped=None,
         owner_recovery: Any | None = None,
+        job_service_factory=None,
     ):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
@@ -184,6 +185,7 @@ class DevelopmentIntegration:
         self._project_faults = {}
         self.confirm_stopped = confirm_stopped
         self.owner_recovery = owner_recovery
+        self.job_service_factory = job_service_factory
         #: How often a running validation is checked against its budgets, and
         #: how far past ``slot_wait_seconds`` a queued command may go before
         #: the publisher stops it (``aq test`` normally gives up first).
@@ -411,7 +413,7 @@ class DevelopmentIntegration:
                     f"remote write {row['id']} needs reconciliation: target changed"
                 )
 
-    async def validate(self, store, policy):
+    async def validate(self, store, policy, *, project_id=None, head=None):
         """Run the selected validation and classify it.
 
         ``evidence["conclusion"]`` is ``passed``, ``failed`` (tests ran and
@@ -426,15 +428,32 @@ class DevelopmentIntegration:
             return evidence, True
         reports = self.data_dir / "slot-reports"
         for command in policy.commands:
-            check = await run_validation_check(
-                command,
-                cwd=store,
-                timeout_seconds=policy.timeout_seconds,
-                slot_wait_seconds=policy.slot_wait_seconds,
-                report_path=reports / f"{uuid4()}.jsonl",
-                poll_seconds=self.validation_poll_seconds,
-                slot_grace_seconds=self.slot_wait_grace_seconds,
-            )
+            service = self.job_service_factory() if self.job_service_factory else None
+            if service is not None and service.settings.enabled:
+                from src.jobs.publisher import publisher_check
+                from src.jobs.policy import JobError
+
+                try:
+                    if not project_id or not head:
+                        raise JobError("jobs.snapshot_invalid")
+                    check = await publisher_check(
+                        service, self.git, store, project_id, head, command, policy,
+                    )
+                except JobError as exc:
+                    check = {
+                        "command": command, "outcome": "infrastructure",
+                        "infra_reason": str(exc), "failing_tests": [], "detail": str(exc),
+                    }
+            else:
+                check = await run_validation_check(
+                    command,
+                    cwd=store,
+                    timeout_seconds=policy.timeout_seconds,
+                    slot_wait_seconds=policy.slot_wait_seconds,
+                    report_path=reports / f"{uuid4()}.jsonl",
+                    poll_seconds=self.validation_poll_seconds,
+                    slot_grace_seconds=self.slot_wait_grace_seconds,
+                )
             evidence["checks"].append(check)
             if check["outcome"] == validation_outcomes.INFRASTRUCTURE:
                 break
@@ -1352,7 +1371,7 @@ class DevelopmentIntegration:
                 await self.reconcile_parked(repo, store, base)
                 return {"outcome": "idle", "parked": conflicts}
             head = await self.run_git(store, "rev-parse", "HEAD")
-            evidence, passed = await self.validate(store, policy)
+            evidence, passed = await self.validate(store, policy, project_id=project_id, head=head)
             evidence["head_sha"] = head
             if await self.run_git(store, "rev-parse", "HEAD") != head or await self.run_git(
                 store, "status", "--porcelain", "--untracked-files=no"

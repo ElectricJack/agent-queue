@@ -3,8 +3,9 @@
 Implements plan (2) of the approved 2026-09-24 exclusive job queue and managed
 long-running command specs in the agent-queue project vault. Phases 2 and 3 leave
 `resources.jobs.enabled: false`. Phase 3 exposes scoped CLI/MCP/typed API
-commands, atomic job waits and existing wait-result delivery; publisher and finite
-stream adapters belong to phase 4. The internal reconciler remains excluded from public transports. There is one executor and one
+commands, atomic job waits and existing wait-result delivery. Phase 4 adds retained
+output attachments and publisher/finite-stream adapters. The internal reconciler
+remains excluded from public transports. There is one executor and one
 identity: `jobs.id`, `AQ_JOB_ID`, and `<data_dir>/runs/<uuid>/`.
 
 `src/jobs/service.py` orders accepted jobs by aged band, timestamp and id. An
@@ -87,3 +88,35 @@ sleeping task sessions. Prime independently reads the ten most recent terminal
 results for the held task and renders summaries within a 6,000-byte budget.
 Prime/result reads neither acknowledge terminal intent nor create messages;
 results remain visible when the message transport is unavailable.
+
+Phase 4 exposes `GET /api/jobs/{id}/output?after=<logical-byte-offset>`,
+`aq job logs ID --follow --after OFFSET`, and `aq job attach ID`. A shared
+reader polls each watched job through the command handler, with two attachments
+per principal/job and eight bounded frames per subscriber. Slow readers receive
+a disconnect frame naming their last delivered cursor. Reconnection reopens the
+retained store, including after a daemon restart. Chunk frames carry `offset`,
+`next`, rendered text and base64 of the original bytes; gap frames carry `after`
+and `next`; terminal frames carry state and immutable result. Expired logs return
+410 with result metadata, and foreign or deleted owners return 404. Reads run in
+threads; no viewer touches the runner's pipes or execution lifetime. Ctrl+C
+detaches the CLI and prints the explicit cancellation command.
+
+With job admission enabled, console-stream starts accept finite test/lint/build
+commands and submit presets instead of spawning another executor. The returned
+stream id is the canonical job UUID. Metadata, tail, subscription and cancellation
+continue working after viewer-registry loss and even after admission is disabled.
+The existing console pane renders retained-range gaps and caps displayed output.
+Shell syntax and indefinite servers/watchers are refused. Admission-off preserves
+the pre-rollout stream and publisher behavior.
+
+Publisher validation submits band-1 integration jobs against dedicated detached
+Git worktrees at the candidate SHA. Their disabled `integration-snapshot`
+workspace rows are unavailable to workers, but admit integration-owned snapshot
+jobs under the same generation and non-expiring pin fences. Stable terminal
+results are mapped into existing validation evidence with job id, candidate SHA
+and result hash. An interruption reuses the pinned producer; an infrastructure
+deferral may create a later attempt after verified cleanup. Only stable results
+at the requested SHA can pass. Queue and run budgets are capped separately.
+Unsupported commands defer with infrastructure evidence. Snapshots are removed
+only once the job is terminal and its process cleanup has released the pin.
+No additional schema revision or rollout enablement is required.
