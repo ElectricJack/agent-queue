@@ -1223,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:da5afcd739d5f667f5ef67425910abcb38354b81a538dfd0294fda8046c02821",
+  "digest": "sha256:4a29b0ea7bab80b7d31483a415fba194e40172a1f1662885e7990d8e912da000",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3253,6 +3253,7 @@
         "src.cli.app",
         "src.cli.test_runner",
         "src.config",
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.slot_report"
       ],
@@ -10189,9 +10190,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Resource gating layer 2 — the box-wide ``aq test`` slot semaphore."
     },
     "tests/test_resource_test_runs.py": {
@@ -12032,6 +12036,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.test_db_reaper"
       ],
