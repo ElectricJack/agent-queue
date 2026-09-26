@@ -81,6 +81,7 @@ somehow declares none.
     "review_comment",
     "review_show",
     "review_submit",
+    "github_issue_close_rejected",
     "review_withdraw",
     "project_ready",
     "session_drain_ack",

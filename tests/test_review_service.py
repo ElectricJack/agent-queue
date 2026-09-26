@@ -120,13 +120,14 @@ async def revise(svc, review_id, content, *, note="changed", resolves=()):
 
 async def approve(svc, review_id, revision=1, note="ok"):
     return await svc.decide(
-        review_id=review_id, revision=revision, approve=True, note=note, decided_by=OPERATOR
+        review_id=review_id, revision=revision, decision="approve", note=note, decided_by=OPERATOR
     )
 
 
 async def request_changes(svc, review_id, revision=1, note="Tighten scope."):
     return await svc.decide(
-        review_id=review_id, revision=revision, approve=False, note=note, decided_by=OPERATOR
+        review_id=review_id, revision=revision, decision="request_changes", note=note,
+        decided_by=OPERATOR
     )
 
 
@@ -407,13 +408,15 @@ async def test_response_choice_belongs_to_each_decided_revision(svc, db):
     submitted = await submit(svc)
     review_id = submitted["review_id"]
     await svc.decide(
-        review_id=review_id, revision=1, approve=False, note="First pass", decided_by=OPERATOR,
+        review_id=review_id, revision=1, decision="request_changes", note="First pass",
+        decided_by=OPERATOR,
         responder_class="standard-high", responder_profile="standard-high-codex",
         responder_profile_source="explicit",
     )
     await revise(svc, review_id, DOC + "\nMore detail.\n")
     await svc.decide(
-        review_id=review_id, revision=2, approve=False, note="Second pass", decided_by=OPERATOR,
+        review_id=review_id, revision=2, decision="request_changes", note="Second pass",
+        decided_by=OPERATOR,
     )
     first = await db.get_review_revision(review_id, 1)
     second = await db.get_review_revision(review_id, 2)

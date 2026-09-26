@@ -146,6 +146,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="review",
         description="Document reviews: submit specs and plans for Jack's approval",
     ),
+    "github_issue": CategoryMeta(
+        name="github_issue",
+        description="Repository-bound GitHub issue triage and reviewed fixes",
+    ),
     "digest": CategoryMeta(
         name="digest",
         description=(

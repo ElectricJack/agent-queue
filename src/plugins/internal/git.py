@@ -1081,6 +1081,11 @@ class GitPlugin(InternalPlugin):
                 repository_url = publication.repository_url
                 if not _is_github_repository(repository_url):
                     return {"error": "Project has no authorized GitHub repository"}
+                from src.commands.github_issue_commands import with_fix_closing_line
+
+                held_task = await self._db._db.get_task(principal.task_id)
+                key = held_task.dedup_key if held_task else None
+                body = with_fix_closing_line(body, key)
             repository = await git.bind_github_repository(repository_url)
             pr_url = await git.acreate_pr(
                 checkout_path,

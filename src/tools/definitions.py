@@ -89,6 +89,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_apply_reply": "escalation",
     # document reviews
     "review_submit": "review",
+    "github_issue_triage": "github_issue",
+    "github_issue_fix_approved": "github_issue",
+    "github_issue_rejection": "github_issue",
+    "github_issue_close_rejected": "github_issue",
     "review_show": "review",
     "review_list": "review",
     "review_withdraw": "review",
@@ -6426,7 +6430,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "project_id": {"type": "string"},
                     "state": {
                         "type": "string",
-                        "enum": ["in_review", "changes_requested", "approved", "withdrawn"],
+                        "enum": ["in_review", "changes_requested", "rejected", "approved", "withdrawn"],
                     },
                     "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
                     "task_id": {"type": "string"},
@@ -6446,16 +6450,16 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
         {
             "name": "review_decide",
-            "description": "Approve a review or request changes on its current revision.",
+            "description": "Approve, request changes, or reject a current review revision.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
-                    "decision": {"type": "string", "enum": ["approve", "request_changes"]},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
                     "note": {"type": "string"},
-                    "responder_class": {"type": "string", "description": "Who revises after feedback: intelligence class for the new revision task (request_changes only)."},
-                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class (request_changes only)."},
+                    "responder_class": {"type": "string", "description": "Who revises after request_changes or reject: intelligence class for the new revision task."},
+                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class."},
                 },
                 "required": ["review_id", "revision", "decision"],
                 "additionalProperties": False,
@@ -6514,6 +6518,59 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {"review_id": {"type": "string"}},
                 "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "github_issue_triage",
+            "description": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"project_id": {"type": "string", "enum": ["agent-queue"]}},
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_fix_approved",
+            "description": "File or reuse a fix task for an approved GitHub issue investigation review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "enum": ["agent-queue"]},
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["project_id", "review_id", "revision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_close_rejected",
+            "description": "Close a rejected investigation issue only when Jack explicitly requested it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}},
+                "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_rejection",
+            "description": "Apply only an explicit closure request in Jack's rejected issue review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "enum": ["agent-queue"]},
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["project_id", "review_id", "revision"],
                 "additionalProperties": False,
             },
         },

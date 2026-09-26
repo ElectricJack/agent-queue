@@ -92,6 +92,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_list",
         "review_withdraw",
         "review_comment",
+        # The command checks the held revision task and Jack's explicit
+        # rejection before it reaches the repository-bound GitHub client.
+        "github_issue_close_rejected",
     }
 )
 
