@@ -100,8 +100,8 @@ anchors each finding with `--quote` or `--heading-path`, then closes its task
 with a verdict summary. The operator still decides the gate.
 
 **Delegation, set once per project.** You can delegate all new reviews in a
-project to the supervisor with `aq project edit --review-delegate-to supervisor`
-(revert with `--review-delegate-to user`, the default). That writes the
+project to the supervisor with `aq project set <project-id> review-delegate-to supervisor`
+(revert with `aq project set <project-id> review-delegate-to user`, the default). That writes the
 nullable `projects.review_delegate_to` column (CHECK `user` | `supervisor`)
 and sets the initial `decider` of every new review in that project. Only a
 local operator may change it; the elevated supervisor is refused

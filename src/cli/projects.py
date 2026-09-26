@@ -240,6 +240,7 @@ def project_set(
         "integration-repository-id": "integration_repository_id",
         "integration-policy": "hierarchical_integration_policy",
         "integration-review-mode": "integration_mode",
+        "review-delegate-to": "review_delegate_to",
     }
 
     field = KEY_MAP.get(key)
@@ -257,6 +258,15 @@ def project_set(
         # Clearing falls the task back to the profile-resolution chain rather
         # than pinning every unpinned task to one lane.
         coerced = None if value.lower() in ("none", "null", "clear") else value
+    elif field == "review_delegate_to":
+        # Local-operator only; empty clears the delegation back to the default.
+        lowered = value.lower()
+        if lowered in ("clear", "none", "null", ""):
+            coerced = None
+        elif lowered in ("user", "supervisor"):
+            coerced = lowered
+        else:
+            raise click.UsageError("review-delegate-to must be user, supervisor, or clear")
     elif field == "integration_repository_id":
         coerced = None if value.lower() in ("none", "null", "clear") else value
     elif field == "integration_repository":
