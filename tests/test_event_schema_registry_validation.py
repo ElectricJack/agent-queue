@@ -72,6 +72,14 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "conversation.input_received.v1": {
+        "conversation_id": "conv-1",
+        "input_id": "cinput-1",
+        "transport": "discord",
+        "verified_actor": "human:discord:333333333333333333",
+        "created": True,
+        "source": "gateway",
+    },
     "digest.window_ready": {
         "window_id": "digest-window-1",
         "request_id": "report-hourly-digest-window-1",

@@ -936,7 +936,7 @@
       ]
     },
     "supervisor": {
-      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations and inbound conversation gates, and the blocked-task escalation playbook.",
+      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations, inbound conversation gates, verified supervisor inbox intake and the blocked-task escalation playbook.",
       "modules": [
         "tests/test_blocked_task_escalation.py",
         "tests/test_config_supervisor.py",
@@ -950,6 +950,7 @@
         "tests/test_supervisor_global_lifecycle.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_supervisor_inbox_commands.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py"
       ]
@@ -1214,7 +1215,7 @@
       ]
     }
   },
-  "digest": "sha256:67fa2e876894a4af7aa3f62fb4b6c692b6d8f341b7ff34dd23cc30d22ed03541",
+  "digest": "sha256:46ed9c102e1fec6b14abc8d9812c7566d65e8038800ec3299e9c4d88ada85985",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11212,6 +11213,25 @@
         "asyncio"
       ],
       "summary": "Loopback restriction on global-admin bearer tokens."
+    },
+    "tests/test_supervisor_inbox_commands.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.outbox",
+        "src.database",
+        "src.database.tables",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified internal intake, durable quotas and replay-safe conversation notifications."
     },
     "tests/test_supervisor_recovery.py": {
       "areas": [

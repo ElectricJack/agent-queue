@@ -1750,6 +1750,12 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "conversation.input_received.v1": {
+        "required": ["conversation_id", "input_id", "transport", "verified_actor", "created", "source"],
+        "optional": [],
+        "types": {"conversation_id": str, "input_id": str, "transport": str,
+                  "verified_actor": str, "created": bool, "source": str},
+    },
     "agent.created": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},

@@ -369,6 +369,10 @@ class Orchestrator(
         # escalation surface", which never affects scheduling or the durable
         # escalation records themselves.
         self.escalation_delivery = None
+        # Intake fails closed until the shared delivery adapter binds this port.
+        from src.conversations.outbox import UnboundOutbox
+
+        self.conversation_outbox = UnboundOutbox()
         # Hourly digest scheduler (discord-simplification §8).  Also wired by
         # ``main.py``; ``None`` means no external routine surface.  Evaluation
         # and delivery both live in the service, so nothing about the cycle

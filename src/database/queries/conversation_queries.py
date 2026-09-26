@@ -24,13 +24,14 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+from src.conversations.limits import AUTHOR_WINDOW_LIMIT, CHANNEL_WINDOW_LIMIT, WINDOW_SECONDS
 from src.database.tables import (
     conversation_backfill_cursors,
     conversation_inputs,
@@ -75,6 +76,14 @@ class ConversationClosed(ConversationStateError):
     """The conversation is closed; a new mention must open a fresh one."""
 
 
+class ConversationRateLimited(ConversationError):
+    """The author or channel has spent its durable sliding-window quota."""
+
+    def __init__(self, scope: str):
+        self.scope = scope
+        super().__init__(f"conversation {scope} rate limit reached")
+
+
 def _require_nonempty(values: Mapping[str, Any], names: Sequence[str]) -> None:
     empty = [name for name in names if values.get(name) is None or values.get(name) == ""]
     if empty:
@@ -112,9 +121,10 @@ class ConversationQueriesMixin:
         source: str,
         received_at: float,
         conversation_id: str | None,
-        brief: str,
+        brief: str | Callable[[str, str], str],
         supervisor_recipient: str = SUPERVISOR_RECIPIENT,
         now: float | None = None,
+        enforce_limits: bool = False,
     ) -> dict[str, Any]:
         """Persist one verified operator message and queue its supervisor notice.
 
@@ -136,6 +146,11 @@ class ConversationQueriesMixin:
         empty, oversize or unknown-source input.
 
         Returns ``{"created", "conversation", "input", "supervisor_message_id"}``.
+
+        A callable *brief* receives the allocated conversation/input ids and
+        renders within this transaction. With *enforce_limits*, author and
+        channel quota checks are serialized with the insert; the window uses
+        acceptance time, so old backfill messages still spend current quota.
         """
         _require_nonempty(
             {
@@ -186,6 +201,7 @@ class ConversationQueriesMixin:
                 brief=brief,
                 supervisor_recipient=supervisor_recipient,
                 now=stamp,
+                enforce_limits=enforce_limits,
             )
         except IntegrityError as exc:
             # The lock order above makes this unreachable for one message, but
@@ -214,11 +230,35 @@ class ConversationQueriesMixin:
         source: str,
         received_at: float,
         conversation_id: str | None,
-        brief: str,
+        brief: str | Callable[[str, str], str],
         supervisor_recipient: str,
         now: float,
+        enforce_limits: bool,
     ) -> dict[str, Any]:
         async with self.immediate() as conn:
+            if enforce_limits:
+                # Shared across handlers/restarts and gateway/backfill. Always
+                # acquire author then channel to keep the lock order stable.
+                for key in (f"conversation:author:{author_id}", f"conversation:channel:{channel_id}"):
+                    await conn.execute(
+                        select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0)))
+                    )
+                existing = await _input_by_external(conn, transport, external_message_id)
+                if existing is not None:
+                    return await _replay(conn, existing)
+                for scope, column, value, limit in (
+                    ("author", conversation_inputs.c.author_id, author_id, AUTHOR_WINDOW_LIMIT),
+                    ("channel", conversation_inputs.c.channel_id, channel_id, CHANNEL_WINDOW_LIMIT),
+                ):
+                    total = await conn.scalar(
+                        select(func.count()).select_from(conversation_inputs).where(
+                            conversation_inputs.c.created_at >= now - WINDOW_SECONDS,
+                            conversation_inputs.c.state != "revoked",
+                            column == value,
+                        )
+                    )
+                    if total >= limit:
+                        raise ConversationRateLimited(scope)
             if conversation_id is None:
                 existing = await _input_by_external(conn, transport, external_message_id)
                 if existing is not None:
@@ -303,6 +343,11 @@ class ConversationQueriesMixin:
 
             input_id = f"cinput-{uuid.uuid4()}"
             supervisor_message_id = f"msg-{input_id}"
+            # The renderer needs the server-allocated ids. Render before any
+            # message is committed so the notification is never incomplete.
+            rendered_brief = brief(conversation["id"], input_id) if callable(brief) else brief
+            if not isinstance(rendered_brief, str) or not rendered_brief:
+                raise ValueError("brief must render non-empty text")
             await conn.execute(
                 pg_insert(messages).values(
                     id=supervisor_message_id,
@@ -313,7 +358,7 @@ class ConversationQueriesMixin:
                     to_id=supervisor_recipient,
                     thread_id=conversation["thread_id"],
                     subject=f"Discord conversation {conversation['id']}",
-                    body=brief,
+                    body=rendered_brief,
                     priority=_SUPERVISOR_PRIORITY,
                     created_at=now,
                     delivered_at=None,
@@ -455,13 +500,13 @@ class ConversationQueriesMixin:
         author_id: str | None = None,
         channel_id: str | None = None,
     ) -> int:
-        """Inputs received at or after *since* that still spend rate-limit quota.
+        """Inputs accepted at or after *since* that still spend rate-limit quota.
 
         Every accepted input counts, answered or expired, except a revoked
         one.  Replays never create a row, so they never spend quota.
         """
         conditions = [
-            conversation_inputs.c.received_at >= since,
+            conversation_inputs.c.created_at >= since,
             conversation_inputs.c.state != "revoked",
         ]
         if author_id is not None:
