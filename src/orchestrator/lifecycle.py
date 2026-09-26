@@ -35,7 +35,7 @@ import time
 from typing import Any
 
 from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
-from src.models import Task, TaskStatus
+from src.models import ProjectStatus, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -80,11 +80,14 @@ class LifecycleMixin:
         now = time.time() if now is None else now
         result["settled"] = await self.reconcile_stale_containers()
         cutoff = now - threshold
+        # A paused or archived project is expected to sit still; only an
+        # active project's stopped work is news to its supervisor.
+        active = {p.id for p in await self.db.list_projects(status=ProjectStatus.ACTIVE)}
         stale = [
             task
             for status in (TaskStatus.BLOCKED, TaskStatus.PAUSED)
             for task in await self.db.list_tasks(status=status)
-            if task.updated_at and task.updated_at <= cutoff
+            if task.updated_at and task.updated_at <= cutoff and task.project_id in active
         ]
         if not stale:
             return result

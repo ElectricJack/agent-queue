@@ -800,3 +800,13 @@ class TestDanglingLifecycleDoctor:
         )
         result = await self.check(db)
         assert result.data["obsolete_pending"] == [{"task_id": "dup", "pending": ["publishing"]}]
+
+
+class TestStaleOpenScope:
+    async def test_a_paused_project_is_not_flagged(self, db, orch):
+        from src.models import ProjectStatus
+
+        await blocked_on(db)
+        await db.update_project(PROJECT_ID, status=ProjectStatus.PAUSED)
+        assert (await orch.reevaluate_stale_open())["flagged"] == []
+        assert await db.get_task_meta("t", "needs_attention") is None
