@@ -66,12 +66,7 @@ def sanitise_reply(text: str, *, base_url: str) -> str:
             and allowed.netloc
             and parsed.scheme == allowed.scheme
             and parsed.netloc == allowed.netloc
-            and (
-                url == base
-                or url.startswith(base + "/")
-                or url.startswith(base + "?")
-                or url.startswith(base + "#")
-            )
+            and (url == base or url.startswith((base + "/", base + "?", base + "#")))
         ):
             return url
         return "[link removed]"
