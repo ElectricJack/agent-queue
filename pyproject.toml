@@ -152,6 +152,7 @@ mcp = [
 # and a new version is adopted only once that evaluation passes on it.
 test-selection = [
     "pytest-impacted==0.30.0",
+    "typesafe-sdk==0.7.1",
 ]
 cli = [
     # 8.3.3 addresses PYSEC-2026-2132.
