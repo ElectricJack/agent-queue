@@ -8,6 +8,7 @@ import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
+const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(loadWorkspaceGraph);
 const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
@@ -147,6 +148,7 @@ export default function App() {
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
+            <Route path="conversations" element={<GlobalChat />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="reviews" element={<ReviewsInbox />} />
             <Route path="reviews/:reviewId" element={<ReviewPage />} />

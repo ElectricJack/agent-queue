@@ -153,16 +153,20 @@ export function useChatTranscript(
   const [thinking, setThinking] = useState<ThinkingState | null>(null);
   const seenIds = useRef<Set<string>>(new Set());
   const thinkingRef = useRef<ThinkingState | null>(null);
+  const threadGeneration = useRef(0);
   thinkingRef.current = thinking;
 
-  // Reset per-project when projectId changes
+  // Each thread has its own pending messages, activity and reply wait.
   useEffect(() => {
+    threadGeneration.current += 1;
     setLive([]);
     setPending([]);
     setEvents([]);
     setThinking(null);
+    setSendError(null);
+    setIsSending(false);
     seenIds.current = new Set();
-  }, [projectId]);
+  }, [projectId, thread, toId]);
 
   useEventStream({
     onEvent: useCallback(
@@ -263,6 +267,8 @@ export function useChatTranscript(
     async (body: string) => {
       const trimmed = body.trim();
       if (!trimmed) return;
+      const generation = threadGeneration.current;
+      const isCurrent = () => mountedRef.current && generation === threadGeneration.current;
       const now = Date.now() / 1000;
       const optimistic: PendingMessage = {
         id: `optimistic-${Date.now()}`,
@@ -293,23 +299,24 @@ export function useChatTranscript(
           threadId: thread,
           sessionAddress: overrides.sessionAddress,
         });
-        if (!mountedRef.current) return;
+        // Keep the sent thread fresh even if the user switched away while sending.
+        qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
+        if (!isCurrent()) return;
         setPending((prev) =>
           prev.map((p) => (p.id === optimistic.id ? { ...p, serverId: res.message_id } : p)),
         );
-        qc.invalidateQueries({ queryKey: ["chat", "thread", projectId, thread] });
       } catch (err) {
-        if (!mountedRef.current) return;
+        if (!isCurrent()) return;
         setSendError(err);
         setPending((prev) =>
           prev.map((p) => (p.id === optimistic.id ? { ...p, failed: true, pending: false } : p)),
         );
         setThinking(null);
       } finally {
-        if (mountedRef.current) setIsSending(false);
+        if (isCurrent()) setIsSending(false);
       }
     },
-    [projectId, thread, qc],
+    [projectId, thread, toId, overrides.sessionAddress, qc],
   );
 
   const items = useMemo<TranscriptItem[]>(() => {

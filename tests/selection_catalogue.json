@@ -1223,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:4a29b0ea7bab80b7d31483a415fba194e40172a1f1662885e7990d8e912da000",
+  "digest": "sha256:cc74e453f3adcead8464a1f677b41ca646175240d1d4428461c908f31fa2f95d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4434,6 +4434,8 @@
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.conversations.intake",
+        "src.conversations.preconditions",
         "src.discord.escalation_intake",
         "src.escalations.intake"
       ],
