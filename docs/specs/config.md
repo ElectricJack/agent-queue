@@ -239,7 +239,7 @@ Maps to `AgentsDefaultConfig`. The YAML key is `agents`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `heartbeat_interval_seconds` | `int` | `30` | How often (in seconds) a running agent must emit a heartbeat to be considered alive. |
-| `stuck_timeout_seconds` | `int` | `0` | Seconds without a heartbeat before an agent is declared stuck. `0` disables the timeout entirely (no stuck detection). |
+| `stuck_timeout_seconds` | `int` | `0` | Session backstop: task sessions use age since launch or question/wait resumption; pool sessions use inactivity. Active current-claim waits are exempt and their results grant a fresh lease interval. `0` disables this backstop; the inactivity ladder remains enabled. |
 | `graceful_shutdown_timeout_seconds` | `int` | `30` | Maximum seconds to wait for an agent to finish cleanly during shutdown before forcibly terminating it. |
 
 ### 4.4 `scheduling` Section

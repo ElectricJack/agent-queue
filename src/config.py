@@ -471,7 +471,7 @@ class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 1800  # 30 min; 0 = no timeout
+    stuck_timeout_seconds: int = 0  # disabled; explicit limits remain honored
     graceful_shutdown_timeout_seconds: int = 30
 
     def validate(self) -> list[ConfigError]:
