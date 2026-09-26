@@ -33,7 +33,8 @@ class ConversationHistoryRecord:
         updated_at (float):
         closed_at (float | None):
         inputs (list[ConversationInputRecord]):
-        next_before (float | None):
+        next_before (float | None): `before` for this conversation's next input page; null when exhausted.
+        next_before_id (None | str): `before_id` paired with `next_before`.
     """
 
     id: str
@@ -51,6 +52,7 @@ class ConversationHistoryRecord:
     closed_at: float | None
     inputs: list[ConversationInputRecord]
     next_before: float | None
+    next_before_id: None | str
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,6 +92,9 @@ class ConversationHistoryRecord:
         next_before: float | None
         next_before = self.next_before
 
+        next_before_id: None | str
+        next_before_id = self.next_before_id
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -109,6 +114,7 @@ class ConversationHistoryRecord:
                 "closed_at": closed_at,
                 "inputs": inputs,
                 "next_before": next_before,
+                "next_before_id": next_before_id,
             }
         )
 
@@ -169,6 +175,13 @@ class ConversationHistoryRecord:
 
         next_before = _parse_next_before(d.pop("next_before"))
 
+        def _parse_next_before_id(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        next_before_id = _parse_next_before_id(d.pop("next_before_id"))
+
         conversation_history_record = cls(
             id=id,
             transport=transport,
@@ -185,6 +198,7 @@ class ConversationHistoryRecord:
             closed_at=closed_at,
             inputs=inputs,
             next_before=next_before,
+            next_before_id=next_before_id,
         )
 
         conversation_history_record.additional_properties = d

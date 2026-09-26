@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, case, delete, func, select, update
+from sqlalchemy import and_, case, delete, func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -96,6 +96,17 @@ def _now(now: float | None) -> float:
 
 def _row(row: Any) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
+
+
+def _page_boundary(time_column: Any, id_column: Any, before: float, before_id: str | None) -> Any:
+    """Rows after an exclusive ``(before, before_id)`` boundary in newest-first order.
+
+    A bare *before* stays a strict time filter.  With *before_id* the id breaks
+    ties, so rows sharing the boundary time are paged exactly once.
+    """
+    if before_id is None:
+        return time_column < before
+    return tuple_(time_column, id_column) < tuple_(before, before_id)
 
 
 class ConversationQueriesMixin:
@@ -757,13 +768,27 @@ class ConversationQueriesMixin:
         states: list[str] | None = None,
         limit: int = 50,
         before: float | None = None,
+        before_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Conversations, most recently active first; page with ``before=updated_at``."""
+        """Conversations, most recently active first.
+
+        Page with the last row's ``before=updated_at, before_id=id``; *before*
+        alone returns only conversations updated strictly earlier.
+        """
+        if before_id is not None and before is None:
+            raise ValueError("before_id requires before")
         conditions = []
         if states:
             conditions.append(supervisor_conversations.c.state.in_(states))
         if before is not None:
-            conditions.append(supervisor_conversations.c.updated_at < before)
+            conditions.append(
+                _page_boundary(
+                    supervisor_conversations.c.updated_at,
+                    supervisor_conversations.c.id,
+                    before,
+                    before_id,
+                )
+            )
         statement = (
             select(supervisor_conversations)
             .where(*conditions)
@@ -783,17 +808,25 @@ class ConversationQueriesMixin:
         *,
         limit: int = 100,
         before: float | None = None,
+        before_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """One conversation's inputs, newest first; page with ``before=received_at``.
+        """One conversation's inputs, newest first.
 
-        ``text`` is ``None`` once expired.  Each row carries the current reply
-        pointer's ``reply_body`` and ``reply_created_at`` (``None`` when
-        unanswered).
+        Page with the last row's ``before=received_at, before_id=id``; *before*
+        alone returns only inputs received strictly earlier.  ``text`` is
+        ``None`` once expired.  Each row carries the current reply pointer's
+        ``reply_body`` and ``reply_created_at`` (``None`` when unanswered).
         """
+        if before_id is not None and before is None:
+            raise ValueError("before_id requires before")
         reply = messages.alias("reply")
         conditions = [conversation_inputs.c.conversation_id == conversation_id]
         if before is not None:
-            conditions.append(conversation_inputs.c.received_at < before)
+            conditions.append(
+                _page_boundary(
+                    conversation_inputs.c.received_at, conversation_inputs.c.id, before, before_id
+                )
+            )
         statement = (
             select(
                 conversation_inputs,

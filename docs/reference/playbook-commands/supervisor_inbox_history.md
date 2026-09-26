@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/supervisor_inbox.py`](../../../src/commands/contracts/supervisor_inbox.py) |
-| Contract fingerprint | `sha256:7ca497cf03da300154ce55583eefe4cd466948f57a9b2bad5f392a277f9533fd` |
+| Contract fingerprint | `sha256:b221d1a7c4924039b951d4b17174d5ce2afddcebda7c3adb64012cf56d4d512e` |
 
 ## Parameters
 
@@ -23,14 +23,16 @@
 | `conversation_id` | `string \| null` | no | `null` | — |
 | `states` | `("opening" \| "open" \| "closed" \| "delivery_blocked")[] \| null` | no | `null` | — |
 | `limit` | `integer` | no | `50` | — |
-| `before` | `number \| null` | no | `null` | — |
+| `before` | `number \| null` | no | `null` | Exclusive epoch-second boundary; alone, a strict time filter. |
+| `before_id` | `string \| null` | no | `null` | Row id breaking ties at `before`; requires `before`. |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
 | `conversations` | `object[]` | — |
-| `next_before` | `number \| null` | — |
+| `next_before` | `number \| null` | Next page's `before`; null when exhausted. |
+| `next_before_id` | `string \| null` | Next page's `before_id`, with `next_before`. |
 
 ## Outcomes
 
@@ -62,14 +64,20 @@ sessions are refused; this is not on the plain agent surface.
 ## How it works internally
 
 [`conversation_commands.py`](../../../src/commands/conversation_commands.py)
-reads the database history queries. Without `conversation_id`, `before` is an
-exclusive conversation `updated_at` cursor and the top-level `next_before` pages
-conversations. With `conversation_id`, it is an exclusive input `received_at`
-cursor; top-level and per-conversation cursors then both page inputs. A null cursor
-means the query page is exhausted. The current timestamp-only cursor cannot
-continue through a group of equal-time rows split across a page boundary; use a
-larger limit when inspecting such a group. Each conversation includes its newest inputs and an
-input cursor usable with that conversation id. State filters apply to conversations.
+reads the database history queries. Rows are ordered newest first by time, then
+by id descending. Without `conversation_id`, the cursor walks conversations by
+`updated_at`; with `conversation_id`, it walks that conversation's inputs by
+`received_at`, and the top-level and per-conversation cursors are then the same.
+
+A cursor is the pair `next_before` and `next_before_id` (the last row's time and
+id). Pass them back as `before` and `before_id`: the next page holds rows older
+than that time, plus rows at exactly that time with a smaller id, so a group of
+equal-time rows split across a page boundary is still returned exactly once.
+`before` alone keeps its original meaning, a strict "older than this time"
+filter; it skips every row at the boundary time, so continue a page with both
+values. Both are null when the page is exhausted. Each conversation includes its
+newest inputs and an input cursor pair usable with that conversation id. State
+filters apply to conversations.
 
 ## Side effects and persistence
 
@@ -80,11 +88,13 @@ reply text come from durable rows.
 ## Failure modes and diagnostics
 
 `out_of_scope` means the caller lacks global read authority. `invalid_request`
-means an unknown state, invalid limit or nonfinite cursor. `conversation_not_found`
+means an unknown state, invalid limit, nonfinite cursor, or a blank `before_id` or
+one given without `before`. `conversation_not_found`
 means the requested conversation id does not exist. No matching state is a
 successful empty list.
 
 ## Example step
 
 Run `aq supervisor-inbox history --conversation-id conv-example --limit 20 --json`,
-then repeat with `--before` set to the returned `data.next_before` until it is null.
+then repeat with `--before` set to the returned `data.next_before` and `--before-id`
+set to `data.next_before_id` until both are null.

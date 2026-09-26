@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.commands.contracts.supervisor_inbox import (
     SupervisorInboxHistoryArgs,
@@ -111,13 +111,19 @@ class ConversationHistoryRecord(BaseModel):
     updated_at: float
     closed_at: float | None
     inputs: list[ConversationInputRecord]
-    next_before: float | None
+    next_before: float | None = Field(
+        description="`before` for this conversation's next input page; null when exhausted."
+    )
+    next_before_id: str | None = Field(description="`before_id` paired with `next_before`.")
 
 
 class SupervisorInboxHistoryResponse(BaseModel):
     success: bool = True
     conversations: list[ConversationHistoryRecord]
-    next_before: float | None
+    next_before: float | None = Field(
+        description="`before` for the next page; null when exhausted."
+    )
+    next_before_id: str | None = Field(description="`before_id` paired with `next_before`.")
 
 
 class SupervisorInboxErrorResponse(BaseModel):

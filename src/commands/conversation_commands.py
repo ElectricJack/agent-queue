@@ -28,12 +28,12 @@ from src.conversations.outbox import ConversationOutbox, UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
 from src.conversations.render import render_brief, render_reply, sanitise_reply
 from src.database.queries.conversation_queries import (
+    CONVERSATION_STATES,
     ConversationClosed,
     ConversationConflict,
     ConversationNotFound,
     ConversationRateLimited,
     ConversationStateError,
-    CONVERSATION_STATES,
 )
 
 _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
@@ -121,8 +121,9 @@ class ConversationCommandsMixin:
             return _error("out_of_scope", "conversation reads require local or global supervisor")
         conversation_id = args.get("conversation_id")
         states, limit, before = args.get("states"), args.get("limit", 50), args.get("before")
+        before_id = args.get("before_id")
         if (
-            set(args) - {"conversation_id", "states", "limit", "before"}
+            set(args) - {"conversation_id", "states", "limit", "before", "before_id"}
             or (
                 conversation_id is not None
                 and (not isinstance(conversation_id, str) or not conversation_id.strip())
@@ -145,34 +146,53 @@ class ConversationCommandsMixin:
                     or not math.isfinite(before)
                 )
             )
+            # The id tie-breaker only continues a timestamp cursor.
+            or (
+                before_id is not None
+                and (before is None or not isinstance(before_id, str) or not before_id.strip())
+            )
         ):
             return _error("invalid_request", "invalid history filter or pagination arguments")
 
-        next_before = None
+        next_before = next_before_id = None
         if conversation_id is not None:
             conversation = await self.db.get_conversation(conversation_id)
             if conversation is None:
                 return _error("conversation_not_found", "conversation does not exist")
             conversations = [conversation] if not states or conversation["state"] in states else []
         else:
-            rows = await self.db.list_conversations(states=states, limit=limit + 1, before=before)
+            rows = await self.db.list_conversations(
+                states=states, limit=limit + 1, before=before, before_id=before_id
+            )
             conversations = rows[:limit]
             if len(rows) > limit:
                 next_before = conversations[-1]["updated_at"]
+                next_before_id = conversations[-1]["id"]
 
         history = []
         for conversation in conversations:
+            paging = conversation_id is not None
             rows = await self.db.list_conversation_inputs(
                 conversation["id"],
                 limit=limit + 1,
-                before=before if conversation_id is not None else None,
+                before=before if paging else None,
+                before_id=before_id if paging else None,
             )
             inputs = [{**item, "text_expired": item["text"] is None} for item in rows[:limit]]
-            input_before = inputs[-1]["received_at"] if len(rows) > limit else None
-            history.append({**conversation, "inputs": inputs, "next_before": input_before})
-            if conversation_id is not None:
-                next_before = input_before
-        return {"success": True, "conversations": history, "next_before": next_before}
+            more = len(rows) > limit
+            cursor = {
+                "next_before": inputs[-1]["received_at"] if more else None,
+                "next_before_id": inputs[-1]["id"] if more else None,
+            }
+            history.append({**conversation, "inputs": inputs, **cursor})
+            if paging:
+                next_before, next_before_id = cursor["next_before"], cursor["next_before_id"]
+        return {
+            "success": True,
+            "conversations": history,
+            "next_before": next_before,
+            "next_before_id": next_before_id,
+        }
 
     async def _cmd_supervisor_inbox_reply(self, args: dict[str, Any]) -> dict[str, Any]:
         """Only an explicit answer from the live global supervisor queues a reply."""
