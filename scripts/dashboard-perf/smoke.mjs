@@ -11,9 +11,9 @@ import { fileURLToPath } from "node:url";
 const dir = await mkdtemp(join(tmpdir(), "aq-perf-smoke-"));
 const server = createServer((req, res) => {
   req.resume();
-  const isPage = req.url.startsWith("/projects/");
+  const isPage = req.url.startsWith("/projects/") || req.url === "/agents";
   const body = isPage
-    ? '<main><a href="/projects/fixture/tasks" onclick="event.preventDefault()">Tasks</a><table><tr data-task-row><td>Fixture</td></tr></table></main>'
+    ? '<main><a href="/projects/fixture/tasks" onclick="event.preventDefault()">Tasks</a><table><tr data-task-row><td>Fixture</td></tr></table><button aria-label="Open pool fixture">Pool</button></main>'
     : JSON.stringify(req.url === "/api/task/list" ? { tasks: [{ id: "fixture-1" }] } : {});
   res.writeHead(200, { "content-type": isPage ? "text/html" : "application/json" });
   res.end(body);
@@ -25,7 +25,7 @@ try {
   const out = join(dir, "smoke.json");
   child = spawn(process.execPath, [fileURLToPath(new URL("harness.mjs", import.meta.url)),
     base, out, "--api", base, "--clients", "3", "--warmup-ms", "50",
-    "--observe-ms", "200", "--idle-ms", "999", "--runs", "1", "--only", "tasks",
+    "--observe-ms", "200", "--idle-ms", "999", "--runs", "1", "--only", "tasks,agents",
     "--project", "fixture", "--no-interactions"], { detached: true, stdio: "inherit" });
   const code = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -41,14 +41,18 @@ try {
   assert.equal(data.manifest.observe_ms, 200); // Alias precedence.
   assert.equal(data.manifest.warmup_ms, 50);
   assert.match(data.manifest.chrome, /^Chrome\//);
-  const clients = data.idle.tasks.clients;
-  assert.equal(clients.length, 3);
-  assert.ok(Math.max(...clients.map((c) => c.start_ts)) < Math.min(...clients.map((c) => c.end_ts)));
+  // Every surface gets its own set of concurrent clients, each in a separate window.
+  for (const surface of ["tasks", "agents"]) {
+    const clients = data.idle[surface].clients;
+    assert.equal(clients.length, 3);
+    assert.ok(Math.max(...clients.map((c) => c.start_ts)) < Math.min(...clients.map((c) => c.end_ts)));
+    assert.equal(new Set(clients.map((c) => c.window_id)).size, 3);
+  }
   assert.equal(data.cold.tasks.raw_samples.length, 1);
   assert.equal(data.warm.tasks.raw_samples.length, 1);
   assert.equal(data.api["POST /api/task/get"].raw_ms.length, 30);
   assert.equal(data.api["POST /api/task/get"].errors, 0);
-  console.log("Chrome smoke passed: three concurrent clients, duration alias, manifests, raw browser/API samples");
+  console.log("Chrome smoke passed: three concurrent windowed clients on two surfaces, duration alias, manifests, raw browser/API samples");
 } finally {
   if (child?.pid) {
     try { process.kill(-child.pid, "SIGKILL"); } catch (error) {

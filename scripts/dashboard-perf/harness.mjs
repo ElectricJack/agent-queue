@@ -165,23 +165,13 @@ const median = (xs) => {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 };
 
-let clientWindow = 0;
 async function newPage(browser, separateWindow = false) {
-  let page;
-  if (separateWindow) {
-    // An inactive tab suspends requestAnimationFrame, including __waitFor.
-    // Each measured client needs its own foreground window.
-    const marker = `about:blank#aq-perf-client-${++clientWindow}`;
-    const session = await browser.target().createCDPSession();
-    try {
-      await session.send("Target.createTarget", { url: marker, newWindow: true, background: false });
-      page = await (await browser.waitForTarget((target) => target.url() === marker)).page();
-    } finally {
-      await session.detach();
-    }
-  } else {
-    page = await browser.newPage();
-  }
+  // An inactive tab suspends requestAnimationFrame, including __waitFor, so each
+  // measured client needs its own foreground window. Ask Puppeteer for the window:
+  // detaching a session opened on browser.target() drops the browser target from
+  // puppeteer-core 24's lookup, and the next surface's clients then fail.
+  const page = await browser.newPage(separateWindow ? { type: "window", background: false } : undefined);
+  const windowId = separateWindow ? await page.windowId() : null;
   await page.setViewport({ width: 1600, height: 1000 });
   const cdp = await page.createCDPSession();
   await cdp.send("Network.enable");
@@ -222,7 +212,7 @@ async function newPage(browser, separateWindow = false) {
     }
     req.continue();
   });
-  return { page, cdp, net };
+  return { page, cdp, net, windowId };
 }
 
 async function snapshot(page) {
@@ -614,7 +604,12 @@ async function main() {
             if (ready < 0) throw new Error(`idle surface ${key} did not become ready`);
             await sleep(WARMUP_MS);
           }));
-          const clients = await Promise.all(pages.map(({ page, net }) => idle(page, net, IDLE_MS)));
+          // A Puppeteer that ignores the window option would leave background tabs.
+          if (new Set(pages.map((c) => c.windowId)).size !== pages.length)
+            throw new Error(`idle surface ${key} clients share a browser window`);
+          const clients = await Promise.all(pages.map(async ({ page, net, windowId }) => ({
+            window_id: windowId, ...(await idle(page, net, IDLE_MS)),
+          })));
           const aggregate = { clients };
           for (const field of ["api_per_min", "ws_frames_per_min", "ws_kb_per_min", "commits_per_min", "fibers_per_min"])
             aggregate[field] = median(clients.map((c) => c[field]));
