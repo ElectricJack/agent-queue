@@ -11015,6 +11015,53 @@
         }
       }
     },
+    "/api/supervisor_inbox/reply": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Explicit conversation reply from the live global supervisor or local operator.",
+        "description": "Explicit conversation reply from the live global supervisor or local operator.",
+        "operationId": "supervisor_inbox_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/claude-usage": {
       "post": {
         "tags": [
@@ -48616,6 +48663,76 @@
         "type": "object",
         "title": "SubagentRollup",
         "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
+      },
+      "SupervisorInboxReplyRequest": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "title": "Conversation Id",
+            "description": ""
+          },
+          "input_id": {
+            "type": "string",
+            "title": "Input Id",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "SupervisorInboxReplyRequest"
+      },
+      "SupervisorInboxReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "reply_message_id": {
+            "type": "string",
+            "title": "Reply Message Id"
+          },
+          "delivery_dedup_key": {
+            "type": "string",
+            "title": "Delivery Dedup Key"
+          },
+          "discord_text_chars": {
+            "type": "integer",
+            "title": "Discord Text Chars"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "reply_message_id",
+          "delivery_dedup_key",
+          "discord_text_chars",
+          "truncated"
+        ],
+        "title": "SupervisorInboxReplyResponse"
       },
       "TaskActivityAttempt": {
         "properties": {

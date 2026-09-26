@@ -88,6 +88,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
+    "supervisor_inbox_reply": "supervisor_inbox",
     # document reviews
     "review_submit": "review",
     "github_issue_triage": "github_issue",
@@ -6926,5 +6927,21 @@ _ALL_TOOL_DEFINITIONS.append({
             "provenance": {"type": "string", "enum": ["replay", "test"]},
         },
         "required": ["envelope"], "additionalProperties": False,
+    },
+})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "supervisor_inbox_reply",
+    "description": "Explicit conversation reply from the live global supervisor or local operator.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string", "minLength": 1},
+            "input_id": {"type": "string", "minLength": 1},
+            "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+            "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+        "required": ["conversation_id", "input_id", "text", "idempotency_key"],
+        "additionalProperties": False,
     },
 })

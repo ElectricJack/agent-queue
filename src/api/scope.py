@@ -191,6 +191,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return None
     if command == "supervisor_inbox_post":
         return "out of scope: conversation intake is daemon-internal"
+    if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):
+        return "out of scope: conversation replies require local operator or global supervisor"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
     if command in LOCAL_REVIEW_CONTROLS:

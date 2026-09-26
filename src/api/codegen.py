@@ -122,6 +122,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "escalation_reply",
             "escalation_update",
             "escalation_apply_reply",
+            "supervisor_inbox_reply",
             "digest_preview",
             "digest_status",
             "report_request",

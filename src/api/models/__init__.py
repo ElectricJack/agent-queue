@@ -69,6 +69,7 @@ def _category_modules() -> tuple[object, ...]:
         report,
         provider,
         session,
+        supervisor_inbox,
         system,
         task,
     )
@@ -89,6 +90,7 @@ def _category_modules() -> tuple[object, ...]:
         playbook,
         playbook_v2,
         session,
+        supervisor_inbox,
         gate,
         message,
         discord,
