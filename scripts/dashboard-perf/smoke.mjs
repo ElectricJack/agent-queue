@@ -1,5 +1,5 @@
 // Real Chrome regression smoke against an ephemeral local fixture; no daemon/database.
-// Needs puppeteer-core beside the harness and CHROME (as in README.md).
+// Needs puppeteer-core (the root `npm install`) and CHROME (as in README.md).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
