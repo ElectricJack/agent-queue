@@ -43,6 +43,7 @@ class AgentQueueBot(commands.Bot):
         self._guild: discord.Guild | None = None
         self._escalation_intake_impl: tuple[Any, Any] | None = None
         self._inbound_router_impl: tuple[Any, Any, Any] | None = None
+        self._conversation_backfill_impl: tuple[Any, Any] | None = None
         # Outlives any one intake adapter: a handler swap rebuilds the adapter,
         # not the counts ``digest_status`` reports as its ``intake`` block.
         self._intake_diagnostics = IgnoreCounter()
@@ -107,6 +108,33 @@ class AgentQueueBot(commands.Bot):
             self._inbound_router_impl = (handler, intake, router)
             return router
         return cached[2]
+
+    def _conversation_backfill(self):
+        """Keep one recovery pass lock and refresh it when the router changes."""
+        from src.conversations.backfill import ConversationBackfill
+        from src.discord.escalation_transport import DiscordEscalationTransport
+
+        router = self._inbound_router()
+        cached = getattr(self, "_conversation_backfill_impl", None)
+        if cached is None or cached[0] is not router:
+            backfill = ConversationBackfill(
+                db=self.handler.db,
+                router=router,
+                transport=DiscordEscalationTransport(self, self.config),
+                config=self.config,
+            )
+            self._conversation_backfill_impl = (router, backfill)
+            return backfill
+        return cached[1]
+
+    async def _run_conversation_backfill(self) -> None:
+        try:
+            result = await self._conversation_backfill().run(
+                bot_user_id=getattr(self.user, "id", None)
+            )
+            logger.info("Discord conversation backfill: %s", result)
+        except Exception:
+            logger.warning("Discord conversation backfill failed", exc_info=True)
 
     async def setup_hook(self) -> None:
         """Keep plugin commands, retire only the six former AQ commands, sync."""
@@ -181,6 +209,11 @@ class AgentQueueBot(commands.Bot):
             )
         finally:
             self._cutover_complete.set()
+        await self._run_conversation_backfill()
+
+    async def on_resumed(self) -> None:
+        """A resumed gateway can have missed messages just like a fresh READY."""
+        await self._run_conversation_backfill()
 
     async def wait_until_cutover_complete(self) -> None:
         await self._cutover_complete.wait()
