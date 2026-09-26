@@ -186,6 +186,16 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```
 
 ## Rules
+- **Hourly report authoring.** On a `report_request` message, read `aq report
+  brief ID` and perform only bounded evidence reads for that frozen brief.
+  Distinguish completed work, branch publication, and delivery to main. A
+  shipment assertion requires a delivery reference; label inference and
+  unknown/pending delivery. Previous narrative is context, not new evidence.
+  Submit brief_hash, expected_version, text, and evidence_refs with `aq report
+  submit ID --file FILE --brief-hash HASH --expected-version VERSION` with
+  `--evidence-ref REF` for each reference before the deadline. The server inserts links and the
+  marker and enforces 1,200 characters. Do not initiate code work for a report
+  request. A closed request is final; never send a second report or edit it.
 - **First action on a cold start: establish the patrol.** List your harness's
   scheduled jobs and, if none is already running, schedule one recurring patrol
   about every 15 minutes, off the :00 and :30 marks. Its prompt runs the

@@ -38,7 +38,6 @@ Nothing here raises into the orchestrator cycle.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -50,23 +49,15 @@ from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
 from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
-from src.escalations.plan import MAX_ATTEMPTS, backoff_for
-from src.escalations.transport import (
-    EscalationTransport,
-    SendOutcome,
-    TransportAmbiguous,
-    TransportError,
-    TransportMissing,
-    TransportRetryable,
-    TransportUnavailable,
-)
+from src.escalations.plan import MAX_ATTEMPTS
+from src.delivery.dispatch import LEASE_SECONDS, OutboundAdapter, dispatch_batch
+from src.delivery.message import FrozenMessage, MessageDelivery, operation_marker
+from src.escalations.transport import EscalationTransport
+
 from src.remote_links import DashboardLinkSource
 from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
 
 logger = logging.getLogger(__name__)
-
-#: How long a claimed window stays leased before another process may take it.
-LEASE_SECONDS = 120.0
 
 #: Marker prefix embedded in every delivered digest so an ambiguous send can
 #: be reconciled against message history.  Distinct from the escalation
@@ -86,8 +77,7 @@ REPORTED_HISTORY = 20
 
 def marker_for(window_id: str) -> str:
     """Short, stable operation marker for one digest window."""
-    fold = hashlib.sha256(window_id.encode("utf-8")).hexdigest()[:16]
-    return f"{MARKER_PREFIX}:{fold}"
+    return operation_marker(window_id, prefix=MARKER_PREFIX)
 
 
 async def reported_so_far(
@@ -156,6 +146,7 @@ class DigestScheduleService:
         max_attempts: int = MAX_ATTEMPTS,
         authoring_ready: Callable[[], bool] | None = None,
         event_bus: Any | None = None,
+        include_outbound: bool = False,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -172,6 +163,8 @@ class DigestScheduleService:
         self._max_attempts = max_attempts
         self._authoring_ready = authoring_ready
         self._event_bus = event_bus
+        self._include_outbound = include_outbound
+        self._delivery = MessageDelivery(transport, clock=clock, max_attempts=max_attempts)
         # Anchor for a generation nothing has been persisted for yet, keyed by
         # ``(destination, generation)``.  A configuration change lands here as
         # a new key, which is how §9's "starts a new schedule generation at the
@@ -203,7 +196,9 @@ class DigestScheduleService:
         """Evaluate whatever is due and push whatever is ready.  Never raises."""
         report = DigestTickReport()
         schedule = self.schedule()
-        if not self._reports.hourly.enabled:
+        if not self._reports.hourly.enabled or not (
+            self._authoring_ready and self._authoring_ready()
+        ):
             try:
                 await self.db.cancel_hourly_reports(now=self._clock())
             except Exception:
@@ -213,8 +208,7 @@ class DigestScheduleService:
                 await self.db.invalidate_hourly_visibility(
                     destination=schedule.destination,
                     full_fleet=(
-                        self._reports.hourly.full_fleet_visibility
-                        and not schedule.project_ids
+                        self._reports.hourly.full_fleet_visibility and not schedule.project_ids
                     ),
                     now=self._clock(),
                 )
@@ -222,6 +216,11 @@ class DigestScheduleService:
                 logger.warning("hourly report visibility check failed", exc_info=True)
         if not schedule.enabled:
             report.skipped = "discord.digest.enabled is false"
+            if self._include_outbound:
+                try:
+                    await self.pump(schedule, report, limit=limit)
+                except Exception:
+                    logger.warning("outbound delivery pump failed", exc_info=True)
             return report
         try:
             await self.evaluate(schedule, report)
@@ -365,7 +364,9 @@ class DigestScheduleService:
                     {"window_id": window_id, "request_id": f"report-hourly-{window_id}"},
                 )
             except Exception:
-                logger.warning("digest.window_ready emit failed; request remains durable", exc_info=True)
+                logger.warning(
+                    "digest.window_ready emit failed; request remains durable", exc_info=True
+                )
         report.evaluated += 1
         if window.catchup:
             report.catchup += 1
@@ -423,32 +424,43 @@ class DigestScheduleService:
         report = report or DigestTickReport()
         now = self._clock()
 
-        if self._escalation_priority is not None:
-            try:
-                owed = await self._escalation_priority(now)
-            except Exception:
-                logger.debug("escalation priority probe failed", exc_info=True)
-                owed = 0
-            if owed:
-                report.deferred = f"{owed} escalation deliveries take priority"
-                return report
-        if self._rate_guard is not None and not self._rate_guard():
-            report.deferred = "held by the Discord invalid-request rate guard"
-            return report
-
-        claimed = await self.db.claim_digest_windows(
-            lease_owner=self._lease_owner,
-            now=now,
-            lease_seconds=LEASE_SECONDS,
-            limit=limit,
-        )
-        for row in claimed:
-            try:
-                await self._deliver_one(schedule, row, report)
-            except Exception:
-                logger.warning(
-                    "digest window %s raised; leaving it leased", row["id"], exc_info=True
+        async def claim(batch_limit):
+            claim_now = self._clock()
+            if self._include_outbound:
+                return await self.db.claim_report_deliveries(
+                    lease_owner=self._lease_owner,
+                    now=claim_now,
+                    lease_seconds=LEASE_SECONDS,
+                    limit=batch_limit,
+                    include_digest=schedule.enabled,
                 )
+            return await self.db.claim_digest_windows(
+                lease_owner=self._lease_owner,
+                now=claim_now,
+                lease_seconds=LEASE_SECONDS,
+                limit=batch_limit,
+            )
+
+        class DigestAdapter:
+            async def deliver(adapter, row):
+                await self._deliver_one(schedule, row, report)
+
+        report.deferred = await dispatch_batch(
+            now=now,
+            limit=limit,
+            claim=claim,
+            adapters={
+                "digest": DigestAdapter(),
+                "outbound": OutboundAdapter(
+                    self.db,
+                    self._delivery,
+                    lease_owner=self._lease_owner,
+                ),
+            },
+            escalation_priority=self._escalation_priority,
+            rate_guard=self._rate_guard,
+            clock=self._clock,
+        )
         return report
 
     async def _finish(
@@ -477,43 +489,11 @@ class DigestScheduleService:
         else:
             report.unknown += 1
 
-    async def _fail(
-        self,
-        row: Mapping[str, Any],
-        report: DigestTickReport,
-        *,
-        error: str,
-        retryable: bool,
-    ) -> None:
-        """Bounded backoff, then honest abandonment rather than a late repost."""
-        attempts = int(row["attempt_count"])
-        if retryable and attempts < self._max_attempts:
-            await self._finish(
-                row,
-                report,
-                status="retry",
-                next_attempt_at=self._clock() + backoff_for(attempts),
-                last_error=error,
-            )
-            return
-        await self._finish(row, report, status="unknown", last_error=error)
-
-    async def _reconcile_marker(self, marker: str, *, channel_id: str) -> SendOutcome | None:
-        try:
-            return await self.transport.find_marker(
-                channel_id=channel_id, thread_id=None, marker=marker
-            )
-        except TransportError:
-            return None
-        except Exception:
-            logger.debug("digest marker reconciliation failed", exc_info=True)
-            return None
-
     async def _deliver_one(
         self, schedule: DigestSchedule, row: Mapping[str, Any], report: DigestTickReport
     ) -> None:
-        channel_id = self._channel_id
-        if not channel_id:
+        channel_id = str(row["destination"]).removeprefix("discord:")
+        if not channel_id or channel_id == "unconfigured":
             await self._finish(
                 row,
                 report,
@@ -559,45 +539,24 @@ class DigestScheduleService:
             )
             return
 
-        marker = marker_for(str(row["id"]))
-        if int(row["attempt_count"]) > 1:
-            found = await self._reconcile_marker(marker, channel_id=channel_id)
-            if found is not None:
-                await self._finish(row, report, status="sent", receipt_id=found.receipt_id)
-                return
-            if str(row.get("last_error") or "").startswith("ambiguous:"):
-                await self._finish(
-                    row,
-                    report,
-                    status="unknown",
-                    last_error=(
-                        "an earlier send was ambiguous and no matching message was found; "
-                        "delivery ownership is unknown and nothing was reposted"
-                    ),
-                )
-                return
-
-        try:
-            outcome = await self.transport.post_root(
-                channel_id=channel_id, content=f"{text}\n{marker}"
-            )
-        except TransportAmbiguous as exc:
-            found = await self._reconcile_marker(marker, channel_id=channel_id)
-            if found is not None:
-                await self._finish(row, report, status="sent", receipt_id=found.receipt_id)
-                return
-            await self._fail(row, report, error=f"ambiguous: {exc}", retryable=True)
-            return
-        except (TransportRetryable, TransportUnavailable) as exc:
-            await self._fail(row, report, error=str(exc), retryable=True)
-            return
-        except TransportMissing as exc:
-            await self._fail(row, report, error=str(exc), retryable=False)
-            return
-        except TransportError as exc:
-            await self._fail(row, report, error=str(exc), retryable=False)
-            return
-        await self._finish(row, report, status="sent", receipt_id=outcome.receipt_id)
+        result = await self._delivery.deliver(
+            FrozenMessage(
+                channel_id=channel_id,
+                text=text,
+                marker=marker_for(str(row["id"])),
+                attempt_count=int(row["attempt_count"]),
+                last_error=row.get("last_error"),
+                reclaimed=bool(row.get("reclaimed")),
+            ),
+        )
+        await self._finish(
+            row,
+            report,
+            status=result.status,
+            receipt_id=result.receipt_id,
+            next_attempt_at=result.next_attempt_at,
+            last_error=result.last_error,
+        )
 
 
 __all__ = [

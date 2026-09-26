@@ -7,6 +7,11 @@ from typing import Any
 from pydantic import BaseModel
 
 
+class ReportReconcileResponse(BaseModel):
+    success: bool = True
+    requested: int
+
+
 class ReportRequestResponse(BaseModel):
     success: bool = True
     request_id: str
@@ -125,6 +130,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "report_list": ReportListResponse,
     "morning_report_preview": MorningReportPreviewResponse,
     "report_request": ReportRequestResponse,
+    "report_reconcile": ReportReconcileResponse,
     "report_brief": ReportBriefResponse,
     "report_submit": ReportSubmitResponse,
 }

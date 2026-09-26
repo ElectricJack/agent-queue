@@ -4819,3 +4819,47 @@ job_outbox = Table(
     Column("payload", JSON, nullable=False),
     Column("delivered_at", Float, nullable=True),
 )
+
+
+# Shared outbox for new report/conversation lifecycles. Digest and escalation
+# identities remain in their established domain tables.
+outbound_deliveries = Table(
+    "outbound_deliveries", metadata,
+    Column("id", Text, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("dedup_key", Text, nullable=False),
+    Column("destination", JSON, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("marker", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("due_at", Float, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("external_receipt_id", Text, nullable=True),
+    Column("receipt_confirmed_at", Float, nullable=True),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("dedup_key", name="uq_outbound_deliveries_dedup"),
+    UniqueConstraint("marker", name="uq_outbound_deliveries_marker"),
+    CheckConstraint(
+        "state IN ('pending','sending','sent','retry','unknown')",
+        name="ck_outbound_deliveries_state",
+    ),
+    CheckConstraint("attempt_count >= 0", name="ck_outbound_deliveries_attempts"),
+    CheckConstraint(
+        "(state = 'sending' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+        "OR (state <> 'sending' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+        name="ck_outbound_deliveries_lease",
+    ),
+    CheckConstraint(
+        "state <> 'sent' OR (external_receipt_id IS NOT NULL "
+        "AND receipt_confirmed_at IS NOT NULL)",
+        name="ck_outbound_deliveries_receipt",
+    ),
+    Index("idx_outbound_deliveries_due", "state", "due_at"),
+    Index("idx_outbound_deliveries_owner", "owner_kind", "owner_id", "created_at"),
+)

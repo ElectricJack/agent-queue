@@ -280,7 +280,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/task_requirements_queries.py", "src/database/queries/workspace_*.py"], areas: ["workspaces", "worktree-slots"] }
   - { paths: ["src/database/queries/task_subtask_queries.py"], areas: ["task-subtasks"] }
 
-  - { paths: ["src/digest/**"], areas: ["digest"] }
+  - { paths: ["src/digest/**", "src/delivery/**", "src/database/queries/outbound_queries.py"], areas: ["digest"] }
   - { paths: ["src/discord/**"], areas: ["discord"] }
   - { paths: ["src/discord/escalation_*.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/**"], areas: ["doctor"] }
