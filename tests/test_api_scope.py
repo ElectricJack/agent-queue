@@ -53,6 +53,8 @@ EXPECTED_AGENT_COMMANDS = {
     "review_list",
     "review_withdraw",
     "review_comment",
+    "report_brief",
+    "report_submit",
     "github_issue_close_rejected",
 }
 
