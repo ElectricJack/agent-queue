@@ -92,6 +92,63 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
         await conn.close()
 
 
+async def test_upgrade_preserves_review_revision_before_adding_codex_service_tier():
+    """The two formerly colliding revisions both run on a pre-change database."""
+    dsn = await create_scratch_database("reviewcodexchain")
+    before = _alembic_pg(dsn, "upgrade", "a00000000023")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The squashed baseline uses today's metadata. Recreate the old schema
+        # so neither incremental revision can silently skip its actual DDL.
+        await conn.execute("ALTER TABLE agent_profiles DROP COLUMN codex_service_tier")
+        await conn.execute("ALTER TABLE doc_reviews DROP CONSTRAINT ck_doc_reviews_state")
+        await conn.execute(
+            "ALTER TABLE doc_reviews ADD CONSTRAINT ck_doc_reviews_state "
+            "CHECK (state IN ('in_review', 'changes_requested', 'approved', 'withdrawn'))"
+        )
+        await conn.execute(
+            "INSERT INTO agent_profiles (id, name, created_at, updated_at) "
+            "VALUES ('keep', 'Keep', 0, 0)"
+        )
+    finally:
+        await conn.close()
+
+    review = _alembic_pg(dsn, "upgrade", "a00000000024")
+    assert review.returncode == 0, review.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000024"
+        constraint = await conn.fetchval(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_doc_reviews_state'"
+        )
+        assert "'rejected'" in constraint
+        assert not await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'agent_profiles' "
+            "AND column_name = 'codex_service_tier')"
+        )
+    finally:
+        await conn.close()
+
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000025"
+        row = await conn.fetchrow(
+            "SELECT name, codex_service_tier FROM agent_profiles WHERE id = 'keep'"
+        )
+        assert dict(row) == {"name": "Keep", "codex_service_tier": None}
+        await conn.execute("UPDATE agent_profiles SET codex_service_tier = 'fast' WHERE id = 'keep'")
+        assert await conn.fetchval(
+            "SELECT codex_service_tier FROM agent_profiles WHERE id = 'keep'"
+        ) == "fast"
+    finally:
+        await conn.close()
+
+
 async def test_resolution_push_fence_upgrade_marks_legacy_reservation_unknown():
     """A pre-marker reservation is not proof that no external push started."""
     if not POSTGRES_DSN:
