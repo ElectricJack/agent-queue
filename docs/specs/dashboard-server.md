@@ -192,9 +192,18 @@ at 128 KiB of unacknowledged output and closes `4408` after 30 s. The terminal's
 3. Frames are relayed one-to-one in order, preserving text versus binary and
    frame boundaries — the terminal is binary output plus JSON text control
    frames. Maximum message size is 16 MiB on both hops (uvicorn's default, so the
-   proxy is never the tighter limit). Ping/pong is per hop and not relayed.
+   proxy is never the tighter limit). Ping/pong is per hop and not relayed;
+   the proxy sends upstream pings every 15 s. Interactive terminals also use
+   application ping/pong to detect a silently stalled browser connection.
 4. Close code and reason are relayed in both directions; `4400`–`4429` carry
    meaning the dashboard displays.
+5. `GET /ws/terminal/{session_id}` is a read-only access probe under the same
+   terminal-prefix edge gates. It never attaches a PTY and is not cached.
+   Browsers use it to diagnose opaque handshake failures and stop retrying
+   confirmed authorization/session refusals. `browser_origin` supplies the
+   page's origin when a same-origin GET omits Origin (including behind TLS).
+   [Terminal reconnection](terminal-reconnection.md) specifies the retry,
+   keepalive and screen reset contract for interactive and watch-only viewers.
 
 ### 2.5 When the daemon is down
 
@@ -202,7 +211,7 @@ The bundle keeps loading, so the SPA renders its own disconnected state. Proxied
 HTTP answers `503` with `{"ok": false, "error": "daemon_unreachable", "api_url":
 …}`, `Retry-After: 2` and `Cache-Control: no-store`; a WebSocket handshake is
 denied with `503`, which the browser reports as close `1006` and
-`useEventStream`'s existing backoff retries. Every response the dashboard server
+the event and terminal streams' backoff retries. Every response the dashboard server
 generates itself carries `X-AQ-Dashboard-Server: <version>`, which separates its
 `503` from the daemon's own degraded `/health` `503`.
 

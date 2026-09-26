@@ -99,6 +99,16 @@ Nothing about the input path is recorded: no command dispatch, no replay, no
 input logging. Errors that cross the boundary are fixed, constant strings —
 never terminal bytes and never tmux's stderr.
 
+Dashboard viewers reconnect automatically after transport drops, with jittered
+backoff capped at 15 s and a `Reconnect now` action. Retries pause in hidden or
+offline tabs and resume on visibility, online or daemon stream recovery. Every
+reattach redraws the pane after resetting stale renderer state; input and old
+output acknowledgements never cross connections. Exit, user close and confirmed
+auth/identity refusals stop retries. A guarded, uncached `GET /ws/terminal/{id}`
+probe explains opaque handshake failures without attaching a PTY. Watch-only
+pane streams also recover from a CLOSED EventSource and retain the last screen.
+See the [reconnection contract](../specs/terminal-reconnection.md).
+
 Starting a terminal for an agent that has no live session is a separate,
 explicit act, and requires global admin:
 

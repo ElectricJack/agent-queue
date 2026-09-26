@@ -15,7 +15,6 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
   const connectionRef = useRef<TerminalConnection | null>(null);
   const handledFocusRequest = useRef<string | null>(null);
   const [state, setState] = useState<TerminalConnectionState>({ status: "connecting" });
-  const [attempt, setAttempt] = useState(0);
   const hintId = useId();
 
   useEffect(() => {
@@ -65,6 +64,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
     const fit = () => {
       if (disposed) return;
       const bounds = host.getBoundingClientRect();
+      connectionRef.current?.setVisible(!!bounds.width && !!bounds.height);
       if (!bounds.width || !bounds.height) return;
       const proposed = fitAddon.proposeDimensions();
       if (!proposed || !Number.isFinite(proposed.cols) || !Number.isFinite(proposed.rows)) return;
@@ -78,6 +78,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
     fit();
     const connection = connectTerminal({
       sessionId, cols: terminal.cols, rows: terminal.rows,
+      visible: !!host.getBoundingClientRect().width && !!host.getBoundingClientRect().height,
       write: (bytes, processed) => terminal.write(bytes, processed),
       onState: (next) => {
         if (disposed) return;
@@ -109,7 +110,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
       terminalRef.current = null;
       connectionRef.current = null;
     };
-  }, [sessionId, name, attempt, hintId]);
+  }, [sessionId, name, hintId]);
 
   useEffect(() => {
     if (!focusRequest || state.status !== "connected" || handledFocusRequest.current === focusRequest) return;
@@ -118,7 +119,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
   }, [focusRequest, state.status]);
 
   const disabled = state.status !== "connected";
-  const reconnect = state.status === "disconnected" || state.status === "error";
+  const reconnect = state.status === "reconnecting";
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
       {/* One control row only: the terminal itself owns every other pixel of height. */}
@@ -126,7 +127,7 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
         <span>Live tmux · interactive</span>
         <span id={hintId} className="sr-only">{disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}</span>
         <span role="status" aria-label={name + " terminal connection"} className="ml-auto capitalize">
-          {state.status}{disabled && " · input unavailable"}
+          {reconnect ? `Reconnecting… (attempt ${state.attempt})` : state.status}{disabled && " · input unavailable"}
         </span>
         <button ref={focusButton} type="button" aria-label={"Focus " + name + " terminal"} disabled={disabled}
           onClick={() => terminalRef.current?.focus()}
@@ -143,12 +144,12 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
           onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
       </div>
       {state.message && (
-        <div role={reconnect ? "alert" : "status"} className="shrink-0 border-t border-gray-800 px-3 py-2 text-xs text-gray-300">
+        <div role={state.status === "error" ? "alert" : "status"} className="shrink-0 border-t border-gray-800 px-3 py-2 text-xs text-gray-300">
           <p>{state.message}</p>
           {reconnect && (
-            <button type="button" onClick={() => setAttempt((value) => value + 1)}
+            <button type="button" onClick={() => connectionRef.current?.reconnect()}
               className="mt-2 rounded border border-gray-700 px-2 py-1 hover:bg-gray-800">
-              Reconnect terminal
+              Reconnect now
             </button>
           )}
         </div>
