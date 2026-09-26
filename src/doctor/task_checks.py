@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from sqlalchemy import or_, select, union_all
 
 from src.agent_waits import TERMINAL_TASK_STATUSES
@@ -12,6 +14,38 @@ from src.models import TaskStatus
 
 OWNER = "task-lifecycle"
 _STALE_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED})
+
+
+async def _check_pending_timer_waits(ctx: DoctorContext) -> CheckResult:
+    """Timers become ready at due_at, even before their hard timeout."""
+    check_id = "waits.pending_timers"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    now = time.time()
+    due_at = agent_waits.c.match["due_at"].as_float()
+    stmt = (
+        select(
+            agent_waits.c.id.label("wait_id"), agent_waits.c.project_id,
+            agent_waits.c.owner_kind, agent_waits.c.owner_id, agent_waits.c.session_id,
+            due_at.label("due_at"), agent_waits.c.deadline_at, agent_waits.c.checked_at,
+        )
+        .where(
+            agent_waits.c.state == "active", agent_waits.c.kind == "timer",
+            or_(due_at <= now, agent_waits.c.deadline_at <= now),
+        )
+        .order_by(due_at, agent_waits.c.id)
+        .limit(51)
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(stmt)).mappings().all()
+    if not rows:
+        return CheckResult(id=check_id, severity=Severity.OK,
+                           detail="no active timer wait is past its due instant or deadline")
+    return CheckResult(
+        id=check_id, severity=Severity.WARN,
+        detail=f"{len(rows[:50])} active timer wait(s) are overdue; check wait reconciliation",
+        data={"waits": [dict(row) for row in rows[:50]], "truncated": len(rows) > 50},
+    )
 
 
 async def _check_pending_terminal_waits(ctx: DoctorContext) -> CheckResult:
@@ -162,6 +196,11 @@ async def _fix_stale_attention(ctx: DoctorContext) -> CheckResult:
 
 def task_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="waits.pending_timers",
+            run=_check_pending_timer_waits,
+            owner="agent-waits",
+        ),
         DoctorCheck(
             id="waits.pending_terminal_tasks",
             run=_check_pending_terminal_waits,

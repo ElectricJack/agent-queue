@@ -50,7 +50,9 @@ lease exemptions never follow an old epoch into a new claim.
 
 The daemon scans at most 100 rows per cycle, rotates past unresolved conditions,
 and reads durable producer state, including archived tasks. It preserves actual
-task status and close outcome. Completion at or before the deadline wins even if
+task status and close outcome. Due timers receive the same scan priority as
+waits past their hard deadline, without waiting for the timer's later timeout.
+Completion at or before the deadline wins even if
 observed later. Job waits return the actual terminal state, outcome, exit code, infrastructure
 reason and a bounded failure-first excerpt with a `job:ID` result reference.
 Read the full immutable result with `aq job result ID`; read retained output with
@@ -91,13 +93,28 @@ live and archived COMPLETED, FAILED and BLOCKED targets and reports the wait,
 owner and session ids. The daemon's normal reconciliation resolves these waits
 and queues their result pointers; doctor does not change claims or task state.
 
+For timers that missed their due instant, run
+`aq doctor --check waits.pending_timers`. This read-only check flags active
+timers as soon as `due_at` passes, including timers whose hard timeout remains
+in the future, and also flags timers past that timeout. It reports due and
+deadline times, the last reconciliation check, and wait, owner and session ids.
+
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
 
 ## Opt-in live harness check
 
 The regular reconciler and delivery tests use a fake terminal and disposable
-PostgreSQL. To measure idle behavior with installed harness credentials, run
+PostgreSQL. A real tmux pool-terminal test uses a small local input stub and a
+32-second timer, with no model credentials or operator daemon:
+
+```bash
+aq test -m tmux -p no:xdist \
+  tests/test_session_reconciler.py::test_short_timer_wakes_idle_pool_through_real_tmux
+```
+
+It checks normal reconciliation, result submission exactly once, and retained
+claim and workspace. To measure idle behavior with installed harness credentials, run
 the paid probe on an isolated tmux socket:
 
 ```bash

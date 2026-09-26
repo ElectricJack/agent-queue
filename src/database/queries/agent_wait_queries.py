@@ -650,7 +650,13 @@ class AgentWaitQueriesMixin:
                         )
                         .where(waits.c.id == wait_id if wait_id else True)
                         .order_by(
-                            case((waits.c.deadline_at <= now, 0), else_=1),
+                            case((or_(
+                                waits.c.deadline_at <= now,
+                                and_(
+                                    waits.c.kind == "timer",
+                                    waits.c.match["due_at"].as_float() <= now,
+                                ),
+                            ), 0), else_=1),
                             waits.c.checked_at,
                             waits.c.deadline_at,
                             waits.c.created_at,

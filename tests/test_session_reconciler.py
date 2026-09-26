@@ -2603,7 +2603,9 @@ def installed_wait_reconciler(db, config, registry, tmp_path, monkeypatch):
     ).session_reconciler
 
 
-async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task", timeout=7200):
+async def _waiting_session(
+    db, provider, rec, config, tmp_path, lifecycle="task", timeout=7200, kind="task"
+):
     """Real wait commands, claim and workspace, with only the terminal faked."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
@@ -2636,10 +2638,75 @@ async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task"
     wait = await db.register_agent_wait(
         identity=dict(session_id=row.id, instance_token=row.instance_token, project_id="p1",
                       claim_epoch=task.claim_epoch, elevated=False),
-        kind="task", match={"task_id": "producer"}, deadline_at=NOW + timeout,
+        kind=kind, match={"due_at": NOW + 5} if kind == "timer" else {"task_id": "producer"},
+        deadline_at=NOW + timeout,
         idempotency_key="durable", now=NOW,
     )
     return row, wait
+
+
+@pytest.mark.parametrize("delivery", ["idle", "busy", "not_submitted"])
+async def test_short_timer_cascade_wakes_current_pool_holder_once(
+    db, provider, installed_wait_reconciler, config, tmp_path, monkeypatch, delivery
+):
+    """Registration → real daemon reconciliation → durable outbox → terminal input."""
+    from unittest.mock import AsyncMock
+
+    from src.messages.session_lens import SessionLens
+
+    config.swarm.enabled = True
+    config.messages.enabled = True
+    rec = installed_wait_reconciler
+    orch = rec.orchestrator
+    row, wait = await _waiting_session(
+        db, provider, rec, config, tmp_path, lifecycle="pool", timeout=120, kind="timer"
+    )
+    # Use the installed lens and delivery engine, with only the terminal faked.
+    orch.session_lens = SessionLens(
+        db=db, providers=rec.providers, spec_builder=None, harness_registry=None,
+        config=config, profiles_loader=AsyncMock(),
+    )
+    orch.message_delivery._sessions = orch.session_lens
+    clock = NOW
+    monkeypatch.setattr("src.orchestrator.core.time.time", lambda: clock)
+    for clock in (NOW, NOW + 4):
+        await orch._reconcile_sessions()
+        orch._last_delivery_pass = 0
+        await orch._deliver_messages()
+        assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
+        assert provider.sent_nudges == []
+    clock = NOW + 5
+    if delivery == "busy":
+        provider.sessions[row.name].activity = clock
+    elif delivery == "not_submitted":
+        provider.swallow_next_nudge(row.name)
+    await orch._reconcile_sessions()
+    result = await db.get_agent_wait(wait["id"])
+    assert result["state"] == "satisfied"
+    assert result["result_ref"] == f"timer:{clock}"
+    assert result["wait_resumed_at"] == clock
+    orch._last_delivery_pass = 0
+    await orch._deliver_messages()
+    if delivery != "idle":
+        assert provider.sent_nudges == []
+        assert (await db.get_message(result["result_message_id"])).delivered_at is None
+        provider.sessions[row.name].activity = NOW - 10000
+        orch._last_delivery_pass = 0
+        await orch._deliver_messages()
+    assert provider.sent_nudges == [
+        (row.name, f"Handle `aq wait show {wait['id']} --json`."),
+    ]
+    assert (await db.get_message(result["result_message_id"])).delivered_at == clock
+    await orch._reconcile_sessions()
+    orch._last_delivery_pass = 0
+    await orch._deliver_messages()
+    assert len(provider.sent_nudges) == 1
+    current = await db.get_session(row.id)
+    assert current.state == "running" and current.task_id == "t1"
+    assert current.last_claim_epoch == row.last_claim_epoch
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert (await db.get_agent("a1")).state == AgentState.BUSY
+    assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
 
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
@@ -2799,6 +2866,87 @@ async def test_restart_reconstructs_wait_exemption_without_heartbeat(
     assert (await db.get_session(row.id)).state == "running"
     assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
     assert provider.sent_nudges == []
+
+
+@pytest.mark.tmux
+async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_path, monkeypatch):
+    """A short timer reaches a real idle pool terminal without an operator nudge or LLM."""
+    import os
+    import shutil
+    import time
+    import uuid
+    from pathlib import Path
+    from src.sessions.tmux import TmuxProvider
+    from tests.test_tmux_integration import STUB, _spec
+
+    if not shutil.which("tmux"):
+        pytest.skip("tmux required")
+    stub = tmp_path / "timer_stub.py"
+    stub.write_text(STUB)
+    config.sessions.provider = "tmux"
+    config.sessions.tmux_socket = f"aq-timer-test-{uuid.uuid4().hex[:10]}"
+    config.swarm.enabled = True
+    config.messages.enabled = True
+    provider = TmuxProvider(config=config)
+    registry = SessionProviderRegistry({"tmux": lambda **_: provider}, config=config)
+    orch = _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch)
+    spec = _spec(tmp_path, stub, name="p-idle-timer", token=uuid.uuid4().hex)
+    handle = None
+    try:
+        handle = await provider.start(spec)
+        await _task(db)
+        await _busy_agent_and_workspace(db, tmp_path)
+        task = await db.get_task("t1")
+        now = time.time()
+        row = SessionRecord(
+            id="timer-probe", project_id="p1", profile_id="worker", harness="codex",
+            provider="tmux", name=spec.session_name, lifecycle="pool", work_dir=spec.work_dir,
+            epoch="probe", instance_token=spec.instance_token, started_at=now, task_id="t1",
+            state="running", agent_id="a1", claim_phase="active", last_claim_epoch=task.claim_epoch,
+        )
+        await db.create_session(row)
+        # Let startup output age beyond the lens's 30-second busy window.
+        due = now + 32
+        registered = await orch._command_handler.execute("wait_register", dict(
+            session_id=row.id, project_id="p1", claim_epoch=task.claim_epoch,
+            kind="timer", due_at=due, timeout=120, idempotency_key="real-timer",
+        ))
+        assert registered["success"], registered
+        wait = registered["wait"]
+        received = Path(spec.work_dir) / "received.txt"
+        stop_at = time.monotonic() + 60
+        while time.monotonic() < stop_at:
+            await orch._reconcile_sessions()
+            await orch._deliver_messages()
+            if received.exists():
+                break
+            if time.time() < due:
+                assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
+            await asyncio.sleep(0.5)
+        assert received.exists(), "due timer did not reach the idle terminal within 60 seconds"
+        expected = f"Handle `aq wait show {wait['id']} --json`.\n"
+        assert received.read_text() == expected
+        result = await db.get_agent_wait(wait["id"])
+        assert result["state"] == "satisfied" and result["result_ref"] == f"timer:{due}"
+        assert (await db.get_message(result["result_message_id"])).delivered_at is not None
+        await orch._reconcile_sessions()
+        orch._last_delivery_pass = 0
+        await orch._deliver_messages()
+        assert received.read_text() == expected
+        current = await db.get_session(row.id)
+        assert current.state == "running" and current.task_id == "t1"
+        assert current.last_claim_epoch == task.claim_epoch
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    finally:
+        if handle is not None:
+            await provider.stop(handle, grace=1)
+        try:
+            await provider._tmux("kill-server")
+        except Exception:
+            pass  # A failed start or stop may already have removed this isolated server.
+        socket_root = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+        (socket_root / config.sessions.tmux_socket).unlink(missing_ok=True)
 
 
 @pytest.mark.tmux

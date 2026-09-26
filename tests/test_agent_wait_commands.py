@@ -272,6 +272,63 @@ async def test_doctor_reports_active_wait_with_terminal_target(commands, env, te
     assert (await check.run(ctx)).severity == Severity.OK
 
 
+@pytest.mark.parametrize("delay", [5, 100, 101])
+async def test_doctor_reports_pending_timer_due_before_hard_deadline(
+    commands, env, monkeypatch, delay
+):
+    from src.doctor import default_registry
+    from src.doctor.models import DoctorContext, Severity
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    registered = await execute(commands, "wait_register", dict(
+        kind="timer", due_at=NOW + 5, timeout=100, idempotency_key="doctor", claim_epoch=1,
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait"]["id"]
+    check = default_registry().get("waits.pending_timers")
+    ctx = DoctorContext(config=commands.config, db=env.db)
+    assert (await check.run(ctx)).severity == Severity.OK
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + delay)
+    found = await check.run(ctx)
+    assert found.severity == Severity.WARN
+    assert found.data["waits"] == [dict(
+        wait_id=wait_id, project_id="p", owner_kind="task", owner_id="owner", session_id="s",
+        due_at=NOW + 5, deadline_at=NOW + 100, checked_at=0.0,
+    )]
+    assert not found.fixable and check.fix is None
+    assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
+    await AgentWaitReconciler(commands).tick(now=NOW + delay)
+    assert (await check.run(ctx)).severity == Severity.OK
+
+
+async def test_doctor_pending_timer_diagnostic_is_bounded_and_ignores_other_waits(
+    commands, env, monkeypatch
+):
+    from sqlalchemy import insert
+    from src.database.tables import agent_waits
+    from src.doctor import default_registry
+    from src.doctor.models import DoctorContext, Severity
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    registered = await execute(commands, "wait_register", dict(
+        kind="task", ref="source", idempotency_key="task", claim_epoch=1,
+    ))
+    wait = registered["wait"]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(agent_waits), [
+            dict(wait, id=f"timer-{i:02}", owner_kind="supervisor", kind="timer",
+                 match={"due_at": NOW - 1}, idempotency_key=f"timer-{i}")
+            for i in range(60)
+        ])
+    check = default_registry().get("waits.pending_timers")
+    ctx = DoctorContext(config=commands.config, db=env.db)
+    found = await check.run(ctx)
+    assert found.severity == Severity.WARN
+    assert len(found.data["waits"]) == 50 and found.data["truncated"]
+    assert {w["wait_id"] for w in found.data["waits"]} == {f"timer-{i:02}" for i in range(50)}
+    assert (await check.run(DoctorContext(config=commands.config))).severity == Severity.INFO
+
+
 async def test_supplied_principal_cannot_replace_owner_instance(commands):
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
