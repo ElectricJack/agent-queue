@@ -40,6 +40,10 @@ _REPORT_REQUEST_ROW = {
     "updated_at": 120.0,
 }
 
+# The legacy import still ships, but creating and copying a source schema is
+# migration work, not part of the default developer/CI run.
+pytestmark = pytest.mark.migration
+
 
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
@@ -120,7 +124,7 @@ async def _empty_pg_adapter():
 
 
 async def _seeded_source(tmp_path) -> str:
-    """A SQLite source at head with rows across the deferred-FK tables:
+    """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
     from sqlalchemy import MetaData, insert, text
 

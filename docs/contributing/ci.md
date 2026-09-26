@@ -78,9 +78,9 @@ The job checks out the exact event SHA (the PR's merge with its base, for a
 | Arm | Command |
 |---|---|
 | `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py -n 2 --dist loadfile` |
-| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration` |
+| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py` |
 | `migration-and-slow` | `pytest tests/ -n 4 --dist loadfile -m "migration or slow"` |
-| `postgres-integration` | `pytest tests/ -n 4 --dist loadfile -m "integration or perf"` |
+| `postgres-integration` | `pytest tests/ -n 4 --dist loadfile -m "(integration or perf) and not migration and not slow"` |
 
 Every arm appends `--timeout=120 --durations=50 -rfE` to its command.
 `pytest-timeout` (installed by the `dev` extra) limits each test to 120 seconds,
@@ -108,9 +108,14 @@ runs still use the box's resource caps; these counts apply to CI.
 
 The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
-default one drops. The `cli-conformance` arm is separated so a CLI-surface
+default one drops. Tests with a `migration` or `slow` marker belong to
+`migration-and-slow`, including those also marked `integration` or `perf`.
+The legacy SQLite import and PostgreSQL substrate suites run there too,
+including the real template-creation coordination check.
+The `cli-conformance` arm is separated so a CLI-surface
 change fails visibly instead of inside fourteen thousand other results, and it
-is the one arm that goes through the `aq test` wrapper.
+is the one arm that goes through the `aq test` wrapper. Its two files are
+ignored by every default shard, so they execute once.
 
 Wall-clock budgets still skip in the `postgres-integration` arm: they need
 `AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
